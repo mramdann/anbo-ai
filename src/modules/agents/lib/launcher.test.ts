@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_LAUNCHERS,
   type AgentInstanceCount,
+  canLaunchAgentRequest,
   createAgentPanePlan,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
   findAgentLauncher,
@@ -61,6 +62,30 @@ describe("agent launch commands", () => {
       opencode: "opencode",
       grok: "grok",
     });
+  });
+});
+
+describe("parallel agent limits", () => {
+  it("allows two OpenCode instances but blocks a third", () => {
+    const request = {
+      agent: "opencode" as const,
+      command: "opencode",
+      instances: 1 as const,
+    };
+
+    expect(canLaunchAgentRequest(request, ["opencode"])).toBe(true);
+    expect(canLaunchAgentRequest(request, ["opencode", "opencode"])).toBe(
+      false,
+    );
+  });
+
+  it("does not limit other agent launchers", () => {
+    expect(
+      canLaunchAgentRequest(
+        { agent: "claude", command: "claude", instances: 4 },
+        ["opencode", "opencode"],
+      ),
+    ).toBe(true);
   });
 });
 

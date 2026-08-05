@@ -19,9 +19,11 @@ import {
   AgentNotificationsBridge,
   buildAgentLaunchCommand,
   buildAgentResumeCommand,
+  canLaunchAgentRequest,
   collectAgentResumeLeaves,
   createAgentResumeStates,
   findAgentLauncher,
+  MAX_PARALLEL_OPENCODE_AGENTS,
   nextAttentionTarget,
   validateAgentLaunchCommand,
 } from "@/modules/agents";
@@ -116,6 +118,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { SearchAddon } from "@xterm/addon-search";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { CloseDialogs } from "./components/CloseDialogs";
 import { LandingPage } from "./components/LandingPage";
 import {
@@ -669,6 +672,15 @@ export default function App() {
       if (!command.ok) return;
       const launcher = findAgentLauncher(request.agent, customCliAgents);
       if (!launcher) return;
+      const runningAgents = Object.values(
+        useAgentActivityStore.getState().agents,
+      );
+      if (!canLaunchAgentRequest(request, runningAgents)) {
+        toast.error("OpenCode launch blocked", {
+          description: `Anbo limits OpenCode to ${MAX_PARALLEL_OPENCODE_AGENTS} concurrent instances to prevent WebView out-of-memory crashes. Close one before starting another.`,
+        });
+        return;
+      }
       const title =
         request.instances === 1
           ? launcher.label

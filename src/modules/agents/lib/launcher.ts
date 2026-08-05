@@ -90,6 +90,21 @@ export type AgentLaunchRequest = {
   instances: AgentInstanceCount;
 };
 
+export const MAX_PARALLEL_OPENCODE_AGENTS = 2;
+
+export function canLaunchAgentRequest(
+  request: AgentLaunchRequest,
+  runningAgents: readonly string[],
+): boolean {
+  if (request.agent !== "opencode") return true;
+  const runningOpenCode = runningAgents.filter(
+    (agent) => agent === "opencode",
+  ).length;
+  return (
+    runningOpenCode + request.instances <= MAX_PARALLEL_OPENCODE_AGENTS
+  );
+}
+
 export const DEFAULT_AGENT_LAUNCH_COMMANDS: AgentLaunchCommands =
   Object.fromEntries(
     AGENT_LAUNCHERS.map((agent) => [agent.id, agent.defaultCommand]),
