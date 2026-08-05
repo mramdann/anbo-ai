@@ -5,6 +5,21 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing tag to build
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      release_body:
+        description: Generated release notes
+        required: false
+        type: string
+      tag_name:
+        description: Existing tag to build
+        required: true
+        type: string
 
 jobs:
   publish-tauri:
@@ -21,10 +36,14 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     env:
+      RELEASE_BODY: ${{ inputs.release_body || 'See the assets to download and install. Auto-update is built in.' }}
+      RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
       SIGNPATH_ENABLED: ${{ vars.SIGNPATH_ENABLED || 'false' }}
       APPLE_SIGNING_ENABLED: ${{ vars.APPLE_SIGNING_ENABLED || 'false' }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Linux build dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -57,6 +76,9 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check release versions
+        run: pnpm check-version
+
       - name: Write Apple API key to disk
         if: startsWith(matrix.platform, 'macos') && env.APPLE_SIGNING_ENABLED == 'true'
         shell: bash
@@ -83,10 +105,10 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "anboai ${{ github.ref_name }}"
-          releaseBody: "See the assets to download and install. Auto-update is built in."
-          releaseDraft: true
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: "anboai ${{ env.RELEASE_TAG }}"
+          releaseBody: ${{ env.RELEASE_BODY }}
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
 
@@ -100,10 +122,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "anboai ${{ github.ref_name }}"
-          releaseBody: "See the assets to download and install. Auto-update is built in."
-          releaseDraft: true
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: "anboai ${{ env.RELEASE_TAG }}"
+          releaseBody: ${{ env.RELEASE_BODY }}
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
 
@@ -119,7 +141,7 @@ jobs:
       # patch-appimage-updater job after all matrix legs finish, so a parallel
       # macOS/Windows upload cannot clobber the combined latest.json.
       - name: Fix AppImage wayland libs and re-sign
-        if: matrix.platform == 'ubuntu-22.04' && startsWith(github.ref, 'refs/tags/')
+        if: matrix.platform == 'ubuntu-22.04'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -171,7 +193,7 @@ jobs:
           rm -f "$APPIMAGE.sig"
           pnpm tauri signer sign "$APPIMAGE"
 
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${RELEASE_TAG}"
           gh release upload "$TAG" "$APPIMAGE" "$APPIMAGE.sig" \
             --clobber --repo "$GITHUB_REPOSITORY"
 
@@ -184,7 +206,7 @@ jobs:
       # patch-updater-manifest job, after every matrix leg has merged, so a
       # parallel macOS/Linux upload cannot clobber the Windows signatures.
       - name: Stage Windows installers for SignPath
-        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/') && env.SIGNPATH_ENABLED == 'true'
+        if: matrix.platform == 'windows-latest' && env.SIGNPATH_ENABLED == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -201,7 +223,7 @@ jobs:
 
       - name: Upload unsigned Windows artifact
         id: upload-windows
-        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/') && env.SIGNPATH_ENABLED == 'true'
+        if: matrix.platform == 'windows-latest' && env.SIGNPATH_ENABLED == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: windows-unsigned
@@ -212,7 +234,7 @@ jobs:
       # The default wait timeout is 600s; bumped so the job survives the time
       # it takes to review and approve the request during a release.
       - name: Submit Windows installers to SignPath
-        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/') && env.SIGNPATH_ENABLED == 'true'
+        if: matrix.platform == 'windows-latest' && env.SIGNPATH_ENABLED == 'true'
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -226,7 +248,7 @@ jobs:
           output-artifact-directory: 'signed'
 
       - name: Re-sign updater and upload signed Windows installers
-        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/') && env.SIGNPATH_ENABLED == 'true'
+        if: matrix.platform == 'windows-latest' && env.SIGNPATH_ENABLED == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -249,7 +271,7 @@ jobs:
           Remove-Item "$($env:MSI_REAL_PATH).sig" -ErrorAction SilentlyContinue
           pnpm tauri signer sign $env:EXE_REAL_PATH
           pnpm tauri signer sign $env:MSI_REAL_PATH
-          gh release upload $env:GITHUB_REF_NAME `
+          gh release upload $env:RELEASE_TAG `
             $env:EXE_REAL_PATH "$($env:EXE_REAL_PATH).sig" `
             $env:MSI_REAL_PATH "$($env:MSI_REAL_PATH).sig" `
             --clobber --repo $env:GITHUB_REPOSITORY
@@ -259,8 +281,10 @@ jobs:
   # already contain the correct signatures and URLs.
   patch-updater-manifest:
     needs: publish-tauri
-    if: startsWith(github.ref, 'refs/tags/') && vars.SIGNPATH_ENABLED == 'true'
+    if: vars.SIGNPATH_ENABLED == 'true'
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
     permissions:
       contents: write
     steps:
@@ -269,7 +293,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${RELEASE_TAG}"
 
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
             --pattern "latest.json" \
