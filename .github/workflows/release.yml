@@ -31,7 +31,7 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
-            args: ""
+            args: "--bundles nsis"
             rust-target: ""
 
     runs-on: ${{ matrix.platform }}
@@ -197,12 +197,12 @@ jobs:
           gh release upload "$TAG" "$APPIMAGE" "$APPIMAGE.sig" \
             --clobber --repo "$GITHUB_REPOSITORY"
 
-      # SignPath Authenticode-signs the Windows installers. Their bytes change,
+      # SignPath Authenticode-signs the Windows installer. Its bytes change,
       # so the minisign updater signatures tauri-action produced over the
-      # unsigned files no longer match. We stage the installers under the exact
-      # names the SignPath artifact configuration expects, submit them, then
-      # re-run the tauri signer over the SIGNED files and re-upload both the
-      # installers and their new .sig. latest.json is patched in the final
+      # unsigned file no longer match. We stage the installer under the exact
+      # name the SignPath artifact configuration expects, submit it, then
+      # re-run the Tauri signer over the signed file and re-upload it with its
+      # temporary .sig. latest.json is patched in the final
       # patch-updater-manifest job, after every matrix leg has merged, so a
       # parallel macOS/Linux upload cannot clobber the Windows signatures.
       - name: Stage Windows installers for SignPath
@@ -212,14 +212,10 @@ jobs:
           $ErrorActionPreference = "Stop"
           $bundleDir = "src-tauri/target/release/bundle"
           $exe = Get-ChildItem "$bundleDir/nsis" -Filter *.exe | Select-Object -First 1
-          $msi = Get-ChildItem "$bundleDir/msi"  -Filter *.msi | Select-Object -First 1
           if (-not $exe) { throw "No NSIS .exe produced by Tauri" }
-          if (-not $msi) { throw "No .msi produced by Tauri" }
           New-Item -ItemType Directory -Path signpath-staging -Force | Out-Null
           Copy-Item $exe.FullName signpath-staging/anboai-setup.exe
-          Copy-Item $msi.FullName signpath-staging/anboai.msi
           "EXE_REAL_PATH=$($exe.FullName)" | Out-File $env:GITHUB_ENV -Append
-          "MSI_REAL_PATH=$($msi.FullName)" | Out-File $env:GITHUB_ENV -Append
 
       - name: Upload unsigned Windows artifact
         id: upload-windows
@@ -257,24 +253,31 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $signedExe = "signed/anboai-setup.exe"
-          $signedMsi = "signed/anboai.msi"
-          foreach ($f in @($signedExe, $signedMsi)) {
-            if (-not (Test-Path $f)) { throw "Signed artifact missing: $f" }
-            $sig = Get-AuthenticodeSignature $f
-            if ($null -eq $sig.SignerCertificate) { throw "$f is NOT Authenticode-signed" }
-            if ($sig.Status -ne 'Valid') { throw "$f signature status: $($sig.Status)" }
-            Write-Host "OK $f -> $($sig.SignerCertificate.Subject)"
-          }
+          if (-not (Test-Path $signedExe)) { throw "Signed artifact missing: $signedExe" }
+          $sig = Get-AuthenticodeSignature $signedExe
+          if ($null -eq $sig.SignerCertificate) { throw "$signedExe is NOT Authenticode-signed" }
+          if ($sig.Status -ne 'Valid') { throw "$signedExe signature status: $($sig.Status)" }
           Copy-Item $signedExe $env:EXE_REAL_PATH -Force
-          Copy-Item $signedMsi $env:MSI_REAL_PATH -Force
           Remove-Item "$($env:EXE_REAL_PATH).sig" -ErrorAction SilentlyContinue
-          Remove-Item "$($env:MSI_REAL_PATH).sig" -ErrorAction SilentlyContinue
           pnpm tauri signer sign $env:EXE_REAL_PATH
-          pnpm tauri signer sign $env:MSI_REAL_PATH
           gh release upload $env:RELEASE_TAG `
             $env:EXE_REAL_PATH "$($env:EXE_REAL_PATH).sig" `
-            $env:MSI_REAL_PATH "$($env:MSI_REAL_PATH).sig" `
             --clobber --repo $env:GITHUB_REPOSITORY
+
+      - name: Remove standalone updater signatures
+        if: matrix.platform == 'windows-latest' && env.SIGNPATH_ENABLED != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $assets = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY `
+            --json assets --jq '.assets[].name'
+          foreach ($asset in $assets) {
+            if ($asset.EndsWith('.sig') -or $asset.EndsWith('.msi')) {
+              gh release delete-asset $env:RELEASE_TAG $asset `
+                --yes --repo $env:GITHUB_REPOSITORY
+            }
+          }
 
   # SignPath changes the installer bytes after tauri-action creates latest.json.
   # Patch the manifest only when SignPath is enabled; unsigned Windows releases
@@ -297,11 +300,9 @@ jobs:
 
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
             --pattern "latest.json" \
-            --pattern "*_x64-setup.exe.sig" \
-            --pattern "*_x64_en-US.msi.sig" --clobber
+            --pattern "*_x64-setup.exe.sig" --clobber
 
           EXE_SIG=$(cat ./*_x64-setup.exe.sig)
-          MSI_SIG=$(cat ./*_x64_en-US.msi.sig)
 
           # Re-signing an artifact re-uploads it with --clobber, which deletes
           # and recreates the asset under a new id. tauri-action baked the old
@@ -309,33 +310,22 @@ jobs:
           # the re-signed artifacts to the tag+filename download url, which is
           # stable across clobbers. Filenames come from the .sig names.
           EXE_FILE=$(basename "$(ls ./*_x64-setup.exe.sig)" .sig)
-          MSI_FILE=$(basename "$(ls ./*_x64_en-US.msi.sig)" .sig)
           DL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
 
           jq -e 'has("platforms") and (.platforms | has("windows-x86_64")
-            and has("windows-x86_64-msi")
             and has("windows-x86_64-nsis"))' latest.json >/dev/null \
             || { echo "latest.json missing an expected platform key"; exit 1; }
 
-          # The generic windows-x86_64 key mirrors whichever installer Tauri
-          # picked as primary; decode its current signature to see which file it
-          # references so the correct regenerated signature and url are used.
-          GEN_FILE=$(jq -r '.platforms["windows-x86_64"].signature' latest.json \
-            | base64 -d | grep -oE 'file:[^[:space:]]+' | head -n1)
-          GEN_FILE=${GEN_FILE#file:}
-          case "$GEN_FILE" in
-            *.msi) WIN_GEN="$MSI_SIG" ;;
-            *)     WIN_GEN="$EXE_SIG" ;;
-          esac
-
-          jq --arg gen "$WIN_GEN" \
-             --arg msi "$MSI_SIG" --arg nsis "$EXE_SIG" \
-             --arg genurl "$DL/$GEN_FILE" \
-             --arg msiurl "$DL/$MSI_FILE" --arg exeurl "$DL/$EXE_FILE" '
-            .platforms["windows-x86_64"] += {signature: $gen, url: $genurl}
-            | .platforms["windows-x86_64-msi"] += {signature: $msi, url: $msiurl}
-            | .platforms["windows-x86_64-nsis"] += {signature: $nsis, url: $exeurl}
+          jq --arg sig "$EXE_SIG" --arg url "$DL/$EXE_FILE" '
+            .platforms["windows-x86_64"] += {signature: $sig, url: $url}
+            | .platforms["windows-x86_64-nsis"] += {signature: $sig, url: $url}
+            | del(.platforms["windows-x86_64-msi"])
           ' latest.json > latest.json.tmp
           mv latest.json.tmp latest.json
 
           gh release upload "$TAG" latest.json --clobber --repo "$GITHUB_REPOSITORY"
+          while IFS= read -r asset; do
+            gh release delete-asset "$TAG" "$asset" \
+              --yes --repo "$GITHUB_REPOSITORY"
+          done < <(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name | select(endswith(".sig") or endswith(".msi"))')
