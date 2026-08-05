@@ -26,13 +26,18 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 
 type Props = {
-  onBack: () => void;
+  onBack?: () => void;
   onLaunch: (request: AgentLaunchRequest) => void;
+  variant?: "popover" | "embedded";
 };
 
 const INSTANCE_COUNTS: AgentInstanceCount[] = [1, 2, 3, 4];
 
-export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
+export function AgentLauncherPanel({
+  onBack,
+  onLaunch,
+  variant = "popover",
+}: Props) {
   const storedCommands = usePreferencesStore((s) => s.agentLaunchCommands);
   const customCliAgents = usePreferencesStore((s) => s.customCliAgents);
   const hydrated = usePreferencesStore((s) => s.hydrated);
@@ -118,26 +123,35 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
 
   return (
     <form
-      className="animate-in fade-in-0 slide-in-from-right-2 duration-150"
+      className={cn(
+        variant === "popover" &&
+          "animate-in fade-in-0 slide-in-from-right-2 duration-150",
+      )}
       onSubmit={(event) => {
         event.preventDefault();
         submit();
       }}
     >
       <div className="flex h-9 items-center gap-2 px-1">
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          className="rounded-md text-muted-foreground"
-          onClick={onBack}
-          aria-label="Back to new tab menu"
-        >
-          <HugeiconsIcon icon={ArrowLeft01Icon} size={14} strokeWidth={1.75} />
-        </Button>
+        {onBack ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            className="rounded-md text-muted-foreground"
+            onClick={onBack}
+            aria-label="Back to new tab menu"
+          >
+            <HugeiconsIcon
+              icon={ArrowLeft01Icon}
+              size={14}
+              strokeWidth={1.75}
+            />
+          </Button>
+        ) : null}
         <div className="min-w-0">
           <div className="text-[13px] font-medium text-foreground">
-            Launch agents
+            {variant === "embedded" ? "Agents" : "Launch agents"}
           </div>
           <div className="text-[10px] text-muted-foreground">
             One workspace, up to four panes

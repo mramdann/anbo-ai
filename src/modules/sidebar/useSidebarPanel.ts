@@ -22,6 +22,12 @@ export function shouldPersistSidebarWidth(
   return isUserInteraction && width > 0;
 }
 
+export function shouldPersistSidebarCollapsed(
+  isUserInteraction: boolean,
+): boolean {
+  return isUserInteraction;
+}
+
 function clampSidebarWidth(width: number): number {
   return Math.min(
     SIDEBAR_MAX_WIDTH,
@@ -90,28 +96,38 @@ export function useSidebarPanel(
     }
   }, []);
 
-  const persistSidebarCollapsed = useCallback((collapsed: boolean) => {
-    if (collapsedRef.current === collapsed) return;
-    collapsedRef.current = collapsed;
-    try {
-      window.localStorage.setItem(
-        SIDEBAR_COLLAPSED_STORAGE_KEY,
-        collapsed ? "1" : "0",
-      );
-    } catch {
-      // storage may fail in private mode
-    }
-  }, []);
+  const persistSidebarCollapsed = useCallback(
+    (collapsed: boolean, isUserInteraction = true) => {
+      if (
+        !shouldPersistSidebarCollapsed(isUserInteraction) ||
+        collapsedRef.current === collapsed
+      ) {
+        return;
+      }
+      collapsedRef.current = collapsed;
+      try {
+        window.localStorage.setItem(
+          SIDEBAR_COLLAPSED_STORAGE_KEY,
+          collapsed ? "1" : "0",
+        );
+      } catch {
+        // storage may fail in private mode
+      }
+    },
+    [],
+  );
 
   const toggleSidebar = useCallback(() => {
     const panel = sidebarRef.current;
     if (!panel) return;
     if (panel.isCollapsed()) {
       expandSidebar(panel, sidebarWidthRef.current);
+      persistSidebarCollapsed(false);
     } else {
       panel.collapse();
+      persistSidebarCollapsed(true);
     }
-  }, []);
+  }, [persistSidebarCollapsed]);
 
   const cycleSidebarView = useCallback(
     (view: SidebarViewId) => {
@@ -119,16 +135,18 @@ export function useSidebarPanel(
       const collapsed = panel?.isCollapsed() ?? false;
       if (collapsed) {
         if (panel) expandSidebar(panel, sidebarWidthRef.current);
+        persistSidebarCollapsed(false);
         if (view !== sidebarView) persistSidebarView(view);
         return;
       }
       if (view === sidebarView) {
         panel?.collapse();
+        persistSidebarCollapsed(true);
         return;
       }
       persistSidebarView(view);
     },
-    [persistSidebarView, sidebarView],
+    [persistSidebarCollapsed, persistSidebarView, sidebarView],
   );
 
   const persistSidebarWidth = useCallback(
@@ -163,7 +181,10 @@ export function useSidebarPanel(
     const panel = sidebarRef.current;
     const collapsed = panel?.isCollapsed() ?? false;
     if (sidebarView !== "explorer" || collapsed) {
-      if (panel && collapsed) expandSidebar(panel, sidebarWidthRef.current);
+      if (panel && collapsed) {
+        expandSidebar(panel, sidebarWidthRef.current);
+        persistSidebarCollapsed(false);
+      }
       if (sidebarView !== "explorer") persistSidebarView("explorer");
       const active = document.activeElement;
       explorerReturnFocusRef.current =
@@ -188,7 +209,7 @@ export function useSidebarPanel(
     explorerReturnFocusRef.current =
       active instanceof HTMLElement && active !== document.body ? active : null;
     explorer.focus();
-  }, [explorerRef, persistSidebarView, sidebarView]);
+  }, [explorerRef, persistSidebarCollapsed, persistSidebarView, sidebarView]);
 
   return {
     sidebarRef,

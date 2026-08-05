@@ -1507,6 +1507,9 @@ export default function App() {
                   onLayoutChanged={(_, { isUserInteraction }) => {
                     const width = sidebarRef.current?.getSize().inPixels ?? 0;
                     persistSidebarWidth(width, isUserInteraction);
+                    const collapsed =
+                      sidebarRef.current?.isCollapsed() ?? false;
+                    persistSidebarCollapsed(collapsed, isUserInteraction);
                   }}
                 >
                   <ResizablePanel
@@ -1521,9 +1524,6 @@ export default function App() {
                     maxSize={`${SIDEBAR_MAX_WIDTH}px`}
                     collapsible
                     collapsedSize={0}
-                    onResize={(size) => {
-                      persistSidebarCollapsed(size.inPixels <= 0);
-                    }}
                   >
                     <div className="flex h-full min-h-0 flex-col border-r border-border/60 bg-card">
                       <div
