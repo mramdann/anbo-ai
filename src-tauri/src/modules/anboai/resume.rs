@@ -92,7 +92,7 @@ pub fn find_claude_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>) 
         if ts < since_ts {
             continue;
         }
-        if best.as_ref().map_or(true, |(_, b_ts)| ts > *b_ts) {
+        if best.as_ref().is_none_or(|(_, b_ts)| ts > *b_ts) {
             best = Some((id.to_string(), ts));
         }
     }
@@ -148,7 +148,10 @@ mod tests {
     #[test]
     fn encode_replaces_all_non_alphanumeric() {
         // Spasi, kurung, titik, slash, colon — SEMUA → '-'.
-        assert_eq!(encode_segments_only("D:\\a\\OFFLINE SCADA"), "D--a-OFFLINE-SCADA");
+        assert_eq!(
+            encode_segments_only("D:\\a\\OFFLINE SCADA"),
+            "D--a-OFFLINE-SCADA"
+        );
         assert_eq!(encode_segments_only("FLORES (FCC)"), "FLORES--FCC-");
     }
 
@@ -185,12 +188,19 @@ mod tests {
         let mut claimed = HashSet::new();
         claimed.insert(new_id.to_string());
         let found2 = find_claude_session(&cwd, 0, &claimed);
-        assert_eq!(found2.as_deref(), Some(old_id), "claimed new → fallback old");
+        assert_eq!(
+            found2.as_deref(),
+            Some(old_id),
+            "claimed new → fallback old"
+        );
 
         // (C) since_ts di masa depan → semua sesi (created≈now) < since → None.
         let future = now_ms() + 3_600_000;
         let found3 = find_claude_session(&cwd, future, &HashSet::new());
-        assert!(found3.is_none(), "since_ts masa depan → tak ada yg eligible");
+        assert!(
+            found3.is_none(),
+            "since_ts masa depan → tak ada yg eligible"
+        );
 
         std::env::remove_var("ANBOAI_CLAUDE_PROJECTS");
         let _ = fs::remove_dir_all(&tmp);

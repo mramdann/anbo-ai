@@ -1,8 +1,7 @@
 import {
-  isLeaf,
-  type PaneNode,
-  type SplitDir,
-} from "@/modules/terminal/lib/panes";
+  normalizePersistedAgentResume,
+  type PersistedAgentResume,
+} from "@/modules/agents/lib/resume";
 import type {
   EditorTab,
   MarkdownTab,
@@ -10,9 +9,19 @@ import type {
   Tab,
   TerminalTab,
 } from "@/modules/tabs/lib/useTabs";
+import {
+  isLeaf,
+  type PaneNode,
+  type SplitDir,
+} from "@/modules/terminal/lib/panes";
 
 export type SerializedNode =
-  | { kind: "leaf"; cwd?: string; active?: boolean }
+  | {
+      kind: "leaf";
+      cwd?: string;
+      active?: boolean;
+      agentResume?: PersistedAgentResume;
+    }
   | { kind: "split"; dir: SplitDir; children: SerializedNode[] };
 
 export type SerializedTab =
@@ -41,10 +50,15 @@ function titleFromUrl(url: string): string {
 
 function serializeNode(node: PaneNode, activeLeafId: number): SerializedNode {
   if (isLeaf(node)) {
+    const agentResume =
+      node.agentResume?.armed === false
+        ? undefined
+        : normalizePersistedAgentResume(node.agentResume);
     return {
       kind: "leaf",
       ...(node.cwd !== undefined && { cwd: node.cwd }),
       ...(node.id === activeLeafId && { active: true }),
+      ...(agentResume && { agentResume }),
     };
   }
   return {
@@ -110,11 +124,15 @@ function hydrateNode(
 ): PaneNode {
   if (node.kind === "leaf") {
     const id = allocId();
+    const agentResume = normalizePersistedAgentResume(node.agentResume);
     if (node.active && acc.activeLeafId === null) acc.activeLeafId = id;
     return {
       kind: "leaf",
       id,
       ...(node.cwd !== undefined && { cwd: node.cwd }),
+      ...(agentResume && {
+        agentResume: { ...agentResume, armed: true, resumeOnStart: true },
+      }),
     };
   }
   const children = node.children.map((c) => hydrateNode(c, allocId, acc));

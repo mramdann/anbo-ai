@@ -1,10 +1,63 @@
-import { describe, expect, it } from "vitest";
 import {
+  armLeafAgentResume,
   firstLeafSlotId,
   leafIds,
-  swapLeafInDirection,
   type PaneNode,
+  pinLeafAgentResumeSession,
+  swapLeafInDirection,
 } from "@/modules/terminal/lib/panes";
+import { describe, expect, it } from "vitest";
+
+describe("armLeafAgentResume", () => {
+  it("arms only the selected leaf without mutating its siblings", () => {
+    const resume = {
+      agent: "claude" as const,
+      command: "claude",
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      armed: false,
+    };
+    const tree: PaneNode = {
+      kind: "split",
+      id: 10,
+      dir: "row",
+      children: [
+        { kind: "leaf", id: 1, agentResume: resume },
+        { kind: "leaf", id: 2, agentResume: resume },
+      ],
+    };
+    const armed = armLeafAgentResume(tree, 2);
+    expect(armed).not.toBe(tree);
+    if (armed.kind !== "split") return;
+    expect(
+      armed.children.map((node) =>
+        node.kind === "leaf" ? node.agentResume?.armed : undefined,
+      ),
+    ).toEqual([false, true]);
+  });
+
+  it("pins a discovered session id and arms the selected leaf", () => {
+    const tree: PaneNode = {
+      kind: "leaf",
+      id: 1,
+      agentResume: {
+        agent: "opencode",
+        armed: false,
+        command: "opencode",
+      },
+    };
+    const pinned = pinLeafAgentResumeSession(tree, 1, "ses_test123");
+    expect(pinned).toEqual({
+      kind: "leaf",
+      id: 1,
+      agentResume: {
+        agent: "opencode",
+        armed: true,
+        command: "opencode",
+        sessionId: "ses_test123",
+      },
+    });
+  });
+});
 
 function row(...ids: number[]): PaneNode {
   return {

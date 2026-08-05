@@ -84,6 +84,19 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", () => emit("finished"));
 }
 "#;
+const OPENCODE_PLUGIN_DIR: &str = ".config/opencode/plugins";
+const OPENCODE_PLUGIN_FILE: &str = "anbo-notifications.js";
+const OPENCODE_PLUGIN_MARKER: &str = "anbo-opencode-notifications-v1";
+const OPENCODE_PLUGIN: &str = r#"// anbo-opencode-notifications-v1
+export const AnboNotifications = async () => ({
+  event: async ({ event }) => {
+    if (!process.env.ANBO_TERMINAL || event.type !== "session.created") return;
+    const id = event.properties?.sessionID || event.properties?.info?.id;
+    if (typeof id !== "string" || !/^ses_[A-Za-z0-9]+$/.test(id)) return;
+    process.stdout.write(`\u001b]777;notify;Anbo;opencode;session;${id}\u0007`);
+  },
+});
+"#;
 
 // Substrings identifying a hook command as ours, across every form we've ever
 // emitted (legacy /dev/tty Claude, current TerminalSequence, Osc, Windows
@@ -195,7 +208,10 @@ fn merge_hooks(mut root: Value, spec: &AgentSpec) -> Value {
 fn existing_config(contents: Option<&str>, path: &std::path::Path) -> Result<Value, String> {
     match contents {
         Some(s) if !s.trim().is_empty() => serde_json::from_str::<Value>(s).map_err(|e| {
-            format!("{} is not valid JSON ({e}); refusing to overwrite", path.display())
+            format!(
+                "{} is not valid JSON ({e}); refusing to overwrite",
+                path.display()
+            )
         }),
         _ => Ok(json!({})),
     }
@@ -214,6 +230,10 @@ fn settings_path(spec: &AgentSpec) -> Result<std::path::PathBuf, String> {
 
 fn pi_extension_path() -> Result<std::path::PathBuf, String> {
     home_path(PI_EXTENSION_DIR, PI_EXTENSION_FILE)
+}
+
+fn opencode_plugin_path() -> Result<std::path::PathBuf, String> {
+    home_path(OPENCODE_PLUGIN_DIR, OPENCODE_PLUGIN_FILE)
 }
 
 fn pi_extension_contents(
@@ -266,10 +286,36 @@ fn enable_pi_extension() -> Result<(), String> {
     enable_pi_extension_at(&pi_extension_path()?)
 }
 
+fn enable_opencode_plugin_at(path: &std::path::Path) -> Result<(), String> {
+    let dir = path.parent().unwrap();
+    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let existing = match std::fs::read_to_string(path) {
+        Ok(s) if s == OPENCODE_PLUGIN => return Ok(()),
+        Ok(s) if s.contains(OPENCODE_PLUGIN_MARKER) => Some(s),
+        Ok(_) => {
+            return Err(format!(
+                "{} is not managed by Anbo; refusing to overwrite",
+                path.display()
+            ))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("read {}: {e}", path.display())),
+    };
+    let _ = existing;
+    write_atomic(&pi_extension_write_path(path)?, OPENCODE_PLUGIN)
+}
+
+fn enable_opencode_plugin() -> Result<(), String> {
+    enable_opencode_plugin_at(&opencode_plugin_path()?)
+}
+
 #[tauri::command]
 pub fn agent_enable_hooks(agent: String) -> Result<(), String> {
     if agent == "pi" {
         return enable_pi_extension();
+    }
+    if agent == "opencode" {
+        return enable_opencode_plugin();
     }
     let spec = find(&agent)?;
     let path = settings_path(spec)?;
@@ -328,6 +374,12 @@ pub fn agent_hooks_status(agent: String) -> bool {
                     .iter()
                     .all(|needle| content.contains(needle))
             });
+    }
+    if agent == "opencode" {
+        return opencode_plugin_path()
+            .ok()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .is_some_and(|content| content.contains(OPENCODE_PLUGIN_MARKER));
     }
     let Ok(spec) = find(&agent) else {
         return false;
@@ -449,6 +501,28 @@ mod tests {
 
         std::fs::write(&path, "export const mine = true;").unwrap();
         assert!(enable_pi_extension_at(&path).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "export const mine = true;"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn opencode_plugin_emits_exact_session_marker_and_preserves_foreign_files() {
+        assert!(OPENCODE_PLUGIN.contains("session.created"));
+        assert!(OPENCODE_PLUGIN.contains("notify;Anbo;opencode;session;${id}"));
+        assert!(OPENCODE_PLUGIN.contains("process.env.ANBO_TERMINAL"));
+
+        let dir = std::env::temp_dir().join(format!("anbo-opencode-plugin-{}", std::process::id()));
+        let path = dir.join(OPENCODE_PLUGIN_FILE);
+        let _ = std::fs::remove_dir_all(&dir);
+        enable_opencode_plugin_at(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), OPENCODE_PLUGIN);
+        enable_opencode_plugin_at(&path).unwrap();
+
+        std::fs::write(&path, "export const mine = true;").unwrap();
+        assert!(enable_opencode_plugin_at(&path).is_err());
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "export const mine = true;"

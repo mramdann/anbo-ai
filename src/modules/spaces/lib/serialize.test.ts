@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
-import type { PaneNode } from "@/modules/terminal/lib/panes";
 import type { Tab } from "@/modules/tabs/lib/useTabs";
-import { hydrateTabs, serializeTabs, type SerializedTab } from "./serialize";
+import type { PaneNode } from "@/modules/terminal/lib/panes";
+import { describe, expect, it } from "vitest";
+import { hydrateTabs, type SerializedTab, serializeTabs } from "./serialize";
 
 function counter(start = 100): () => number {
   let n = start;
@@ -72,6 +72,53 @@ describe("serializeTabs", () => {
       expect(node.tree.children[0]).not.toHaveProperty("active");
     }
   });
+
+  it("persists agent resume metadata without its runtime restore flag", () => {
+    const [serialized] = serializeTabs([
+      term({
+        paneTree: {
+          kind: "leaf",
+          id: 2,
+          cwd: "/a",
+          agentResume: {
+            agent: "claude",
+            command: "claude --model opus",
+            sessionId: "00000000-0000-4000-8000-000000000001",
+            resumeOnStart: true,
+          },
+        },
+      }),
+    ]);
+    expect(serialized).toMatchObject({
+      kind: "terminal",
+      tree: {
+        agentResume: {
+          agent: "claude",
+          command: "claude --model opus",
+          sessionId: "00000000-0000-4000-8000-000000000001",
+        },
+      },
+    });
+    expect(JSON.stringify(serialized)).not.toContain("resumeOnStart");
+  });
+
+  it("does not persist resume metadata before the launch command is sent", () => {
+    const [serialized] = serializeTabs([
+      term({
+        paneTree: {
+          kind: "leaf",
+          id: 2,
+          agentResume: {
+            agent: "claude",
+            command: "claude",
+            sessionId: "00000000-0000-4000-8000-000000000001",
+            armed: false,
+          },
+        },
+      }),
+    ]);
+    expect(JSON.stringify(serialized)).not.toContain("agentResume");
+  });
 });
 
 describe("hydrateTabs", () => {
@@ -134,6 +181,84 @@ describe("hydrateTabs", () => {
     }
     expect(new Set(ids).size).toBe(ids.length);
     expect(Math.min(...ids)).toBeGreaterThanOrEqual(100);
+  });
+
+  it("restores per-leaf agent sessions and marks them for lazy resume", () => {
+    const serialized: SerializedTab[] = [
+      {
+        kind: "terminal",
+        tree: {
+          kind: "split",
+          dir: "row",
+          children: [
+            {
+              kind: "leaf",
+              cwd: "/a",
+              agentResume: {
+                agent: "claude",
+                command: "claude",
+                sessionId: "00000000-0000-4000-8000-000000000001",
+              },
+            },
+            {
+              kind: "leaf",
+              cwd: "/b",
+              agentResume: {
+                agent: "pi",
+                command: "pi",
+                sessionId: "00000000-0000-4000-8000-000000000002",
+              },
+            },
+          ],
+        },
+      },
+    ];
+    const [restored] = hydrateTabs(serialized, "s1", counter());
+    expect(restored.kind).toBe("terminal");
+    if (restored.kind !== "terminal" || restored.paneTree.kind !== "split") {
+      return;
+    }
+    expect(
+      restored.paneTree.children.map((node) =>
+        node.kind === "leaf" ? node.agentResume : undefined,
+      ),
+    ).toEqual([
+      {
+        agent: "claude",
+        command: "claude",
+        sessionId: "00000000-0000-4000-8000-000000000001",
+        armed: true,
+        resumeOnStart: true,
+      },
+      {
+        agent: "pi",
+        command: "pi",
+        sessionId: "00000000-0000-4000-8000-000000000002",
+        armed: true,
+        resumeOnStart: true,
+      },
+    ]);
+  });
+
+  it("ignores malformed agent resume metadata", () => {
+    const serialized = [
+      {
+        kind: "terminal",
+        tree: {
+          kind: "leaf",
+          agentResume: {
+            agent: "claude",
+            command: "claude",
+            sessionId: "invalid",
+          },
+        },
+      },
+    ] as unknown as SerializedTab[];
+    const [restored] = hydrateTabs(serialized, "s1", counter());
+    expect(restored.kind).toBe("terminal");
+    if (restored.kind === "terminal" && restored.paneTree.kind === "leaf") {
+      expect(restored.paneTree.agentResume).toBeUndefined();
+    }
   });
 
   it("returns empty for corrupted input without throwing", () => {

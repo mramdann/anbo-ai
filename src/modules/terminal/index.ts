@@ -9,6 +9,7 @@ export {
   ptyIdForLeaf,
   respawnSession,
   whenSessionReady,
+  writeToReadySession,
   writeToSession,
 } from "./lib/useTerminalSession";
 export {

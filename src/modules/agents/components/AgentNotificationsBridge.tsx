@@ -11,11 +11,13 @@ import { useAgentStore } from "../store/agentStore";
 import { useManagedAgentsStore } from "../store/managedAgentsStore";
 
 type Activate = (tabId: number, leafId: number) => void;
+type Session = (leafId: number, agent: string, sessionId: string) => void;
 type Ctx = {
   tabs: Tab[];
   activeId: number;
   focused: boolean;
   onActivate: Activate;
+  onSession: Session;
 };
 
 function tabInfo(
@@ -71,6 +73,11 @@ function handleSignal(sig: AgentSignal, ctx: Ctx): void {
     case "working":
       store.setStatus(leafId, "working");
       return;
+    case "session":
+      if (sig.agent && sig.sessionId) {
+        ctx.onSession(leafId, sig.agent, sig.sessionId);
+      }
+      return;
     case "attention": {
       store.setStatus(leafId, "waiting");
       const session = store.sessions[leafId];
@@ -95,14 +102,22 @@ export function AgentNotificationsBridge({
   tabs,
   activeId,
   onActivate,
+  onSession,
 }: {
   tabs: Tab[];
   activeId: number;
   onActivate: Activate;
+  onSession: Session;
 }) {
   const focused = useWindowFocus();
-  const ctxRef = useRef<Ctx>({ tabs, activeId, focused, onActivate });
-  ctxRef.current = { tabs, activeId, focused, onActivate };
+  const ctxRef = useRef<Ctx>({
+    tabs,
+    activeId,
+    focused,
+    onActivate,
+    onSession,
+  });
+  ctxRef.current = { tabs, activeId, focused, onActivate, onSession };
 
   useEffect(() => {
     let alive = true;

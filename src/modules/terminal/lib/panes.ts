@@ -1,3 +1,5 @@
+import type { AgentResumeState } from "@/modules/agents/lib/resume";
+
 export type PaneId = number;
 
 export type SplitDir = "row" | "col";
@@ -11,7 +13,13 @@ export type PaneBounds = {
 };
 
 export type PaneNode =
-  | { kind: "leaf"; id: PaneId; slotId?: PaneId; cwd?: string }
+  | {
+      kind: "leaf";
+      id: PaneId;
+      slotId?: PaneId;
+      cwd?: string;
+      agentResume?: AgentResumeState;
+    }
   | {
       kind: "split";
       id: PaneId;
@@ -60,6 +68,47 @@ export function setLeafCwd(
     return u;
   });
   return changed ? { ...n, children: next } : n;
+}
+
+export function armLeafAgentResume(n: PaneNode, id: PaneId): PaneNode {
+  if (isLeaf(n)) {
+    if (n.id !== id || !n.agentResume || n.agentResume.armed !== false) {
+      return n;
+    }
+    return { ...n, agentResume: { ...n.agentResume, armed: true } };
+  }
+  let changed = false;
+  const children = n.children.map((child) => {
+    const next = armLeafAgentResume(child, id);
+    if (next !== child) changed = true;
+    return next;
+  });
+  return changed ? { ...n, children } : n;
+}
+
+export function pinLeafAgentResumeSession(
+  n: PaneNode,
+  id: PaneId,
+  sessionId: string,
+): PaneNode {
+  if (isLeaf(n)) {
+    if (n.id !== id || !n.agentResume) return n;
+    return {
+      ...n,
+      agentResume: {
+        ...n.agentResume,
+        armed: true,
+        sessionId,
+      },
+    };
+  }
+  let changed = false;
+  const children = n.children.map((child) => {
+    const next = pinLeafAgentResumeSession(child, id, sessionId);
+    if (next !== child) changed = true;
+    return next;
+  });
+  return changed ? { ...n, children } : n;
 }
 
 /**

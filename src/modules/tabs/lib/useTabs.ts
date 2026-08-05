@@ -3,7 +3,9 @@ import {
   type AgentInstanceCount,
   createAgentPanePlan,
 } from "@/modules/agents/lib/launcher";
+import type { PersistedAgentResume } from "@/modules/agents/lib/resume";
 import {
+  armLeafAgentResume,
   findLeafCwd,
   hasLeaf,
   insertNodeBeside,
@@ -12,6 +14,7 @@ import {
   type PaneBounds,
   type PaneDirection,
   type PaneNode,
+  pinLeafAgentResumeSession,
   removeLeaf,
   type SplitDir,
   setLeafCwd as setLeafCwdInTree,
@@ -545,12 +548,18 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   }, [newBlockTab]);
 
   const newAgentGroupTab = useCallback(
-    (cwd: string | undefined, title: string, instances: AgentInstanceCount) => {
+    (
+      cwd: string | undefined,
+      title: string,
+      instances: AgentInstanceCount,
+      agentResumes: Array<PersistedAgentResume | undefined> = [],
+    ) => {
       const tabId = nextIdRef.current++;
       const { paneTree, leafIds: agentLeafIds } = createAgentPanePlan(
         instances,
         () => nextIdRef.current++,
         cwd,
+        agentResumes,
       );
       setTabs((t) => [
         ...t,
@@ -577,6 +586,37 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       return { tabId, leafId: agentLeafIds[0] };
     },
     [newAgentGroupTab],
+  );
+
+  const armAgentResume = useCallback((leafId: number) => {
+    setTabs((current) =>
+      current.map((tab) => {
+        if (tab.kind !== "terminal" || !hasLeaf(tab.paneTree, leafId)) {
+          return tab;
+        }
+        const paneTree = armLeafAgentResume(tab.paneTree, leafId);
+        return paneTree === tab.paneTree ? tab : { ...tab, paneTree };
+      }),
+    );
+  }, []);
+
+  const pinAgentResumeSession = useCallback(
+    (leafId: number, sessionId: string) => {
+      setTabs((current) =>
+        current.map((tab) => {
+          if (tab.kind !== "terminal" || !hasLeaf(tab.paneTree, leafId)) {
+            return tab;
+          }
+          const paneTree = pinLeafAgentResumeSession(
+            tab.paneTree,
+            leafId,
+            sessionId,
+          );
+          return paneTree === tab.paneTree ? tab : { ...tab, paneTree };
+        }),
+      );
+    },
+    [],
   );
 
   const newPrivateTab = useCallback((cwd?: string) => {
@@ -1364,6 +1404,8 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     newBlockTab,
     newAgentTab,
     newAgentGroupTab,
+    armAgentResume,
+    pinAgentResumeSession,
     newPrivateTab,
     openFileTab,
     pinTab,

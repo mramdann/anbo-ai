@@ -165,6 +165,34 @@ describe("createAgentPanePlan", () => {
     ).toBe(true);
   });
 
+  it("attaches distinct resume metadata to each agent leaf", () => {
+    const resumes = [
+      {
+        agent: "claude" as const,
+        command: "claude",
+        sessionId: "00000000-0000-4000-8000-000000000001",
+      },
+      {
+        agent: "claude" as const,
+        command: "claude",
+        sessionId: "00000000-0000-4000-8000-000000000002",
+      },
+    ];
+    const { paneTree } = createAgentPanePlan(
+      2,
+      allocator(),
+      "/workspace",
+      resumes,
+    );
+    expect(paneTree.kind).toBe("split");
+    if (paneTree.kind !== "split") return;
+    expect(
+      paneTree.children.map((node) =>
+        node.kind === "leaf" ? node.agentResume : undefined,
+      ),
+    ).toEqual(resumes);
+  });
+
   it("rejects counts outside the renderer pool limit", () => {
     expect(() =>
       createAgentPanePlan(0 as AgentInstanceCount, allocator()),

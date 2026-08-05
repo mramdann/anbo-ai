@@ -5,6 +5,7 @@ export type AgentSource = "terminal" | "local";
 export type AgentSignalKind =
   | "started"
   | "working"
+  | "session"
   | "attention"
   | "finished"
   | "exited";
@@ -13,6 +14,7 @@ export type AgentSignal = {
   id: number;
   kind: AgentSignalKind;
   agent: string | null;
+  sessionId?: string;
 };
 
 export type AgentSession = {

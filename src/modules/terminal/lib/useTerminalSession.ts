@@ -165,6 +165,22 @@ export function writeToSession(leafId: number, data: string): boolean {
   return true;
 }
 
+export async function writeToReadySession(
+  leafId: number,
+  data: string,
+  timeoutMs = 15_000,
+): Promise<boolean> {
+  await whenSessionReady(leafId, timeoutMs);
+  const session = sessions.get(leafId);
+  if (!session?.pty || session.shellExited) return false;
+  try {
+    await session.pty.write(data);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function submitToLeaf(leafId: number, text: string): void {
   const s = sessions.get(leafId);
   if (!s || s.shellExited) return;
@@ -704,6 +720,7 @@ function attachSession(
           return;
         }
         s.pty = pty;
+        markSessionReady(leafId);
         if (s.pendingInput) {
           void pty.write(s.pendingInput);
           s.pendingInput = "";
@@ -767,6 +784,7 @@ export async function respawnSession(
     return;
   }
   s.pty = pty;
+  markSessionReady(leafId);
   if (s.pendingInput) {
     void pty.write(s.pendingInput);
     s.pendingInput = "";

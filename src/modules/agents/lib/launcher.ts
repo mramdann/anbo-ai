@@ -1,4 +1,5 @@
 import type { PaneNode } from "@/modules/terminal";
+import type { PersistedAgentResume } from "./resume";
 
 export const AGENT_LAUNCHERS = [
   {
@@ -38,7 +39,7 @@ export const AGENT_LAUNCHERS = [
     icon: "opencode",
     label: "OpenCode",
     defaultCommand: "opencode",
-    supportsHooks: false,
+    supportsHooks: true,
     custom: false,
   },
   {
@@ -264,15 +265,17 @@ export function createAgentPanePlan(
   instances: AgentInstanceCount,
   allocateId: () => number,
   cwd?: string,
+  agentResumes: Array<PersistedAgentResume | undefined> = [],
 ): AgentPanePlan {
   if (!Number.isInteger(instances) || instances < 1 || instances > 4) {
     throw new RangeError("Agent instance count must be between 1 and 4.");
   }
 
-  const leaves = Array.from({ length: instances }, () => ({
+  const leaves = Array.from({ length: instances }, (_, index) => ({
     kind: "leaf" as const,
     id: allocateId(),
     cwd,
+    ...(agentResumes[index] && { agentResume: agentResumes[index] }),
   }));
   const split = (dir: "row" | "col", children: PaneNode[]): PaneNode => ({
     kind: "split",

@@ -13,4 +13,12 @@ export {
   normalizeAgentLaunchCommands,
   validateAgentLaunchCommand,
 } from "./lib/launcher";
+export {
+  buildAgentLaunchCommand,
+  buildAgentResumeCommand,
+  collectAgentResumeLeaves,
+  createAgentResumeStates,
+  normalizePersistedAgentResume,
+  type PersistedAgentResume,
+} from "./lib/resume";
 export { nextAttentionTarget } from "./store/agentStore";

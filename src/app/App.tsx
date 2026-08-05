@@ -17,6 +17,10 @@ import { isMarkdownPath } from "@/lib/utils";
 import {
   type AgentLaunchRequest,
   AgentNotificationsBridge,
+  buildAgentLaunchCommand,
+  buildAgentResumeCommand,
+  collectAgentResumeLeaves,
+  createAgentResumeStates,
   findAgentLauncher,
   nextAttentionTarget,
   validateAgentLaunchCommand,
@@ -102,7 +106,7 @@ import {
   type TerminalPaneHandle,
   useAgentActivityStore,
   useTerminalFileDrop,
-  whenSessionReady,
+  writeToReadySession,
   writeToSession,
 } from "@/modules/terminal";
 import { ThemeProvider, useThemeFileEditing } from "@/modules/theme";
@@ -147,6 +151,8 @@ export default function App() {
     newBlockTab,
     newAgentTab,
     newAgentGroupTab,
+    armAgentResume,
+    pinAgentResumeSession,
     newPrivateTab,
     openFileTab,
     pinTab,
@@ -616,6 +622,41 @@ export default function App() {
     newBlockTab(inheritedCwdForNewTab());
   }, [newBlockTab, inheritedCwdForNewTab]);
 
+  const resumedAgentLeavesRef = useRef(new Set<number>());
+  const handleAgentSession = useCallback(
+    (leafId: number, agent: string, sessionId: string) => {
+      if (agent === "opencode") pinAgentResumeSession(leafId, sessionId);
+    },
+    [pinAgentResumeSession],
+  );
+  useEffect(() => {
+    for (const tab of tabs) {
+      if (tab.kind !== "terminal" || tab.cold) continue;
+      for (const leaf of collectAgentResumeLeaves(tab.paneTree)) {
+        if (
+          !leaf.resume.resumeOnStart ||
+          resumedAgentLeavesRef.current.has(leaf.id)
+        ) {
+          continue;
+        }
+        if (leaf.resume.agent === "opencode" && workspaceEnv.kind !== "local") {
+          continue;
+        }
+        const resumeCommand = buildAgentResumeCommand(leaf.resume);
+        if (!resumeCommand) continue;
+        resumedAgentLeavesRef.current.add(leaf.id);
+        void (async () => {
+          if (!(await writeToReadySession(leaf.id, `${resumeCommand}\r`))) {
+            resumedAgentLeavesRef.current.delete(leaf.id);
+            console.error(
+              `[anbo] agent terminal ${leaf.id} closed before resume`,
+            );
+          }
+        })();
+      }
+    }
+  }, [tabs, workspaceEnv.kind]);
+
   const launchAgentGroup = useCallback(
     (request: AgentLaunchRequest) => {
       const command = validateAgentLaunchCommand(request.command);
@@ -626,10 +667,20 @@ export default function App() {
         request.instances === 1
           ? launcher.label
           : `${launcher.label} × ${request.instances}`;
+      const agentCwd = inheritedCwdForNewTab();
+      const agentResumes =
+        request.agent === "opencode" && workspaceEnv.kind !== "local"
+          ? Array.from({ length: request.instances }, () => undefined)
+          : createAgentResumeStates(
+              request.agent,
+              command.command,
+              request.instances,
+            );
       const { leafIds: agentLeafIds } = newAgentGroupTab(
-        inheritedCwdForNewTab(),
+        agentCwd,
         title,
         request.instances,
+        agentResumes,
       );
       const hooksReady = launcher.supportsHooks
         ? invoke("agent_enable_hooks", {
@@ -642,18 +693,37 @@ export default function App() {
           })
         : Promise.resolve();
 
-      for (const leafId of agentLeafIds) {
-        void (async () => {
-          await Promise.all([whenSessionReady(leafId), hooksReady]);
-          if (!writeToSession(leafId, `${command.command}\r`)) {
+      const launch = async () => {
+        await hooksReady;
+        const launchOne = async (leafId: number, index: number) => {
+          const resume = agentResumes[index];
+          const launchCommand = buildAgentLaunchCommand(
+            resume,
+            command.command,
+          );
+          if (await writeToReadySession(leafId, `${launchCommand}\r`)) {
+            if (resume && resume.agent !== "opencode") {
+              armAgentResume(leafId);
+            }
+          } else {
             console.error(
               `[anbo] agent terminal ${leafId} closed before launch`,
             );
           }
-        })();
-      }
+        };
+        await Promise.all(
+          agentLeafIds.map((leafId, index) => launchOne(leafId, index)),
+        );
+      };
+      void launch();
     },
-    [customCliAgents, inheritedCwdForNewTab, newAgentGroupTab],
+    [
+      armAgentResume,
+      customCliAgents,
+      inheritedCwdForNewTab,
+      newAgentGroupTab,
+      workspaceEnv.kind,
+    ],
   );
 
   const sendCd = useCallback(
@@ -1605,6 +1675,7 @@ export default function App() {
                 tabs={tabs}
                 activeId={activeId}
                 onActivate={onActivateAgent}
+                onSession={handleAgentSession}
               />
               <Toaster position="bottom-right" />
 
