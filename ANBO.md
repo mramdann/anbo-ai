@@ -37,6 +37,15 @@ A change to a core subsystem (terminal/shell spawn, workspace auth, git, fs, IPC
 - **Imports**: always `@/...` on the frontend, never relative across modules.
 - **pnpm only**, never npm/npx/yarn.
 
+## Repository workflow and releases
+
+- Never commit or push changes directly to `main`. Create a focused branch using the prefixes in `CONTRIBUTING.md`, push it, open a pull request, and merge only after CI passes. GitHub Free does not enforce branch rulesets on this private repository, so every agent must follow this rule explicitly.
+- PR titles use Conventional Commits. `fix:` produces a patch release, `feat:` produces a minor release, and `!` or `BREAKING CHANGE` produces a major release. `docs:`, `test:`, `ci:`, and `chore:` do not produce a release by themselves.
+- Do not bump versions, create release tags, or publish releases manually during normal development. Release Please maintains the release PR and synchronizes `package.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`.
+- Merging the Release Please PR creates the `v*` tag, invokes the reusable Windows release workflow, builds NSIS and MSI installers, signs updater artifacts, and publishes the GitHub Release.
+- Release configuration lives in `.github/workflows/release-please.yml`, `.github/workflows/release.yml`, `release-please-config.json`, and `.release-please-manifest.json`. Run `pnpm check-version` and `actionlint` after changing it.
+- GitHub Free private repositories receive 2,000 Actions minutes per billing month, not per day, plus 500 MB of artifact storage and 10 GB of cache storage per repository. Windows and macOS runners consume the allowance faster than Linux. Avoid redundant workflow runs and unnecessary release builds; Dependabot Actions usage is free.
+
 ## Architecture
 
 ### Two-process model
