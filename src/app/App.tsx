@@ -631,7 +631,13 @@ export default function App() {
   );
   useEffect(() => {
     for (const tab of tabs) {
-      if (tab.kind !== "terminal" || tab.cold) continue;
+      if (
+        tab.spaceId !== (activeSpaceId ?? DEFAULT_SPACE_ID) ||
+        tab.kind !== "terminal" ||
+        tab.cold
+      ) {
+        continue;
+      }
       for (const leaf of collectAgentResumeLeaves(tab.paneTree)) {
         if (
           !leaf.resume.resumeOnStart ||
@@ -655,7 +661,7 @@ export default function App() {
         })();
       }
     }
-  }, [tabs, workspaceEnv.kind]);
+  }, [tabs, activeSpaceId, workspaceEnv.kind]);
 
   const launchAgentGroup = useCallback(
     (request: AgentLaunchRequest) => {
