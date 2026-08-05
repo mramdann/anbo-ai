@@ -1,7 +1,8 @@
 pub mod modules;
 
 use modules::{
-    agent, anboai, app_data, fs, git, history, lsp, net, preview, pty, secrets, shell, workspace,
+    agent, anboai, app_data, browser_automation, fs, git, history, lsp, net, preview, pty, secrets,
+    shell, workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -211,6 +212,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|_app| {
+            browser_automation::server::cleanup_stale_descriptor();
             // macOS skips parent() for the settings window, so tie its lifecycle
             // to the main window here instead. Other platforms keep parent().
             #[cfg(target_os = "macos")]
@@ -289,6 +291,9 @@ pub fn run() {
             preview::embed::preview_embed_suspend,
             preview::embed::preview_embed_release,
             preview::embed::preview_embed_close,
+            browser_automation::browser_automation_start,
+            browser_automation::browser_automation_stop,
+            browser_automation::browser_automation_status,
             git::commands::git_resolve_repo,
             git::commands::git_panel_snapshot,
             git::commands::git_status,
@@ -346,6 +351,7 @@ pub fn run() {
                 // Servers exit on stdin EOF, but destructors are not guaranteed
                 // on process exit; kill explicitly.
                 tauri::RunEvent::Exit => {
+                    browser_automation::on_exit();
                     if let Some(state) = app.try_state::<lsp::LspState>() {
                         state.kill_all();
                     }

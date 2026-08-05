@@ -44,6 +44,7 @@ import {
   setAgentLaunchCommands,
   setAgentNotifications,
   setAutostart,
+  setBrowserAutomationEnabled,
   setCustomCliAgents,
   setDefaultWorkspaceEnv,
   setExplorerGitDecorations,
@@ -123,6 +124,9 @@ export function GeneralSection() {
   const { mode, setMode } = useTheme();
 
   const autostart = usePreferencesStore((s) => s.autostart);
+  const browserAutomationEnabled = usePreferencesStore(
+    (s) => s.browserAutomationEnabled,
+  );
   const restoreWindowState = usePreferencesStore((s) => s.restoreWindowState);
   const showHidden = usePreferencesStore((s) => s.showHidden);
   const explorerGitDecorations = usePreferencesStore(
@@ -538,6 +542,23 @@ export function GeneralSection() {
             />
           </SettingRow>
         </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <Label>Automation</Label>
+        <SettingRow
+          title="Browser automation (experimental)"
+          description="Allow the anbo-browser CLI and MCP server to control active native browser tabs. Available on Windows only."
+        >
+          <Switch
+            checked={browserAutomationEnabled}
+            onCheckedChange={(value) =>
+              void setBrowserAutomationEnabled(value).catch((error) => {
+                console.error("browser automation toggle failed", error);
+              })
+            }
+          />
+        </SettingRow>
       </div>
     </div>
   );
