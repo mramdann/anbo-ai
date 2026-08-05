@@ -8,6 +8,7 @@ import {
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { WorkspaceConstellation } from "./WorkspaceConstellation";
 
 type WorkspaceWelcomeProps = {
   name: string | null;
@@ -47,19 +48,12 @@ export function WorkspaceWelcome({
 
   return (
     <div className="relative h-full w-full overflow-y-auto bg-background">
-      <div
-        className="pointer-events-none absolute inset-0 opacity-40"
-        style={{
-          backgroundImage:
-            "radial-gradient(circle, var(--border) 1px, transparent 1px)",
-          backgroundSize: "24px 24px",
-        }}
-      />
+      <WorkspaceConstellation />
       <div
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            "radial-gradient(circle at 50% 28%, color-mix(in oklab, var(--primary) 10%, transparent), var(--background) 58%)",
+            "radial-gradient(circle at 50% 28%, color-mix(in oklab, var(--background) 68%, transparent), var(--background) 62%)",
         }}
       />
 
