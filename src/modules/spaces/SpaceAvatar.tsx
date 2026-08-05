@@ -1,11 +1,11 @@
 import { cn } from "@/lib/utils";
-import type { SpaceMeta } from "./lib/store";
 import { accentFor, spaceInitial } from "./lib/spaceColor";
+import type { SpaceMeta } from "./lib/store";
 
 type Size = "sm" | "md";
 
 const SIZES: Record<Size, string> = {
-  sm: "size-5 rounded-[5px] text-[10px]",
+  sm: "size-4 rounded text-[9px]",
   md: "size-7 rounded-md text-[12px]",
 };
 

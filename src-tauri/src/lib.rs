@@ -1,6 +1,8 @@
 pub mod modules;
 
-use modules::{agent, fs, git, history, lsp, net, pty, secrets, shell, workspace};
+use modules::{
+    agent, anboai, app_data, fs, git, history, lsp, net, preview, pty, secrets, shell, workspace,
+};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -91,7 +93,7 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
         if let Some(t) = tab.as_deref().filter(|s| !s.is_empty()) {
             // emit() serializes via JSON — no string-escape footgun, unlike
             // eval() with format!(). Frontend listens via Tauri event API.
-            let _ = window.emit("terax:settings-tab", t);
+            let _ = window.emit("anbo:settings-tab", t);
         }
         return Ok(());
     }
@@ -160,7 +162,7 @@ pub fn run() {
     #[cfg(windows)]
     {
         let args: Vec<String> = std::env::args().collect();
-        if args.get(1).map(String::as_str) == Some("__terax_notify") {
+        if args.get(1).map(String::as_str) == Some("__anbo_notify") {
             if let (Some(agent), Some(event)) = (args.get(2), args.get(3)) {
                 agent::emit_conout_marker(agent, event);
             }
@@ -176,6 +178,12 @@ pub fn run() {
     let cli_dir = launch.dir.clone();
     workspace::init_launch_cwd(cli_dir.as_deref());
 
+    let context = tauri::generate_context!();
+    let data_paths = app_data::prepare(&context.config().identifier)
+        .expect("failed to prepare Anbo local data directory");
+    log::info!("using local data directory {}", data_paths.root.display());
+    let window_state_path = data_paths.window_state.to_string_lossy().into_owned();
+
     let builder = tauri::Builder::default();
     #[cfg(target_os = "linux")]
     let builder = builder.plugin(tauri_plugin_clipboard_manager::init());
@@ -187,6 +195,7 @@ pub fn run() {
         // Windows/Linux.
         .plugin(
             tauri_plugin_window_state::Builder::new()
+                .with_filename(window_state_path)
                 .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
                 .build(),
         )
@@ -200,6 +209,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|_app| {
             // macOS skips parent() for the settings window, so tie its lifecycle
             // to the main window here instead. Other platforms keep parent().
@@ -270,6 +280,15 @@ pub fn run() {
             fs::grep::fs_grep,
             fs::grep::fs_grep_interactive,
             fs::grep::fs_glob,
+            preview::embed::preview_embed_update,
+            preview::embed::preview_embed_begin_session,
+            preview::embed::preview_embed_navigate,
+            preview::embed::preview_embed_dispatch,
+            preview::embed::preview_embed_url,
+            preview::embed::preview_embed_snapshot,
+            preview::embed::preview_embed_suspend,
+            preview::embed::preview_embed_release,
+            preview::embed::preview_embed_close,
             git::commands::git_resolve_repo,
             git::commands::git_panel_snapshot,
             git::commands::git_status,
@@ -307,6 +326,7 @@ pub fn run() {
             open_settings_window,
             agent::agent_enable_hooks,
             agent::agent_hooks_status,
+            anboai::resume::anboai_find_claude_session,
             secrets::secrets_get,
             secrets::secrets_set,
             secrets::secrets_delete,
@@ -319,7 +339,7 @@ pub fn run() {
             history::history_record,
             history::history_list,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app, event| {
             match event {
@@ -358,7 +378,7 @@ pub fn run() {
                     if let Some(state) = app.try_state::<LaunchFiles>() {
                         *state.0.lock().expect("LaunchFiles mutex poisoned") = target.files.clone();
                     }
-                    let _ = app.emit("terax:open-file", target.files);
+                    let _ = app.emit("anbo:open-file", target.files);
                 }
                 _ => {}
             }

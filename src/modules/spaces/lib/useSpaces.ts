@@ -1,15 +1,12 @@
-import { create } from "zustand";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import {
-  parseWorkspaceScopeKey,
-  type WorkspaceEnv,
-} from "@/modules/workspace";
+import { parseWorkspaceScopeKey, type WorkspaceEnv } from "@/modules/workspace";
+import { create } from "zustand";
 import {
   deleteSpaceData,
   newSpaceId,
+  type SpaceMeta,
   saveActiveId,
   saveSpacesList,
-  type SpaceMeta,
 } from "./store";
 
 type CreateInput = {
@@ -33,6 +30,7 @@ type State = {
   ) => void;
   create: (input: CreateInput) => SpaceMeta;
   rename: (id: string, name: string) => void;
+  setRoot: (id: string, root: string, name?: string) => void;
   setEnv: (id: string, env: WorkspaceEnv) => void;
   setColor: (id: string, color: number | undefined) => void;
   reorder: (orderedIds: string[]) => void;
@@ -73,6 +71,21 @@ export const useSpaces = create<State>((set, get) => ({
   rename: (id, name) => {
     const spaces = get().spaces.map((s) =>
       s.id === id ? { ...s, name, updatedAt: Date.now() } : s,
+    );
+    set({ spaces });
+    void saveSpacesList(spaces);
+  },
+
+  setRoot: (id, root, name) => {
+    const spaces = get().spaces.map((space) =>
+      space.id === id
+        ? {
+            ...space,
+            root,
+            ...(name?.trim() ? { name: name.trim() } : {}),
+            updatedAt: Date.now(),
+          }
+        : space,
     );
     set({ spaces });
     void saveSpacesList(spaces);

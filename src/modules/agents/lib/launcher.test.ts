@@ -2,11 +2,15 @@ import { leafIds } from "@/modules/terminal";
 import { describe, expect, it } from "vitest";
 import {
   AGENT_LAUNCHERS,
+  type AgentInstanceCount,
   createAgentPanePlan,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
+  findAgentLauncher,
+  getAgentLaunchers,
   normalizeAgentLaunchCommands,
+  normalizeCustomCliAgents,
   validateAgentLaunchCommand,
-  type AgentInstanceCount,
+  validateCustomCliAgentName,
 } from "./launcher";
 
 function allocator(start = 1) {
@@ -57,6 +61,71 @@ describe("agent launch commands", () => {
       opencode: "opencode",
       grok: "grok",
     });
+  });
+});
+
+describe("custom CLI agents", () => {
+  it("normalizes valid agents and removes malformed or duplicate entries", () => {
+    expect(
+      normalizeCustomCliAgents([
+        { id: "custom:aider", name: "  Aider  ", command: "  aider --fast  " },
+        { id: "custom:duplicate-name", name: "aider", command: "other" },
+        { id: "custom:bad-command", name: "Bad", command: "bad\ncommand" },
+        { id: "invalid", name: "Invalid", command: "invalid" },
+        null,
+      ]),
+    ).toEqual([
+      {
+        id: "custom:aider",
+        icon: "robot",
+        name: "Aider",
+        command: "aider --fast",
+      },
+    ]);
+  });
+
+  it("rejects duplicate and built-in names", () => {
+    const existing = [
+      {
+        id: "custom:aider" as const,
+        icon: "robot" as const,
+        name: "Aider",
+        command: "aider",
+      },
+    ];
+
+    expect(validateCustomCliAgentName("Claude", existing)).toMatchObject({
+      ok: false,
+    });
+    expect(validateCustomCliAgentName("aider", existing)).toMatchObject({
+      ok: false,
+    });
+    expect(
+      validateCustomCliAgentName("Aider", existing, "custom:aider"),
+    ).toEqual({ ok: true, name: "Aider" });
+  });
+
+  it("merges custom launchers without granting hooks", () => {
+    const custom = [
+      {
+        id: "custom:aider" as const,
+        icon: "gemini" as const,
+        name: "Aider",
+        command: "aider",
+      },
+    ];
+    const launchers = getAgentLaunchers(custom);
+
+    expect(launchers[launchers.length - 1]).toEqual({
+      id: "custom:aider",
+      icon: "gemini",
+      label: "Aider",
+      defaultCommand: "aider",
+      supportsHooks: false,
+      custom: true,
+    });
+    expect(findAgentLauncher("custom:aider", custom)?.label).toBe("Aider");
+    expect(findAgentLauncher("custom:missing", custom)).toBeUndefined();
   });
 });
 

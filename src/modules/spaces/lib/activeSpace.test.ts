@@ -1,6 +1,12 @@
 import type { WorkspaceEnv } from "@/modules/workspace";
 import { describe, expect, it } from "vitest";
-import { activeSpaceEnv, findActiveSpace, freshTabCwd } from "./activeSpace";
+import {
+  activeSpaceEnv,
+  findActiveSpace,
+  freshTabCwd,
+  newSpaceDefaults,
+  shouldCreateFreshTerminal,
+} from "./activeSpace";
 import type { SpaceMeta } from "./store";
 
 function space(over: Partial<SpaceMeta>): SpaceMeta {
@@ -29,6 +35,27 @@ describe("findActiveSpace", () => {
 
   it("returns null when there are no spaces", () => {
     expect(findActiveSpace([], "a")).toBeNull();
+  });
+});
+
+describe("newSpaceDefaults", () => {
+  it("creates an unconfigured space without inheriting a cwd", () => {
+    expect(newSpaceDefaults(4, { kind: "local" })).toEqual({
+      name: "Space 4",
+      root: null,
+      env: { kind: "local" },
+    });
+  });
+});
+
+describe("shouldCreateFreshTerminal", () => {
+  it("keeps an unconfigured space empty across restart", () => {
+    expect(shouldCreateFreshTerminal(null, false)).toBe(false);
+  });
+
+  it("retains the configured workspace startup fallback", () => {
+    expect(shouldCreateFreshTerminal("C:/work", false)).toBe(true);
+    expect(shouldCreateFreshTerminal("C:/work", true)).toBe(false);
   });
 });
 
@@ -65,6 +92,18 @@ describe("freshTabCwd", () => {
     expect(freshTabCwd(wsl, "/home/aj", "C:/Users/me", "C:/Users/me")).toBe(
       "/home/aj",
     );
+  });
+
+  it("prefers the configured space root over terminal and environment homes", () => {
+    expect(
+      freshTabCwd(
+        local,
+        "C:/Users/me",
+        "C:/launch",
+        "C:/Users/me",
+        "C:/Documents/notaris",
+      ),
+    ).toBe("C:/Documents/notaris");
   });
 
   it("returns null for a WSL space when its home did not resolve", () => {

@@ -1,4 +1,4 @@
-import { LazyStore } from "@tauri-apps/plugin-store";
+import { LocalLazyStore } from "@/lib/localStore";
 
 export type Snippet = {
   id: string;
@@ -9,10 +9,10 @@ export type Snippet = {
   content: string;
 };
 
-const STORE_PATH = "terax-ai-snippets.json";
+const STORE_PATH = "anbo-ai-snippets.json";
 const KEY_LIST = "snippets";
 
-const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
+const store = new LocalLazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
 
 export async function loadSnippets(): Promise<Snippet[]> {
   return (await store.get<Snippet[]>(KEY_LIST)) ?? [];

@@ -1,3 +1,11 @@
+import { LocalLazyStore } from "@/lib/localStore";
+import {
+  type AgentLaunchCommands,
+  type CustomCliAgent,
+  DEFAULT_AGENT_LAUNCH_COMMANDS,
+  normalizeAgentLaunchCommands,
+  normalizeCustomCliAgents,
+} from "@/modules/agents/lib/launcher";
 import {
   type AutocompleteProviderId,
   type CustomEndpoint,
@@ -14,18 +22,12 @@ import {
   type SttProvider,
   WHISPERCPP_DEFAULT_BASE_URL,
 } from "@/modules/ai/config";
-import {
-  type AgentLaunchCommands,
-  DEFAULT_AGENT_LAUNCH_COMMANDS,
-  normalizeAgentLaunchCommands,
-} from "@/modules/agents/lib/launcher";
 import type { KeyBinding, ShortcutId } from "@/modules/shortcuts/shortcuts";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { LazyStore } from "@tauri-apps/plugin-store";
 
 export type ThemePref = "system" | "light" | "dark";
 
-export const DEFAULT_THEME_ID = "terax-default";
+export const DEFAULT_THEME_ID = "anbo-default";
 
 export type BackgroundKind = "none" | "image";
 
@@ -168,6 +170,7 @@ export type Preferences = {
   zoomLevel: number;
   agentNotifications: boolean;
   agentLaunchCommands: AgentLaunchCommands;
+  customCliAgents: CustomCliAgent[];
   defaultWorkspaceEnv: string;
   shortcuts: Record<ShortcutId, KeyBinding[]>;
   editorAutoSave: boolean;
@@ -206,7 +209,7 @@ export type LspCustomServer = {
   rootMarkers: string[];
 };
 
-const STORE_PATH = "terax-settings.json";
+const STORE_PATH = "anbo-settings.json";
 const KEY_THEME = "theme";
 const KEY_THEME_ID = "themeId";
 const KEY_BG_KIND = "backgroundKind";
@@ -259,6 +262,7 @@ const KEY_LAST_WSL_DISTRO = "lastWslDistro";
 const KEY_ZOOM_LEVEL = "zoomLevel";
 const KEY_AGENT_NOTIFICATIONS = "agentNotifications";
 const KEY_AGENT_LAUNCH_COMMANDS = "agentLaunchCommands";
+const KEY_CUSTOM_CLI_AGENTS = "customCliAgents";
 const KEY_DEFAULT_WORKSPACE_ENV = "defaultWorkspaceEnv";
 const KEY_SHORTCUTS = "shortcuts";
 const KEY_EDITOR_AUTO_SAVE = "editorAutoSave";
@@ -342,6 +346,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   zoomLevel: 1.0,
   agentNotifications: true,
   agentLaunchCommands: DEFAULT_AGENT_LAUNCH_COMMANDS,
+  customCliAgents: [],
   defaultWorkspaceEnv: "local",
   shortcuts: {} as Record<ShortcutId, KeyBinding[]>,
   editorAutoSave: false,
@@ -354,13 +359,13 @@ export const DEFAULT_PREFERENCES: Preferences = {
   lspCustomServers: [],
 };
 
-const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
+const store = new LocalLazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
 
 // LazyStore.onChange only fires within the writing process. The settings
 // page lives in a separate webview, so writes there never reach the main
 // window's subscribers. Mirror every setter through a Tauri event so any
 // window can listen.
-const PREFS_CHANGED_EVENT = "terax://prefs-changed";
+const PREFS_CHANGED_EVENT = "anbo://prefs-changed";
 
 async function writePref<T>(key: string, value: T): Promise<void> {
   await store.set(key, value);
@@ -514,6 +519,9 @@ export async function loadPreferences(): Promise<Preferences> {
       DEFAULT_PREFERENCES.agentNotifications,
     agentLaunchCommands: normalizeAgentLaunchCommands(
       get<unknown>(KEY_AGENT_LAUNCH_COMMANDS),
+    ),
+    customCliAgents: normalizeCustomCliAgents(
+      get<unknown>(KEY_CUSTOM_CLI_AGENTS),
     ),
     defaultWorkspaceEnv:
       get<string>(KEY_DEFAULT_WORKSPACE_ENV) ??
@@ -874,6 +882,12 @@ export async function setAgentLaunchCommands(
   );
 }
 
+export async function setCustomCliAgents(
+  value: readonly CustomCliAgent[],
+): Promise<void> {
+  await writePref(KEY_CUSTOM_CLI_AGENTS, normalizeCustomCliAgents(value));
+}
+
 export async function setDefaultWorkspaceEnv(value: string): Promise<void> {
   await writePref(KEY_DEFAULT_WORKSPACE_ENV, value);
 }
@@ -944,6 +958,7 @@ export async function onPreferencesChange(
     [KEY_ZOOM_LEVEL]: "zoomLevel",
     [KEY_AGENT_NOTIFICATIONS]: "agentNotifications",
     [KEY_AGENT_LAUNCH_COMMANDS]: "agentLaunchCommands",
+    [KEY_CUSTOM_CLI_AGENTS]: "customCliAgents",
     [KEY_DEFAULT_WORKSPACE_ENV]: "defaultWorkspaceEnv",
     [KEY_SHORTCUTS]: "shortcuts",
     [KEY_EDITOR_AUTO_SAVE]: "editorAutoSave",
@@ -976,7 +991,7 @@ export async function onPreferencesChange(
 
 // API key changes are stored in OS keychain (not the prefs store),
 // so we broadcast via a Tauri event for cross-window listeners.
-const KEYS_CHANGED_EVENT = "terax://ai-keys-changed";
+const KEYS_CHANGED_EVENT = "anbo://ai-keys-changed";
 
 export async function emitKeysChanged(): Promise<void> {
   await emit(KEYS_CHANGED_EVENT);

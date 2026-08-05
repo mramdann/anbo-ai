@@ -43,7 +43,7 @@ export function BlockWatermark({ leafId, subscribe }: Props) {
       )}
     >
       <img
-        src="/logo.png"
+        src="/logo.svg"
         alt=""
         draggable={false}
         className="size-24 rounded-3xl shadow-lg shadow-black/25"

@@ -11,9 +11,9 @@ import type { SidebarViewId } from "./types";
 export const SIDEBAR_DEFAULT_WIDTH = 260;
 export const SIDEBAR_MIN_WIDTH = 220;
 export const SIDEBAR_MAX_WIDTH = 480;
-const SIDEBAR_WIDTH_STORAGE_KEY = "terax.sidebar.width";
-const SIDEBAR_VIEW_STORAGE_KEY = "terax.sidebar.view";
-const SIDEBAR_COLLAPSED_STORAGE_KEY = "terax.sidebar.collapsed";
+const SIDEBAR_WIDTH_STORAGE_KEY = "anbo.sidebar.width";
+const SIDEBAR_VIEW_STORAGE_KEY = "anbo.sidebar.view";
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "anbo.sidebar.collapsed";
 
 function clampSidebarWidth(width: number): number {
   return Math.min(
@@ -57,6 +57,11 @@ type FocusableExplorer = {
   isFocused: () => boolean;
 };
 
+function expandSidebar(panel: PanelImperativeHandle, width: number): void {
+  panel.expand();
+  panel.resize(`${width}px`);
+}
+
 export function useSidebarPanel(
   explorerRef: RefObject<FocusableExplorer | null>,
 ) {
@@ -92,18 +97,21 @@ export function useSidebarPanel(
   }, []);
 
   const toggleSidebar = useCallback(() => {
-    const p = sidebarRef.current;
-    if (!p) return;
-    if (p.getSize().asPercentage <= 0) p.resize(`${sidebarWidthRef.current}px`);
-    else p.collapse();
+    const panel = sidebarRef.current;
+    if (!panel) return;
+    if (panel.isCollapsed()) {
+      expandSidebar(panel, sidebarWidthRef.current);
+    } else {
+      panel.collapse();
+    }
   }, []);
 
   const cycleSidebarView = useCallback(
     (view: SidebarViewId) => {
       const panel = sidebarRef.current;
-      const collapsed = panel ? panel.getSize().asPercentage <= 0 : false;
+      const collapsed = panel?.isCollapsed() ?? false;
       if (collapsed) {
-        if (panel) panel.resize(`${sidebarWidthRef.current}px`);
+        if (panel) expandSidebar(panel, sidebarWidthRef.current);
         if (view !== sidebarView) persistSidebarView(view);
         return;
       }
@@ -142,9 +150,9 @@ export function useSidebarPanel(
   const toggleExplorerFocus = useCallback(() => {
     const explorer = explorerRef.current;
     const panel = sidebarRef.current;
-    const collapsed = panel ? panel.getSize().asPercentage <= 0 : false;
+    const collapsed = panel?.isCollapsed() ?? false;
     if (sidebarView !== "explorer" || collapsed) {
-      if (panel && collapsed) panel.resize(`${sidebarWidthRef.current}px`);
+      if (panel && collapsed) expandSidebar(panel, sidebarWidthRef.current);
       if (sidebarView !== "explorer") persistSidebarView("explorer");
       const active = document.activeElement;
       explorerReturnFocusRef.current =

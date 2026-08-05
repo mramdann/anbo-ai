@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Anbo">
+  <defs>
+    <linearGradient id="background" x1="76" y1="42" x2="436" y2="470" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1b2027"/>
+      <stop offset="1" stop-color="#090b0f"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="126" y1="144" x2="419" y2="371" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff"/>
+      <stop offset="0.72" stop-color="#dce7f2"/>
+      <stop offset="1" stop-color="#7dd3fc"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="488" height="488" rx="112" fill="url(#background)"/>
+  <rect x="13" y="13" width="486" height="486" rx="111" fill="none" stroke="#ffffff" stroke-opacity="0.12" stroke-width="2"/>
+  <g fill="none" stroke="url(#mark)" stroke-width="30" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M128 148v216"/>
+    <path d="m205 148 120 108-120 108"/>
+    <path d="M352 364h68"/>
+  </g>
+</svg>

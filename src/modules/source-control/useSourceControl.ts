@@ -1,7 +1,7 @@
 import {
-  native,
   type GitRepoInfo,
   type GitStatusSnapshot,
+  native,
 } from "@/modules/ai/lib/native";
 import { useWorkspaceEnvStore, workspaceScopeKey } from "@/modules/workspace";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -41,9 +41,7 @@ export type SourceControlSummary = {
   applyStatus: (
     updater: (status: GitStatusSnapshot) => GitStatusSnapshot,
   ) => void;
-  refresh: (options?: {
-    remote?: SourceControlRefreshMode;
-  }) => Promise<void>;
+  refresh: (options?: { remote?: SourceControlRefreshMode }) => Promise<void>;
   runRemoteAction: (
     mode?: SourceControlRemoteActionMode,
   ) => Promise<SourceControlRemoteActionResult>;
@@ -93,7 +91,13 @@ export function getSourceControlRemoteIndicator(
   >,
 ): SourceControlRemoteIndicator {
   if (!summary.hasRepo || !summary.upstream) {
-    return { visible: false, label: "", title: "", disabled: true, action: null };
+    return {
+      visible: false,
+      label: "",
+      title: "",
+      disabled: true,
+      action: null,
+    };
   }
   if (summary.ahead > 0 && summary.behind > 0) {
     return {
@@ -152,6 +156,7 @@ export function useSourceControl(
 ): SourceControlSummary {
   const workspaceEnv = useWorkspaceEnvStore((s) => s.env);
   const workspaceKey = workspaceScopeKey(workspaceEnv);
+  const sourceControlContextKey = `${workspaceKey}\0${contextPath ?? ""}`;
   const [state, setState] = useState<SourceControlSummaryState>({
     repo: null,
     status: null,
@@ -168,6 +173,7 @@ export function useSourceControl(
   const autoFetchByRepoRef = useRef(new Map<string, number>());
   const enabledRef = useRef(enabled);
   const lastRefreshAtRef = useRef(0);
+  const sourceControlContextKeyRef = useRef(sourceControlContextKey);
 
   useEffect(() => {
     stateRef.current = state;
@@ -178,6 +184,7 @@ export function useSourceControl(
   }, [enabled]);
 
   useEffect(() => {
+    sourceControlContextKeyRef.current = sourceControlContextKey;
     requestIdRef.current++;
     inflightRef.current = null;
     inflightModeRef.current = "never";
@@ -191,7 +198,7 @@ export function useSourceControl(
       busyAction: null,
       lastRemoteError: null,
     });
-  }, [workspaceKey]);
+  }, [sourceControlContextKey]);
 
   const applyStatus = useCallback(
     (updater: (status: GitStatusSnapshot) => GitStatusSnapshot) => {
@@ -230,7 +237,11 @@ export function useSourceControl(
           ? activeRoot
           : undefined;
 
-      setState((current) => ({ ...current, isLoading: true, localError: null }));
+      setState((current) => ({
+        ...current,
+        isLoading: true,
+        localError: null,
+      }));
 
       try {
         let repo: GitRepoInfo | null;
@@ -301,8 +312,7 @@ export function useSourceControl(
           repo.upstream &&
           remoteMode !== "never" &&
           (remoteMode === "always" ||
-            Date.now() -
-              (autoFetchByRepoRef.current.get(repo.repoRoot) ?? 0) >=
+            Date.now() - (autoFetchByRepoRef.current.get(repo.repoRoot) ?? 0) >=
               AUTO_FETCH_THROTTLE_MS);
 
         if (shouldAutoFetch) {
@@ -341,7 +351,7 @@ export function useSourceControl(
         lastRefreshAtRef.current = Date.now();
       }
     },
-    [contextPath, workspaceKey],
+    [contextPath],
   );
 
   const refresh = useCallback(
@@ -428,7 +438,9 @@ export function useSourceControl(
       return;
     }
     setState((current) => ({ ...current, lastRemoteError: null }));
+    const scheduledContextKey = sourceControlContextKey;
     const run = () => {
+      if (sourceControlContextKeyRef.current !== scheduledContextKey) return;
       const root = stateRef.current.repo?.repoRoot;
       const sameRepo =
         !!root &&
@@ -453,7 +465,7 @@ export function useSourceControl(
         window.clearTimeout(idle as number);
       }
     };
-  }, [refresh, contextPath, enabled, workspaceKey]);
+  }, [refresh, enabled, sourceControlContextKey, contextPath]);
 
   useEffect(() => {
     if (!enabled) return;

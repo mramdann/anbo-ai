@@ -4,10 +4,10 @@
     "windows": [
       {
         "label": "main",
-        "title": "Terax",
+        "title": "Anbo",
         "decorations": false,
         "transparent": true,
-        "visible": false,
+        "visible": true,
         "shadow": false
       }
     ]

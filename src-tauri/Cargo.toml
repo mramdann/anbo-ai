@@ -1,7 +1,9 @@
 [package]
-name = "terax"
+name = "anbo"
+default-run = "anbo"
+autobins = false
 version = "0.8.6"
-description = "Terax — an open-source AI-native terminal emulator"
+description = "anboai — multi-agent AI control workspace (based on Anbo)"
 authors = ["crynta"]
 license = "Apache-2.0"
 edition = "2021"
@@ -12,15 +14,16 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "terax_lib"
+name = "anbo_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
+tauri = { version = "2", features = ["protocol-asset", "unstable"] }
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 portable-pty = "0.9"
@@ -43,11 +46,17 @@ reqwest = { version = "0.12", default-features = false, features = [
 	"stream",
 ] }
 bytes = "1"
+base64 = "0.22"
 futures-util = "0.3"
-tokio = { version = "1", default-features = false, features = ["rt"] }
+tokio = { version = "1", default-features = false, features = ["rt", "sync", "time"] }
 tempfile = "3"
 notify = "8.2.0"
 which = "8.0.4"
+url = "2"
+
+[[bin]]
+name = "anbo"
+path = "src/main.rs"
 
 [dev-dependencies]
 proptest = "1"
@@ -80,6 +89,11 @@ windows-sys = { version = "0.61", features = [
 	"Win32_System_Threading",
 	"Win32_System_Diagnostics_ToolHelp",
 ] }
+webview2-com = "0.38"
+windows = { version = "0.61", features = [
+	"Win32_System_Com",
+	"Win32_System_Com_StructuredStorage",
+] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-autostart = "2"
@@ -88,6 +102,9 @@ tauri-plugin-window-state = "2"
 
 [profile.dev]
 incremental = true
+# Full debug info (default) membuat artifact dev raksasa → link gagal di disk sempit
+# (mesin dev C: 64GB penuh). line-tables-only: cukup utk panic backtrace, jauh lebih kecil.
+debug = "line-tables-only"
 
 [profile.release]
 codegen-units = 1

@@ -1,4 +1,4 @@
-import { LazyStore } from "@tauri-apps/plugin-store";
+import { LocalLazyStore } from "@/lib/localStore";
 
 export type TodoStatus = "pending" | "in_progress" | "completed";
 
@@ -9,10 +9,10 @@ export type Todo = {
   status: TodoStatus;
 };
 
-const STORE_PATH = "terax-ai-todos.json";
+const STORE_PATH = "anbo-ai-todos.json";
 const todosKey = (sessionId: string) => `todos:${sessionId}`;
 
-const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
+const store = new LocalLazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
 
 export async function loadTodos(sessionId: string): Promise<Todo[]> {
   return (await store.get<Todo[]>(todosKey(sessionId))) ?? [];

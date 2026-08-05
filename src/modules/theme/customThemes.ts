@@ -1,12 +1,12 @@
+import { LocalLazyStore } from "@/lib/localStore";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { LazyStore } from "@tauri-apps/plugin-store";
 import type { Theme } from "./types";
 
-const STORE_PATH = "terax-custom-themes.json";
+const STORE_PATH = "anbo-custom-themes.json";
 const KEY = "themes";
-const CHANGED_EVENT = "terax://custom-themes-changed";
+const CHANGED_EVENT = "anbo://custom-themes-changed";
 
-const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
+const store = new LocalLazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
 
 export async function listCustomThemes(): Promise<Theme[]> {
   const v = await store.get<Theme[]>(KEY);
@@ -30,7 +30,9 @@ export async function deleteCustomTheme(id: string): Promise<void> {
   await emit(CHANGED_EVENT);
 }
 
-export async function onCustomThemesChange(cb: () => void): Promise<UnlistenFn> {
+export async function onCustomThemesChange(
+  cb: () => void,
+): Promise<UnlistenFn> {
   const unsubLocal = await store.onChange((key) => {
     if (key === KEY) cb();
   });

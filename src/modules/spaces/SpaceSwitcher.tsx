@@ -189,13 +189,15 @@ export function SpaceSwitcher({
       return;
     }
     const rect = hit.getBoundingClientRect();
-    const edge: Edge = e.clientY < rect.top + rect.height / 2 ? "top" : "bottom";
+    const edge: Edge =
+      e.clientY < rect.top + rect.height / 2 ? "top" : "bottom";
     const kind = hit.getAttribute("data-drop");
     let next: DropTarget | null = null;
     if (st.kind === "space") {
       if (kind === "space") {
         const spaceId = hit.getAttribute("data-space-id");
-        if (spaceId && spaceId !== st.id) next = { kind: "space", spaceId, edge };
+        if (spaceId && spaceId !== st.id)
+          next = { kind: "space", spaceId, edge };
       }
     } else if (kind === "tab") {
       const tabId = Number(hit.getAttribute("data-tab-id"));
@@ -396,7 +398,9 @@ function SpaceRow({
         data-space-id={space.id}
         role="button"
         tabIndex={editing ? -1 : 0}
-        onPointerDown={editing ? undefined : (e) => onPointerDown(e, "space", space.id)}
+        onPointerDown={
+          editing ? undefined : (e) => onPointerDown(e, "space", space.id)
+        }
         onPointerMove={onPointerMove}
         onPointerUp={editing ? undefined : (e) => onPointerUp(e, onSwitch)}
         onPointerCancel={(e) => onPointerUp(e)}
@@ -408,7 +412,7 @@ function SpaceRow({
           }
         }}
         className={cn(
-          "group relative flex cursor-pointer select-none items-center gap-1.5 rounded-md px-1.5 py-1.5 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/40",
+          "group relative flex cursor-pointer select-none items-center gap-1.5 rounded-md px-1.5 py-1 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/40",
           moveTarget
             ? "bg-primary/10 ring-1 ring-inset ring-primary/40"
             : isActive
@@ -441,25 +445,29 @@ function SpaceRow({
             className="ml-0.5"
           />
         ) : (
-          <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
+          <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-foreground">
             {space.name}
           </span>
         )}
         {!editing && (
-          <>
-            <span className="shrink-0 px-1 text-[10px] tabular-nums text-muted-foreground/50 group-hover:hidden">
+          <div
+            data-no-drag
+            className="relative flex h-5 w-16 shrink-0 items-center justify-end"
+          >
+            <span className="absolute right-1 text-[10px] tabular-nums text-muted-foreground/50 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
               {tabs.length}
             </span>
-            <div
-              data-no-drag
-              className="hidden shrink-0 items-center gap-0.5 group-hover:flex"
-            >
+            <div className="pointer-events-none absolute right-0 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
               <RowAction
                 icon={PencilEdit02Icon}
                 label="Rename space"
                 onClick={onStartRename}
               />
-              <RowAction icon={PlusSignIcon} label="New tab" onClick={onNewTab} />
+              <RowAction
+                icon={PlusSignIcon}
+                label="New tab"
+                onClick={onNewTab}
+              />
               {canDelete && (
                 <RowAction
                   icon={Delete02Icon}
@@ -469,12 +477,12 @@ function SpaceRow({
                 />
               )}
             </div>
-          </>
+          </div>
         )}
       </div>
 
       {expanded && (
-        <div className="flex flex-col gap-px py-0.5 pl-10 pr-0.5">
+        <div className="flex flex-col gap-px py-0.5 pl-9 pr-0.5">
           {tabs.map((t) => (
             <TabRow
               key={t.id}
@@ -547,17 +555,17 @@ function TabRow({
           }
         }}
         className={cn(
-          "group/tab relative flex cursor-pointer select-none items-center gap-2 rounded-md px-2 py-1 outline-none transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-primary/40",
+          "group/tab relative flex cursor-pointer select-none items-center gap-1.5 rounded-md px-1.5 py-0.5 outline-none transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-primary/40",
           isDragging && "opacity-50",
         )}
       >
-        <TabIcon tab={tab} />
+        <TabIcon tab={tab} size="sm" />
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-[11.5px] leading-tight">
+          <span className="truncate text-[11px] leading-tight">
             {labelFor(tab)}
           </span>
           {subtitle && (
-            <span className="truncate text-[9.5px] leading-tight text-muted-foreground/55">
+            <span className="truncate text-[9px] leading-tight text-muted-foreground/55">
               {subtitle}
             </span>
           )}

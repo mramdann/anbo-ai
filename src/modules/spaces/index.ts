@@ -1,6 +1,7 @@
-export { SpaceSwitcher } from "./SpaceSwitcher";
-export { SpaceAvatar } from "./SpaceAvatar";
+export { newSpaceDefaults } from "./lib/activeSpace";
+export type { SpaceMeta } from "./lib/store";
+export { useSpacePersistence } from "./lib/useSpacePersistence";
 export { useSpaces } from "./lib/useSpaces";
 export { useSpacesBoot } from "./lib/useSpacesBoot";
-export { useSpacePersistence } from "./lib/useSpacePersistence";
-export type { SpaceMeta } from "./lib/store";
+export { SpaceAvatar } from "./SpaceAvatar";
+export { SpaceSwitcher } from "./SpaceSwitcher";

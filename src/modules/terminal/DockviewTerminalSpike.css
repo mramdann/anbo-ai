@@ -1,0 +1,49 @@
+.dockview-theme-anbo-spike {
+  --dv-tabs-and-actions-container-height: 30px;
+  --dv-tabs-and-actions-container-font-size: 12px;
+  --dv-group-view-background-color: var(--background);
+  --dv-tabs-and-actions-container-background-color: var(--sidebar);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--background);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--muted);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--background);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--muted);
+  --dv-activegroup-visiblepanel-tab-color: var(--foreground);
+  --dv-activegroup-hiddenpanel-tab-color: var(--muted-foreground);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--muted-foreground);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--muted-foreground);
+  --dv-tab-divider-color: var(--border);
+  --dv-separator-border: var(--border);
+  --dv-sash-color: transparent;
+  --dv-active-sash-color: var(--ring);
+  --dv-paneview-active-outline-color: var(--ring);
+  --dv-drag-over-background-color: color-mix(in oklab, var(--primary) 18%, transparent);
+  --dv-drag-over-border-color: var(--ring);
+  --dv-border-radius: 0;
+  --dv-tab-margin: 0;
+}
+
+.dockview-theme-anbo-spike .dv-tabs-and-actions-container {
+  border-bottom: 1px solid var(--border);
+}
+
+.dockview-theme-anbo-spike .dv-content-container {
+  position: relative;
+  min-height: 0;
+}
+
+.anbo-dockview-spike-tab {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.65rem;
+  font-size: 0.75rem;
+}
+
+.anbo-dockview-spike-tab::before {
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 999px;
+  background: var(--primary);
+  content: "";
+}

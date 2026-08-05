@@ -1,25 +1,32 @@
-; "Open in Terax" shell verbs for folders, folder backgrounds, and drives.
+; "Open in Anbo" shell verbs for folders, folder backgrounds, and drives.
 ; HKCU matches installer currentUser scope. %V = clicked path.
 ; NoWorkingDirectory keeps Explorer from overriding %V (System32 on Drive).
 
 !macro NSIS_HOOK_POSTINSTALL
-  WriteRegStr HKCU "Software\Classes\Directory\shell\OpenInTerax" "" "Open in Terax"
-  WriteRegStr HKCU "Software\Classes\Directory\shell\OpenInTerax" "Icon" '"$INSTDIR\terax.exe",0'
-  WriteRegStr HKCU "Software\Classes\Directory\shell\OpenInTerax" "NoWorkingDirectory" ""
-  WriteRegStr HKCU "Software\Classes\Directory\shell\OpenInTerax\command" "" '"$INSTDIR\terax.exe" "%V"'
+  DeleteRegKey HKCU "Software\Classes\Directory\shell\OpenInTerax"
+  DeleteRegKey HKCU "Software\Classes\Directory\Background\shell\OpenInTerax"
+  DeleteRegKey HKCU "Software\Classes\Drive\shell\OpenInTerax"
 
-  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\OpenInTerax" "" "Open in Terax"
-  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\OpenInTerax" "Icon" '"$INSTDIR\terax.exe",0'
-  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\OpenInTerax" "NoWorkingDirectory" ""
-  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\OpenInTerax\command" "" '"$INSTDIR\terax.exe" "%V"'
+  WriteRegStr HKCU "Software\Classes\Directory\shell\OpenInAnbo" "" "Open in Anbo"
+  WriteRegStr HKCU "Software\Classes\Directory\shell\OpenInAnbo" "Icon" '"$INSTDIR\${MAINBINARYNAME}.exe",0'
+  WriteRegStr HKCU "Software\Classes\Directory\shell\OpenInAnbo" "NoWorkingDirectory" ""
+  WriteRegStr HKCU "Software\Classes\Directory\shell\OpenInAnbo\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" "%V"'
 
-  WriteRegStr HKCU "Software\Classes\Drive\shell\OpenInTerax" "" "Open in Terax"
-  WriteRegStr HKCU "Software\Classes\Drive\shell\OpenInTerax" "Icon" '"$INSTDIR\terax.exe",0'
-  WriteRegStr HKCU "Software\Classes\Drive\shell\OpenInTerax" "NoWorkingDirectory" ""
-  WriteRegStr HKCU "Software\Classes\Drive\shell\OpenInTerax\command" "" '"$INSTDIR\terax.exe" "%V"'
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\OpenInAnbo" "" "Open in Anbo"
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\OpenInAnbo" "Icon" '"$INSTDIR\${MAINBINARYNAME}.exe",0'
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\OpenInAnbo" "NoWorkingDirectory" ""
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\OpenInAnbo\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" "%V"'
+
+  WriteRegStr HKCU "Software\Classes\Drive\shell\OpenInAnbo" "" "Open in Anbo"
+  WriteRegStr HKCU "Software\Classes\Drive\shell\OpenInAnbo" "Icon" '"$INSTDIR\${MAINBINARYNAME}.exe",0'
+  WriteRegStr HKCU "Software\Classes\Drive\shell\OpenInAnbo" "NoWorkingDirectory" ""
+  WriteRegStr HKCU "Software\Classes\Drive\shell\OpenInAnbo\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" "%V"'
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
+  DeleteRegKey HKCU "Software\Classes\Directory\shell\OpenInAnbo"
+  DeleteRegKey HKCU "Software\Classes\Directory\Background\shell\OpenInAnbo"
+  DeleteRegKey HKCU "Software\Classes\Drive\shell\OpenInAnbo"
   DeleteRegKey HKCU "Software\Classes\Directory\shell\OpenInTerax"
   DeleteRegKey HKCU "Software\Classes\Directory\Background\shell\OpenInTerax"
   DeleteRegKey HKCU "Software\Classes\Drive\shell\OpenInTerax"

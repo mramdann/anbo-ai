@@ -1,4 +1,4 @@
-import { LazyStore } from "@tauri-apps/plugin-store";
+import { LocalLazyStore } from "@/lib/localStore";
 import type { WorkspaceEnv } from "@/modules/workspace";
 import type { SerializedTab } from "./serialize";
 
@@ -18,13 +18,13 @@ export type SpaceState = {
   activeTabIndex: number;
 };
 
-const STORE_PATH = "terax-spaces.json";
+const STORE_PATH = "anbo-spaces.json";
 const KEY_SPACES = "spaces";
 const KEY_ACTIVE = "activeId";
 const STATE_PREFIX = "state:";
 const stateKey = (id: string) => `${STATE_PREFIX}${id}`;
 
-const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 500 });
+const store = new LocalLazyStore(STORE_PATH, { defaults: {}, autoSave: 500 });
 
 export type LoadedSpaces = {
   spaces: SpaceMeta[];

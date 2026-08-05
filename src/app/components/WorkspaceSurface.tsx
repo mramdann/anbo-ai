@@ -1,4 +1,3 @@
-import type { ComponentProps } from "react";
 import { cn } from "@/lib/utils";
 import { AiDiffStack, EditorStack, GitDiffStack } from "@/modules/editor";
 import { GitHistoryStack } from "@/modules/git-history";
@@ -6,6 +5,7 @@ import { MarkdownStack } from "@/modules/markdown";
 import { PreviewStack } from "@/modules/preview";
 import type { Tab } from "@/modules/tabs";
 import { TerminalStack } from "@/modules/terminal";
+import type { ComponentProps } from "react";
 
 type TerminalStackProps = ComponentProps<typeof TerminalStack>;
 type EditorStackProps = ComponentProps<typeof EditorStack>;
@@ -27,6 +27,7 @@ type Props = {
   onEditorCloseTab: EditorStackProps["onCloseTab"];
   registerPreviewHandle: PreviewStackProps["registerHandle"];
   onPreviewUrlChange: PreviewStackProps["onUrlChange"];
+  onPreviewTitleChange: PreviewStackProps["onTitleChange"];
   onAiDiffAccept: AiDiffStackProps["onAccept"];
   onAiDiffReject: AiDiffStackProps["onReject"];
   onOpenCommitFile: GitHistoryStackProps["onOpenCommitFile"];
@@ -53,6 +54,7 @@ export function WorkspaceSurface({
   onEditorCloseTab,
   registerPreviewHandle,
   onPreviewUrlChange,
+  onPreviewTitleChange,
   onAiDiffAccept,
   onAiDiffReject,
   onOpenCommitFile,
@@ -115,6 +117,7 @@ export function WorkspaceSurface({
           activeId={activeId}
           registerHandle={registerPreviewHandle}
           onUrlChange={onPreviewUrlChange}
+          onTitleChange={onPreviewTitleChange}
         />
       </div>
       <div

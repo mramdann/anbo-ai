@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="public/logo.png" width="144" height="144" alt="Terax" />
+  <img src="public/logo.svg" width="144" height="144" alt="Anbo" />
   <h1>Terax</h1>
 
   <p><strong>Lightweight Terminal-first AI-native dev workspace.</strong></p>

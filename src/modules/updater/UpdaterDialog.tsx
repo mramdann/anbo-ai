@@ -12,16 +12,18 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
 import { useUpdater } from "./useUpdater";
 
+const AUTO_UPDATE_ENABLED = import.meta.env.VITE_UPDATER_ENABLED === "true";
+
 type DistroKey = "arch" | "debian" | "fedora";
 
 function distroCommand(key: DistroKey, version: string): string {
   switch (key) {
     case "arch":
-      return "yay -S terax-bin";
+      return "yay -S anbo-bin";
     case "debian":
-      return `sudo apt install ./Terax_${version}_amd64.deb`;
+      return `sudo apt install ./Anbo_${version}_amd64.deb`;
     case "fedora":
-      return `sudo dnf install ./Terax-${version}-1.x86_64.rpm`;
+      return `sudo dnf install ./Anbo-${version}-1.x86_64.rpm`;
   }
 }
 
@@ -38,7 +40,11 @@ function formatBytes(n: number): string {
 }
 
 export function UpdaterDialog() {
-  const { status, install, dismiss } = useUpdater();
+  // The AnboAI release endpoint is not live yet. Opt in when signed releases
+  // and latest.json are published instead of logging a 404 on every startup.
+  const { status, install, dismiss } = useUpdater({
+    autoCheck: AUTO_UPDATE_ENABLED,
+  });
   const [copied, setCopied] = useState(false);
   const [distro, setDistro] = useState<DistroKey>("arch");
   const manualVersion =
@@ -92,12 +98,12 @@ export function UpdaterDialog() {
               : downloading
                 ? "Downloading update…"
                 : manual
-                  ? `Terax v${manual.version} is available`
-                  : `Terax v${update?.version} is available`}
+                  ? `Anbo v${manual.version} is available`
+                  : `Anbo v${update?.version} is available`}
           </DialogTitle>
           <DialogDescription>
             {ready
-              ? "Restart Terax to finish installing."
+              ? "Restart Anbo to finish installing."
               : downloading
                 ? progress !== null
                   ? `${progress.toFixed(0)}% — ${formatBytes(status.downloaded)}`
@@ -163,10 +169,7 @@ export function UpdaterDialog() {
               <Button variant="ghost" size="sm" onClick={dismiss}>
                 Later
               </Button>
-              <Button
-                size="sm"
-                onClick={() => void openUrl(manual.releaseUrl)}
-              >
+              <Button size="sm" onClick={() => void openUrl(manual.releaseUrl)}>
                 Download package
               </Button>
             </>

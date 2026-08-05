@@ -5,7 +5,11 @@ import { DEFAULT_SPACE_ID } from "@/modules/tabs/lib/useTabs";
 import { isLeaf, type PaneNode } from "@/modules/terminal/lib/panes";
 import { parseWorkspaceScopeKey, type WorkspaceEnv } from "@/modules/workspace";
 import { useEffect, useRef } from "react";
-import { activeSpaceEnv, freshTabCwd } from "./activeSpace";
+import {
+  activeSpaceEnv,
+  freshTabCwd,
+  shouldCreateFreshTerminal,
+} from "./activeSpace";
 import { freshTerminalTab, hydrateTabs } from "./serialize";
 import { loadAll, type SpaceMeta, saveActiveId, saveSpacesList } from "./store";
 import { useSpaces } from "./useSpaces";
@@ -14,6 +18,7 @@ type Params = {
   ready: boolean;
   launchCwd: string | null;
   home: string | null;
+  hasExplicitLaunchDir: boolean;
   allocId: () => number;
   replaceTabs: (tabs: Tab[], activeId: number) => void;
   markBooted: () => void;
@@ -38,6 +43,7 @@ export function useSpacesBoot({
   ready,
   launchCwd,
   home,
+  hasExplicitLaunchDir,
   allocId,
   replaceTabs,
   markBooted,
@@ -51,10 +57,19 @@ export function useSpacesBoot({
     done.current = true;
 
     void (async () => {
+      let landed = false;
       try {
         const { spaces, activeId, states } = await loadAll();
 
         if (spaces.length === 0) {
+          if (!hasExplicitLaunchDir) {
+            // Cold open tanpa folder pilihan → tampilkan landing page.
+            // Jangan bikin space/terminal & jangan markBooted → tab eager tetap
+            // `cold` → selectLiveTerminals abaikan → tak ada PTY spawn di home.
+            useSpaces.getState().hydrate([], null);
+            landed = true;
+            return;
+          }
           const root = launchCwd ?? home ?? null;
           // Hydrate prefs before reading the saved workspace env.
           await usePreferencesStore
@@ -96,9 +111,27 @@ export function useSpacesBoot({
         const env = activeSpaceEnv(spaces, active);
         const restoredHome = await adoptWorkspaceEnv(env);
 
-        // Active space must never be empty, else its tab list shows nothing.
-        if (!restored.some((t) => t.spaceId === active)) {
-          const cwd = freshTabCwd(env, restoredHome, launchCwd, home);
+        const activeSpace = spaces.find((space) => space.id === active);
+        // Configured workspaces retain the historical fresh-terminal fallback.
+        // An unconfigured new workspace must stay empty so its folder landing
+        // survives an app restart.
+        const hasRestoredActiveTab = restored.some(
+          (tab) => tab.spaceId === active,
+        );
+        if (
+          shouldCreateFreshTerminal(
+            activeSpace?.root ?? null,
+            hasRestoredActiveTab,
+          ) &&
+          activeSpace?.root
+        ) {
+          const cwd = freshTabCwd(
+            env,
+            restoredHome,
+            launchCwd,
+            home,
+            activeSpace.root,
+          );
           restored.push(freshTerminalTab(active, cwd, allocId));
         }
 
@@ -113,18 +146,19 @@ export function useSpacesBoot({
 
         const inActive = restored.filter((t) => t.spaceId === active);
         const idx = states.get(active)?.activeTabIndex ?? 0;
-        const activeTab = inActive[idx] ?? inActive[0] ?? restored[0];
-        replaceTabs(restored, activeTab.id);
+        const activeTab = inActive[idx] ?? inActive[0];
+        replaceTabs(restored, activeTab?.id ?? -1);
       } catch (e) {
-        console.error("[terax] spaces boot failed:", e);
+        console.error("[anbo] spaces boot failed:", e);
       } finally {
-        markBooted();
+        if (!landed) markBooted();
       }
     })();
   }, [
     ready,
     launchCwd,
     home,
+    hasExplicitLaunchDir,
     allocId,
     replaceTabs,
     markBooted,

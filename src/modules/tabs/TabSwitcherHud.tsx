@@ -3,12 +3,12 @@ import { useMemo } from "react";
 import { labelFor } from "./lib/tabLabel";
 import type { TabSwitcherState } from "./lib/useTabSwitcher";
 import type { Tab } from "./lib/useTabs";
-import { TabIcon } from "./TabBar";
+import { TabIcon } from "./TabIcon";
 
 function subtitleFor(tab: Tab): string | null {
   if (tab.kind === "terminal")
     return tab.cwd
-      ? (tab.cwd.split(/[\\/]/).filter(Boolean).slice(-2).join("/") || tab.cwd)
+      ? tab.cwd.split(/[\\/]/).filter(Boolean).slice(-2).join("/") || tab.cwd
       : null;
   if (tab.kind === "editor" || tab.kind === "markdown")
     return tab.path.split(/[\\/]/).filter(Boolean).slice(-2, -1)[0] ?? null;

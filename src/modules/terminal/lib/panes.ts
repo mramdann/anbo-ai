@@ -112,6 +112,53 @@ export function splitLeaf(
 }
 
 /**
+ * Insert an EXISTING node (a moved subtree whose leaf `id`s must be preserved
+ * so their PTY sessions reattach) beside `targetId`, in direction `dir`,
+ * before/after it. Mirrors `splitLeaf`'s same-dir-flatten logic; used by
+ * drag-to-split to dock a tab's paneTree next to the active pane.
+ */
+export function insertNodeBeside(
+  tree: PaneNode,
+  targetId: PaneId,
+  newSplitId: PaneId,
+  node: PaneNode,
+  dir: SplitDir,
+  place: "before" | "after",
+): PaneNode {
+  if (tree.kind === "split" && tree.dir === dir) {
+    const idx = tree.children.findIndex(
+      (c) => c.kind === "leaf" && c.id === targetId,
+    );
+    if (idx >= 0) {
+      const at = place === "before" ? idx : idx + 1;
+      return {
+        ...tree,
+        children: [
+          ...tree.children.slice(0, at),
+          node,
+          ...tree.children.slice(at),
+        ],
+      };
+    }
+  }
+  if (isLeaf(tree)) {
+    if (tree.id !== targetId) return tree;
+    return {
+      kind: "split",
+      id: newSplitId,
+      dir,
+      children: place === "before" ? [node, tree] : [tree, node],
+    };
+  }
+  return {
+    ...tree,
+    children: tree.children.map((c) =>
+      insertNodeBeside(c, targetId, newSplitId, node, dir, place),
+    ),
+  };
+}
+
+/**
  * Remove a leaf and collapse single-child splits left in its wake. Returns
  * `null` when the entire subtree is gone.
  */

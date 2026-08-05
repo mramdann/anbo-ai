@@ -1,5 +1,5 @@
 {
-  "name": "terax",
+  "name": "anbo",
   "private": true,
   "version": "0.8.6",
   "license": "Apache-2.0",
@@ -67,6 +67,7 @@
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-autostart": "~2.5.1",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
     "@tauri-apps/plugin-log": "~2.9.0",
     "@tauri-apps/plugin-notification": "^2.3.3",
     "@tauri-apps/plugin-opener": "^2.5.4",
@@ -96,6 +97,8 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "codemirror-languageserver": "^1.22.0",
+    "dockview": "4.13.1",
+    "dockview-react": "4.13.1",
     "radix-ui": "^1.6.7",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

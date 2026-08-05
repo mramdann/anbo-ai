@@ -1,12 +1,12 @@
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { appConfigDir, join } from "@tauri-apps/api/path";
+import { appLocalDataDir, join } from "@tauri-apps/api/path";
 import type { Theme } from "./types";
-import { validateTheme, type ValidationResult } from "./validateTheme";
+import { type ValidationResult, validateTheme } from "./validateTheme";
 
-const THEME_FILE_EXT = ".terax-theme";
-const THEME_EDIT_EVENT = "terax://theme-edit";
+const THEME_FILE_EXT = ".anbo-theme";
+const THEME_EDIT_EVENT = "anbo://theme-edit";
 
 export type ThemeEditRequest =
   | { action: "create" }
@@ -17,7 +17,7 @@ export function isThemeFilePath(path: string): boolean {
 }
 
 async function themesDir(): Promise<string> {
-  return join(await appConfigDir(), "themes");
+  return join(await appLocalDataDir(), "themes");
 }
 
 export async function themeFilePath(id: string): Promise<string> {

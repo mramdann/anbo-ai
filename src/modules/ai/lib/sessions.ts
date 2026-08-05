@@ -1,5 +1,5 @@
+import { LocalLazyStore } from "@/lib/localStore";
 import type { UIMessage } from "@ai-sdk/react";
-import { LazyStore } from "@tauri-apps/plugin-store";
 
 export type SessionMeta = {
   id: string;
@@ -8,12 +8,12 @@ export type SessionMeta = {
   updatedAt: number;
 };
 
-const STORE_PATH = "terax-ai-sessions.json";
+const STORE_PATH = "anbo-ai-sessions.json";
 const KEY_SESSIONS = "sessions";
 const KEY_ACTIVE = "activeId";
 const messagesKey = (id: string) => `messages:${id}`;
 
-const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
+const store = new LocalLazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
 
 export type LoadedSessions = {
   sessions: SessionMeta[];

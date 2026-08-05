@@ -8,8 +8,11 @@ import {
   type AgentLaunchCommands,
   type AgentLauncherId,
   type AgentLaunchRequest,
+  type BuiltInAgentLauncherId,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
   findAgentLauncher,
+  getAgentLaunchers,
+  isBuiltInAgentLauncherId,
   validateAgentLaunchCommand,
 } from "@/modules/agents/lib/launcher";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -31,15 +34,22 @@ const INSTANCE_COUNTS: AgentInstanceCount[] = [1, 2, 3, 4];
 
 export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
   const storedCommands = usePreferencesStore((s) => s.agentLaunchCommands);
+  const customCliAgents = usePreferencesStore((s) => s.customCliAgents);
   const hydrated = usePreferencesStore((s) => s.hydrated);
   const [agentId, setAgentId] = useState<AgentLauncherId>("claude");
   const [instances, setInstances] = useState<AgentInstanceCount>(2);
   const [drafts, setDrafts] = useState<AgentLaunchCommands>(storedCommands);
   const hydratedRef = useRef(hydrated);
   const persistedRef = useRef(storedCommands);
-  const command = drafts[agentId];
+  const launchers = getAgentLaunchers(customCliAgents);
+  const resolvedLauncher = findAgentLauncher(agentId, customCliAgents);
+  const launcher = resolvedLauncher ?? AGENT_LAUNCHERS[0];
+  const selectedId = launcher.id;
+  const builtInSelected = isBuiltInAgentLauncherId(selectedId);
+  const command = builtInSelected
+    ? drafts[selectedId]
+    : launcher.defaultCommand;
   const validation = validateAgentLaunchCommand(command);
-  const launcher = findAgentLauncher(agentId);
 
   useEffect(() => {
     if (!hydrated || hydratedRef.current) return;
@@ -47,6 +57,10 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
     persistedRef.current = storedCommands;
     setDrafts(storedCommands);
   }, [hydrated, storedCommands]);
+
+  useEffect(() => {
+    if (!resolvedLauncher) setAgentId("claude");
+  }, [resolvedLauncher]);
 
   const save = (next: AgentLaunchCommands) => {
     const changed = AGENT_LAUNCHERS.some(
@@ -57,12 +71,12 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
     persistedRef.current = next;
     void setAgentLaunchCommands(next).catch((error) => {
       persistedRef.current = previous;
-      console.error("[terax] failed to save agent launch commands:", error);
+      console.error("[anbo] failed to save agent launch commands:", error);
     });
   };
 
   const persist = (
-    id: AgentLauncherId,
+    id: BuiltInAgentLauncherId,
     value: string,
   ): AgentLaunchCommands | null => {
     const result = validateAgentLaunchCommand(value);
@@ -74,25 +88,30 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
   };
 
   const selectAgent = (id: AgentLauncherId) => {
-    persist(agentId, command);
+    if (isBuiltInAgentLauncherId(selectedId)) persist(selectedId, command);
     setAgentId(id);
   };
 
   const resetCommand = () => {
+    if (!isBuiltInAgentLauncherId(selectedId)) return;
     const next = {
       ...drafts,
-      [agentId]: DEFAULT_AGENT_LAUNCH_COMMANDS[agentId],
+      [selectedId]: DEFAULT_AGENT_LAUNCH_COMMANDS[selectedId],
     };
     setDrafts(next);
     save(next);
   };
 
   const submit = () => {
-    const next = persist(agentId, command);
-    if (!next) return;
+    const result = validateAgentLaunchCommand(command);
+    if (!result.ok) return;
+    if (isBuiltInAgentLauncherId(selectedId)) {
+      const next = persist(selectedId, result.command);
+      if (!next) return;
+    }
     onLaunch({
-      agent: agentId,
-      command: next[agentId],
+      agent: selectedId,
+      command: result.command,
       instances,
     });
   };
@@ -126,9 +145,9 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
         </div>
       </div>
 
-      <div className="mt-1 grid grid-cols-2 gap-1 border-t border-border/60 pt-1.5">
-        {AGENT_LAUNCHERS.map((agent) => {
-          const selected = agent.id === agentId;
+      <div className="mt-1 grid max-h-44 grid-cols-2 gap-1 overflow-y-auto border-t border-border/60 pt-1.5 pr-0.5">
+        {launchers.map((agent) => {
+          const selected = agent.id === selectedId;
           return (
             <button
               key={agent.id}
@@ -144,7 +163,7 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
               )}
             >
               <AgentIcon
-                agent={agent.id}
+                agent={agent.icon}
                 size={16}
                 className={cn(
                   "shrink-0",
@@ -194,18 +213,29 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
           >
             Start command
           </label>
-          <button
-            type="button"
-            onClick={resetCommand}
-            disabled={
-              !hydrated || command === DEFAULT_AGENT_LAUNCH_COMMANDS[agentId]
-            }
-            className="ml-auto flex items-center gap-1 rounded-md px-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-            title={`Reset to ${launcher.defaultCommand}`}
-          >
-            <HugeiconsIcon icon={Refresh01Icon} size={11} strokeWidth={1.75} />
-            Reset
-          </button>
+          {builtInSelected ? (
+            <button
+              type="button"
+              onClick={resetCommand}
+              disabled={
+                !hydrated ||
+                command === DEFAULT_AGENT_LAUNCH_COMMANDS[selectedId]
+              }
+              className="ml-auto flex items-center gap-1 rounded-md px-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+              title={`Reset to ${launcher.defaultCommand}`}
+            >
+              <HugeiconsIcon
+                icon={Refresh01Icon}
+                size={11}
+                strokeWidth={1.75}
+              />
+              Reset
+            </button>
+          ) : (
+            <span className="ml-auto text-[10px] text-muted-foreground">
+              Custom CLI
+            </span>
+          )}
         </div>
         <Input
           id="agent-start-command"
@@ -214,14 +244,18 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
           spellCheck={false}
           autoCapitalize="off"
           autoCorrect="off"
+          readOnly={!builtInSelected}
           aria-invalid={!validation.ok}
-          onChange={(event) =>
+          onChange={(event) => {
+            if (!builtInSelected) return;
             setDrafts((current) => ({
               ...current,
-              [agentId]: event.target.value,
-            }))
-          }
-          onBlur={() => persist(agentId, command)}
+              [selectedId]: event.target.value,
+            }));
+          }}
+          onBlur={() => {
+            if (builtInSelected) persist(selectedId, command);
+          }}
           className="h-8 rounded-xl bg-input/40 px-2.5 font-mono text-xs"
           placeholder={launcher.defaultCommand}
         />
@@ -232,7 +266,9 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
           )}
         >
           {validation.ok
-            ? "Aliases and flags are supported."
+            ? builtInSelected
+              ? "Aliases and flags are supported."
+              : "Edit this command in General settings."
             : validation.error}
         </div>
       </div>

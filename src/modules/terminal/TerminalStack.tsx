@@ -1,6 +1,7 @@
 import type { Tab } from "@/modules/tabs";
 import type { SearchAddon } from "@xterm/addon-search";
 import { useEffect, useMemo, useRef } from "react";
+import { DockviewTerminalSpike } from "./DockviewTerminalSpike";
 import { selectLiveTerminals } from "./lib/liveTerminals";
 import { leafIds } from "./lib/panes";
 import { PaneTreeView } from "./PaneTreeView";
@@ -23,6 +24,12 @@ type Bundle = {
   onCwd: (leafId: number, cwd: string) => void;
   onExit: (leafId: number, code: number) => void;
 };
+
+// Pane-level dockview spike (nested dockview) is OFF by default — it caused
+// "tab in tab" + "Terminal N" labels. Opt-in only with VITE_DOCKVIEW_SPIKE=true.
+// The flat dockview port (WorkspaceDockview) supersedes this; slated for deletion.
+const dockviewSpikeEnabled =
+  import.meta.env.DEV && import.meta.env.VITE_DOCKVIEW_SPIKE === "true";
 
 export function TerminalStack({
   tabs,
@@ -91,14 +98,25 @@ export function TerminalStack({
             }}
             aria-hidden={!tabVisible}
           >
-            <PaneTreeView
-              node={t.paneTree}
-              tabVisible={tabVisible}
-              activeLeafId={t.activeLeafId}
-              blocks={t.blocks ?? false}
-              onFocusLeaf={(leafId) => onFocusLeaf(t.id, leafId)}
-              getBundle={getBundle}
-            />
+            {dockviewSpikeEnabled ? (
+              <DockviewTerminalSpike
+                paneTree={t.paneTree}
+                activeLeafId={t.activeLeafId}
+                tabVisible={tabVisible}
+                blocks={t.blocks ?? false}
+                onFocusLeaf={(leafId) => onFocusLeaf(t.id, leafId)}
+                getBundle={getBundle}
+              />
+            ) : (
+              <PaneTreeView
+                node={t.paneTree}
+                tabVisible={tabVisible}
+                activeLeafId={t.activeLeafId}
+                blocks={t.blocks ?? false}
+                onFocusLeaf={(leafId) => onFocusLeaf(t.id, leafId)}
+                getBundle={getBundle}
+              />
+            )}
           </div>
         );
       })}

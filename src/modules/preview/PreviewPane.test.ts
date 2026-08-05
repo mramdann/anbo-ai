@@ -57,3 +57,10 @@ describe("PreviewPane iframe sandbox", () => {
     expect(iframeJsx).toMatch(/referrerPolicy="no-referrer"/);
   });
 });
+
+describe("PreviewPane native overlay freeze frame", () => {
+  it("keeps the captured browser frame behind dropdowns and drag overlays", () => {
+    expect(src).toContain("previewEmbedSnapshot");
+    expect(src).toContain("src={freezeFrame}");
+  });
+});

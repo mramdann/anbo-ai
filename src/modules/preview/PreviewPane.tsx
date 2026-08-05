@@ -1,12 +1,34 @@
 import { Alert02Icon, Globe02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { isTauri } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useRef,
   useState,
 } from "react";
+import {
+  createPreviewOwnerId,
+  isSelfReferenceUrl,
+  isSupportedBrowserUrl,
+  PREVIEW_NAV_EVENT,
+  type PreviewNavEvent,
+  previewEmbedDispatch,
+  previewEmbedNavigate,
+  previewEmbedRelease,
+  previewEmbedSnapshot,
+  previewEmbedSuspend,
+  previewEmbedUpdate,
+  previewEmbedUrl,
+  toPhysicalBounds,
+} from "./native";
+import {
+  useNativePreviewDragActive,
+  useNativePreviewOverlayOpen,
+} from "./nativeVisibility";
 import {
   PreviewAddressBar,
   type PreviewAddressBarHandle,
@@ -19,47 +41,356 @@ export type PreviewPaneHandle = {
 };
 
 type Props = {
+  id: number;
   url: string;
   visible: boolean;
   onUrlChange: (url: string) => void;
+  onTitleChange: (title: string) => void;
 };
 
-// Tear the iframe down after this much invisibility — a background dev
-// server page can hold hundreds of MB inside the WebView.
+type DesiredBounds = {
+  key: string;
+  bounds: ReturnType<typeof toPhysicalBounds>;
+  visible: boolean;
+};
+
+const EMPTY_BOUNDS = { x: 0, y: 0, width: 0, height: 0 };
 const SUSPEND_AFTER_MS = 30_000;
+const mountedOwners = new Map<number, string>();
+const pendingReleases = new Map<number, ReturnType<typeof setTimeout>>();
 
 export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
-  function PreviewPane({ url, visible, onUrlChange }, ref) {
-    // `nonce` is part of the iframe `key`. Bumping it remounts the iframe,
-    // which is the only reliable cross-origin reload (calling
-    // contentWindow.location.reload() throws on cross-origin frames).
-    const [nonce, setNonce] = useState(0);
-    const [loaded, setLoaded] = useState(visible);
+  function PreviewPane({ id, url, visible, onUrlChange, onTitleChange }, ref) {
+    const native = isTauri();
+    const [iframeNonce, setIframeNonce] = useState(0);
+    const [nativeError, setNativeError] = useState<string | null>(null);
+    const [freezeFrame, setFreezeFrame] = useState<string | null>(null);
     const addressRef = useRef<PreviewAddressBarHandle>(null);
+    const contentRef = useRef<HTMLDivElement>(null);
+    const ownerIdRef = useRef(createPreviewOwnerId());
+    const currentUrlRef = useRef(url);
+    const urlPropRef = useRef(url);
+    const onUrlChangeRef = useRef(onUrlChange);
+    const onTitleChangeRef = useRef(onTitleChange);
+    const visibleRef = useRef(visible);
+    const overlayOpen = useNativePreviewOverlayOpen();
+    const overlayOpenRef = useRef(overlayOpen);
+    const dragActive = useNativePreviewDragActive();
+    const dragActiveRef = useRef(dragActive);
+    const suppressionReadyRef = useRef(false);
+    const suppressionRequestRef = useRef(0);
+    const sentKeyRef = useRef("");
+    const desiredRef = useRef<DesiredBounds | null>(null);
+    const inFlightRef = useRef(false);
+    const disposedRef = useRef(false);
+    const boundsErrorRef = useRef(false);
+    const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    onUrlChangeRef.current = onUrlChange;
+    onTitleChangeRef.current = onTitleChange;
+    urlPropRef.current = url;
+    visibleRef.current = visible;
+
+    const reportNativeError = useCallback((error: unknown) => {
+      boundsErrorRef.current = false;
+      setNativeError(error instanceof Error ? error.message : String(error));
+    }, []);
+
+    const sendDesiredBounds = useCallback(() => {
+      if (!native || disposedRef.current || inFlightRef.current) return;
+      const desired = desiredRef.current;
+      if (!desired || desired.key === sentKeyRef.current) return;
+      sentKeyRef.current = desired.key;
+      inFlightRef.current = true;
+      void previewEmbedUpdate(
+        id,
+        ownerIdRef.current,
+        currentUrlRef.current,
+        desired.bounds,
+        desired.visible,
+      )
+        .then(() => {
+          if (disposedRef.current) return;
+          if (boundsErrorRef.current) {
+            boundsErrorRef.current = false;
+            setNativeError(null);
+          }
+        })
+        .catch((error) => {
+          if (disposedRef.current) return;
+          boundsErrorRef.current = true;
+          setNativeError(
+            error instanceof Error ? error.message : String(error),
+          );
+          const failedKey = desired.key;
+          if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+          retryTimerRef.current = setTimeout(() => {
+            retryTimerRef.current = null;
+            if (sentKeyRef.current !== failedKey) return;
+            sentKeyRef.current = "";
+            sendDesiredBounds();
+          }, 1_000);
+        })
+        .finally(() => {
+          inFlightRef.current = false;
+          sendDesiredBounds();
+        });
+    }, [id, native]);
+
+    const syncBounds = useCallback(() => {
+      if (!native) return;
+      const element = contentRef.current;
+      const currentUrl = currentUrlRef.current;
+      const allowedUrl =
+        isSupportedBrowserUrl(currentUrl) && !isSelfReferenceUrl(currentUrl);
+      const show =
+        document.visibilityState === "visible" &&
+        visibleRef.current &&
+        !suppressionReadyRef.current &&
+        allowedUrl &&
+        !!element;
+      const rect = show ? element.getBoundingClientRect() : null;
+      const hasArea = !!rect && rect.width >= 1 && rect.height >= 1;
+      const bounds = hasArea
+        ? toPhysicalBounds(rect, window.devicePixelRatio || 1)
+        : EMPTY_BOUNDS;
+      const shouldShow = show && hasArea;
+      desiredRef.current = {
+        key: shouldShow
+          ? `show:${bounds.x},${bounds.y},${bounds.width},${bounds.height}:${currentUrl}`
+          : "hide",
+        bounds,
+        visible: shouldShow,
+      };
+      sendDesiredBounds();
+    }, [native, sendDesiredBounds]);
 
     useEffect(() => {
-      if (visible) {
-        setLoaded(true);
+      if (!native) return;
+      if (!visible) {
+        syncBounds();
+        const timeout = setTimeout(() => {
+          void previewEmbedSuspend(id, ownerIdRef.current)
+            .catch(() => {})
+            .finally(() => {
+              sentKeyRef.current = "";
+              syncBounds();
+            });
+        }, SUSPEND_AFTER_MS);
+        return () => clearTimeout(timeout);
+      }
+      let frame = 0;
+      let lastSync = 0;
+      const tick = (now: number) => {
+        if (now - lastSync >= 40) {
+          lastSync = now;
+          syncBounds();
+        }
+        frame = requestAnimationFrame(tick);
+      };
+      frame = requestAnimationFrame(tick);
+      return () => cancelAnimationFrame(frame);
+    }, [id, native, syncBounds, visible]);
+
+    useEffect(() => {
+      disposedRef.current = false;
+      const pending = pendingReleases.get(id);
+      if (pending) clearTimeout(pending);
+      pendingReleases.delete(id);
+      mountedOwners.set(id, ownerIdRef.current);
+      return () => {
+        disposedRef.current = true;
+        if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+        if (!native) return;
+        const ownerId = ownerIdRef.current;
+        const timer = setTimeout(() => {
+          pendingReleases.delete(id);
+          if (mountedOwners.get(id) !== ownerId) return;
+          mountedOwners.delete(id);
+          void previewEmbedRelease(id, ownerId).catch(() => {});
+        }, 0);
+        pendingReleases.set(id, timer);
+      };
+    }, [id, native]);
+
+    useEffect(() => {
+      if (!native || !visible) return;
+      let alive = true;
+      let reading = false;
+      const reconcileLiveUrl = () => {
+        if (reading) return;
+        reading = true;
+        void previewEmbedUrl(id, ownerIdRef.current)
+          .then((liveUrl) => {
+            if (!alive || !liveUrl || liveUrl === currentUrlRef.current) return;
+            currentUrlRef.current = liveUrl;
+            if (liveUrl !== urlPropRef.current) {
+              onUrlChangeRef.current(liveUrl);
+            }
+          })
+          .catch(() => {})
+          .finally(() => {
+            reading = false;
+          });
+      };
+      const interval = setInterval(reconcileLiveUrl, 1_000);
+      return () => {
+        alive = false;
+        clearInterval(interval);
+      };
+    }, [id, native, visible]);
+
+    useEffect(() => {
+      overlayOpenRef.current = overlayOpen;
+      dragActiveRef.current = dragActive;
+      if (!native) return;
+      const request = ++suppressionRequestRef.current;
+      const suppressed = overlayOpen || dragActive;
+      if (!suppressed) {
+        suppressionReadyRef.current = false;
+        sentKeyRef.current = "";
+        syncBounds();
         return;
       }
-      const t = setTimeout(() => setLoaded(false), SUSPEND_AFTER_MS);
-      return () => clearTimeout(t);
-    }, [visible]);
+
+      let frame = 0;
+      void previewEmbedSnapshot(id, ownerIdRef.current)
+        .catch(() => null)
+        .then((snapshot) => {
+          if (
+            disposedRef.current ||
+            suppressionRequestRef.current !== request ||
+            (!overlayOpenRef.current && !dragActiveRef.current)
+          ) {
+            return;
+          }
+          if (snapshot) setFreezeFrame(snapshot);
+          frame = requestAnimationFrame(() => {
+            if (
+              disposedRef.current ||
+              suppressionRequestRef.current !== request ||
+              (!overlayOpenRef.current && !dragActiveRef.current)
+            ) {
+              return;
+            }
+            suppressionReadyRef.current = true;
+            sentKeyRef.current = "";
+            syncBounds();
+          });
+        });
+      return () => {
+        if (frame) cancelAnimationFrame(frame);
+      };
+    }, [dragActive, id, native, overlayOpen, syncBounds]);
+
+    useEffect(() => {
+      if (!native) return;
+      const onVisibilityChange = () => syncBounds();
+      document.addEventListener("visibilitychange", onVisibilityChange);
+      return () =>
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+    }, [native, syncBounds]);
+
+    useEffect(() => {
+      if (!native) return;
+      let alive = true;
+      let unlisten: UnlistenFn | undefined;
+      void listen<PreviewNavEvent>(PREVIEW_NAV_EVENT, ({ payload }) => {
+        if (
+          !payload ||
+          payload.tabId !== id ||
+          payload.ownerId !== ownerIdRef.current ||
+          !payload.url
+        )
+          return;
+        if (payload.kind === "loaded") return;
+        if (payload.kind === "title" && payload.title?.trim()) {
+          onTitleChangeRef.current(payload.title.trim().slice(0, 200));
+        }
+        currentUrlRef.current = payload.url;
+        if (
+          payload.kind === "navigated" ||
+          payload.url !== urlPropRef.current
+        ) {
+          onUrlChangeRef.current(payload.url);
+        }
+      }).then((dispose) => {
+        if (alive) unlisten = dispose;
+        else dispose();
+      });
+      return () => {
+        alive = false;
+        unlisten?.();
+      };
+    }, [id, native]);
+
+    useEffect(() => {
+      if (!native || !url) return;
+      if (!isSupportedBrowserUrl(url)) {
+        boundsErrorRef.current = false;
+        setNativeError("Only HTTP(S) URLs can load in the browser.");
+        return;
+      }
+      if (isSelfReferenceUrl(url)) {
+        boundsErrorRef.current = false;
+        setNativeError("AnboAI cannot be opened inside its own browser pane.");
+        return;
+      }
+      if (url === currentUrlRef.current) return;
+      currentUrlRef.current = url;
+      setNativeError(null);
+      void previewEmbedNavigate(id, ownerIdRef.current, url).catch(
+        reportNativeError,
+      );
+    }, [id, native, reportNativeError, url]);
+
+    const navigate = useCallback(
+      (next: string) => {
+        currentUrlRef.current = next;
+        onUrlChangeRef.current(next);
+        setNativeError(null);
+        if (native) {
+          if (!isSupportedBrowserUrl(next)) {
+            boundsErrorRef.current = false;
+            setNativeError("Only HTTP(S) URLs can load in the browser.");
+          } else if (isSelfReferenceUrl(next)) {
+            boundsErrorRef.current = false;
+            setNativeError(
+              "AnboAI cannot be opened inside its own browser pane.",
+            );
+          } else {
+            void previewEmbedNavigate(id, ownerIdRef.current, next).catch(
+              reportNativeError,
+            );
+          }
+          syncBounds();
+        }
+      },
+      [id, native, reportNativeError, syncBounds],
+    );
+
+    const dispatch = useCallback(
+      (action: "back" | "forward" | "reload") => {
+        if (native)
+          void previewEmbedDispatch(id, ownerIdRef.current, action).catch(
+            reportNativeError,
+          );
+        else if (action === "reload") setIframeNonce((nonce) => nonce + 1);
+      },
+      [id, native, reportNativeError],
+    );
 
     useImperativeHandle(
       ref,
       () => ({
-        reload: () => {
-          setLoaded(true);
-          setNonce((n) => n + 1);
-        },
+        reload: () => dispatch("reload"),
         focusAddressBar: () => addressRef.current?.focus(),
-        getUrl: () => url,
+        getUrl: () => currentUrlRef.current,
       }),
-      [url],
+      [dispatch],
     );
 
-    const showXfoHint = url ? !isLocalUrl(url) : false;
+    const showXfoHint = !native && url ? !isLocalUrl(url) : false;
 
     return (
       <div
@@ -72,53 +403,51 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
         <PreviewAddressBar
           ref={addressRef}
           url={url}
-          onSubmit={onUrlChange}
-          onReload={() => setNonce((n) => n + 1)}
+          onSubmit={navigate}
+          onBack={() => dispatch("back")}
+          onForward={() => dispatch("forward")}
+          onReload={() => dispatch("reload")}
         />
         {showXfoHint ? (
           <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-border/60 bg-amber-500/8 px-3 text-[11px] text-amber-600 dark:text-amber-400">
-            <HugeiconsIcon
-              icon={Alert02Icon}
-              size={12}
-              strokeWidth={1.75}
-              className="shrink-0"
-            />
+            <HugeiconsIcon icon={Alert02Icon} size={12} strokeWidth={1.75} />
             <span className="truncate">
-              Many public sites refuse to embed (X-Frame-Options). If the page
-              is blank, open it externally.
+              Public sites may refuse the browser-development iframe. Open the
+              desktop app for native browsing.
             </span>
           </div>
         ) : null}
         <div
+          ref={contentRef}
           className={
             url
               ? "relative min-h-0 flex-1 bg-white"
               : "relative min-h-0 flex-1 bg-background"
           }
         >
+          {native && freezeFrame && !nativeError ? (
+            <img
+              src={freezeFrame}
+              alt=""
+              aria-hidden
+              draggable={false}
+              className="pointer-events-none absolute inset-0 h-full w-full select-none object-fill"
+            />
+          ) : null}
           {url ? (
-            loaded ? (
+            native ? (
+              nativeError ? (
+                <BrowserError message={nativeError} />
+              ) : null
+            ) : (
               <iframe
-                key={`${url}#${nonce}`}
+                key={`${url}#${iframeNonce}`}
                 src={url}
                 title="Preview"
                 className="h-full w-full border-0"
-                // sandbox grants the bare minimum for a dev preview: scripts,
-                // same-origin (cookies/storage for the previewed app), forms,
-                // popups for "open in new tab". Critically OMITS
-                // `allow-top-navigation*` — without it the iframe cannot
-                // navigate the parent Tauri webview to an attacker origin,
-                // which would otherwise expose `window.__TAURI__` IPC.
                 sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
                 referrerPolicy="no-referrer"
                 allow="clipboard-read; clipboard-write; fullscreen"
-              />
-            ) : (
-              <SuspendedState
-                onReload={() => {
-                  setLoaded(true);
-                  setNonce((n) => n + 1);
-                }}
               />
             )
           ) : (
@@ -130,27 +459,20 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
   },
 );
 
-function SuspendedState({ onReload }: { onReload: () => void }) {
+function BrowserError({ message }: { message: string }) {
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center">
-      <div className="flex size-10 items-center justify-center rounded-2xl border border-border/60 bg-card text-muted-foreground">
-        <HugeiconsIcon icon={Globe02Icon} size={18} strokeWidth={1.5} />
+      <div className="flex size-10 items-center justify-center rounded-2xl border border-border/60 bg-card text-amber-500">
+        <HugeiconsIcon icon={Alert02Icon} size={18} strokeWidth={1.5} />
       </div>
       <div className="space-y-1">
         <p className="text-[12.5px] font-medium text-foreground">
-          Preview suspended
+          Browser unavailable
         </p>
-        <p className="max-w-xs text-[11px] leading-relaxed text-muted-foreground">
-          Released to free memory after sitting in the background.
+        <p className="max-w-md text-[11px] leading-relaxed text-muted-foreground">
+          {message}
         </p>
       </div>
-      <button
-        type="button"
-        onClick={onReload}
-        className="rounded-md border border-border/60 bg-card px-3 py-1 text-[11px] hover:bg-accent/50"
-      >
-        Reload
-      </button>
     </div>
   );
 }
@@ -163,16 +485,11 @@ function EmptyState() {
       </div>
       <div className="space-y-1.5">
         <p className="text-sm font-medium text-foreground">
-          Nothing to preview yet
+          Open a browser page
         </p>
         <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
-          Type a URL above, or open the{" "}
-          <span className="rounded bg-muted px-1 py-0.5 font-mono text-[10.5px]">
-            Ports
-          </span>{" "}
-          dropdown to jump straight to your running dev server. Public sites
-          often block embedding — open them in your browser via the link icon
-          if you see a blank page.
+          Enter an HTTP(S) URL or choose a running local development server from
+          the Ports menu.
         </p>
       </div>
     </div>
@@ -181,14 +498,13 @@ function EmptyState() {
 
 function isLocalUrl(url: string): boolean {
   try {
-    const u = new URL(url);
-    const h = u.hostname;
+    const hostname = new URL(url).hostname;
     return (
-      h === "localhost" ||
-      h === "127.0.0.1" ||
-      h === "0.0.0.0" ||
-      h === "[::1]" ||
-      h.endsWith(".localhost")
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "0.0.0.0" ||
+      hostname === "[::1]" ||
+      hostname.endsWith(".localhost")
     );
   } catch {
     return false;

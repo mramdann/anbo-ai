@@ -1,6 +1,21 @@
 import type { WorkspaceEnv } from "@/modules/workspace";
 import type { SpaceMeta } from "./store";
 
+export function newSpaceDefaults(position: number, env: WorkspaceEnv) {
+  return {
+    name: `Space ${position}`,
+    root: null,
+    env,
+  };
+}
+
+export function shouldCreateFreshTerminal(
+  spaceRoot: string | null,
+  hasRestoredTab: boolean,
+): boolean {
+  return !!spaceRoot && !hasRestoredTab;
+}
+
 export function findActiveSpace(
   spaces: SpaceMeta[],
   activeId: string | null,
@@ -26,6 +41,11 @@ export function freshTabCwd(
   restoredHome: string | null,
   launchCwd: string | null,
   home: string | null,
+  spaceRoot: string | null = null,
 ): string | null {
-  return restoredHome ?? (env.kind === "local" ? (launchCwd ?? home) : null);
+  return (
+    spaceRoot ??
+    restoredHome ??
+    (env.kind === "local" ? (launchCwd ?? home) : null)
+  );
 }

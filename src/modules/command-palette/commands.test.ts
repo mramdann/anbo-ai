@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
 import type { Tab } from "@/modules/tabs";
+import { describe, expect, it } from "vitest";
 import {
   type CommandPaletteActionContext,
   createCommandItems,
@@ -59,7 +59,7 @@ function reasonById(over: Partial<CommandPaletteActionContext>, id: string) {
 }
 
 describe("createCommandItems", () => {
-  it("enables split on a terminal tab below the pane limit", () => {
+  it("enables Dockview split on a terminal tab", () => {
     expect(reasonById({}, "pane.splitRight")).toBeUndefined();
     expect(reasonById({}, "pane.splitDown")).toBeUndefined();
   });

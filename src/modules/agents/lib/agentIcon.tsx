@@ -1,5 +1,6 @@
 import {
   AiBrowserIcon,
+  BotIcon,
   ChatGptIcon,
   ClaudeIcon,
   CodeIcon,
@@ -30,6 +31,7 @@ function PiIcon({ size, className }: { size: number; className?: string }) {
 
 function iconFor(agent: string): IconSvgElement {
   const a = agent.toLowerCase();
+  if (a === "robot") return BotIcon;
   if (a.includes("claude")) return ClaudeIcon;
   if (a.includes("gemini")) return GoogleGeminiIcon;
   if (a.includes("opencode")) return CodeIcon;
@@ -51,10 +53,10 @@ export function AgentIcon({
   if (agent.toLowerCase() === "pi") {
     return <PiIcon size={size} className={className} />;
   }
-  if (agent.toLowerCase().includes("terax")) {
+  if (agent.toLowerCase().includes("anbo")) {
     return (
       <img
-        src="/logo.png"
+        src="/logo.svg"
         alt=""
         width={size}
         height={size}
