@@ -16,6 +16,7 @@
     "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",
+    "check-version": "node scripts/check-version-sync.mjs",
     "check-types": "tsc --noEmit",
     "lint": "biome lint ./src",
     "lint:fix": "biome lint --write ./src",

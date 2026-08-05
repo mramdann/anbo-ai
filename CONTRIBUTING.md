@@ -150,6 +150,17 @@ Common scopes: `terminal`, `editor`, `explorer`, `pty`, `ai`, `agents`, `setting
 
 Within a PR, individual commit messages can be free-form (they get squashed or grouped).
 
+## Releases
+
+Do not commit version bumps or create release tags manually during normal development.
+
+1. Create a focused branch from `main` and open a pull request.
+2. Use a Conventional Commit PR title. `fix:` produces a patch release, `feat:` produces a minor release, and a `!` or `BREAKING CHANGE` produces a major release.
+3. Merge the feature or fix PR after CI passes. GitHub updates the automated Release Please PR with the version bump and changelog.
+4. Merge the Release Please PR when the accumulated changes are ready to ship. GitHub creates the version tag, builds the Windows installers, and publishes the release automatically.
+
+Commits such as `docs:`, `test:`, `ci:`, and `chore:` do not create a release by themselves unless they contain a breaking-change marker.
+
 **Fill out the PR template.** Include: what changed, why, how you tested. Screenshots/GIFs for UI changes. "Tested manually by ..." is the bare minimum.
 
 **Open a draft PR early** if you want feedback mid-flight. Mark "Ready for review" when done.

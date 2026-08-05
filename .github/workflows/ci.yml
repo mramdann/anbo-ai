@@ -25,6 +25,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Check release versions
+        run: pnpm check-version
+
       - name: Audit (advisory)
         run: pnpm audit --prod --audit-level high
         continue-on-error: true
