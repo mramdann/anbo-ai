@@ -2,7 +2,7 @@
 name = "anbo"
 default-run = "anbo"
 autobins = false
-version = "0.8.8"
+version = "0.8.9"
 description = "anboai — multi-agent AI control workspace (based on Anbo)"
 authors = ["crynta"]
 license = "Apache-2.0"
