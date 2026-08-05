@@ -1,3 +1,4 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   type RefObject,
   useCallback,
@@ -26,6 +27,20 @@ export function shouldPersistSidebarCollapsed(
   isUserInteraction: boolean,
 ): boolean {
   return isUserInteraction;
+}
+
+export function shouldRestoreSidebar(
+  intendedCollapsed: boolean,
+  panelCollapsed: boolean,
+  documentVisible: boolean,
+  viewportWidth: number,
+): boolean {
+  return (
+    !intendedCollapsed &&
+    panelCollapsed &&
+    documentVisible &&
+    viewportWidth >= SIDEBAR_MIN_WIDTH + 320
+  );
 }
 
 function clampSidebarWidth(width: number): number {
@@ -81,6 +96,7 @@ export function useSidebarPanel(
   const sidebarRef = useRef<PanelImperativeHandle | null>(null);
   const sidebarWidthRef = useRef(readSidebarWidth());
   const sidebarWidthWriteTimerRef = useRef(0);
+  const sidebarRestoreTimerRef = useRef(0);
   const explorerReturnFocusRef = useRef<HTMLElement | null>(null);
   const [sidebarView, setSidebarViewState] =
     useState<SidebarViewId>(readSidebarView);
@@ -168,10 +184,59 @@ export function useSidebarPanel(
     [],
   );
 
+  const scheduleSidebarRestore = useCallback(() => {
+    if (sidebarRestoreTimerRef.current) {
+      window.clearTimeout(sidebarRestoreTimerRef.current);
+    }
+    sidebarRestoreTimerRef.current = window.setTimeout(() => {
+      sidebarRestoreTimerRef.current = 0;
+      const panel = sidebarRef.current;
+      if (
+        !panel ||
+        !shouldRestoreSidebar(
+          collapsedRef.current,
+          panel.isCollapsed(),
+          document.visibilityState === "visible",
+          window.innerWidth,
+        )
+      ) {
+        return;
+      }
+      expandSidebar(panel, sidebarWidthRef.current);
+    }, 120);
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlistenResize: (() => void) | undefined;
+    window.addEventListener("resize", scheduleSidebarRestore, {
+      passive: true,
+    });
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") scheduleSidebarRestore();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    void getCurrentWindow()
+      .onResized(scheduleSidebarRestore)
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else unlistenResize = unlisten;
+      });
+    return () => {
+      disposed = true;
+      unlistenResize?.();
+      window.removeEventListener("resize", scheduleSidebarRestore);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [scheduleSidebarRestore]);
+
   useEffect(() => {
     return () => {
       if (sidebarWidthWriteTimerRef.current) {
         window.clearTimeout(sidebarWidthWriteTimerRef.current);
+      }
+      if (sidebarRestoreTimerRef.current) {
+        window.clearTimeout(sidebarRestoreTimerRef.current);
       }
     };
   }, []);

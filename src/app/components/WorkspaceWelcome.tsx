@@ -53,7 +53,7 @@ export function WorkspaceWelcome({
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            "radial-gradient(circle at 50% 28%, color-mix(in oklab, var(--background) 68%, transparent), var(--background) 62%)",
+            "radial-gradient(circle at 50% 36%, color-mix(in oklab, var(--background) 72%, transparent), transparent 68%)",
         }}
       />
 
@@ -84,7 +84,7 @@ export function WorkspaceWelcome({
           ) : null}
         </header>
 
-        <div className="mt-7 overflow-hidden rounded-3xl border border-border/70 bg-card/75 shadow-[0_24px_80px_-40px_color-mix(in_oklab,var(--foreground)_30%,transparent)] backdrop-blur-xl">
+        <div className="mt-7 overflow-hidden rounded-3xl border border-border/70 bg-card/95 shadow-[0_24px_80px_-40px_color-mix(in_oklab,var(--foreground)_30%,transparent)]">
           <button
             type="button"
             onClick={onNew}

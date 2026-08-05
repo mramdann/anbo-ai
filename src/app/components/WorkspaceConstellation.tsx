@@ -16,8 +16,8 @@ type Spark = {
   speed: number;
 };
 
-const LINK_DISTANCE = 132;
-const FRAME_INTERVAL = 1000 / 30;
+const LINK_DISTANCE = 176;
+const FRAME_INTERVAL = 1000 / 10;
 
 export function WorkspaceConstellation() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -42,10 +42,11 @@ export function WorkspaceConstellation() {
     const reducedMotion = window.matchMedia(
       "(prefers-reduced-motion: reduce)",
     ).matches;
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const dpr = 0.75;
     let width = 0;
     let height = 0;
     let animationFrame = 0;
+    let frameTimer = 0;
     let previousFrame = 0;
     let sparkTimer = 0;
     let nodes: Node[] = [];
@@ -54,13 +55,13 @@ export function WorkspaceConstellation() {
     const seed = () => {
       const count = Math.max(
         12,
-        Math.min(24, Math.round((width * height) / 24_000)),
+        Math.min(18, Math.round((width * height) / 28_000)),
       );
       nodes = Array.from({ length: count }, () => ({
         x: Math.random() * width,
         y: Math.random() * height,
-        vx: (Math.random() - 0.5) * 0.025,
-        vy: (Math.random() - 0.5) * 0.025,
+        vx: (Math.random() - 0.5) * 0.018,
+        vy: (Math.random() - 0.5) * 0.018,
         radius: 1.1 + Math.random() * 1.3,
       }));
       sparks.length = 0;
@@ -95,7 +96,7 @@ export function WorkspaceConstellation() {
       context.lineWidth = 1;
       context.strokeStyle = nodeColor;
       for (const [from, to, distance] of pairs) {
-        context.globalAlpha = (1 - distance / LINK_DISTANCE) * 0.22;
+        context.globalAlpha = (1 - distance / LINK_DISTANCE) * 0.34;
         context.beginPath();
         context.moveTo(nodes[from].x, nodes[from].y);
         context.lineTo(nodes[to].x, nodes[to].y);
@@ -103,7 +104,7 @@ export function WorkspaceConstellation() {
       }
 
       context.fillStyle = nodeColor;
-      context.globalAlpha = 0.52;
+      context.globalAlpha = 0.68;
       for (const node of nodes) {
         context.beginPath();
         context.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
@@ -141,11 +142,17 @@ export function WorkspaceConstellation() {
       context.globalAlpha = 1;
     };
 
+    const queueFrame = () => {
+      frameTimer = window.setTimeout(() => {
+        frameTimer = 0;
+        animationFrame = requestAnimationFrame(frame);
+      }, FRAME_INTERVAL);
+    };
+
     const frame = (timestamp: number) => {
-      animationFrame = requestAnimationFrame(frame);
-      if (timestamp - previousFrame < FRAME_INTERVAL) return;
+      animationFrame = 0;
       const delta = previousFrame
-        ? Math.min(50, timestamp - previousFrame)
+        ? Math.min(150, timestamp - previousFrame)
         : FRAME_INTERVAL;
       previousFrame = timestamp;
       for (const node of nodes) {
@@ -168,17 +175,23 @@ export function WorkspaceConstellation() {
         });
       }
       drawSparks(delta);
+      queueFrame();
     };
 
     const start = () => {
-      if (animationFrame || reducedMotion) return;
+      if (animationFrame || frameTimer || reducedMotion) return;
       previousFrame = 0;
       animationFrame = requestAnimationFrame(frame);
     };
     const stop = () => {
-      if (!animationFrame) return;
-      cancelAnimationFrame(animationFrame);
-      animationFrame = 0;
+      if (animationFrame) {
+        cancelAnimationFrame(animationFrame);
+        animationFrame = 0;
+      }
+      if (frameTimer) {
+        window.clearTimeout(frameTimer);
+        frameTimer = 0;
+      }
     };
     const onVisibilityChange = () => {
       if (document.hidden) stop();
