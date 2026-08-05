@@ -345,6 +345,7 @@ async fn capture_preview(webview: tauri::Webview) -> Result<String, String> {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri exposes these as named invoke arguments.
 pub async fn preview_embed_update(
     app: tauri::AppHandle,
     window: tauri::Window,

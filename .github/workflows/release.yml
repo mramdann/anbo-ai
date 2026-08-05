@@ -29,6 +29,9 @@ jobs:
             rust-target: ""
 
     runs-on: ${{ matrix.platform }}
+    env:
+      SIGNPATH_ENABLED: ${{ vars.SIGNPATH_ENABLED || 'false' }}
+      APPLE_SIGNING_ENABLED: ${{ vars.APPLE_SIGNING_ENABLED || 'false' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -64,7 +67,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Write Apple API key to disk
-        if: startsWith(matrix.platform, 'macos')
+        if: startsWith(matrix.platform, 'macos') && env.APPLE_SIGNING_ENABLED == 'true'
         shell: bash
         env:
           KEY_CONTENT: ${{ secrets.APPLE_API_KEY_PATH }}
@@ -89,7 +92,7 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "Terax ${{ github.ref_name }}"
+          releaseName: "anboai ${{ github.ref_name }}"
           releaseBody: "See the assets to download and install. Auto-update is built in."
           releaseDraft: true
           prerelease: false
@@ -150,8 +153,8 @@ jobs:
             test ! -e "squashfs-root/usr/lib/$lib" \
               || { echo "lib still present after repack: $lib"; exit 1; }
           done
-          test -x squashfs-root/usr/bin/terax \
-            || { echo "terax binary missing from repacked AppImage"; exit 1; }
+          test -x squashfs-root/usr/bin/anboai \
+            || { echo "anboai binary missing from repacked AppImage"; exit 1; }
           popd >/dev/null
 
           cp "$WORK/$BASENAME" "$APPIMAGE"
@@ -172,7 +175,7 @@ jobs:
       # patch-updater-manifest job, after every matrix leg has merged, so a
       # parallel macOS/Linux upload cannot clobber the Windows signatures.
       - name: Stage Windows installers for SignPath
-        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/')
+        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/') && env.SIGNPATH_ENABLED == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -182,14 +185,14 @@ jobs:
           if (-not $exe) { throw "No NSIS .exe produced by Tauri" }
           if (-not $msi) { throw "No .msi produced by Tauri" }
           New-Item -ItemType Directory -Path signpath-staging -Force | Out-Null
-          Copy-Item $exe.FullName signpath-staging/terax-setup.exe
-          Copy-Item $msi.FullName signpath-staging/terax.msi
+          Copy-Item $exe.FullName signpath-staging/anboai-setup.exe
+          Copy-Item $msi.FullName signpath-staging/anboai.msi
           "EXE_REAL_PATH=$($exe.FullName)" | Out-File $env:GITHUB_ENV -Append
           "MSI_REAL_PATH=$($msi.FullName)" | Out-File $env:GITHUB_ENV -Append
 
       - name: Upload unsigned Windows artifact
         id: upload-windows
-        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/')
+        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/') && env.SIGNPATH_ENABLED == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: windows-unsigned
@@ -200,12 +203,12 @@ jobs:
       # The default wait timeout is 600s; bumped so the job survives the time
       # it takes to review and approve the request during a release.
       - name: Submit Windows installers to SignPath
-        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/')
+        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/') && env.SIGNPATH_ENABLED == 'true'
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: 'df665bf4-9b76-41ae-9596-1ba3a23010aa'
-          project-slug: 'terax-ai'
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
           signing-policy-slug: 'release-signing'
           artifact-configuration-slug: 'initial'
           github-artifact-id: ${{ steps.upload-windows.outputs.artifact-id }}
@@ -214,7 +217,7 @@ jobs:
           output-artifact-directory: 'signed'
 
       - name: Re-sign updater and upload signed Windows installers
-        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/')
+        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/') && env.SIGNPATH_ENABLED == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -222,8 +225,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
-          $signedExe = "signed/terax-setup.exe"
-          $signedMsi = "signed/terax.msi"
+          $signedExe = "signed/anboai-setup.exe"
+          $signedMsi = "signed/anboai.msi"
           foreach ($f in @($signedExe, $signedMsi)) {
             if (-not (Test-Path $f)) { throw "Signed artifact missing: $f" }
             $sig = Get-AuthenticodeSignature $f
