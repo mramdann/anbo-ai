@@ -294,6 +294,7 @@ pub fn run() {
             browser_automation::browser_automation_start,
             browser_automation::browser_automation_stop,
             browser_automation::browser_automation_status,
+            browser_automation::browser_automation_handle_action,
             git::commands::git_resolve_repo,
             git::commands::git_panel_snapshot,
             git::commands::git_status,
