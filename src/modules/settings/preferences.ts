@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import {
   DEFAULT_PREFERENCES,
@@ -55,6 +56,11 @@ export const usePreferencesStore = create<State>((set) => ({
         const prefs = await loadPreferences();
         set({ ...prefs, hydrated: true });
         mirrorBgFastPath(prefs.backgroundKind, prefs.backgroundImageId);
+        if (prefs.browserAutomationEnabled) {
+          void invoke("browser_automation_start").catch((error) => {
+            console.error("browser automation startup failed", error);
+          });
+        }
         void onPreferencesChange((key, value) => {
           set({ [key]: value } as Partial<State>);
           if (key === "backgroundKind" || key === "backgroundImageId") {

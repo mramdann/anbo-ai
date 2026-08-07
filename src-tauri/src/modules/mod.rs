@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod anboai;
 pub mod app_data;
+pub mod browser_automation;
 pub mod fs;
 
 pub mod git;

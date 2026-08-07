@@ -23,6 +23,7 @@ import {
   WHISPERCPP_DEFAULT_BASE_URL,
 } from "@/modules/ai/config";
 import type { KeyBinding, ShortcutId } from "@/modules/shortcuts/shortcuts";
+import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type ThemePref = "system" | "light" | "dark";
@@ -132,6 +133,7 @@ export type Preferences = {
   editorFontSize: number;
   customInstructions: string;
   autostart: boolean;
+  browserAutomationEnabled: boolean;
   restoreWindowState: boolean;
   autocompleteEnabled: boolean;
   autocompleteTrigger: AutocompleteTrigger;
@@ -221,6 +223,7 @@ const KEY_EDITOR_THEME = "editorTheme";
 const KEY_EDITOR_FONT_SIZE = "editorFontSize";
 const KEY_CUSTOM_INSTRUCTIONS = "customInstructions";
 const KEY_AUTOSTART = "autostart";
+const KEY_BROWSER_AUTOMATION_ENABLED = "browserAutomationEnabled";
 const KEY_RESTORE_WINDOW = "restoreWindowState";
 export type AutocompleteTrigger = "auto" | "manual";
 
@@ -308,6 +311,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   editorFontSize: EDITOR_FONT_SIZE_DEFAULT,
   customInstructions: "",
   autostart: false,
+  browserAutomationEnabled: false,
   restoreWindowState: true,
   autocompleteEnabled: false,
   autocompleteTrigger: "auto",
@@ -412,6 +416,9 @@ export async function loadPreferences(): Promise<Preferences> {
       get<string>(KEY_CUSTOM_INSTRUCTIONS) ??
       DEFAULT_PREFERENCES.customInstructions,
     autostart: get<boolean>(KEY_AUTOSTART) ?? DEFAULT_PREFERENCES.autostart,
+    browserAutomationEnabled:
+      get<boolean>(KEY_BROWSER_AUTOMATION_ENABLED) ??
+      DEFAULT_PREFERENCES.browserAutomationEnabled,
     restoreWindowState:
       get<boolean>(KEY_RESTORE_WINDOW) ??
       DEFAULT_PREFERENCES.restoreWindowState,
@@ -641,6 +648,13 @@ export async function setCustomInstructions(value: string): Promise<void> {
 
 export async function setAutostart(value: boolean): Promise<void> {
   await writePref(KEY_AUTOSTART, value);
+}
+
+export async function setBrowserAutomationEnabled(
+  value: boolean,
+): Promise<void> {
+  await invoke(value ? "browser_automation_start" : "browser_automation_stop");
+  await writePref(KEY_BROWSER_AUTOMATION_ENABLED, value);
 }
 
 export async function setRestoreWindowState(value: boolean): Promise<void> {
