@@ -1,12 +1,16 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
+#[cfg(windows)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::modules::app_data::local_data_root;
+#[cfg(windows)]
 use crate::modules::browser_automation::actions::handle_action;
+#[cfg(windows)]
 use crate::modules::browser_automation::protocol::{
     error_codes, BrowserRequest, BrowserResponse, InstanceDescriptor, MAX_REQUEST_SIZE,
     PROTOCOL_VERSION,
@@ -39,8 +43,8 @@ pub fn cleanup_stale_descriptor() {
     if let Ok(path) = descriptor_path() {
         if path.exists() {
             if let Ok(content) = fs::read_to_string(&path) {
+                #[cfg(windows)]
                 if let Ok(desc) = serde_json::from_str::<InstanceDescriptor>(&content) {
-                    #[cfg(windows)]
                     {
                         use windows_sys::Win32::System::Threading::OpenProcess;
                         use windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
@@ -54,12 +58,15 @@ pub fn cleanup_stale_descriptor() {
                         }
                     }
                 }
+                #[cfg(not(windows))]
+                let _ = content;
             }
             let _ = fs::remove_file(path);
         }
     }
 }
 
+#[cfg(windows)]
 pub fn start_server(app: AppHandle) -> Result<(), String> {
     if is_running() {
         return Ok(());
@@ -153,6 +160,11 @@ pub fn start_server(app: AppHandle) -> Result<(), String> {
     });
 
     Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn start_server(_app: AppHandle) -> Result<(), String> {
+    Err("browser automation is only available on Windows".to_string())
 }
 
 pub fn stop_server() {
@@ -252,6 +264,7 @@ async fn send_response<W: AsyncWriteExt + Unpin>(
     Ok(())
 }
 
+#[cfg(any(windows, test))]
 fn constant_time_compare(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
@@ -262,6 +275,7 @@ fn constant_time_compare(a: &str, b: &str) -> bool {
         == 0
 }
 
+#[cfg(any(windows, test))]
 fn generate_random_token() -> Result<String, String> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes)

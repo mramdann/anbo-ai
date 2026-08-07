@@ -403,19 +403,9 @@ pub async fn handle_action(
                 .unwrap_or(0);
             let file_path = dir.join(format!("screenshot_{tab_id}_{ts}.jpg"));
 
-            #[cfg(windows)]
             let data_url = crate::modules::preview::embed::capture_preview_artifact(webview)
                 .await
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
-
-            #[cfg(not(windows))]
-            let data_url = {
-                let _ = webview;
-                return Err((
-                    error_codes::CDP_FAILED.to_string(),
-                    "native screenshots are only available on Windows".to_string(),
-                ));
-            };
 
             if let Some(base64_str) = data_url.split(',').nth(1) {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(base64_str) {

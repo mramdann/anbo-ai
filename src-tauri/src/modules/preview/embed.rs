@@ -371,6 +371,11 @@ pub(crate) async fn capture_preview_artifact(webview: tauri::Webview) -> Result<
     capture_preview_with_timeout(webview, std::time::Duration::from_secs(5)).await
 }
 
+#[cfg(not(windows))]
+pub(crate) async fn capture_preview_artifact(_webview: tauri::Webview) -> Result<String, String> {
+    Err("native screenshots are only available on Windows".to_string())
+}
+
 #[cfg(windows)]
 fn overlay_insert_after(active: bool) -> windows::Win32::Foundation::HWND {
     if active {

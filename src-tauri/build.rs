@@ -6,14 +6,12 @@ fn main() {
 
 fn ensure_browser_sidecar_placeholder() {
     let target = std::env::var("TARGET").expect("Cargo did not provide TARGET");
-    let extension = if target.contains("windows") {
-        ".exe"
-    } else {
-        ""
-    };
+    if !target.contains("windows") {
+        return;
+    }
     let directory =
         std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("binaries");
-    let path = directory.join(format!("anbo-browser-{target}{extension}"));
+    let path = directory.join(format!("anbo-browser-{target}.exe"));
     if path.exists() {
         return;
     }
