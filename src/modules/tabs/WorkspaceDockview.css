@@ -49,11 +49,29 @@
   align-items: stretch;
   border-bottom: 1px solid color-mix(in oklab, var(--border) 65%, transparent);
   padding: 3px 4px;
+  overflow: hidden;
 }
 
 .dockview-theme-anbo-workspace .dv-tabs-container {
   gap: 2px;
   min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.dockview-theme-anbo-workspace .dv-tabs-and-actions-container::-webkit-scrollbar,
+.dockview-theme-anbo-workspace .dv-tabs-container::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.dockview-theme-anbo-workspace .dv-tabs-overflow-dropdown-default,
+.dockview-theme-anbo-workspace .dv-default-overflow-action,
+.dockview-theme-anbo-workspace .dv-overflow-action {
+  display: none !important;
 }
 
 .dockview-theme-anbo-workspace .dv-tab {

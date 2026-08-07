@@ -22,6 +22,7 @@ import {
 import { resolveDisplayName } from "@/modules/editor/lib/languageResolver";
 import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
 import {
+  ArrowDown01Icon,
   Cancel01Icon,
   FullScreenIcon,
   Minimize01Icon,
@@ -204,6 +205,7 @@ function WorkspacePanel(props: IDockviewPanelProps<{ tabId: number }>) {
 function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
   const context = useWorkspaceDockviewContext();
   const [maximized, setMaximized] = useState(props.api.isMaximized());
+  const [isOverflow, setIsOverflow] = useState(false);
 
   useEffect(() => {
     setMaximized(props.api.isMaximized());
@@ -212,6 +214,34 @@ function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
     });
     return () => changed.dispose();
   }, [props.api, props.containerApi]);
+
+  const groupPanels = props.group.panels;
+
+  const checkOverflow = useCallback(() => {
+    const header = props.group.element.querySelector<HTMLElement>(
+      ".dv-tabs-container",
+    );
+    if (!header) {
+      setIsOverflow(false);
+      return;
+    }
+    const overflowing = header.scrollWidth > header.clientWidth + 2;
+    setIsOverflow(overflowing);
+  }, [props.group.element]);
+
+  useLayoutEffect(() => {
+    checkOverflow();
+    const header = props.group.element.querySelector<HTMLElement>(
+      ".dv-tabs-container",
+    );
+    if (!header) return;
+
+    const observer = new ResizeObserver(() => checkOverflow());
+    observer.observe(header);
+    observer.observe(props.group.element);
+
+    return () => observer.disconnect();
+  }, [props.group.element, groupPanels.length, checkOverflow]);
 
   return (
     <div
@@ -222,6 +252,68 @@ function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
         }
       }}
     >
+      {isOverflow && groupPanels.length > 1 ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-label="List open tabs"
+              title="List open tabs"
+              className="h-7 shrink-0 gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <HugeiconsIcon icon={ArrowDown01Icon} size={13} strokeWidth={2} />
+              <span className="font-mono text-[11px]">{groupPanels.length}</span>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            side="bottom"
+            sideOffset={6}
+            className="max-h-75 w-56 overflow-y-auto rounded-xl border border-border/40 bg-popover/95 p-1 shadow-lg backdrop-blur-md"
+            onClick={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            {groupPanels.map((panel) => {
+              const tabId = tabIdForParams(panel.params ?? {});
+              const tab = context.tabs.find(
+                (candidate) => candidate.id === tabId,
+              );
+              if (!tab) return null;
+              const isActive = panel.api.isActive;
+              return (
+                <DropdownMenuItem
+                  key={panel.id}
+                  onSelect={() => {
+                    panel.api.setActive();
+                    if (tabId !== null) context.onSelect(tabId);
+                  }}
+                  className="flex cursor-default items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs focus:bg-accent focus:text-accent-foreground"
+                >
+                  <TabIcon tab={tab} />
+                  <span
+                    className={cn(
+                      "flex-1 truncate",
+                      isActive && "font-medium text-foreground",
+                    )}
+                  >
+                    {labelFor(tab)}
+                  </span>
+                  {isActive ? (
+                    <HugeiconsIcon
+                      icon={Tick02Icon}
+                      className="size-3.5 text-primary"
+                    />
+                  ) : null}
+                </DropdownMenuItem>
+              );
+            })}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : null}
+
       <Button
         type="button"
         variant="ghost"
