@@ -1,23 +1,44 @@
-import { useSyncExternalStore } from "react";
+import { type RefObject, useSyncExternalStore } from "react";
 
 const OVERLAY_SELECTOR =
   '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [role="menu"], .fixed';
 
 function isTooltip(element: Element): boolean {
   return (
+    element.matches('[data-slot="tooltip-content"], [role="tooltip"]') ||
     element.querySelector('[data-slot="tooltip-content"], [role="tooltip"]') !==
-    null
+      null
   );
 }
 
-export function hasNativePreviewOverlay(): boolean {
+type Rect = Pick<DOMRect, "bottom" | "height" | "left" | "right" | "top" | "width">;
+
+export function rectsIntersect(a: Rect, b: Rect): boolean {
+  return (
+    a.width > 0 &&
+    a.height > 0 &&
+    b.width > 0 &&
+    b.height > 0 &&
+    a.left < b.right &&
+    a.right > b.left &&
+    a.top < b.bottom &&
+    a.bottom > b.top
+  );
+}
+
+export function hasNativePreviewOverlay(target?: Rect): boolean {
   for (const element of document.querySelectorAll(OVERLAY_SELECTOR)) {
-    if (!isTooltip(element)) return true;
+    if (isTooltip(element)) continue;
+    const style = window.getComputedStyle(element);
+    if (style.display === "none" || style.visibility === "hidden") continue;
+    const bounds = element.getBoundingClientRect();
+    if (!target ? bounds.width > 0 && bounds.height > 0 : rectsIntersect(bounds, target)) {
+      return true;
+    }
   }
   return false;
 }
 
-let overlayOpen = false;
 let overlayObserver: MutationObserver | null = null;
 let overlayRaf = 0;
 let overlaySubscribers = 0;
@@ -25,9 +46,6 @@ const overlayListeners = new Set<() => void>();
 
 function recomputeOverlay() {
   overlayRaf = 0;
-  const next = hasNativePreviewOverlay();
-  if (next === overlayOpen) return;
-  overlayOpen = next;
   overlayListeners.forEach((listener) => {
     listener();
   });
@@ -41,7 +59,7 @@ function subscribeOverlay(listener: () => void): () => void {
   overlayListeners.add(listener);
   if (overlaySubscribers++ === 0) {
     overlayObserver = new MutationObserver(scheduleOverlayCheck);
-    overlayObserver.observe(document.body, { childList: true });
+    overlayObserver.observe(document.body, { childList: true, subtree: true });
     scheduleOverlayCheck();
   }
   return () => {
@@ -56,10 +74,15 @@ function subscribeOverlay(listener: () => void): () => void {
   };
 }
 
-export function useNativePreviewOverlayOpen(): boolean {
+export function useNativePreviewOverlayOpen(
+  targetRef: RefObject<HTMLElement | null>,
+): boolean {
   return useSyncExternalStore(
     subscribeOverlay,
-    () => overlayOpen,
+    () => {
+      const target = targetRef.current?.getBoundingClientRect();
+      return target ? hasNativePreviewOverlay(target) : false;
+    },
     () => false,
   );
 }

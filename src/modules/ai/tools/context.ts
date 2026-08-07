@@ -13,6 +13,10 @@ export type ToolContext = {
   injectIntoActivePty: (text: string) => boolean;
   /** Open a new native browser tab at the given URL. */
   openPreview: (url: string) => boolean;
+  /** Navigate the active preview, opening one when another surface is active. */
+  navigatePreview: (url: string) => boolean;
+  /** Active native browser preview tab, or null when another surface is active. */
+  getActivePreviewTabId: () => number | null;
   /** Spawn a Claude Code agent in a new terminal tab, bound to this session. */
   spawnAgent: (prompt: string) => { tabId: number; leafId: number } | null;
   /** Read the terminal scrollback tail of a managed agent's leaf. */

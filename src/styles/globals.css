@@ -192,6 +192,24 @@ html[data-chrome="borderless"] #settings-root {
   background: var(--background);
 }
 
+html[data-native-preview-live="true"] #root,
+html[data-native-preview-live="true"] .anbo-app-shell,
+html[data-native-preview-live="true"] .anbo-workspace-dockview,
+html[data-native-preview-live="true"] .dockview-theme-anbo-workspace .dv-groupview,
+html[data-native-preview-live="true"]
+  .dockview-theme-anbo-workspace
+  .dv-content-container {
+  background: transparent !important;
+}
+
+html[data-native-preview-live="true"] .dockview-theme-anbo-workspace {
+  --dv-group-view-background-color: transparent;
+}
+
+html[data-native-preview-live="true"] .anbo-bg-surface {
+  display: none;
+}
+
 /*
  * xterm.js overrides — kept outside @layer so they win against the addon's
  * own stylesheet (which is not in any layer and would otherwise override).

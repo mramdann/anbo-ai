@@ -1,6 +1,7 @@
 import { type RefObject, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useManagedAgentsStore } from "@/modules/agents/store/managedAgentsStore";
+import type { PreviewPaneHandle } from "@/modules/preview";
 import {
   findLeafCwd,
   type TerminalPaneHandle,
@@ -35,6 +36,7 @@ type Params = {
   launchCwd: string | null;
   home: string | null;
   openPreviewTab: (url: string) => void;
+  previewRefs: RefObject<Map<number, PreviewPaneHandle>>;
   newAgentTab: (
     cwd: string | undefined,
     title: string,
@@ -52,7 +54,7 @@ type Params = {
  * arrive from terminal OSC on shell output and would otherwise churn constantly.
  */
 export function useAiLiveBridge(params: Params) {
-  const { setLive, terminalRefs } = params;
+  const { previewRefs, setLive, terminalRefs } = params;
   const ref = useRef(params);
   ref.current = params;
 
@@ -114,6 +116,24 @@ export function useAiLiveBridge(params: Params) {
         ref.current.openPreviewTab(url);
         return true;
       },
+      navigatePreview: (url: string) => {
+        const { activeId, openPreviewTab, tabs } = ref.current;
+        const active = tabs.find((tab) => tab.id === activeId);
+        if (active?.kind !== "preview") {
+          openPreviewTab(url);
+          return true;
+        }
+        const preview = previewRefs.current.get(activeId);
+        if (!preview) return false;
+        preview.navigate(url);
+        return true;
+      },
+      getActivePreviewTabId: () => {
+        const { activeId, tabs } = ref.current;
+        return tabs.find((tab) => tab.id === activeId)?.kind === "preview"
+          ? activeId
+          : null;
+      },
       spawnManagedAgent: (prompt: string, sessionId: string) => {
         const trimmed = prompt.trim();
         if (!trimmed) return null;
@@ -165,5 +185,5 @@ export function useAiLiveBridge(params: Params) {
         return buf ? redactSensitive(buf) : null;
       },
     });
-  }, [setLive, terminalRefs]);
+  }, [previewRefs, setLive, terminalRefs]);
 }

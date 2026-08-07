@@ -2,6 +2,7 @@ import { Alert02Icon, Globe02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { IS_WINDOWS } from "@/lib/platform";
 import {
   forwardRef,
   useCallback,
@@ -19,6 +20,7 @@ import {
   previewEmbedDispatch,
   previewEmbedNavigate,
   previewEmbedRelease,
+  previewEmbedSetUiOverlay,
   previewEmbedSnapshot,
   previewEmbedSuspend,
   previewEmbedUpdate,
@@ -36,6 +38,7 @@ import {
 
 export type PreviewPaneHandle = {
   reload: () => void;
+  navigate: (url: string) => void;
   focusAddressBar: () => void;
   getUrl: () => string;
 };
@@ -58,6 +61,15 @@ const EMPTY_BOUNDS = { x: 0, y: 0, width: 0, height: 0 };
 const SUSPEND_AFTER_MS = 30_000;
 const mountedOwners = new Map<number, string>();
 const pendingReleases = new Map<number, ReturnType<typeof setTimeout>>();
+const visibleNativePreviews = new Set<number>();
+
+function syncNativePreviewSurface(): void {
+  if (visibleNativePreviews.size > 0) {
+    document.documentElement.dataset.nativePreviewLive = "true";
+  } else {
+    delete document.documentElement.dataset.nativePreviewLive;
+  }
+}
 
 export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
   function PreviewPane({ id, url, visible, onUrlChange, onTitleChange }, ref) {
@@ -73,7 +85,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
     const onUrlChangeRef = useRef(onUrlChange);
     const onTitleChangeRef = useRef(onTitleChange);
     const visibleRef = useRef(visible);
-    const overlayOpen = useNativePreviewOverlayOpen();
+    const overlayOpen = useNativePreviewOverlayOpen(contentRef);
     const overlayOpenRef = useRef(overlayOpen);
     const dragActive = useNativePreviewDragActive();
     const dragActiveRef = useRef(dragActive);
@@ -111,6 +123,11 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
       )
         .then(() => {
           if (disposedRef.current) return;
+          if (IS_WINDOWS && overlayOpenRef.current) {
+            void previewEmbedSetUiOverlay(id, ownerIdRef.current, true).catch(
+              () => {},
+            );
+          }
           if (boundsErrorRef.current) {
             boundsErrorRef.current = false;
             setNativeError(null);
@@ -137,28 +154,57 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
         });
     }, [id, native]);
 
+    useEffect(() => {
+      if (!native || !IS_WINDOWS || !visible || !url) return;
+      visibleNativePreviews.add(id);
+      syncNativePreviewSurface();
+      return () => {
+        visibleNativePreviews.delete(id);
+        syncNativePreviewSurface();
+      };
+    }, [id, native, url, visible]);
+
+    useEffect(() => {
+      overlayOpenRef.current = overlayOpen;
+      if (!native || !IS_WINDOWS || !visible || !url) return;
+      void previewEmbedSetUiOverlay(
+        id,
+        ownerIdRef.current,
+        overlayOpen,
+      ).catch(reportNativeError);
+      return () => {
+        if (overlayOpen) {
+          void previewEmbedSetUiOverlay(id, ownerIdRef.current, false).catch(
+            () => {},
+          );
+        }
+      };
+    }, [id, native, overlayOpen, reportNativeError, url, visible]);
+
     const syncBounds = useCallback(() => {
       if (!native) return;
       const element = contentRef.current;
       const currentUrl = currentUrlRef.current;
       const allowedUrl =
         isSupportedBrowserUrl(currentUrl) && !isSelfReferenceUrl(currentUrl);
-      const show =
+      const canPlace =
         document.visibilityState === "visible" &&
         visibleRef.current &&
-        !suppressionReadyRef.current &&
         allowedUrl &&
         !!element;
-      const rect = show ? element.getBoundingClientRect() : null;
+      const rect = canPlace ? element.getBoundingClientRect() : null;
       const hasArea = !!rect && rect.width >= 1 && rect.height >= 1;
       const bounds = hasArea
         ? toPhysicalBounds(rect, window.devicePixelRatio || 1)
         : EMPTY_BOUNDS;
-      const shouldShow = show && hasArea;
+      const shouldShow =
+        canPlace && !suppressionReadyRef.current && hasArea;
       desiredRef.current = {
         key: shouldShow
           ? `show:${bounds.x},${bounds.y},${bounds.width},${bounds.height}:${currentUrl}`
-          : "hide",
+          : canPlace && hasArea
+            ? `hidden:${bounds.x},${bounds.y},${bounds.width},${bounds.height}:${currentUrl}`
+            : "hide",
         bounds,
         visible: shouldShow,
       };
@@ -241,12 +287,10 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
     }, [id, native, visible]);
 
     useEffect(() => {
-      overlayOpenRef.current = overlayOpen;
       dragActiveRef.current = dragActive;
       if (!native) return;
       const request = ++suppressionRequestRef.current;
-      const suppressed = overlayOpen || dragActive;
-      if (!suppressed) {
+      if (!dragActive) {
         suppressionReadyRef.current = false;
         sentKeyRef.current = "";
         syncBounds();
@@ -260,7 +304,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
           if (
             disposedRef.current ||
             suppressionRequestRef.current !== request ||
-            (!overlayOpenRef.current && !dragActiveRef.current)
+            !dragActiveRef.current
           ) {
             return;
           }
@@ -269,7 +313,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
             if (
               disposedRef.current ||
               suppressionRequestRef.current !== request ||
-              (!overlayOpenRef.current && !dragActiveRef.current)
+              !dragActiveRef.current
             ) {
               return;
             }
@@ -281,7 +325,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
       return () => {
         if (frame) cancelAnimationFrame(frame);
       };
-    }, [dragActive, id, native, overlayOpen, syncBounds]);
+    }, [dragActive, id, native, syncBounds]);
 
     useEffect(() => {
       if (!native) return;
@@ -384,17 +428,18 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
       ref,
       () => ({
         reload: () => dispatch("reload"),
+        navigate,
         focusAddressBar: () => addressRef.current?.focus(),
         getUrl: () => currentUrlRef.current,
       }),
-      [dispatch],
+      [dispatch, navigate],
     );
 
     const showXfoHint = !native && url ? !isLocalUrl(url) : false;
 
     return (
       <div
-        className="flex h-full w-full flex-col overflow-hidden rounded-md border border-border/60 bg-background"
+        className={`flex h-full w-full flex-col overflow-hidden rounded-md border border-border/60 ${native ? "bg-transparent" : "bg-background"}`}
         style={{
           visibility: visible ? "visible" : "hidden",
           pointerEvents: visible ? "auto" : "none",
@@ -421,11 +466,13 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
           ref={contentRef}
           className={
             url
-              ? "relative min-h-0 flex-1 bg-white"
+              ? native
+                ? "relative min-h-0 flex-1 bg-transparent"
+                : "relative min-h-0 flex-1 bg-white"
               : "relative min-h-0 flex-1 bg-background"
           }
         >
-          {native && freezeFrame && !nativeError ? (
+          {native && dragActive && freezeFrame && !nativeError ? (
             <img
               src={freezeFrame}
               alt=""

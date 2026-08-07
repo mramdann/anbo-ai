@@ -26,3 +26,6 @@ stats.html
 *.sw?
 
 *.tsbuildinfo
+
+# Generated Tauri sidecars
+src-tauri/binaries/

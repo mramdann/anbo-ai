@@ -58,9 +58,21 @@ describe("PreviewPane iframe sandbox", () => {
   });
 });
 
-describe("PreviewPane native overlay freeze frame", () => {
-  it("keeps the captured browser frame behind dropdowns and drag overlays", () => {
+describe("PreviewPane native layering", () => {
+  it("uses the captured browser frame only while dragging", () => {
     expect(src).toContain("previewEmbedSnapshot");
-    expect(src).toContain("src={freezeFrame}");
+    expect(src).toContain("native && dragActive && freezeFrame");
+  });
+
+  it("keeps hidden navigation keyed by URL so it cannot stall", () => {
+    expect(src).toMatch(
+      /hidden:\$\{bounds\.x\}.*\$\{bounds\.height\}:\$\{currentUrl\}/s,
+    );
+  });
+
+  it("moves dropdown overlays through native z-order without capture polling", () => {
+    expect(src).toContain("previewEmbedSetUiOverlay");
+    expect(src.match(/previewEmbedSnapshot\(id/g)).toHaveLength(1);
+    expect(src).not.toContain("refreshFreezeFrame");
   });
 });

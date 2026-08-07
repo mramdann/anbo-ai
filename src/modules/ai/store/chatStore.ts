@@ -33,6 +33,8 @@ export type Live = {
   getWorkspaceRoot: () => string | null;
   getActiveFile: () => string | null;
   openPreview: (url: string) => boolean;
+  navigatePreview: (url: string) => boolean;
+  getActivePreviewTabId: () => number | null;
   spawnManagedAgent: (
     prompt: string,
     sessionId: string,
@@ -159,6 +161,8 @@ const NOOP_LIVE: Live = {
   getWorkspaceRoot: () => null,
   getActiveFile: () => null,
   openPreview: () => false,
+  navigatePreview: () => false,
+  getActivePreviewTabId: () => null,
   spawnManagedAgent: () => null,
   readLeafBuffer: () => null,
 };

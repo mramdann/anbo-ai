@@ -21,6 +21,9 @@
   WriteRegStr HKCU "Software\Classes\Drive\shell\OpenInAnbo" "Icon" '"$INSTDIR\${MAINBINARYNAME}.exe",0'
   WriteRegStr HKCU "Software\Classes\Drive\shell\OpenInAnbo" "NoWorkingDirectory" ""
   WriteRegStr HKCU "Software\Classes\Drive\shell\OpenInAnbo\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" "%V"'
+
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\anbo-browser.exe" "" '"$INSTDIR\anbo-browser.exe"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\anbo-browser.exe" "Path" "$INSTDIR"
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
@@ -30,4 +33,5 @@
   DeleteRegKey HKCU "Software\Classes\Directory\shell\OpenInTerax"
   DeleteRegKey HKCU "Software\Classes\Directory\Background\shell\OpenInTerax"
   DeleteRegKey HKCU "Software\Classes\Drive\shell\OpenInTerax"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\anbo-browser.exe"
 !macroend

@@ -159,6 +159,20 @@ export async function previewEmbedSnapshot(
   });
 }
 
+export async function previewEmbedSetUiOverlay(
+  tabId: number,
+  ownerId: string,
+  active: boolean,
+): Promise<void> {
+  await ensurePreviewSession();
+  await invoke("preview_embed_set_ui_overlay", {
+    tabId,
+    instanceId: PREVIEW_INSTANCE_ID,
+    ownerId,
+    active,
+  });
+}
+
 export async function previewEmbedSuspend(
   tabId: number,
   ownerId: string,

@@ -7,12 +7,8 @@ use crate::modules::preview::embed::{embed_label, is_embed_tab_active, list_acti
 
 static TAB_LOCKS: Mutex<Option<HashMap<i64, Arc<AsyncMutex<()>>>>> = Mutex::new(None);
 
-fn locks() -> &'static Mutex<Option<HashMap<i64, Arc<AsyncMutex<()>>>>> {
-    &TAB_LOCKS
-}
-
 pub fn get_tab_lock(tab_id: i64) -> Arc<AsyncMutex<()>> {
-    let mut guard = locks().lock().unwrap();
+    let mut guard = TAB_LOCKS.lock().unwrap();
     let map = guard.get_or_insert_with(HashMap::new);
     map.entry(tab_id)
         .or_insert_with(|| Arc::new(AsyncMutex::new(())))

@@ -189,10 +189,12 @@ pub async fn handle_action(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
             let cur_gen = get_current_generation(tab_id);
+            let ref_json = serde_json::to_string(&ref_id).unwrap();
 
             let js = format!(
                 r#"(function() {{
-                    const el = document.querySelector('[data-anbo-ref="{}"]');
+                    const refId = {};
+                    const el = document.querySelector(`[data-anbo-ref="${{CSS.escape(refId)}}"]`);
                     if (!el) return JSON.stringify({{ ok: false, error: "stale_ref" }});
                     const gen = el.getAttribute('data-anbo-gen');
                     if (gen !== "gen-{}") return JSON.stringify({{ ok: false, error: "stale_ref" }});
@@ -200,7 +202,7 @@ pub async fn handle_action(
                     el.click();
                     return JSON.stringify({{ ok: true }});
                 }})();"#,
-                ref_id, cur_gen
+                ref_json, cur_gen
             );
 
             let res = execute_script(&webview, &js)
@@ -239,25 +241,41 @@ pub async fn handle_action(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
             let cur_gen = get_current_generation(tab_id);
+            let ref_json = serde_json::to_string(&ref_id).unwrap();
 
             let js = format!(
                 r#"(function() {{
-                    const el = document.querySelector('[data-anbo-ref="{}"]');
+                    const refId = {};
+                    const el = document.querySelector(`[data-anbo-ref="${{CSS.escape(refId)}}"]`);
                     if (!el) return JSON.stringify({{ ok: false, error: "stale_ref" }});
                     const gen = el.getAttribute('data-anbo-gen');
                     if (gen !== "gen-{}") return JSON.stringify({{ ok: false, error: "stale_ref" }});
                     el.focus();
                     const text = {};
-                    if ({}) {{
-                        el.value = (el.value || '') + text;
-                    }} else {{
-                        el.value = text;
-                    }}
-                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    const currentValue = el.isContentEditable
+                        ? (el.textContent || '')
+                        : (el.value || '');
+                    const nextValue = {} ? currentValue + text : text;
+                    const prototype = el instanceof HTMLTextAreaElement
+                        ? HTMLTextAreaElement.prototype
+                        : el instanceof HTMLInputElement
+                          ? HTMLInputElement.prototype
+                          : null;
+                    const setter = prototype
+                        ? Object.getOwnPropertyDescriptor(prototype, 'value')?.set
+                        : null;
+                    if (setter) setter.call(el, nextValue);
+                    else if (el.isContentEditable) el.textContent = nextValue;
+                    else el.value = nextValue;
+                    el.dispatchEvent(new InputEvent('input', {{
+                        bubbles: true,
+                        data: text,
+                        inputType: 'insertText'
+                    }}));
                     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     return JSON.stringify({{ ok: true }});
                 }})();"#,
-                ref_id,
+                ref_json,
                 cur_gen,
                 serde_json::to_string(text).unwrap(),
                 append
@@ -381,22 +399,24 @@ pub async fn handle_action(
             let dir = artifacts_dir().map_err(|e| (error_codes::INTERNAL.to_string(), e))?;
             let ts = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
+                .map(|d| d.as_millis())
                 .unwrap_or(0);
-            let file_path = dir.join(format!("screenshot_{tab_id}_{ts}.png"));
+            let file_path = dir.join(format!("screenshot_{tab_id}_{ts}.jpg"));
 
-            let js = r#"(function() {
-                const canvas = document.createElement('canvas');
-                canvas.width = window.innerWidth;
-                canvas.height = window.innerHeight;
-                return canvas.toDataURL('image/png');
-            })();"#;
-
-            let res = execute_script(&webview, js)
+            #[cfg(windows)]
+            let data_url = crate::modules::preview::embed::capture_preview_artifact(webview)
                 .await
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
 
-            let data_url = res.trim_matches('"');
+            #[cfg(not(windows))]
+            let data_url = {
+                let _ = webview;
+                return Err((
+                    error_codes::CDP_FAILED.to_string(),
+                    "native screenshots are only available on Windows".to_string(),
+                ));
+            };
+
             if let Some(base64_str) = data_url.split(',').nth(1) {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(base64_str) {
                     fs::write(&file_path, &bytes).map_err(|e| {
@@ -440,17 +460,29 @@ fn extract_tab_id(params: &Value) -> Result<i64, (String, String)> {
 }
 
 fn extract_ref(params: &Value) -> Result<String, (String, String)> {
-    params
+    let ref_id = params
         .get("ref")
         .or_else(|| params.get("ref_id"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
         .ok_or_else(|| {
             (
                 error_codes::INVALID_REQUEST.to_string(),
                 "missing or invalid 'ref' parameter".to_string(),
             )
-        })
+        })?;
+    let Some(digits) = ref_id.strip_prefix('e') else {
+        return Err((
+            error_codes::INVALID_REQUEST.to_string(),
+            "invalid 'ref': expected e followed by digits".to_string(),
+        ));
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err((
+            error_codes::INVALID_REQUEST.to_string(),
+            "invalid 'ref': expected e followed by digits".to_string(),
+        ));
+    }
+    Ok(ref_id.to_string())
 }
 
 #[cfg(test)]
@@ -480,5 +512,9 @@ mod tests {
 
         let v3 = json!({});
         assert!(extract_ref(&v3).is_err());
+
+        for invalid in ["", "e", "42", "e1\"]'); alert(1); //", "e-1"] {
+            assert!(extract_ref(&json!({ "ref": invalid })).is_err());
+        }
     }
 }

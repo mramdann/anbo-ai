@@ -107,7 +107,7 @@ export function WorkspaceSurface({
       </div>
       <div
         className={cn(
-          "absolute inset-0 px-3 pt-2 pb-2",
+          "absolute inset-0",
           !isPreviewTab && "invisible pointer-events-none",
         )}
         aria-hidden={!isPreviewTab}

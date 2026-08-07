@@ -85,6 +85,7 @@ Each module is self-contained, exports a thin barrel via `index.ts`, and owns it
   Editor code size is stored separately as `editorFontSize` and does not affect `terminalFontSize`.
 - **explorer/** - file tree with Material/Catppuccin icons (`iconResolver.ts`), fuzzy search, keyboard nav, inline rename, context actions. Backslash-aware `basename`.
 - **preview/** - auto-detected dev-server preview tab (status-bar pill suggests opening when a localhost URL is detected).
+  On Windows, overlapping React menus move the native preview child below a transparent main-webview surface with `preview_embed_set_ui_overlay`; do not hide, park, or repeatedly capture the child for menus because that freezes or throttles media playback. Dragging may still use a single freeze frame.
 - **tabs/** - `useTabs` is the source of truth for tab list + active id. `useWorkspaceCwd` derives explorer root + inherited cwd for new tabs from active tab. `basename` splits on both `/` and `\`.
 - **header/** - top bar + inline search (`SearchInline` adapts to terminal vs editor via `SearchTarget`). `WindowControls` rendered when `USE_CUSTOM_WINDOW_CONTROLS` is true (Linux + Windows; macOS uses native traffic lights).
 - **statusbar/** - bottom bar, `CwdBreadcrumb` (handles Unix paths, Windows drive letters, and home `~` segments via `pathUtils.segmentsFromCwd`), AI tools indicator.

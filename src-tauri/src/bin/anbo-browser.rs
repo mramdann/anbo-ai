@@ -85,6 +85,14 @@ async fn main() {
     }
 
     let subcommand = args[1].as_str();
+    if matches!(subcommand, "help" | "--help" | "-h") {
+        print_usage();
+        return;
+    }
+    if matches!(subcommand, "version" | "--version" | "-V") {
+        println!("anbo-browser {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     if subcommand == "mcp" && args.get(2).map(|s| s.as_str()) == Some("--stdio") {
         run_mcp_stdio().await;
         return;
@@ -239,7 +247,7 @@ fn parse_cli_args(subcommand: &str, args: &[String]) -> Result<(String, Value), 
     }
 
     match subcommand {
-        "tabs" => Ok(("list_tabs".to_string(), json!({}))),
+        "tabs" | "list_tabs" | "list-tabs" => Ok(("list_tabs".to_string(), json!({}))),
         "get-url" => Ok((
             "get_url".to_string(),
             json!({ "tabId": tab_id.ok_or("missing --tab")? }),
@@ -403,7 +411,7 @@ async fn run_mcp_stdio() {
                         },
                         "serverInfo": {
                             "name": "anbo-browser",
-                            "version": "0.8.6"
+                            "version": env!("CARGO_PKG_VERSION")
                         }
                     }
                 });
@@ -510,9 +518,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_cli_args_tabs() {
-        let (method, _) = parse_cli_args("tabs", &[]).unwrap();
-        assert_eq!(method, "list_tabs");
+    fn test_parse_cli_args_tab_list_aliases() {
+        for command in ["tabs", "list_tabs", "list-tabs"] {
+            let (method, _) = parse_cli_args(command, &[]).unwrap();
+            assert_eq!(method, "list_tabs");
+        }
     }
 
     #[test]

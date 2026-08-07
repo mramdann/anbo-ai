@@ -288,6 +288,7 @@ pub fn run() {
             preview::embed::preview_embed_dispatch,
             preview::embed::preview_embed_url,
             preview::embed::preview_embed_snapshot,
+            preview::embed::preview_embed_set_ui_overlay,
             preview::embed::preview_embed_suspend,
             preview::embed::preview_embed_release,
             preview::embed::preview_embed_close,

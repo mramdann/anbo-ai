@@ -29,6 +29,9 @@ function makeChat(sessionId: string): Chat<UIMessage> {
     injectIntoActivePty: (text) =>
       useChatStore.getState().live.injectIntoActivePty(text),
     openPreview: (url) => useChatStore.getState().live.openPreview(url),
+    navigatePreview: (url) => useChatStore.getState().live.navigatePreview(url),
+    getActivePreviewTabId: () =>
+      useChatStore.getState().live.getActivePreviewTabId(),
     spawnAgent: (prompt) =>
       useChatStore.getState().live.spawnManagedAgent(prompt, sessionId),
     readAgentOutput: (leafId) =>

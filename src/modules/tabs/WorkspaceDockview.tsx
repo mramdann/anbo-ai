@@ -22,7 +22,6 @@ import {
 import { resolveDisplayName } from "@/modules/editor/lib/languageResolver";
 import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
 import {
-  ArrowDown01Icon,
   Cancel01Icon,
   FullScreenIcon,
   Minimize01Icon,
@@ -55,6 +54,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { labelFor } from "./lib/tabLabel";
+import { countClippedTabs, formatClippedTabCount } from "./lib/tabOverflow";
 import type { EditorTab, Tab } from "./lib/useTabs";
 import {
   calculateLinearReorderGap,
@@ -205,7 +205,7 @@ function WorkspacePanel(props: IDockviewPanelProps<{ tabId: number }>) {
 function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
   const context = useWorkspaceDockviewContext();
   const [maximized, setMaximized] = useState(props.api.isMaximized());
-  const [isOverflow, setIsOverflow] = useState(false);
+  const [overflowCount, setOverflowCount] = useState(0);
 
   useEffect(() => {
     setMaximized(props.api.isMaximized());
@@ -222,11 +222,15 @@ function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
       ".dv-tabs-container",
     );
     if (!header) {
-      setIsOverflow(false);
+      setOverflowCount(0);
       return;
     }
-    const overflowing = header.scrollWidth > header.clientWidth + 2;
-    setIsOverflow(overflowing);
+    const container = header.getBoundingClientRect();
+    const tabs = Array.from(
+      header.querySelectorAll<HTMLElement>(".dv-tab"),
+      (tab) => tab.getBoundingClientRect(),
+    );
+    setOverflowCount(countClippedTabs(container, tabs));
   }, [props.group.element]);
 
   useLayoutEffect(() => {
@@ -237,11 +241,22 @@ function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
     if (!header) return;
 
     const observer = new ResizeObserver(() => checkOverflow());
+    const mutations = new MutationObserver(() => checkOverflow());
     observer.observe(header);
     observer.observe(props.group.element);
+    mutations.observe(header, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+    header.addEventListener("scroll", checkOverflow, { passive: true });
 
-    return () => observer.disconnect();
-  }, [props.group.element, groupPanels.length, checkOverflow]);
+    return () => {
+      observer.disconnect();
+      mutations.disconnect();
+      header.removeEventListener("scroll", checkOverflow);
+    };
+  }, [props.group.element, checkOverflow]);
 
   return (
     <div
@@ -252,20 +267,21 @@ function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
         }
       }}
     >
-      {isOverflow && groupPanels.length > 1 ? (
+      {overflowCount > 0 && groupPanels.length > 1 ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
               type="button"
               variant="ghost"
-              size="sm"
-              aria-label="List open tabs"
-              title="List open tabs"
-              className="h-7 shrink-0 gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+              size="icon"
+              aria-label={`List ${overflowCount} hidden tabs`}
+              title={`${overflowCount} hidden tabs`}
+              className="grid size-7 shrink-0 place-items-center rounded-md p-0 text-muted-foreground hover:bg-accent hover:text-foreground"
               onPointerDown={(e) => e.stopPropagation()}
             >
-              <HugeiconsIcon icon={ArrowDown01Icon} size={13} strokeWidth={2} />
-              <span className="font-mono text-[11px]">{groupPanels.length}</span>
+              <span className="leading-none text-[10px] font-semibold tabular-nums">
+                {formatClippedTabCount(overflowCount)}
+              </span>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent

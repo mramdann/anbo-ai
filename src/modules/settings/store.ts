@@ -311,7 +311,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   editorFontSize: EDITOR_FONT_SIZE_DEFAULT,
   customInstructions: "",
   autostart: false,
-  browserAutomationEnabled: false,
+  browserAutomationEnabled: true,
   restoreWindowState: true,
   autocompleteEnabled: false,
   autocompleteTrigger: "auto",

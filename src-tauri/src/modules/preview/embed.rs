@@ -12,13 +12,17 @@ use std::sync::Arc;
 #[cfg(windows)]
 use webview2_com::{
     CapturePreviewCompletedHandler,
-    Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
+    Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG,
 };
 #[cfg(windows)]
 use windows::Win32::{
     Foundation::HGLOBAL,
     System::Com::{
         IStream, StructuredStorage::CreateStreamOnHGlobal, STREAM_SEEK_END, STREAM_SEEK_SET,
+    },
+    UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_BOTTOM, HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOOWNERZORDER, SWP_NOSIZE,
     },
 };
 
@@ -181,6 +185,10 @@ fn physical_rect(
     ))
 }
 
+fn should_process_update(bounds: &EmbedBounds, _visible: bool) -> bool {
+    bounds.width >= 1.0 && bounds.height >= 1.0
+}
+
 fn ensure_main_window(window: &tauri::Window) -> Result<(), String> {
     if window.label() != "main" {
         return Err("browser panes can only be controlled by the main window".into());
@@ -194,6 +202,7 @@ fn spawn_preview_child(
     target: Url,
     position: PhysicalPosition<i32>,
     size: PhysicalSize<i32>,
+    visible: bool,
 ) -> Result<(), String> {
     let app = window.app_handle();
     let app_url = app
@@ -251,6 +260,11 @@ fn spawn_preview_child(
     window
         .add_child(builder, position, size)
         .map_err(|error| error.to_string())?;
+    if !visible {
+        if let Some(webview) = window.app_handle().get_webview(&embed_label(tab_id)) {
+            webview.hide().map_err(|error| error.to_string())?;
+        }
+    }
     Ok(())
 }
 
@@ -297,7 +311,10 @@ fn read_snapshot_stream(stream: &IStream) -> SnapshotResult {
 }
 
 #[cfg(windows)]
-async fn capture_preview(webview: tauri::Webview) -> Result<String, String> {
+async fn capture_preview_with_timeout(
+    webview: tauri::Webview,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
     let (sender, receiver) = tokio::sync::oneshot::channel::<SnapshotResult>();
     let sender = Arc::new(Mutex::new(Some(sender)));
     let platform_sender = sender.clone();
@@ -321,7 +338,7 @@ async fn capture_preview(webview: tauri::Webview) -> Result<String, String> {
                     unsafe { controller.CoreWebView2() }.map_err(|error| error.to_string())?;
                 unsafe {
                     core.CapturePreview(
-                        COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
+                        COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG,
                         &stream,
                         &handler,
                     )
@@ -334,14 +351,99 @@ async fn capture_preview(webview: tauri::Webview) -> Result<String, String> {
         })
         .map_err(|error| error.to_string())?;
 
-    let bytes = tokio::time::timeout(std::time::Duration::from_millis(500), receiver)
+    let bytes = tokio::time::timeout(timeout, receiver)
         .await
         .map_err(|_| "browser snapshot timed out".to_string())?
         .map_err(|_| "browser snapshot was cancelled".to_string())??;
     Ok(format!(
-        "data:image/png;base64,{}",
+        "data:image/jpeg;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
+}
+
+#[cfg(windows)]
+async fn capture_preview(webview: tauri::Webview) -> Result<String, String> {
+    capture_preview_with_timeout(webview, std::time::Duration::from_millis(500)).await
+}
+
+#[cfg(windows)]
+pub(crate) async fn capture_preview_artifact(webview: tauri::Webview) -> Result<String, String> {
+    capture_preview_with_timeout(webview, std::time::Duration::from_secs(5)).await
+}
+
+#[cfg(windows)]
+fn overlay_insert_after(active: bool) -> windows::Win32::Foundation::HWND {
+    if active {
+        HWND_BOTTOM
+    } else {
+        HWND_TOP
+    }
+}
+
+#[cfg(windows)]
+fn set_ui_overlay_z_order(webview: &tauri::Webview, active: bool) -> Result<(), String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    webview
+        .with_webview(move |platform| {
+            let result = (|| {
+                let controller = platform.controller();
+                let mut hwnd = windows::Win32::Foundation::HWND::default();
+                unsafe { controller.ParentWindow(&mut hwnd) }.map_err(|error| error.to_string())?;
+                unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        Some(overlay_insert_after(active)),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_ASYNCWINDOWPOS
+                            | SWP_NOACTIVATE
+                            | SWP_NOMOVE
+                            | SWP_NOOWNERZORDER
+                            | SWP_NOSIZE,
+                    )
+                }
+                .map_err(|error| error.to_string())
+            })();
+            let _ = sender.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .map_err(|_| "timed out updating browser z-order".to_string())?
+}
+
+#[tauri::command]
+pub async fn preview_embed_set_ui_overlay(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    tab_id: i64,
+    instance_id: String,
+    owner_id: String,
+    active: bool,
+) -> Result<(), String> {
+    ensure_main_window(&window)?;
+    validate_tab_id(tab_id)?;
+    validate_token(&instance_id)?;
+    validate_token(&owner_id)?;
+    let _lifecycle = LIFECYCLE_LOCK.lock().await;
+    ensure_current_instance(&instance_id)?;
+    if !is_active(tab_id, &instance_id, Some(&owner_id)) {
+        return Ok(());
+    }
+    let Some(webview) = app.get_webview(&embed_label(tab_id)) else {
+        return Ok(());
+    };
+
+    #[cfg(windows)]
+    return set_ui_overlay_z_order(&webview, active);
+
+    #[cfg(not(windows))]
+    {
+        let _ = (webview, active);
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -379,7 +481,7 @@ pub async fn preview_embed_update(
         return Ok(());
     }
 
-    if !visible || bounds.width < 1.0 || bounds.height < 1.0 {
+    if !should_process_update(&bounds, visible) {
         if is_active(tab_id, &instance_id, Some(&owner_id)) {
             if let Some(webview) = app.get_webview(&label) {
                 webview.hide().map_err(|error| error.to_string())?;
@@ -421,14 +523,18 @@ pub async fn preview_embed_update(
                 size: size.into(),
             })
             .map_err(|error| error.to_string())?;
-        webview.show().map_err(|error| error.to_string())?;
+        if visible {
+            webview.show().map_err(|error| error.to_string())?;
+        } else {
+            webview.hide().map_err(|error| error.to_string())?;
+        }
         return Ok(());
     }
 
     let Some(target) = target else {
         return Ok(());
     };
-    spawn_preview_child(&window, tab_id, target, position, size)
+    spawn_preview_child(&window, tab_id, target, position, size, visible)
 }
 
 #[tauri::command]
@@ -679,13 +785,36 @@ pub async fn preview_embed_close(
 
 #[cfg(test)]
 mod tests {
-    use super::{navigation_allowed, parse_pane_url, physical_rect, popup_allowed, EmbedBounds};
+    use super::{
+        navigation_allowed, parse_pane_url, physical_rect, popup_allowed, should_process_update,
+        EmbedBounds,
+    };
     use url::Url;
 
     #[test]
     fn accepts_http_and_https_urls() {
         assert!(parse_pane_url("http://localhost:3000").is_ok());
         assert!(parse_pane_url("https://example.com/path").is_ok());
+    }
+
+    #[test]
+    fn hidden_preview_with_bounds_still_processes_navigation() {
+        let bounds = EmbedBounds {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+        };
+        assert!(should_process_update(&bounds, false));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ui_overlay_moves_preview_behind_then_restores_it() {
+        use windows::Win32::UI::WindowsAndMessaging::{HWND_BOTTOM, HWND_TOP};
+
+        assert_eq!(super::overlay_insert_after(true), HWND_BOTTOM);
+        assert_eq!(super::overlay_insert_after(false), HWND_TOP);
     }
 
     #[test]

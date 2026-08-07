@@ -68,7 +68,7 @@ pub fn start_server(app: AppHandle) -> Result<(), String> {
     cleanup_stale_descriptor();
 
     let pid = std::process::id();
-    let token = generate_random_token();
+    let token = generate_random_token()?;
     let pipe_name = format!(r"\\.\pipe\anbo-browser-{pid}-{token}");
 
     let started_at = SystemTime::now()
@@ -262,17 +262,11 @@ fn constant_time_compare(a: &str, b: &str) -> bool {
         == 0
 }
 
-fn generate_random_token() -> String {
-    use std::time::SystemTime;
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!(
-        "{:016x}{:016x}",
-        std::process::id() as u64 ^ nanos as u64,
-        nanos
-    )
+fn generate_random_token() -> Result<String, String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| format!("failed to generate auth token: {error}"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 #[cfg(test)]
@@ -284,5 +278,12 @@ mod tests {
         assert!(constant_time_compare("token123", "token123"));
         assert!(!constant_time_compare("token123", "token124"));
         assert!(!constant_time_compare("token123", "token12"));
+    }
+
+    #[test]
+    fn random_token_has_256_bits_of_encoded_data() {
+        let token = generate_random_token().unwrap();
+        assert_eq!(token.len(), 64);
+        assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 }
