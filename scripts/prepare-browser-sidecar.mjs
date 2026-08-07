@@ -1,10 +1,4 @@
-import {
-  closeSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-} from "node:fs";
+import { copyFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import process from "node:process";
@@ -29,7 +23,6 @@ const destination = join(
   `anbo-browser-${target}${extension}`,
 );
 mkdirSync(dirname(destination), { recursive: true });
-if (!existsSync(destination)) closeSync(openSync(destination, "w"));
 
 const cargo = spawnSync(
   "cargo",
