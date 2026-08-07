@@ -11,5 +11,10 @@
         "shadow": false
       }
     ]
+  },
+  "bundle": {
+    "externalBin": [
+      "binaries/anbo-browser"
+    ]
   }
 }

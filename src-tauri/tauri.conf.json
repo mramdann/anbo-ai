@@ -37,9 +37,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": [
-      "binaries/anbo-browser"
-    ],
     "createUpdaterArtifacts": true,
     "copyright": "Copyright 2026 Crynta",
     "license": "Apache-2.0",
