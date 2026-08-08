@@ -30,7 +30,7 @@ type Props = {
   onNew: () => void;
   onNewBlock: () => void;
   onNewPrivate: () => void;
-  onNewPreview: () => void;
+  onNewBrowser: () => void;
   onNewEditor: () => void;
   onNewGitGraph: () => void;
   onLaunchAgents: (request: AgentLaunchRequest) => void;
@@ -40,7 +40,7 @@ export function NewTabMenu({
   onNew,
   onNewBlock,
   onNewPrivate,
-  onNewPreview,
+  onNewBrowser,
   onNewEditor,
   onNewGitGraph,
   onLaunchAgents,
@@ -151,13 +151,13 @@ export function NewTabMenu({
                   {fmtShortcut(MOD_KEY, "E")}
                 </span>
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={onNewPreview}>
+              <DropdownMenuItem onSelect={onNewBrowser}>
                 <HugeiconsIcon
                   icon={Globe02Icon}
                   size={14}
                   strokeWidth={1.75}
                 />
-                <span className="flex-1">Preview</span>
+                <span className="flex-1">Browser</span>
                 <span className="text-xs text-muted-foreground">
                   {fmtShortcut(MOD_KEY, "P")}
                 </span>

@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
  */
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const src = readFileSync(path.join(here, "PreviewPane.tsx"), "utf8");
+const src = readFileSync(path.join(here, "BrowserPane.tsx"), "utf8");
 const iframeMatch = src.match(/<iframe[\s\S]*?\/>/);
 // Strip JSX comments (`// …` inside `{…}` and `{/* … */}` blocks) so the
 // assertions only see actual attribute syntax — the source explains in a
@@ -22,7 +22,7 @@ const iframeJsx = (iframeMatch?.[0] ?? "")
   .replace(/\/\*[\s\S]*?\*\//g, "")
   .replace(/\/\/[^\n]*/g, "");
 
-describe("PreviewPane iframe sandbox", () => {
+describe("BrowserPane iframe sandbox", () => {
   it("declares an iframe in the source", () => {
     expect(iframeJsx).not.toBe("");
   });
@@ -58,9 +58,9 @@ describe("PreviewPane iframe sandbox", () => {
   });
 });
 
-describe("PreviewPane native layering", () => {
+describe("BrowserPane native layering", () => {
   it("uses the captured browser frame only while dragging", () => {
-    expect(src).toContain("previewEmbedSnapshot");
+    expect(src).toContain("browserEmbedSnapshot");
     expect(src).toContain("native && dragActive && freezeFrame");
   });
 
@@ -71,8 +71,8 @@ describe("PreviewPane native layering", () => {
   });
 
   it("moves dropdown overlays through native z-order without capture polling", () => {
-    expect(src).toContain("previewEmbedSetUiOverlay");
-    expect(src.match(/previewEmbedSnapshot\(id/g)).toHaveLength(1);
+    expect(src).toContain("browserEmbedSetUiOverlay");
+    expect(src.match(/browserEmbedSnapshot\(id/g)).toHaveLength(1);
     expect(src).not.toContain("refreshFreezeFrame");
   });
 });

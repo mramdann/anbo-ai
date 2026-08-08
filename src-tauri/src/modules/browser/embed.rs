@@ -26,10 +26,10 @@ use windows::Win32::{
     },
 };
 
-const PREVIEW_NAV_EVENT: &str = "anbo:preview-nav";
+const BROWSER_NAV_EVENT: &str = "anbo:browser-nav";
 
 #[derive(Clone, serde::Serialize)]
-struct PreviewNavEvent {
+struct BrowserNavEvent {
     #[serde(rename = "tabId")]
     tab_id: i64,
     #[serde(rename = "ownerId")]
@@ -79,7 +79,7 @@ fn current_instance() -> &'static Mutex<Option<String>> {
 }
 
 pub fn embed_label(tab_id: i64) -> String {
-    format!("preview-embed-{tab_id}")
+    format!("browser-embed-{tab_id}")
 }
 
 pub fn list_active_tab_ids() -> Vec<i64> {
@@ -98,7 +98,7 @@ pub fn is_embed_tab_active(tab_id: i64) -> bool {
 
 fn validate_tab_id(tab_id: i64) -> Result<(), String> {
     if tab_id <= 0 {
-        return Err("invalid preview tab id".into());
+        return Err("invalid browser tab id".into());
     }
     Ok(())
 }
@@ -196,7 +196,7 @@ fn ensure_main_window(window: &tauri::Window) -> Result<(), String> {
     Ok(())
 }
 
-fn spawn_preview_child(
+fn spawn_browser_child(
     window: &tauri::Window,
     tab_id: i64,
     target: Url,
@@ -230,8 +230,8 @@ fn spawn_preview_child(
                 PageLoadEvent::Finished => "loaded",
             };
             let _ = navigation_app.emit(
-                PREVIEW_NAV_EVENT,
-                PreviewNavEvent {
+                BROWSER_NAV_EVENT,
+                BrowserNavEvent {
                     tab_id,
                     owner_id,
                     kind,
@@ -246,8 +246,8 @@ fn spawn_preview_child(
             };
             let url = webview.url().map(|url| url.to_string()).unwrap_or_default();
             let _ = title_app.emit(
-                PREVIEW_NAV_EVENT,
-                PreviewNavEvent {
+                BROWSER_NAV_EVENT,
+                BrowserNavEvent {
                     tab_id,
                     owner_id,
                     kind: "title",
@@ -420,7 +420,7 @@ fn set_ui_overlay_z_order(webview: &tauri::Webview, active: bool) -> Result<(), 
 }
 
 #[tauri::command]
-pub async fn preview_embed_set_ui_overlay(
+pub async fn browser_embed_set_ui_overlay(
     app: tauri::AppHandle,
     window: tauri::Window,
     tab_id: i64,
@@ -453,7 +453,7 @@ pub async fn preview_embed_set_ui_overlay(
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri exposes these as named invoke arguments.
-pub async fn preview_embed_update(
+pub async fn browser_embed_update(
     app: tauri::AppHandle,
     window: tauri::Window,
     tab_id: i64,
@@ -539,11 +539,11 @@ pub async fn preview_embed_update(
     let Some(target) = target else {
         return Ok(());
     };
-    spawn_preview_child(&window, tab_id, target, position, size, visible)
+    spawn_browser_child(&window, tab_id, target, position, size, visible)
 }
 
 #[tauri::command]
-pub async fn preview_embed_navigate(
+pub async fn browser_embed_navigate(
     app: tauri::AppHandle,
     window: tauri::Window,
     tab_id: i64,
@@ -569,7 +569,7 @@ pub async fn preview_embed_navigate(
 }
 
 #[tauri::command]
-pub async fn preview_embed_dispatch(
+pub async fn browser_embed_dispatch(
     app: tauri::AppHandle,
     window: tauri::Window,
     tab_id: i64,
@@ -602,7 +602,7 @@ pub async fn preview_embed_dispatch(
 }
 
 #[tauri::command]
-pub async fn preview_embed_url(
+pub async fn browser_embed_url(
     app: tauri::AppHandle,
     window: tauri::Window,
     tab_id: i64,
@@ -625,7 +625,7 @@ pub async fn preview_embed_url(
 }
 
 #[tauri::command]
-pub async fn preview_embed_snapshot(
+pub async fn browser_embed_snapshot(
     app: tauri::AppHandle,
     window: tauri::Window,
     tab_id: i64,
@@ -658,7 +658,7 @@ pub async fn preview_embed_snapshot(
 }
 
 #[tauri::command]
-pub async fn preview_embed_suspend(
+pub async fn browser_embed_suspend(
     app: tauri::AppHandle,
     window: tauri::Window,
     tab_id: i64,
@@ -674,14 +674,13 @@ pub async fn preview_embed_suspend(
     if is_active(tab_id, &instance_id, Some(&owner_id)) {
         if let Some(webview) = app.get_webview(&embed_label(tab_id)) {
             let _ = webview.hide();
-            webview.close().map_err(|error| error.to_string())?;
         }
     }
     Ok(())
 }
 
 #[tauri::command]
-pub async fn preview_embed_release(
+pub async fn browser_embed_release(
     app: tauri::AppHandle,
     window: tauri::Window,
     tab_id: i64,
@@ -701,18 +700,13 @@ pub async fn preview_embed_release(
     if is_active(tab_id, &instance_id, Some(&owner_id)) {
         if let Some(webview) = app.get_webview(&embed_label(tab_id)) {
             let _ = webview.hide();
-            webview.close().map_err(|error| error.to_string())?;
         }
-        active_embeds()
-            .lock()
-            .map_err(|_| "browser lifecycle state is unavailable".to_string())?
-            .remove(&tab_id);
     }
     Ok(())
 }
 
 #[tauri::command]
-pub async fn preview_embed_begin_session(
+pub async fn browser_embed_begin_session(
     app: tauri::AppHandle,
     window: tauri::Window,
     instance_id: String,
@@ -760,7 +754,7 @@ pub async fn preview_embed_begin_session(
 }
 
 #[tauri::command]
-pub async fn preview_embed_close(
+pub async fn browser_embed_close(
     app: tauri::AppHandle,
     window: tauri::Window,
     tab_id: i64,

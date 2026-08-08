@@ -32,7 +32,7 @@ function baseContext(
     openNewBlock: noop,
     openNewPrivate: noop,
     openNewEditor: noop,
-    openNewPreview: noop,
+    openNewBrowser: noop,
     openGitGraph: noop,
     toggleSourceControl: noop,
     closeActiveTabOrPane: noop,

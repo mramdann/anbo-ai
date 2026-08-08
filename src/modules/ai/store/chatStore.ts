@@ -32,9 +32,9 @@ export type Live = {
   injectIntoActivePty: (text: string) => boolean;
   getWorkspaceRoot: () => string | null;
   getActiveFile: () => string | null;
-  openPreview: (url: string) => boolean;
-  navigatePreview: (url: string) => boolean;
-  getActivePreviewTabId: () => number | null;
+  openBrowser: (url: string) => boolean;
+  navigateBrowser: (url: string) => boolean;
+  getActiveBrowserTabId: () => number | null;
   spawnManagedAgent: (
     prompt: string,
     sessionId: string,
@@ -160,9 +160,9 @@ const NOOP_LIVE: Live = {
   injectIntoActivePty: () => false,
   getWorkspaceRoot: () => null,
   getActiveFile: () => null,
-  openPreview: () => false,
-  navigatePreview: () => false,
-  getActivePreviewTabId: () => null,
+  openBrowser: () => false,
+  navigateBrowser: () => false,
+  getActiveBrowserTabId: () => null,
   spawnManagedAgent: () => null,
   readLeafBuffer: () => null,
 };

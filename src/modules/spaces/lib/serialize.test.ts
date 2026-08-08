@@ -268,10 +268,10 @@ describe("hydrateTabs", () => {
     ).toEqual([]);
   });
 
-  it("hydrates editor/preview/markdown as cold with derived titles", () => {
+  it("hydrates editor/browser/markdown as cold with derived titles", () => {
     const serialized: SerializedTab[] = [
       { kind: "editor", path: "/a/foo.ts" },
-      { kind: "preview", url: "http://localhost:5173/x" },
+      { kind: "browser", url: "http://localhost:5173/x" },
       { kind: "markdown", path: "/a/README.md" },
     ];
     const out = hydrateTabs(serialized, "s1", counter());
@@ -281,5 +281,17 @@ describe("hydrateTabs", () => {
       "localhost:5173",
       "README.md",
     ]);
+  });
+
+  it("migrates legacy kind \"preview\" tabs to browser", () => {
+    const serialized = [
+      { kind: "preview", url: "http://localhost:3000" },
+    ] as unknown as SerializedTab[];
+    const [restored] = hydrateTabs(serialized, "s1", counter());
+    expect(restored?.kind).toBe("browser");
+    if (restored?.kind === "browser") {
+      expect(restored.url).toBe("http://localhost:3000");
+      expect(restored.title).toBe("localhost:3000");
+    }
   });
 });

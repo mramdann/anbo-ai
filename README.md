@@ -1,28 +1,30 @@
 <div align="center">
   <img src="public/logo.svg" width="144" height="144" alt="Anbo" />
-  <h1>Terax</h1>
+  <h1>Anbo</h1>
 
   <p><strong>Lightweight Terminal-first AI-native dev workspace.</strong></p>
 
   <p>
-    <img src="https://img.shields.io/github/v/release/crynta/terax-ai?label=version&color=blue" alt="version" />
-    <img src="https://img.shields.io/github/downloads/crynta/terax-ai/total?label=downloads&color=blue" alt="downloads" />
+    <img src="https://img.shields.io/github/v/release/mramdann/anbo-ai?label=version&color=blue" alt="version" />
+    <img src="https://img.shields.io/github/downloads/mramdann/anbo-ai/total?label=downloads&color=blue" alt="downloads" />
     <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="platform" />
-    <a href="https://discord.gg/tyveTUyEp7"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
   </p>
 
   <p>
-    <a href="https://terax.app">Website</a>
+    <a href="https://github.com/mramdann/anbo-ai/releases/latest">Releases</a>
     ·
-    <a href="https://terax.app/docs">Docs</a>
+    <a href="https://github.com/mramdann/anbo-ai/issues">Issues</a>
     ·
-    <a href="https://github.com/crynta/Terax-website">Website's source code</a>
+    <a href="https://github.com/crynta/terax-ai">Upstream: Terax</a>
   </p>
 </div>
 
 ---
 
-Terax is a lightweight open-source terminal (ADE) built on Tauri 2 + Rust and React 19. A native PTY backend with a WebGL renderer, an agentic AI side-panel that runs against your own keys or fully local models, plus a code editor, file explorer, source control with a git graph, and a web preview pane built in. About 7-8 MB on disk. No telemetry. No account.
+> ### 🍴 Anbo is a fork of [Terax](https://github.com/crynta/terax-ai)
+> Anbo is built on top of the excellent [Terax](https://github.com/crynta/terax-ai) project by [crynta](https://github.com/crynta). All credit for the core architecture, terminal, editor, and AI foundations goes to the original Terax maintainers. Anbo is a personal fork that diverges with its own tweaks, branding, and experiments. If you're looking for the upstream project, please visit [Terax](https://github.com/crynta/terax-ai).
+
+Anbo is a lightweight open-source terminal (ADE) built on Tauri 2 + Rust and React 19. A native PTY backend with a WebGL renderer, an agentic AI side-panel that runs against your own keys or fully local models, plus a code editor, file explorer, source control with a git graph, and a built-in browser pane. About 7-8 MB on disk. No telemetry. No account.
 
 ## Screenshots
 
@@ -32,7 +34,7 @@ Terax is a lightweight open-source terminal (ADE) built on Tauri 2 + Rust and Re
     <td align="center"><img src="docs/themes.png" alt="Themes and background image" /><br/><sub>Custom themes, presets, and background images</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="docs/web-preview.png" alt="Web preview" /><br/><sub>Web preview of local dev servers</sub></td>
+    <td align="center"><img src="docs/web-preview.png" alt="Browser" /><br/><sub>Built-in browser for dev servers and the web</sub></td>
     <td align="center"><img src="docs/source-control.png" alt="Source control and git graph" /><br/><sub>Source control panel with git graph in history</sub></td>
   </tr>
   <tr>
@@ -72,10 +74,11 @@ Terax is a lightweight open-source terminal (ADE) built on Tauri 2 + Rust and Re
 - Fuzzy search, keyboard navigation, inline rename, context actions
 - Attach files and selections directly to the AI side-panel
 
-### Web preview
+### Browser
 
-- Auto-detects local dev servers and opens them in a preview tab
-- External URL preview via a native child webview
+- Built-in native browser tab — navigate any HTTP/HTTPS URL, including external sites, with back / forward / reload / stop
+- Curated dev-server port presets and a sandboxed iframe fallback
+- AI automation tools (snapshot, click, type, scroll, screenshot, history) drive the active browser tab, plus an `anbo-browser` CLI / MCP sidecar
 
 ### Themes and customization
 
@@ -88,31 +91,30 @@ Terax is a lightweight open-source terminal (ADE) built on Tauri 2 + Rust and Re
 
 - **BYOK providers:** OpenAI, Anthropic, Google (Gemini), Groq, xAI (Grok), Cerebras, OpenRouter, DeepSeek, Mistral, plus any OpenAI-compatible endpoint
 - **Local / offline:** LM Studio, MLX, Ollama
-- **Agentic workflow:** plans, sub-agents, project memory via `TERAX.md`, file read / write / edit / multi-edit / grep / glob, bash with approval gating, background processes
+- **Agentic workflow:** plans, sub-agents, project memory via `ANBO.md`, file read / write / edit / multi-edit / grep / glob, bash with approval gating, background processes
 - **Composer:** snippets via `#handle`, files via `@path`, slash commands, voice input, attach-to-agent from explorer or selection
 - **Custom agents** with their own system prompt and tool subset
 - **Plan mode** for multi-step work, generates and confirms before doing
 
 ## Install
 
-Latest installers are on the [Releases](https://github.com/crynta/terax-ai/releases/latest) page. Terax auto-updates from there.
+Latest installers are on the [Releases](https://github.com/mramdann/anbo-ai/releases/latest) page.
 
 ### Windows notes
 
-- On first launch Windows shows "Windows protected your PC" because Terax isn't code-signed yet. Click **More info** then **Run anyway**.
+- On first launch Windows shows "Windows protected your PC" because Anbo isn't code-signed. Click **More info** then **Run anyway**.
 - Default shell detection: `pwsh.exe` (PowerShell 7+) -> `powershell.exe` (Windows PowerShell 5.1) -> `cmd.exe`.
 - WSL is a first-class workspace environment, not a wrapped subprocess.
 
 ### Linux notes
 
-- **Arch / AUR:** `yay -S terax-bin` (or `paru`, etc.). Tracks the latest release.
-- **NixOS / Nix**: use the official flake - `nix profile install github:crynta/terax-ai` (non-NixOS), or import the flake and add `inputs.terax.packages.${pkgs.system}.terax` to `environment.systemPackages` (NixOS). The `nixosModules.terax` output is also available for a simpler setup.
-- **AppImage:** needs FUSE. Without it: `./Terax_*.AppImage --appimage-extract-and-run`. On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Otherwise the `.deb` / `.rpm` packages link against the system GTK stack and tend to be smoother.
+- **AppImage:** needs FUSE. Without it: `./Anbo_*.AppImage --appimage-extract-and-run`. On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Otherwise the `.deb` / `.rpm` packages link against the system GTK stack and tend to be smoother.
+- **Upstream packages:** community packages for the original Terax project (Arch AUR `terax-bin`, NixOS flake) track Terax, not Anbo. For Anbo, prefer the build-from-source instructions below or the release bundles above.
 
 ## Configure AI
 
 1. Open **Settings -> AI**.
-2. Pick a provider and paste your API key. For local inference, point Terax at your LM Studio / MLX / Ollama endpoint.
+2. Pick a provider and paste your API key. For local inference, point Anbo at your LM Studio / MLX / Ollama endpoint.
 3. Keys are written to the OS keychain via `keyring`. They never touch disk or localStorage.
 
 ## Build from source
@@ -144,16 +146,12 @@ Tauri 2, Rust, `portable-pty`, React 19, TypeScript, Vite, xterm.js, CodeMirror 
 
 ## Contributing
 
-Issues and PRs are welcome! Feel free to open issues, suggest features, or submit pull requests. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [architecture docs](docs/README.md) for more details.
+Issues and PRs are welcome! Feel free to open issues, suggest features, or submit pull requests against this fork. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [architecture docs](docs/README.md) for more details.
 
-## Code signing
+## Acknowledgements
 
-<a href="https://signpath.org"><img src="https://avatars.githubusercontent.com/u/34448643?s=200&v=4" width="80" alt="SignPath" align="left" /></a>
-
-Windows builds are signed with a free code signing certificate provided by [SignPath.io](https://signpath.io), certificate by the [SignPath Foundation](https://signpath.org).
-
-<br clear="left" />
+Anbo would not exist without [Terax](https://github.com/crynta/terax-ai) and its contributors. This fork keeps the original Apache-2.0 license and inherits the upstream's design and engineering. 🙏
 
 ## License
 
-Terax is licensed under the Apache-2.0 License. For more information on our dependencies, see [Apache License 2.0](LICENSE).
+Anbo is licensed under the Apache-2.0 License. For more information on our dependencies, see [Apache License 2.0](LICENSE).

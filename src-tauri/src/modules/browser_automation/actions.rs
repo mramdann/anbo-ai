@@ -403,7 +403,7 @@ pub async fn handle_action(
                 .unwrap_or(0);
             let file_path = dir.join(format!("screenshot_{tab_id}_{ts}.jpg"));
 
-            let data_url = crate::modules::preview::embed::capture_preview_artifact(webview)
+            let data_url = crate::modules::browser::embed::capture_preview_artifact(webview)
                 .await
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
 

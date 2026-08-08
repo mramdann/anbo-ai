@@ -47,24 +47,6 @@
         gap: 14px;
         transform: translateY(-2vh);
       }
-      #anbo-startup-mark {
-        display: grid;
-        width: 46px;
-        height: 46px;
-        place-items: center;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 15px;
-        background: rgba(255, 255, 255, 0.045);
-        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
-        font-size: 14px;
-        font-weight: 700;
-        letter-spacing: -0.04em;
-      }
-      .light #anbo-startup-mark {
-        border-color: rgba(0, 0, 0, 0.1);
-        background: rgba(0, 0, 0, 0.025);
-        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.08);
-      }
       #anbo-startup-title {
         margin: 0;
         font-size: 13px;
@@ -90,6 +72,8 @@
         background: #6387ff;
         animation: anbo-startup-slide 1.15s ease-in-out infinite;
       }
+      .light #anbo-startup-track { background: rgba(0, 0, 0, 0.08); }
+      .light #anbo-startup-progress { background: #4e79ff; }
       @keyframes anbo-startup-slide {
         0% { transform: translateX(-120%); }
         50% { transform: translateX(120%); }
@@ -105,7 +89,6 @@
     <div id="root">
       <div id="anbo-startup" role="status" aria-label="Starting Anbo">
         <div id="anbo-startup-card">
-          <div id="anbo-startup-mark" aria-hidden="true">A</div>
           <p id="anbo-startup-title">Anbo</p>
           <p id="anbo-startup-status">Preparing your workspace</p>
           <div id="anbo-startup-track" aria-hidden="true">

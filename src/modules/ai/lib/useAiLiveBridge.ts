@@ -1,7 +1,7 @@
 import { type RefObject, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useManagedAgentsStore } from "@/modules/agents/store/managedAgentsStore";
-import type { PreviewPaneHandle } from "@/modules/preview";
+import type { BrowserPaneHandle } from "@/modules/browser";
 import {
   findLeafCwd,
   type TerminalPaneHandle,
@@ -35,8 +35,8 @@ type Params = {
   explorerRoot: string | null;
   launchCwd: string | null;
   home: string | null;
-  openPreviewTab: (url: string) => void;
-  previewRefs: RefObject<Map<number, PreviewPaneHandle>>;
+  openBrowserTab: (url: string) => void;
+  browserRefs: RefObject<Map<number, BrowserPaneHandle>>;
   newAgentTab: (
     cwd: string | undefined,
     title: string,
@@ -54,7 +54,7 @@ type Params = {
  * arrive from terminal OSC on shell output and would otherwise churn constantly.
  */
 export function useAiLiveBridge(params: Params) {
-  const { previewRefs, setLive, terminalRefs } = params;
+  const { browserRefs, setLive, terminalRefs } = params;
   const ref = useRef(params);
   ref.current = params;
 
@@ -112,25 +112,25 @@ export function useAiLiveBridge(params: Params) {
         const t = tabs.find((x) => x.id === activeId);
         return t?.kind === "editor" ? t.path : null;
       },
-      openPreview: (url: string) => {
-        ref.current.openPreviewTab(url);
+      openBrowser: (url: string) => {
+        ref.current.openBrowserTab(url);
         return true;
       },
-      navigatePreview: (url: string) => {
-        const { activeId, openPreviewTab, tabs } = ref.current;
+      navigateBrowser: (url: string) => {
+        const { activeId, openBrowserTab, tabs } = ref.current;
         const active = tabs.find((tab) => tab.id === activeId);
-        if (active?.kind !== "preview") {
-          openPreviewTab(url);
+        if (active?.kind !== "browser") {
+          openBrowserTab(url);
           return true;
         }
-        const preview = previewRefs.current.get(activeId);
-        if (!preview) return false;
-        preview.navigate(url);
+        const browser = browserRefs.current.get(activeId);
+        if (!browser) return false;
+        browser.navigate(url);
         return true;
       },
-      getActivePreviewTabId: () => {
+      getActiveBrowserTabId: () => {
         const { activeId, tabs } = ref.current;
-        return tabs.find((tab) => tab.id === activeId)?.kind === "preview"
+        return tabs.find((tab) => tab.id === activeId)?.kind === "browser"
           ? activeId
           : null;
       },
@@ -185,5 +185,5 @@ export function useAiLiveBridge(params: Params) {
         return buf ? redactSensitive(buf) : null;
       },
     });
-  }, [previewRefs, setLive, terminalRefs]);
+  }, [browserRefs, setLive, terminalRefs]);
 }

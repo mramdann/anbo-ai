@@ -15,7 +15,7 @@ const toolOptions: ToolExecutionOptions = {
 
 function makeContext(
   tabId: number | null,
-  navigatePreview: (url: string) => boolean = () => false,
+  navigateBrowser: (url: string) => boolean = () => false,
 ): ToolContext {
   return {
     getCwd: () => null,
@@ -23,9 +23,9 @@ function makeContext(
     getTerminalContext: () => null,
     isActiveTerminalPrivate: () => false,
     injectIntoActivePty: () => false,
-    openPreview: () => false,
-    navigatePreview,
-    getActivePreviewTabId: () => tabId,
+    openBrowser: () => false,
+    navigateBrowser,
+    getActiveBrowserTabId: () => tabId,
     spawnAgent: () => null,
     readAgentOutput: () => null,
     readCache: new Map(),
@@ -56,21 +56,21 @@ describe("AI browser tools", () => {
     );
   });
 
-  it("does not invoke the backend without an active preview", async () => {
+  it("does not invoke the backend without an active browser tab", async () => {
     const execute = buildBrowserTools(makeContext(null)).browser_snapshot.execute;
     if (!execute) throw new Error("browser_snapshot has no execute");
 
     await expect(execute({}, toolOptions)).resolves.toEqual({
       status: "error",
-      error: "Error: no active browser preview tab",
+      error: "Error: no active browser tab",
     });
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it("routes external navigation through the preview lifecycle", async () => {
-    const navigatePreview = vi.fn(() => true);
+  it("routes external navigation through the browser lifecycle", async () => {
+    const navigateBrowser = vi.fn(() => true);
     const execute = buildBrowserTools(
-      makeContext(null, navigatePreview),
+      makeContext(null, navigateBrowser),
     ).browser_navigate.execute;
     if (!execute) throw new Error("browser_navigate has no execute");
 
@@ -81,7 +81,66 @@ describe("AI browser tools", () => {
       opened: true,
       url: "https://www.youtube.com",
     });
-    expect(navigatePreview).toHaveBeenCalledWith("https://www.youtube.com");
+    expect(navigateBrowser).toHaveBeenCalledWith("https://www.youtube.com");
     expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("handles key press actions on the active preview", async () => {
+    await run("browser_press_key", { key: "Enter" });
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "browser_automation_handle_action",
+      {
+        requestJson: JSON.stringify({
+          action: "press_key",
+          tabId: 42,
+          key: "Enter",
+        }),
+      },
+    );
+  });
+
+  it("handles waiting for text on the active preview", async () => {
+    await run("browser_wait", { text: "Dashboard", timeout: 5000 });
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "browser_automation_handle_action",
+      {
+        requestJson: JSON.stringify({
+          action: "wait",
+          tabId: 42,
+          text: "Dashboard",
+          timeout: 5000,
+        }),
+      },
+    );
+  });
+
+  it("handles screenshot capture on the active preview", async () => {
+    await run("browser_screenshot", {});
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "browser_automation_handle_action",
+      {
+        requestJson: JSON.stringify({
+          action: "screenshot",
+          tabId: 42,
+        }),
+      },
+    );
+  });
+
+  it("handles history navigation on the active preview", async () => {
+    await run("browser_history", { action: "reload" });
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "browser_automation_handle_action",
+      {
+        requestJson: JSON.stringify({
+          action: "reload",
+          tabId: 42,
+        }),
+      },
+    );
   });
 });

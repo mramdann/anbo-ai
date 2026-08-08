@@ -63,9 +63,9 @@ export type EditorTab = TabBase & {
   overrideLanguage?: string | null;
 };
 
-export type PreviewTab = TabBase & {
+export type BrowserTab = TabBase & {
   id: number;
-  kind: "preview";
+  kind: "browser";
   title: string;
   url: string;
   favicon?: string;
@@ -127,7 +127,7 @@ export type GitCommitFileDiffTab = TabBase & {
 export type Tab =
   | TerminalTab
   | EditorTab
-  | PreviewTab
+  | BrowserTab
   | MarkdownTab
   | AiDiffTab
   | GitDiffTab
@@ -164,7 +164,7 @@ function titleFromUrl(url: string): string {
     const u = new URL(url);
     return u.host || url;
   } catch {
-    return url || "preview";
+    return url || "browser";
   }
 }
 
@@ -815,13 +815,13 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     });
   }, []);
 
-  const newPreviewTab = useCallback((url: string) => {
+  const newBrowserTab = useCallback((url: string) => {
     const id = nextIdRef.current++;
     setTabs((t) => [
       ...t,
       {
         id,
-        kind: "preview",
+        kind: "browser",
         spaceId: activeSpaceIdRef.current,
         title: titleFromUrl(url),
         url,
@@ -1050,7 +1050,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
             }),
           };
         }
-        if (x.kind === "preview") {
+        if (x.kind === "browser") {
           return {
             ...x,
             ...(patch.title !== undefined && { title: patch.title }),
@@ -1409,7 +1409,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     newPrivateTab,
     openFileTab,
     pinTab,
-    newPreviewTab,
+    newBrowserTab,
     newMarkdownTab,
     setMarkdownView,
     openAiDiffTab,

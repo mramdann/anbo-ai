@@ -1,25 +1,25 @@
 import { cn } from "@/lib/utils";
-import type { PreviewTab, Tab } from "@/modules/tabs";
+import type { BrowserTab, Tab } from "@/modules/tabs";
 import { useEffect, useRef } from "react";
-import { PreviewPane, type PreviewPaneHandle } from "./PreviewPane";
+import { BrowserPane, type BrowserPaneHandle } from "./BrowserPane";
 
 type Props = {
   tabs: Tab[];
   activeId: number;
   onUrlChange: (id: number, url: string) => void;
   onTitleChange: (id: number, title: string) => void;
-  registerHandle: (id: number, handle: PreviewPaneHandle | null) => void;
+  registerHandle: (id: number, handle: BrowserPaneHandle | null) => void;
 };
 
-export function PreviewStack({
+export function BrowserStack({
   tabs,
   activeId,
   onUrlChange,
   onTitleChange,
   registerHandle,
 }: Props) {
-  const previews = tabs.filter(
-    (t): t is PreviewTab => t.kind === "preview" && !t.cold,
+  const browserTabs = tabs.filter(
+    (t): t is BrowserTab => t.kind === "browser" && !t.cold,
   );
 
   const registerRef = useRef(registerHandle);
@@ -36,7 +36,7 @@ export function PreviewStack({
   }, [onTitleChange]);
 
   const refCallbacks = useRef(
-    new Map<number, (h: PreviewPaneHandle | null) => void>(),
+    new Map<number, (h: BrowserPaneHandle | null) => void>(),
   );
   const urlCallbacks = useRef(new Map<number, (url: string) => void>());
   const titleCallbacks = useRef(new Map<number, (title: string) => void>());
@@ -44,7 +44,7 @@ export function PreviewStack({
   const getRefCallback = (id: number) => {
     let cb = refCallbacks.current.get(id);
     if (!cb) {
-      cb = (h: PreviewPaneHandle | null) => registerRef.current(id, h);
+      cb = (h: BrowserPaneHandle | null) => registerRef.current(id, h);
       refCallbacks.current.set(id, cb);
     }
     return cb;
@@ -67,7 +67,7 @@ export function PreviewStack({
   };
 
   useEffect(() => {
-    const live = new Set(previews.map((t) => t.id));
+    const live = new Set(browserTabs.map((t) => t.id));
     for (const id of refCallbacks.current.keys()) {
       if (!live.has(id)) refCallbacks.current.delete(id);
     }
@@ -77,12 +77,12 @@ export function PreviewStack({
     for (const id of titleCallbacks.current.keys()) {
       if (!live.has(id)) titleCallbacks.current.delete(id);
     }
-  }, [previews]);
+  }, [browserTabs]);
 
-  if (previews.length === 0) return null;
+  if (browserTabs.length === 0) return null;
   return (
     <div className="relative h-full w-full">
-      {previews.map((t) => {
+      {browserTabs.map((t) => {
         const visible = t.id === activeId;
         return (
           <div
@@ -93,7 +93,7 @@ export function PreviewStack({
             )}
             aria-hidden={!visible}
           >
-            <PreviewPane
+            <BrowserPane
               ref={getRefCallback(t.id)}
               id={t.id}
               url={t.url}

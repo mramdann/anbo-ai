@@ -63,7 +63,7 @@ export function TabIcon({
       />
     ) : null;
   }
-  if (tab.kind === "preview") {
+  if (tab.kind === "browser") {
     return (
       <PreviewIcon
         favicon={tab.favicon}

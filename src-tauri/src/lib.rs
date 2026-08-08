@@ -1,7 +1,7 @@
 pub mod modules;
 
 use modules::{
-    agent, anboai, app_data, browser_automation, fs, git, history, lsp, net, preview, pty, secrets,
+    agent, anboai, app_data, browser_automation, fs, git, history, lsp, net, browser, pty, secrets,
     shell, workspace,
 };
 use std::path::PathBuf;
@@ -88,6 +88,7 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
     };
 
     if let Some(window) = app.get_webview_window("settings") {
+        #[cfg(target_os = "macos")]
         let _ = window.set_always_on_top(true);
         let _ = window.show();
         let _ = window.set_focus();
@@ -104,10 +105,10 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
         .inner_size(900.0, 700.0)
         .min_inner_size(820.0, 620.0)
         .resizable(true)
-        .visible(false)
-        // Keep settings above the main app window so it doesn't get hidden
-        // when the user clicks back into the editor or terminal (#33).
-        .always_on_top(true);
+        .visible(false);
+    // On Windows/Linux the settings window is parented to the main window
+    // (below), which keeps it above main without floating above every other
+    // app. macOS has no parent there, so it opts into always-on-top instead.
 
     // Tie lifecycle to the main window so settings minimizes/closes with it.
     // macOS: skip parent() — child + always_on_top leaves the settings webview
@@ -121,6 +122,7 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
 
     #[cfg(target_os = "macos")]
     let builder = builder
+        .always_on_top(true)
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true);
 
@@ -282,16 +284,16 @@ pub fn run() {
             fs::grep::fs_grep,
             fs::grep::fs_grep_interactive,
             fs::grep::fs_glob,
-            preview::embed::preview_embed_update,
-            preview::embed::preview_embed_begin_session,
-            preview::embed::preview_embed_navigate,
-            preview::embed::preview_embed_dispatch,
-            preview::embed::preview_embed_url,
-            preview::embed::preview_embed_snapshot,
-            preview::embed::preview_embed_set_ui_overlay,
-            preview::embed::preview_embed_suspend,
-            preview::embed::preview_embed_release,
-            preview::embed::preview_embed_close,
+            browser::embed::browser_embed_update,
+            browser::embed::browser_embed_begin_session,
+            browser::embed::browser_embed_navigate,
+            browser::embed::browser_embed_dispatch,
+            browser::embed::browser_embed_url,
+            browser::embed::browser_embed_snapshot,
+            browser::embed::browser_embed_set_ui_overlay,
+            browser::embed::browser_embed_suspend,
+            browser::embed::browser_embed_release,
+            browser::embed::browser_embed_close,
             browser_automation::browser_automation_start,
             browser_automation::browser_automation_stop,
             browser_automation::browser_automation_status,

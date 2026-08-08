@@ -38,7 +38,7 @@ function makeContext(readCache: Map<string, { size: number; hash: number }>) {
     getTerminalContext: () => null,
     isActiveTerminalPrivate: () => false,
     injectIntoActivePty: () => false,
-    openPreview: () => false,
+    openBrowser: () => false,
     spawnAgent: () => null,
     readAgentOutput: () => null,
     readCache,

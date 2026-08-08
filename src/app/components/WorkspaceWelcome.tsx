@@ -16,7 +16,7 @@ type WorkspaceWelcomeProps = {
   onNew: () => void;
   onNewBlock: () => void;
   onNewPrivate: () => void;
-  onNewPreview: () => void;
+  onNewBrowser: () => void;
   onNewEditor: () => void;
   onNewGitGraph: () => void;
   onLaunchAgents: (request: AgentLaunchRequest) => void;
@@ -24,7 +24,7 @@ type WorkspaceWelcomeProps = {
 
 /**
  * A workspace is open but no tab is open yet. Offer the same actions as the
- * "new tab" menu (terminal / blocks / agents / privacy / editor / preview /
+ * "new tab" menu (terminal / blocks / agents / privacy / editor / browser /
  * git graph) instead of auto-spawning a terminal on workspace creation.
  */
 export function WorkspaceWelcome({
@@ -33,7 +33,7 @@ export function WorkspaceWelcome({
   onNew,
   onNewBlock,
   onNewPrivate,
-  onNewPreview,
+  onNewBrowser,
   onNewEditor,
   onNewGitGraph,
   onLaunchAgents,
@@ -42,7 +42,7 @@ export function WorkspaceWelcome({
     { label: "Blocks", icon: ComputerTerminal02Icon, onClick: onNewBlock },
     { label: "Privacy", icon: IncognitoIcon, onClick: onNewPrivate },
     { label: "Editor", icon: PencilEdit02Icon, onClick: onNewEditor },
-    { label: "Preview", icon: Globe02Icon, onClick: onNewPreview },
+    { label: "Browser", icon: Globe02Icon, onClick: onNewBrowser },
     { label: "Git graph", icon: GitBranchIcon, onClick: onNewGitGraph },
   ];
 

@@ -9,7 +9,7 @@ pub mod history;
 pub mod lsp;
 pub mod net;
 pub mod proc;
-pub mod preview;
+pub mod browser;
 pub mod pty;
 pub mod secrets;
 pub mod shell;

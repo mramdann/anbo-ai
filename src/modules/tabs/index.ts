@@ -14,7 +14,7 @@ export {
   MAX_PANES_PER_TAB,
   type MarkdownTab,
   nextActiveInSpace,
-  type PreviewTab,
+  type BrowserTab,
   type Tab,
   type TabPatch,
   type TerminalTab,

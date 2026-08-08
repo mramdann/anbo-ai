@@ -5,7 +5,7 @@ import {
 import type {
   EditorTab,
   MarkdownTab,
-  PreviewTab,
+  BrowserTab,
   Tab,
   TerminalTab,
 } from "@/modules/tabs/lib/useTabs";
@@ -32,7 +32,7 @@ export type SerializedTab =
       customTitle?: string;
     }
   | { kind: "editor"; path: string }
-  | { kind: "preview"; url: string }
+  | { kind: "browser"; url: string }
   | { kind: "markdown"; path: string };
 
 function basename(path: string): string {
@@ -44,7 +44,7 @@ function titleFromUrl(url: string): string {
   try {
     return new URL(url).host || url;
   } catch {
-    return url || "preview";
+    return url || "browser";
   }
 }
 
@@ -73,7 +73,7 @@ export function isSerializableTab(tab: Tab): boolean {
     case "terminal":
       return !tab.private;
     case "editor":
-    case "preview":
+    case "browser":
     case "markdown":
       return true;
     default:
@@ -93,8 +93,8 @@ function serializeTab(tab: Tab): SerializedTab | null {
       };
     case "editor":
       return { kind: "editor", path: tab.path };
-    case "preview":
-      return { kind: "preview", url: tab.url };
+    case "browser":
+      return { kind: "browser", url: tab.url };
     case "markdown":
       return { kind: "markdown", path: tab.path };
     default:
@@ -164,6 +164,10 @@ function hydrateTab(
   spaceId: string,
   allocId: () => number,
 ): Tab | null {
+  // Backward compat: older builds persisted browser tabs as kind "preview".
+  if ((s.kind as string) === "preview") {
+    s = { ...s, kind: "browser" } as SerializedTab;
+  }
   switch (s.kind) {
     case "terminal": {
       const { tree, activeLeafId, firstLeafCwd } = hydrateTree(s.tree, allocId);
@@ -194,15 +198,15 @@ function hydrateTab(
         dirty: false,
         preview: false,
       } satisfies EditorTab;
-    case "preview":
+    case "browser":
       return {
         id: allocId(),
-        kind: "preview",
+        kind: "browser",
         spaceId,
         cold: true,
         title: titleFromUrl(s.url),
         url: s.url,
-      } satisfies PreviewTab;
+      } satisfies BrowserTab;
     case "markdown":
       return {
         id: allocId(),

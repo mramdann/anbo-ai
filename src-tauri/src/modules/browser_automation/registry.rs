@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, Webview};
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::modules::preview::embed::{embed_label, is_embed_tab_active, list_active_tab_ids};
+use crate::modules::browser::embed::{embed_label, is_embed_tab_active, list_active_tab_ids};
 
 static TAB_LOCKS: Mutex<Option<HashMap<i64, Arc<AsyncMutex<()>>>>> = Mutex::new(None);
 

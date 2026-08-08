@@ -39,7 +39,7 @@ import {
   type IDockviewPanelProps,
 } from "dockview-react";
 import "dockview/dist/styles/dockview.css";
-import { setNativePreviewDragActive } from "@/modules/preview/nativeVisibility";
+import { setNativeBrowserDragActive } from "@/modules/browser/nativeVisibility";
 import {
   createContext,
   type MouseEvent as ReactMouseEvent,
@@ -87,7 +87,7 @@ export type WorkspaceDockviewProps = {
   onNew: () => void;
   onNewBlock: () => void;
   onNewPrivate: () => void;
-  onNewPreview: () => void;
+  onNewBrowser: () => void;
   onNewEditor: () => void;
   onNewGitGraph: () => void;
   onLaunchAgents: (request: AgentLaunchRequest) => void;
@@ -353,7 +353,7 @@ function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
         onNew={context.onNew}
         onNewBlock={context.onNewBlock}
         onNewPrivate={context.onNewPrivate}
-        onNewPreview={context.onNewPreview}
+        onNewBrowser={context.onNewBrowser}
         onNewEditor={context.onNewEditor}
         onNewGitGraph={context.onNewGitGraph}
         onLaunchAgents={context.onLaunchAgents}
@@ -983,7 +983,7 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
         } finally {
           document.body.style.userSelect = previousUserSelect;
           if (active) {
-            setNativePreviewDragActive(false);
+            setNativeBrowserDragActive(false);
             suppressClickRef.current = true;
             setTimeout(() => {
               suppressClickRef.current = false;
@@ -1008,7 +1008,7 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
             return;
           }
           active = true;
-          setNativePreviewDragActive(true);
+          setNativeBrowserDragActive(true);
           document.body.style.userSelect = "none";
           setDragGhost({
             label,

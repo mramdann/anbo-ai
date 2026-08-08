@@ -12,31 +12,30 @@ import {
   useState,
 } from "react";
 import {
-  createPreviewOwnerId,
+  createBrowserOwnerId,
   isSelfReferenceUrl,
   isSupportedBrowserUrl,
-  PREVIEW_NAV_EVENT,
-  type PreviewNavEvent,
-  previewEmbedDispatch,
-  previewEmbedNavigate,
-  previewEmbedRelease,
-  previewEmbedSetUiOverlay,
-  previewEmbedSnapshot,
-  previewEmbedSuspend,
-  previewEmbedUpdate,
-  previewEmbedUrl,
+  BROWSER_NAV_EVENT,
+  type BrowserNavEvent,
+  browserEmbedDispatch,
+  browserEmbedNavigate,
+  browserEmbedRelease,
+  browserEmbedSetUiOverlay,
+  browserEmbedSnapshot,
+  browserEmbedUpdate,
+  browserEmbedUrl,
   toPhysicalBounds,
 } from "./native";
 import {
-  useNativePreviewDragActive,
-  useNativePreviewOverlayOpen,
+  useNativeBrowserDragActive,
+  useNativeBrowserOverlayOpen,
 } from "./nativeVisibility";
 import {
-  PreviewAddressBar,
-  type PreviewAddressBarHandle,
-} from "./PreviewAddressBar";
+  BrowserAddressBar,
+  type BrowserAddressBarHandle,
+} from "./BrowserAddressBar";
 
-export type PreviewPaneHandle = {
+export type BrowserPaneHandle = {
   reload: () => void;
   navigate: (url: string) => void;
   focusAddressBar: () => void;
@@ -58,36 +57,35 @@ type DesiredBounds = {
 };
 
 const EMPTY_BOUNDS = { x: 0, y: 0, width: 0, height: 0 };
-const SUSPEND_AFTER_MS = 30_000;
 const mountedOwners = new Map<number, string>();
 const pendingReleases = new Map<number, ReturnType<typeof setTimeout>>();
-const visibleNativePreviews = new Set<number>();
+const visibleNativeBrowsers = new Set<number>();
 
-function syncNativePreviewSurface(): void {
-  if (visibleNativePreviews.size > 0) {
-    document.documentElement.dataset.nativePreviewLive = "true";
+function syncNativeBrowserSurface(): void {
+  if (visibleNativeBrowsers.size > 0) {
+    document.documentElement.dataset.nativeBrowserLive = "true";
   } else {
-    delete document.documentElement.dataset.nativePreviewLive;
+    delete document.documentElement.dataset.nativeBrowserLive;
   }
 }
 
-export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
-  function PreviewPane({ id, url, visible, onUrlChange, onTitleChange }, ref) {
+export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
+  function BrowserPane({ id, url, visible, onUrlChange, onTitleChange }, ref) {
     const native = isTauri();
     const [iframeNonce, setIframeNonce] = useState(0);
     const [nativeError, setNativeError] = useState<string | null>(null);
     const [freezeFrame, setFreezeFrame] = useState<string | null>(null);
-    const addressRef = useRef<PreviewAddressBarHandle>(null);
+    const addressRef = useRef<BrowserAddressBarHandle>(null);
     const contentRef = useRef<HTMLDivElement>(null);
-    const ownerIdRef = useRef(createPreviewOwnerId());
+    const ownerIdRef = useRef(createBrowserOwnerId());
     const currentUrlRef = useRef(url);
     const urlPropRef = useRef(url);
     const onUrlChangeRef = useRef(onUrlChange);
     const onTitleChangeRef = useRef(onTitleChange);
     const visibleRef = useRef(visible);
-    const overlayOpen = useNativePreviewOverlayOpen(contentRef);
+    const overlayOpen = useNativeBrowserOverlayOpen(contentRef);
     const overlayOpenRef = useRef(overlayOpen);
-    const dragActive = useNativePreviewDragActive();
+    const dragActive = useNativeBrowserDragActive();
     const dragActiveRef = useRef(dragActive);
     const suppressionReadyRef = useRef(false);
     const suppressionRequestRef = useRef(0);
@@ -114,7 +112,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
       if (!desired || desired.key === sentKeyRef.current) return;
       sentKeyRef.current = desired.key;
       inFlightRef.current = true;
-      void previewEmbedUpdate(
+      void browserEmbedUpdate(
         id,
         ownerIdRef.current,
         currentUrlRef.current,
@@ -124,7 +122,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
         .then(() => {
           if (disposedRef.current) return;
           if (IS_WINDOWS && overlayOpenRef.current) {
-            void previewEmbedSetUiOverlay(id, ownerIdRef.current, true).catch(
+            void browserEmbedSetUiOverlay(id, ownerIdRef.current, true).catch(
               () => {},
             );
           }
@@ -156,25 +154,25 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
 
     useEffect(() => {
       if (!native || !IS_WINDOWS || !visible || !url) return;
-      visibleNativePreviews.add(id);
-      syncNativePreviewSurface();
+      visibleNativeBrowsers.add(id);
+      syncNativeBrowserSurface();
       return () => {
-        visibleNativePreviews.delete(id);
-        syncNativePreviewSurface();
+        visibleNativeBrowsers.delete(id);
+        syncNativeBrowserSurface();
       };
     }, [id, native, url, visible]);
 
     useEffect(() => {
       overlayOpenRef.current = overlayOpen;
       if (!native || !IS_WINDOWS || !visible || !url) return;
-      void previewEmbedSetUiOverlay(
+      void browserEmbedSetUiOverlay(
         id,
         ownerIdRef.current,
         overlayOpen,
       ).catch(reportNativeError);
       return () => {
         if (overlayOpen) {
-          void previewEmbedSetUiOverlay(id, ownerIdRef.current, false).catch(
+          void browserEmbedSetUiOverlay(id, ownerIdRef.current, false).catch(
             () => {},
           );
         }
@@ -215,15 +213,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
       if (!native) return;
       if (!visible) {
         syncBounds();
-        const timeout = setTimeout(() => {
-          void previewEmbedSuspend(id, ownerIdRef.current)
-            .catch(() => {})
-            .finally(() => {
-              sentKeyRef.current = "";
-              syncBounds();
-            });
-        }, SUSPEND_AFTER_MS);
-        return () => clearTimeout(timeout);
+        return;
       }
       let frame = 0;
       let lastSync = 0;
@@ -253,7 +243,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
           pendingReleases.delete(id);
           if (mountedOwners.get(id) !== ownerId) return;
           mountedOwners.delete(id);
-          void previewEmbedRelease(id, ownerId).catch(() => {});
+          void browserEmbedRelease(id, ownerId).catch(() => {});
         }, 0);
         pendingReleases.set(id, timer);
       };
@@ -266,7 +256,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
       const reconcileLiveUrl = () => {
         if (reading) return;
         reading = true;
-        void previewEmbedUrl(id, ownerIdRef.current)
+        void browserEmbedUrl(id, ownerIdRef.current)
           .then((liveUrl) => {
             if (!alive || !liveUrl || liveUrl === currentUrlRef.current) return;
             currentUrlRef.current = liveUrl;
@@ -298,7 +288,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
       }
 
       let frame = 0;
-      void previewEmbedSnapshot(id, ownerIdRef.current)
+      void browserEmbedSnapshot(id, ownerIdRef.current)
         .catch(() => null)
         .then((snapshot) => {
           if (
@@ -339,7 +329,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
       if (!native) return;
       let alive = true;
       let unlisten: UnlistenFn | undefined;
-      void listen<PreviewNavEvent>(PREVIEW_NAV_EVENT, ({ payload }) => {
+      void listen<BrowserNavEvent>(BROWSER_NAV_EVENT, ({ payload }) => {
         if (
           !payload ||
           payload.tabId !== id ||
@@ -383,7 +373,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
       if (url === currentUrlRef.current) return;
       currentUrlRef.current = url;
       setNativeError(null);
-      void previewEmbedNavigate(id, ownerIdRef.current, url).catch(
+      void browserEmbedNavigate(id, ownerIdRef.current, url).catch(
         reportNativeError,
       );
     }, [id, native, reportNativeError, url]);
@@ -403,7 +393,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
               "AnboAI cannot be opened inside its own browser pane.",
             );
           } else {
-            void previewEmbedNavigate(id, ownerIdRef.current, next).catch(
+            void browserEmbedNavigate(id, ownerIdRef.current, next).catch(
               reportNativeError,
             );
           }
@@ -416,7 +406,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
     const dispatch = useCallback(
       (action: "back" | "forward" | "reload") => {
         if (native)
-          void previewEmbedDispatch(id, ownerIdRef.current, action).catch(
+          void browserEmbedDispatch(id, ownerIdRef.current, action).catch(
             reportNativeError,
           );
         else if (action === "reload") setIframeNonce((nonce) => nonce + 1);
@@ -439,13 +429,13 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
 
     return (
       <div
-        className={`flex h-full w-full flex-col overflow-hidden rounded-md border border-border/60 ${native ? "bg-transparent" : "bg-background"}`}
+        className={`flex h-full w-full flex-col overflow-hidden ${native ? "bg-transparent" : "bg-background"}`}
         style={{
           visibility: visible ? "visible" : "hidden",
           pointerEvents: visible ? "auto" : "none",
         }}
       >
-        <PreviewAddressBar
+        <BrowserAddressBar
           ref={addressRef}
           url={url}
           onSubmit={navigate}
@@ -490,7 +480,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
               <iframe
                 key={`${url}#${iframeNonce}`}
                 src={url}
-                title="Preview"
+                title="Browser"
                 className="h-full w-full border-0"
                 sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
                 referrerPolicy="no-referrer"

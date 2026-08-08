@@ -192,22 +192,36 @@ html[data-chrome="borderless"] #settings-root {
   background: var(--background);
 }
 
-html[data-native-preview-live="true"] #root,
-html[data-native-preview-live="true"] .anbo-app-shell,
-html[data-native-preview-live="true"] .anbo-workspace-dockview,
-html[data-native-preview-live="true"] .dockview-theme-anbo-workspace .dv-groupview,
-html[data-native-preview-live="true"]
+html[data-native-browser-live="true"] #root,
+html[data-native-browser-live="true"] .anbo-app-shell,
+html[data-native-browser-live="true"] .anbo-workspace-dockview,
+html[data-native-browser-live="true"] .dockview-theme-anbo-workspace .dv-groupview,
+html[data-native-browser-live="true"]
   .dockview-theme-anbo-workspace
   .dv-content-container {
   background: transparent !important;
 }
 
-html[data-native-preview-live="true"] .dockview-theme-anbo-workspace {
+html[data-native-browser-live="true"] .dockview-theme-anbo-workspace {
   --dv-group-view-background-color: transparent;
+  --dv-sash-color: var(--border);
 }
 
-html[data-native-preview-live="true"] .anbo-bg-surface {
+html[data-native-browser-live="true"] .anbo-bg-surface {
   display: none;
+}
+
+html[data-native-browser-live="true"] footer,
+html[data-native-browser-live="true"] [data-ai-input-bar],
+html[data-native-browser-live="true"] [data-ai-input-bar] > div > div,
+html[data-native-browser-live="true"] [data-slot="resizable-handle"],
+html[data-native-browser-live="true"] .dockview-theme-anbo-workspace .dv-sash,
+html[data-native-browser-live="true"] .dockview-theme-anbo-workspace .dv-tabs-and-actions-container {
+  background-color: var(--card) !important;
+}
+
+html[data-native-browser-live="true"] footer {
+  box-shadow: 0 10px 0 0 var(--card);
 }
 
 /*

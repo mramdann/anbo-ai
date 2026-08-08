@@ -22,7 +22,7 @@ function makeContext(sessionId: string | null = "session"): ToolContext {
     getTerminalContext: () => null,
     isActiveTerminalPrivate: () => false,
     injectIntoActivePty: () => false,
-    openPreview: () => false,
+    openBrowser: () => false,
     spawnAgent: () => null,
     readAgentOutput: () => null,
     readCache: new Map(),

@@ -3,7 +3,6 @@ import {
   type ChatTransport,
   lastAssistantMessageIsCompleteWithApprovalResponses,
 } from "ai";
-import { getModel, providerNeedsKey, type ModelId } from "../config";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { BUILTIN_AGENTS } from "../lib/agents";
 import { useAgentsStore } from "./agentsStore";
@@ -12,7 +11,7 @@ import { createContextAwareTransport } from "../lib/transport";
 import type { ToolContext } from "../tools/tools";
 import {
   chats,
-  getActiveProviderKey,
+  hasKeyForModel,
   seedMessages,
   touchChat,
   useChatStore,
@@ -28,10 +27,10 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       useChatStore.getState().live.isActiveTerminalPrivate(),
     injectIntoActivePty: (text) =>
       useChatStore.getState().live.injectIntoActivePty(text),
-    openPreview: (url) => useChatStore.getState().live.openPreview(url),
-    navigatePreview: (url) => useChatStore.getState().live.navigatePreview(url),
-    getActivePreviewTabId: () =>
-      useChatStore.getState().live.getActivePreviewTabId(),
+    openBrowser: (url) => useChatStore.getState().live.openBrowser(url),
+    navigateBrowser: (url) => useChatStore.getState().live.navigateBrowser(url),
+    getActiveBrowserTabId: () =>
+      useChatStore.getState().live.getActiveBrowserTabId(),
     spawnAgent: (prompt) =>
       useChatStore.getState().live.spawnManagedAgent(prompt, sessionId),
     readAgentOutput: (leafId) =>
@@ -135,11 +134,7 @@ export async function sendMessage(text: string): Promise<boolean> {
   const state = useChatStore.getState();
   const sessionId = state.activeSessionId;
   if (!sessionId) return false;
-  if (
-    providerNeedsKey(getModel(state.selectedModelId as ModelId).provider) &&
-    !getActiveProviderKey()
-  )
-    return false;
+  if (!hasKeyForModel(state.selectedModelId)) return false;
   const c = getOrCreateChat(sessionId);
   await c.sendMessage({ text });
   return true;

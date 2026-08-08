@@ -50,7 +50,7 @@ const PORT_PRESETS: readonly PortPreset[] = [
   { port: 11434, label: "Ollama", hint: "ollama api" },
 ];
 
-export type PreviewAddressBarHandle = {
+export type BrowserAddressBarHandle = {
   focus: () => void;
 };
 
@@ -62,8 +62,8 @@ type Props = {
   onReload: () => void;
 };
 
-export const PreviewAddressBar = forwardRef<PreviewAddressBarHandle, Props>(
-  function PreviewAddressBar(
+export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
+  function BrowserAddressBar(
     { url, onSubmit, onBack, onForward, onReload },
     ref,
   ) {
@@ -118,8 +118,8 @@ export const PreviewAddressBar = forwardRef<PreviewAddressBarHandle, Props>(
     };
 
     return (
-      <div className="shrink-0 border-b border-border/60">
-        <div className="flex h-9 items-center gap-1 bg-card/40 px-1.5">
+      <div className="shrink-0 border-b border-border/60 bg-card">
+        <div className="flex h-9 items-center gap-1 bg-card px-1.5">
           <Button
             type="button"
             variant="ghost"
@@ -208,7 +208,7 @@ export const PreviewAddressBar = forwardRef<PreviewAddressBarHandle, Props>(
               placeholder="Search Google or enter a URL"
               spellCheck={false}
               autoComplete="off"
-              className="h-7 w-full bg-muted/60 px-2 text-xs placeholder:text-muted-foreground/70 focus-visible:ring-0"
+              className="h-7 w-full bg-background px-2 text-xs placeholder:text-muted-foreground/70 focus-visible:ring-0"
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {

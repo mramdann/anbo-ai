@@ -5,7 +5,7 @@ import {
   toPhysicalBounds,
 } from "./native";
 
-describe("native preview URL policy", () => {
+describe("native browser URL policy", () => {
   it("allows HTTP(S) and rejects active or local content schemes", () => {
     expect(isSupportedBrowserUrl("http://localhost:3000")).toBe(true);
     expect(isSupportedBrowserUrl("https://example.com/path")).toBe(true);
@@ -27,7 +27,7 @@ describe("native preview URL policy", () => {
   });
 });
 
-describe("native preview bounds", () => {
+describe("native browser bounds", () => {
   it("converts viewport CSS pixels to rounded physical pixels", () => {
     const rect = {
       left: 10.25,
@@ -38,7 +38,7 @@ describe("native preview bounds", () => {
     expect(toPhysicalBounds(rect, 1.5)).toEqual({
       x: 15,
       y: 31,
-      width: 450,
+      width: 451,
       height: 301,
     });
   });

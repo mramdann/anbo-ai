@@ -41,7 +41,7 @@ function tabLayoutIdentityBase(tab: Tab): string {
     case "editor":
     case "markdown":
       return JSON.stringify([tab.kind, tab.path]);
-    case "preview":
+    case "browser":
       return JSON.stringify([tab.kind, tab.url]);
     case "ai-diff":
       return JSON.stringify([

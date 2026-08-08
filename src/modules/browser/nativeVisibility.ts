@@ -26,7 +26,7 @@ export function rectsIntersect(a: Rect, b: Rect): boolean {
   );
 }
 
-export function hasNativePreviewOverlay(target?: Rect): boolean {
+export function hasNativeBrowserOverlay(target?: Rect): boolean {
   for (const element of document.querySelectorAll(OVERLAY_SELECTOR)) {
     if (isTooltip(element)) continue;
     const style = window.getComputedStyle(element);
@@ -74,14 +74,14 @@ function subscribeOverlay(listener: () => void): () => void {
   };
 }
 
-export function useNativePreviewOverlayOpen(
+export function useNativeBrowserOverlayOpen(
   targetRef: RefObject<HTMLElement | null>,
 ): boolean {
   return useSyncExternalStore(
     subscribeOverlay,
     () => {
       const target = targetRef.current?.getBoundingClientRect();
-      return target ? hasNativePreviewOverlay(target) : false;
+      return target ? hasNativeBrowserOverlay(target) : false;
     },
     () => false,
   );
@@ -90,7 +90,7 @@ export function useNativePreviewOverlayOpen(
 let dragActive = false;
 const dragListeners = new Set<() => void>();
 
-export function setNativePreviewDragActive(active: boolean): void {
+export function setNativeBrowserDragActive(active: boolean): void {
   if (active === dragActive) return;
   dragActive = active;
   dragListeners.forEach((listener) => {
@@ -98,7 +98,7 @@ export function setNativePreviewDragActive(active: boolean): void {
   });
 }
 
-export function useNativePreviewDragActive(): boolean {
+export function useNativeBrowserDragActive(): boolean {
   return useSyncExternalStore(
     (listener) => {
       dragListeners.add(listener);

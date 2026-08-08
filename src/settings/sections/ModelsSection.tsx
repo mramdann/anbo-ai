@@ -15,6 +15,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Popover,
+  PopoverAnchor,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import {
@@ -88,7 +94,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { ProviderIcon } from "../components/ProviderIcon";
 import { ProviderKeyCard } from "../components/ProviderKeyCard";
 import { SectionHeader } from "../components/SectionHeader";
@@ -365,6 +371,7 @@ export function ModelsSection() {
         configuredIds={configuredIds}
         keys={keys}
         customEndpoints={customEndpoints}
+        onUpdateEndpoint={updateCustomEndpoint}
       />
 
       <VoiceBlock />
@@ -531,20 +538,24 @@ function DefaultsBlock({
   configuredIds,
   keys,
   customEndpoints,
+  onUpdateEndpoint,
 }: {
-  defaultModel: ModelId;
+  defaultModel: string;
   configuredIds: Set<ProviderId>;
   keys: KeysMap;
   customEndpoints: readonly CustomEndpoint[];
+  onUpdateEndpoint: (id: string, patch: Partial<CustomEndpoint>) => Promise<void>;
 }) {
   return (
     <div className="flex flex-col gap-3">
       <Label>Defaults</Label>
       <div className="flex flex-col gap-2.5 rounded-lg border border-border/60 bg-card/60 px-3 py-2.5">
-        <FieldRow label="Chat model">
+        <FieldRow label="Default model">
           <DefaultModelPicker
             defaultModel={defaultModel}
             configuredIds={configuredIds}
+            customEndpoints={customEndpoints}
+            onUpdateEndpoint={onUpdateEndpoint}
           />
         </FieldRow>
         <AutocompleteRow
@@ -560,16 +571,137 @@ function DefaultsBlock({
 function DefaultModelPicker({
   defaultModel,
   configuredIds,
+  customEndpoints,
+  onUpdateEndpoint,
 }: {
-  defaultModel: ModelId;
+  defaultModel: string;
   configuredIds: Set<ProviderId>;
+  customEndpoints: readonly CustomEndpoint[];
+  onUpdateEndpoint: (id: string, patch: Partial<CustomEndpoint>) => Promise<void>;
 }) {
-  const m = getModel(defaultModel);
-  const hasAny = configuredIds.size > 0;
+  const [open, setOpen] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+
+  const m = isCompatModelId(defaultModel)
+    ? getCompatModelInfo(defaultModel, customEndpoints)
+    : getModel(defaultModel as ModelId);
+  const configuredEndpoints = customEndpoints.filter(
+    (e) => e.baseURL.trim().length > 0 && e.modelId.trim().length > 0,
+  );
+  // Stay on the default until at least one provider (built-in or a custom
+  // endpoint) is configured. The menu lists each provider as a collapsible
+  // group (icon + name + model count); expand to pick a model. A search box
+  // filters providers and models live.
+  const hasAny = configuredIds.size > 0 || configuredEndpoints.length > 0;
+  const providers = PROVIDERS.filter((p) => configuredIds.has(p.id));
+  const q = query.trim().toLowerCase();
+
+  const endpointModels = (ep: CustomEndpoint): string[] => {
+    const detected = ep.models?.length ? ep.models : [];
+    return Array.from(new Set([ep.modelId, ...detected])).filter(
+      (x): x is string => !!x && x.trim().length > 0,
+    );
+  };
+
+  const pickBuiltIn = (id: ModelId) => {
+    void setDefaultModel(id);
+    setOpen(false);
+  };
+  const pickEndpointModel = (ep: CustomEndpoint, modelId: string) => {
+    void onUpdateEndpoint(ep.id, { modelId });
+    void setDefaultModel(compatModelIdForEndpoint(ep.id));
+    setOpen(false);
+  };
+
+  const renderGroup = (
+    key: string,
+    icon: ReactNode,
+    label: string,
+    count: number,
+    isOpen: boolean,
+    children: ReactNode,
+  ) => (
+    <div key={key} className="px-0.5">
+      <button
+        type="button"
+        onClick={() => setExpanded(isOpen ? null : key)}
+        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-accent"
+      >
+        <HugeiconsIcon
+          icon={ChevronDown}
+          size={11}
+          strokeWidth={2}
+          className={cn(
+            "shrink-0 text-muted-foreground transition-transform",
+            !isOpen && "-rotate-90",
+          )}
+        />
+        <span className="shrink-0">{icon}</span>
+        <span className="flex-1 truncate font-medium">{label}</span>
+        <span className="shrink-0 rounded bg-muted/50 px-1.5 text-[10px] text-muted-foreground">
+          {count}
+        </span>
+      </button>
+      {isOpen ? (
+        <div className="ml-5 mt-0.5 flex flex-col gap-0.5 pb-1">{children}</div>
+      ) : null}
+    </div>
+  );
+
+  const builtInEntries = providers.map((p) => {
+    const all = MODELS.filter((x) => x.provider === p.id);
+    if (all.length === 0) return null;
+    const filtered =
+      q === ""
+        ? all
+        : all.filter((x) =>
+            `${x.label} ${x.id} ${x.description}`.toLowerCase().includes(q),
+          );
+    const show =
+      q === "" || p.label.toLowerCase().includes(q) || filtered.length > 0;
+    if (!show) return null;
+    return {
+      key: `p:${p.id}`,
+      icon: <ProviderIcon provider={p.id} size={13} />,
+      label: p.label,
+      count: all.length,
+      isOpen: q === "" ? expanded === `p:${p.id}` : filtered.length > 0,
+      models: filtered,
+    };
+  });
+
+  const epEntries = configuredEndpoints.map((ep) => {
+    const all = endpointModels(ep);
+    const nameLc = `${ep.name ?? ""} ${ep.modelId ?? ""}`.toLowerCase();
+    const show =
+      q === "" || nameLc.includes(q) || all.some((mid) => mid.toLowerCase().includes(q));
+    if (!show) return null;
+    const filtered =
+      q === ""
+        ? all
+        : all.filter((mid) => `${ep.name ?? ""} ${mid}`.toLowerCase().includes(q));
+    return {
+      key: `e:${ep.id}`,
+      ep,
+      count: all.length,
+      isOpen: q === "" ? expanded === `e:${ep.id}` : filtered.length > 0,
+      models: filtered,
+    };
+  });
+
+  const hasResults =
+    builtInEntries.some((x) => x !== null) || epEntries.some((x) => x !== null);
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
+    <Popover
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o) setQuery("");
+      }}
+    >
+      <PopoverTrigger asChild>
         <Button
           variant="outline"
           disabled={!hasAny}
@@ -587,47 +719,97 @@ function DefaultModelPicker({
             className="opacity-70"
           />
         </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
+      </PopoverTrigger>
+      <PopoverContent
         align="start"
         side="bottom"
         sideOffset={6}
         collisionPadding={12}
-        className="min-w-70 p-1"
+        className="min-w-72 p-0"
       >
-        <div className="max-h-72 overflow-y-auto overscroll-contain pr-1">
-          {PROVIDERS.filter((p) => configuredIds.has(p.id)).map((p) => {
-            const models = MODELS.filter((x) => x.provider === p.id);
-            if (models.length === 0) return null;
-            return (
-              <div key={p.id} className="px-1 pt-1.5 first:pt-1">
-                <div className="mb-0.5 flex items-center gap-1.5 px-2 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
-                  <ProviderIcon provider={p.id} size={11} />
-                  <span>{p.label}</span>
-                </div>
-                {models.map((mod) => (
-                  <DropdownMenuItem
-                    key={mod.id}
-                    onSelect={() => void setDefaultModel(mod.id as ModelId)}
-                    className={cn(
-                      "flex items-start gap-2 text-[12px]",
-                      mod.id === defaultModel && "bg-accent/50",
-                    )}
-                  >
-                    <span className="flex flex-1 flex-col">
-                      <span>{mod.label}</span>
-                      <span className="text-[10px] text-muted-foreground">
-                        {mod.description}
-                      </span>
-                    </span>
-                  </DropdownMenuItem>
-                ))}
-              </div>
-            );
-          })}
+        <div className="border-b border-border/50 p-1.5">
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search models…"
+            spellCheck={false}
+            className="h-7 text-[11px]"
+          />
         </div>
-      </DropdownMenuContent>
-    </DropdownMenu>
+        <div className="max-h-80 overflow-y-auto p-1 pr-0.5">
+          {builtInEntries.map((e) =>
+            e
+              ? renderGroup(
+                  e.key,
+                  e.icon,
+                  e.label,
+                  e.count,
+                  e.isOpen,
+                  e.models.map((mod) => (
+                    <button
+                      key={mod.id}
+                      type="button"
+                      onClick={() => pickBuiltIn(mod.id as ModelId)}
+                      className={cn(
+                        "flex items-start gap-2 rounded-md px-2 py-1.5 text-left text-[11.5px] hover:bg-accent",
+                        mod.id === defaultModel && "bg-accent/50",
+                      )}
+                    >
+                      <span className="flex flex-1 flex-col">
+                        <span className="truncate">{mod.label}</span>
+                        <span className="truncate text-[10px] text-muted-foreground">
+                          {mod.description}
+                        </span>
+                      </span>
+                    </button>
+                  )),
+                )
+              : null,
+          )}
+          {epEntries.map((e) =>
+            e
+              ? renderGroup(
+                  e.key,
+                  <ProviderIcon provider="openai-compatible" size={13} />,
+                  e.ep.name?.trim() || e.ep.modelId?.trim() || "Custom endpoint",
+                  e.count,
+                  e.isOpen,
+                  (() => {
+                    const isDefaultEp =
+                      compatModelIdForEndpoint(e.ep.id) === defaultModel;
+                    return e.models.map((mid) => (
+                      <button
+                        key={mid}
+                        type="button"
+                        onClick={() => pickEndpointModel(e.ep, mid)}
+                        className={cn(
+                          "flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11.5px] hover:bg-accent",
+                          isDefaultEp && e.ep.modelId === mid && "bg-accent/50",
+                        )}
+                      >
+                        <span className="flex-1 truncate font-mono">{mid}</span>
+                        {isDefaultEp && e.ep.modelId === mid ? (
+                          <HugeiconsIcon
+                            icon={CheckmarkCircle02Icon}
+                            size={11}
+                            strokeWidth={2}
+                            className="shrink-0 text-muted-foreground"
+                          />
+                        ) : null}
+                      </button>
+                    ));
+                  })(),
+                )
+              : null,
+          )}
+          {!hasResults ? (
+            <div className="px-2 py-3 text-center text-[11px] text-muted-foreground">
+              {q === "" ? "No models" : "No matching models"}
+            </div>
+          ) : null}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -1040,6 +1222,67 @@ function LocalProviderCard({
   );
 }
 
+/** Parse an OpenAI-compatible `/models` response into a sorted, unique id list.
+ *  Handles `{data:[{id}]}`, `{models:[{id,name}]}`, and bare `[...]` shapes. */
+function extractModelIds(text: string): string[] {
+  try {
+    const json = JSON.parse(text) as unknown;
+    const arr: unknown[] = Array.isArray(json)
+      ? json
+      : Array.isArray((json as { data?: unknown[] })?.data)
+        ? (json as { data: unknown[] }).data
+        : Array.isArray((json as { models?: unknown[] })?.models)
+          ? (json as { models: unknown[] }).models
+          : [];
+    const ids = arr
+      .map((m) => {
+        if (typeof m === "string") return m;
+        const o = m as { id?: string; name?: string };
+        return o.id ?? o.name;
+      })
+      .filter((x): x is string => typeof x === "string" && x.length > 0);
+    return [...new Set(ids)].sort((a, b) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
+}
+
+/** Fetch the model list from an OpenAI-compatible endpoint via the app's
+ *  SSRF-guarded HTTP proxy. Tries `/v1/models` then `/models`. */
+async function fetchCompatModels(
+  baseURL: string,
+  key: string | null,
+): Promise<string[]> {
+  const base = baseURL.trim().replace(/\/+$/, "");
+  if (!base) throw new Error("base URL is empty");
+  const headers: Record<string, string> = {};
+  if (key) headers.Authorization = `Bearer ${key}`;
+  const candidates = /\/v\d+(\/|$)/i.test(base)
+    ? [`${base}/models`]
+    : [`${base}/v1/models`, `${base}/models`];
+  let lastErr = "no models found";
+  for (const url of candidates) {
+    try {
+      const res = await invoke<{ status: number; body: number[] }>(
+        "ai_http_request",
+        { url, method: "GET", headers, allowPrivateNetwork: true },
+      );
+      if (res.status >= 200 && res.status < 300) {
+        const text = new TextDecoder().decode(new Uint8Array(res.body));
+        const ids = extractModelIds(text);
+        if (ids.length > 0) return ids;
+        lastErr = "endpoint returned no models";
+      } else {
+        lastErr = `HTTP ${res.status}`;
+        if (res.status === 404) continue;
+      }
+    } catch (e) {
+      lastErr = e instanceof Error ? e.message : String(e);
+    }
+  }
+  throw new Error(lastErr);
+}
+
 function CustomEndpointCard({
   endpoint,
   endpointKey,
@@ -1066,6 +1309,11 @@ function CustomEndpointCard({
   const [testStatus, setTestStatus] = useState<
     "idle" | "testing" | "ok" | "fail"
   >("idle");
+  const [detectOpen, setDetectOpen] = useState(false);
+  const [detecting, setDetecting] = useState(false);
+  const [detected, setDetected] = useState<string[] | null>(null);
+  const [detectErr, setDetectErr] = useState<string | null>(null);
+  const [modelFilter, setModelFilter] = useState("");
 
   useEffect(() => setNameDraft(endpoint.name), [endpoint.name]);
   useEffect(() => setUrlDraft(endpoint.baseURL), [endpoint.baseURL]);
@@ -1086,6 +1334,37 @@ function CustomEndpointCard({
       setTestStatus("fail");
     }
   };
+
+  const detect = async () => {
+    setDetecting(true);
+    setDetectErr(null);
+    setDetected(null);
+    setModelFilter("");
+    setDetectOpen(true);
+    try {
+      const models = await fetchCompatModels(urlDraft, endpointKey);
+      setDetected(models);
+      if (models.length) void onUpdate({ models });
+    } catch (e) {
+      setDetectErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDetecting(false);
+    }
+  };
+
+  const pickModel = (id: string) => {
+    setModelDraft(id);
+    void onUpdate({ modelId: id });
+    setDetectOpen(false);
+  };
+
+  const filteredModels = useMemo(
+    () =>
+      (detected ?? []).filter((id) =>
+        id.toLowerCase().includes(modelFilter.trim().toLowerCase()),
+      ),
+    [detected, modelFilter],
+  );
 
   return (
     <div className="flex flex-col rounded-lg border border-border/60 bg-card/60">
@@ -1181,17 +1460,82 @@ function CustomEndpointCard({
           </FieldRow>
 
           <FieldRow label="Model ID">
-            <Input
-              value={modelDraft}
-              onChange={(e) => setModelDraft(e.target.value)}
-              onBlur={() => {
-                const v = modelDraft.trim();
-                if (v !== endpoint.modelId) void onUpdate({ modelId: v });
-              }}
-              placeholder="gpt-4o, qwen3-max, glm-4.6, …"
-              spellCheck={false}
-              className="h-8 font-mono text-[11.5px]"
-            />
+            <div className="flex flex-1 gap-1.5">
+              <Input
+                value={modelDraft}
+                onChange={(e) => setModelDraft(e.target.value)}
+                onBlur={() => {
+                  const v = modelDraft.trim();
+                  if (v !== endpoint.modelId) void onUpdate({ modelId: v });
+                }}
+                placeholder="gpt-4o, qwen3-max, glm-4.6, …"
+                spellCheck={false}
+                className="h-8 flex-1 font-mono text-[11.5px]"
+              />
+              <Popover open={detectOpen} onOpenChange={setDetectOpen}>
+                <PopoverAnchor asChild>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void detect()}
+                    disabled={!urlDraft.trim() || detecting}
+                    className="h-8 px-3 text-[11px]"
+                  >
+                    {detecting ? "Detecting…" : "Detect"}
+                  </Button>
+                </PopoverAnchor>
+                <PopoverContent align="end" sideOffset={6} className="w-72 p-0">
+                  <div className="flex flex-col">
+                    <div className="border-b border-border/50 p-1.5">
+                      <Input
+                        value={modelFilter}
+                        onChange={(e) => setModelFilter(e.target.value)}
+                        placeholder="Filter models…"
+                        spellCheck={false}
+                        className="h-7 text-[11px]"
+                      />
+                    </div>
+                    <div className="max-h-60 overflow-y-auto p-1">
+                      {detecting ? (
+                        <div className="px-2 py-3 text-center text-[11px] text-muted-foreground">
+                          Detecting…
+                        </div>
+                      ) : detectErr ? (
+                        <div className="px-2 py-3 text-center text-[11px] text-destructive">
+                          {detectErr}
+                        </div>
+                      ) : filteredModels.length === 0 ? (
+                        <div className="px-2 py-3 text-center text-[11px] text-muted-foreground">
+                          {detected ? "No models found" : "Click Detect"}
+                        </div>
+                      ) : (
+                        filteredModels.map((id) => (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() => pickModel(id)}
+                            className={cn(
+                              "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11px] hover:bg-accent",
+                              id === endpoint.modelId && "bg-accent/50",
+                            )}
+                          >
+                            <span className="flex-1 truncate font-mono">{id}</span>
+                            {id === endpoint.modelId ? (
+                              <HugeiconsIcon
+                                icon={CheckmarkCircle02Icon}
+                                size={11}
+                                strokeWidth={2}
+                                className="shrink-0 text-muted-foreground"
+                              />
+                            ) : null}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </div>
           </FieldRow>
 
           <FieldRow label="Context">

@@ -146,7 +146,7 @@ security(ai): tighten path guard
 
 Types: `feat`, `fix`, `chore`, `docs`, `perf`, `refactor`, `test`, `build`, `ci`, `security`.
 
-Common scopes: `terminal`, `editor`, `explorer`, `pty`, `ai`, `agents`, `settings`, `tabs`, `shortcuts`, `ui`, `git`, `preview`, `windows`, `linux`, `macos`, `wsl`.
+Common scopes: `terminal`, `editor`, `explorer`, `pty`, `ai`, `agents`, `settings`, `tabs`, `shortcuts`, `ui`, `git`, `browser`, `windows`, `linux`, `macos`, `wsl`.
 
 Within a PR, individual commit messages can be free-form (they get squashed or grouped).
 
@@ -222,7 +222,7 @@ src/                        React frontend
     git-history/            Git graph and history pane
     header/                 Top bar, search, window controls
     markdown/               Markdown preview renderer
-    preview/                Dev server, image, and web preview
+    browser/                Built-in browser (dev servers, external URLs, AI automation)
     settings/               Settings UI and preferences store
     shortcuts/              Keymap registry
     sidebar/                Activity bar and side panels

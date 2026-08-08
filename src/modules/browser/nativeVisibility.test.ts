@@ -12,14 +12,14 @@ function rect(left: number, top: number, width: number, height: number) {
   };
 }
 
-describe("native preview overlay overlap", () => {
-  it("ignores dropdowns outside the preview", () => {
+describe("native browser overlay overlap", () => {
+  it("ignores dropdowns outside the browser", () => {
     expect(rectsIntersect(rect(0, 0, 100, 30), rect(0, 40, 500, 400))).toBe(
       false,
     );
   });
 
-  it("detects overlays that cover part of the preview", () => {
+  it("detects overlays that cover part of the browser", () => {
     expect(rectsIntersect(rect(20, 20, 200, 100), rect(0, 40, 500, 400))).toBe(
       true,
     );

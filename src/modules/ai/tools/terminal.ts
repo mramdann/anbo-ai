@@ -65,7 +65,7 @@ export function buildTerminalTools(ctx: ToolContext) {
       },
     }),
 
-    open_preview: tool({
+    open_browser: tool({
       description:
         "Open a native browser tab at the given URL — restricted to localhost/loopback addresses for the local dev server. Use this after starting a dev server (e.g. `pnpm dev`, `npm run dev`) to surface the rendered page next to the terminal. To browse external sites, the user should paste the URL into the browser address bar themselves.",
       inputSchema: z.object({
@@ -96,12 +96,12 @@ export function buildTerminalTools(ctx: ToolContext) {
         if (!isLocal) {
           return {
             error:
-              "open_preview is restricted to localhost URLs. Ask the user to paste the external URL into the preview address bar instead.",
+              "open_browser is restricted to localhost URLs. Ask the user to paste the external URL into the browser address bar instead.",
             url,
           };
         }
-        const ok = ctx.openPreview(url);
-        if (!ok) return { error: "preview surface unavailable", url };
+        const ok = ctx.openBrowser(url);
+        if (!ok) return { error: "browser surface unavailable", url };
         return { url, ok: true };
       },
     }),

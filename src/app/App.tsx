@@ -55,11 +55,11 @@ import {
 } from "@/modules/header";
 import { setLspNavigator } from "@/modules/lsp";
 import {
-  beginPreviewSession,
+  beginBrowserSession,
   faviconUrlForPage,
-  type PreviewPaneHandle,
-  previewEmbedClose,
-} from "@/modules/preview";
+  type BrowserPaneHandle,
+  browserEmbedClose,
+} from "@/modules/browser";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -133,7 +133,7 @@ import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
 
 export default function App() {
   useEffect(() => {
-    void beginPreviewSession().catch(() => {});
+    void beginBrowserSession().catch(() => {});
   }, []);
 
   const {
@@ -159,7 +159,7 @@ export default function App() {
     newPrivateTab,
     openFileTab,
     pinTab,
-    newPreviewTab,
+    newBrowserTab,
     newMarkdownTab,
     setMarkdownView,
     setOverrideLanguage,
@@ -201,7 +201,7 @@ export default function App() {
   const searchInlineRef = useRef<SearchInlineHandle | null>(null);
   const terminalRefs = useRef<Map<number, TerminalPaneHandle>>(new Map());
   const editorRefs = useRef<Map<number, EditorPaneHandle>>(new Map());
-  const previewRefs = useRef<Map<number, PreviewPaneHandle>>(new Map());
+  const browserRefs = useRef<Map<number, BrowserPaneHandle>>(new Map());
   const [activeEditorHandle, setActiveEditorHandle] =
     useState<EditorPaneHandle | null>(null);
   const [gitHistoryHandle, setGitHistoryHandle] =
@@ -233,18 +233,18 @@ export default function App() {
   // Drives session disposal off the pane tree, not React lifecycles —
   // split/unsplit re-mount components but the leaf is still live.
   const liveLeavesRef = useRef<Set<number>>(new Set());
-  const livePreviewIdsRef = useRef<Set<number>>(new Set());
+  const liveBrowserIdsRef = useRef<Set<number>>(new Set());
 
   const clearWorkspaceState = useCallback(() => {
     for (const id of liveLeavesRef.current) disposeSession(id);
-    for (const id of livePreviewIdsRef.current) {
-      void previewEmbedClose(id).catch(() => {});
+    for (const id of liveBrowserIdsRef.current) {
+      void browserEmbedClose(id).catch(() => {});
     }
-    livePreviewIdsRef.current.clear();
+    liveBrowserIdsRef.current.clear();
     searchAddons.current.clear();
     terminalRefs.current.clear();
     editorRefs.current.clear();
-    previewRefs.current.clear();
+    browserRefs.current.clear();
     gitHistoryHandles.current.clear();
     gitHistoryHandleCallbacks.current.clear();
     setActiveSearchAddon(null);
@@ -443,7 +443,7 @@ export default function App() {
       // the effect below as the pane tree changes; only the tab-id-keyed
       // handles need explicit cleanup here.
       editorRefs.current.delete(id);
-      previewRefs.current.delete(id);
+      browserRefs.current.delete(id);
       closeTab(id);
     },
     [closeTab],
@@ -482,13 +482,13 @@ export default function App() {
     for (const k of [...searchAddons.current.keys()])
       if (!live.has(k)) searchAddons.current.delete(k);
 
-    const livePreviews = new Set(
-      tabs.filter((tab) => tab.kind === "preview").map((tab) => tab.id),
+    const liveBrowsers = new Set(
+      tabs.filter((tab) => tab.kind === "browser").map((tab) => tab.id),
     );
-    for (const id of livePreviewIdsRef.current) {
-      if (!livePreviews.has(id)) void previewEmbedClose(id).catch(() => {});
+    for (const id of liveBrowserIdsRef.current) {
+      if (!liveBrowsers.has(id)) void browserEmbedClose(id).catch(() => {});
     }
-    livePreviewIdsRef.current = livePreviews;
+    liveBrowserIdsRef.current = liveBrowsers;
   }, [tabs]);
 
   useEffect(() => {
@@ -855,16 +855,16 @@ export default function App() {
     (s) => s.explorerGitDecorations,
   );
 
-  const openPreviewTab = useCallback(
+  const openBrowserTab = useCallback(
     (url: string) => {
-      const id = newPreviewTab(url);
+      const id = newBrowserTab(url);
       // Focus the address bar if the URL is empty so the user can type.
       if (!url) {
-        setTimeout(() => previewRefs.current.get(id)?.focusAddressBar(), 0);
+        setTimeout(() => browserRefs.current.get(id)?.focusAddressBar(), 0);
       }
       return id;
     },
-    [newPreviewTab],
+    [newBrowserTab],
   );
 
   const splitActiveTabInDockview = useCallback(
@@ -942,7 +942,7 @@ export default function App() {
       "tab.new": openNewTab,
       "tab.newBlock": openNewBlockTab,
       "tab.newPrivate": openNewPrivateTab,
-      "tab.newPreview": () => openPreviewTab(""),
+      "tab.newBrowser": () => openBrowserTab(""),
       "tab.newEditor": () => setNewEditorOpen(true),
       "tab.close": handleCloseTabOrPane,
       "tab.next": () => stepSwitcher(1),
@@ -1012,7 +1012,7 @@ export default function App() {
       openNewTab,
       openNewBlockTab,
       openNewPrivateTab,
-      openPreviewTab,
+      openBrowserTab,
       activeSpaceId,
       selectByIndex,
       splitActiveTabInDockview,
@@ -1116,21 +1116,21 @@ export default function App() {
     [activeId],
   );
 
-  const registerPreviewHandle = useCallback(
-    (id: number, h: PreviewPaneHandle | null) => {
-      if (h) previewRefs.current.set(id, h);
-      else previewRefs.current.delete(id);
+  const registerBrowserHandle = useCallback(
+    (id: number, h: BrowserPaneHandle | null) => {
+      if (h) browserRefs.current.set(id, h);
+      else browserRefs.current.delete(id);
     },
     [],
   );
 
-  const handlePreviewUrl = useCallback(
+  const handleBrowserUrl = useCallback(
     (id: number, url: string) =>
       updateTab(id, { url, favicon: faviconUrlForPage(url) }),
     [updateTab],
   );
 
-  const handlePreviewTitle = useCallback(
+  const handleBrowserTitle = useCallback(
     (id: number, title: string) => updateTab(id, { title }),
     [updateTab],
   );
@@ -1392,7 +1392,7 @@ export default function App() {
             openNewBlock: openNewBlockTab,
             openNewPrivate: openNewPrivateTab,
             openNewEditor: () => setNewEditorOpen(true),
-            openNewPreview: () => openPreviewTab(""),
+            openNewBrowser: () => openBrowserTab(""),
             openGitGraph: openGitGraphFromContext,
             toggleSourceControl,
             closeActiveTabOrPane: handleCloseTabOrPane,
@@ -1422,7 +1422,7 @@ export default function App() {
       openNewTab,
       openNewBlockTab,
       openNewPrivateTab,
-      openPreviewTab,
+      openBrowserTab,
       openGitGraphFromContext,
       toggleSourceControl,
       handleCloseTabOrPane,
@@ -1470,8 +1470,8 @@ export default function App() {
     explorerRoot,
     launchCwd,
     home,
-    openPreviewTab,
-    previewRefs,
+    openBrowserTab,
+    browserRefs,
     newAgentTab,
     terminalRefs,
   });
@@ -1587,7 +1587,7 @@ export default function App() {
                             onNew={openNewTab}
                             onNewBlock={openNewBlockTab}
                             onNewPrivate={openNewPrivateTab}
-                            onNewPreview={() => openPreviewTab("")}
+                            onNewBrowser={() => openBrowserTab("")}
                             onNewEditor={() => setNewEditorOpen(true)}
                             onNewGitGraph={openGitGraphFromContext}
                             onLaunchAgents={launchAgentGroup}
@@ -1609,9 +1609,9 @@ export default function App() {
                                 registerEditorHandle={registerEditorHandle}
                                 onEditorDirtyChange={handleEditorDirty}
                                 onEditorCloseTab={handleClose}
-                                registerPreviewHandle={registerPreviewHandle}
-                                onPreviewUrlChange={handlePreviewUrl}
-                                onPreviewTitleChange={handlePreviewTitle}
+                                registerBrowserHandle={registerBrowserHandle}
+                                onBrowserUrlChange={handleBrowserUrl}
+                                onBrowserTitleChange={handleBrowserTitle}
                                 onAiDiffAccept={(id) =>
                                   respondToApproval(id, true)
                                 }
@@ -1638,7 +1638,7 @@ export default function App() {
                                 onNewPrivate={() =>
                                   newPrivateTab(activeSpaceRoot)
                                 }
-                                onNewPreview={() => openPreviewTab("")}
+                                onNewBrowser={() => openBrowserTab("")}
                                 onNewEditor={() => setNewEditorOpen(true)}
                                 onNewGitGraph={openGitGraphFromContext}
                                 onLaunchAgents={launchAgentGroup}

@@ -2,14 +2,14 @@ import { cn } from "@/lib/utils";
 import { AiDiffStack, EditorStack, GitDiffStack } from "@/modules/editor";
 import { GitHistoryStack } from "@/modules/git-history";
 import { MarkdownStack } from "@/modules/markdown";
-import { PreviewStack } from "@/modules/preview";
+import { BrowserStack } from "@/modules/browser";
 import type { Tab } from "@/modules/tabs";
 import { TerminalStack } from "@/modules/terminal";
 import type { ComponentProps } from "react";
 
 type TerminalStackProps = ComponentProps<typeof TerminalStack>;
 type EditorStackProps = ComponentProps<typeof EditorStack>;
-type PreviewStackProps = ComponentProps<typeof PreviewStack>;
+type BrowserStackProps = ComponentProps<typeof BrowserStack>;
 type AiDiffStackProps = ComponentProps<typeof AiDiffStack>;
 type GitHistoryStackProps = ComponentProps<typeof GitHistoryStack>;
 
@@ -25,9 +25,9 @@ type Props = {
   registerEditorHandle: EditorStackProps["registerHandle"];
   onEditorDirtyChange: EditorStackProps["onDirtyChange"];
   onEditorCloseTab: EditorStackProps["onCloseTab"];
-  registerPreviewHandle: PreviewStackProps["registerHandle"];
-  onPreviewUrlChange: PreviewStackProps["onUrlChange"];
-  onPreviewTitleChange: PreviewStackProps["onTitleChange"];
+  registerBrowserHandle: BrowserStackProps["registerHandle"];
+  onBrowserUrlChange: BrowserStackProps["onUrlChange"];
+  onBrowserTitleChange: BrowserStackProps["onTitleChange"];
   onAiDiffAccept: AiDiffStackProps["onAccept"];
   onAiDiffReject: AiDiffStackProps["onReject"];
   onOpenCommitFile: GitHistoryStackProps["onOpenCommitFile"];
@@ -52,9 +52,9 @@ export function WorkspaceSurface({
   registerEditorHandle,
   onEditorDirtyChange,
   onEditorCloseTab,
-  registerPreviewHandle,
-  onPreviewUrlChange,
-  onPreviewTitleChange,
+  registerBrowserHandle,
+  onBrowserUrlChange,
+  onBrowserTitleChange,
   onAiDiffAccept,
   onAiDiffReject,
   onOpenCommitFile,
@@ -64,14 +64,19 @@ export function WorkspaceSurface({
   const kind = activeTab?.kind;
   const isTerminalTab = kind === "terminal";
   const isEditorTab = kind === "editor";
-  const isPreviewTab = kind === "preview";
+  const isBrowserTab = kind === "browser";
   const isMarkdownTab = kind === "markdown";
   const isAiDiffTab = kind === "ai-diff";
   const isGitDiffTab = kind === "git-diff" || kind === "git-commit-file";
   const isGitHistoryTab = kind === "git-history";
 
   return (
-    <div className="relative h-full min-h-0">
+    <div
+      className={cn(
+        "relative h-full min-h-0",
+        isBrowserTab ? "bg-transparent" : "bg-background",
+      )}
+    >
       <div
         className={cn(
           "absolute inset-0 px-3 pt-2 pb-2",
@@ -108,16 +113,16 @@ export function WorkspaceSurface({
       <div
         className={cn(
           "absolute inset-0",
-          !isPreviewTab && "invisible pointer-events-none",
+          !isBrowserTab && "invisible pointer-events-none",
         )}
-        aria-hidden={!isPreviewTab}
+        aria-hidden={!isBrowserTab}
       >
-        <PreviewStack
+        <BrowserStack
           tabs={tabs}
           activeId={activeId}
-          registerHandle={registerPreviewHandle}
-          onUrlChange={onPreviewUrlChange}
-          onTitleChange={onPreviewTitleChange}
+          registerHandle={registerBrowserHandle}
+          onUrlChange={onBrowserUrlChange}
+          onTitleChange={onBrowserTitleChange}
         />
       </div>
       <div
