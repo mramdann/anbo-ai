@@ -291,6 +291,8 @@ pub fn run() {
             browser::embed::browser_embed_url,
             browser::embed::browser_embed_snapshot,
             browser::embed::browser_embed_set_ui_overlay,
+            browser::embed::browser_embed_set_punch_hole,
+            browser::embed::browser_embed_set_zoom,
             browser::embed::browser_embed_suspend,
             browser::embed::browser_embed_release,
             browser::embed::browser_embed_close,

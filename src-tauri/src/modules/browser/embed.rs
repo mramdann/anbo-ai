@@ -16,13 +16,14 @@ use webview2_com::{
 };
 #[cfg(windows)]
 use windows::Win32::{
-    Foundation::HGLOBAL,
+    Foundation::{HGLOBAL, RECT},
+    Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, RGN_DIFF, RGN_ERROR, SetWindowRgn},
     System::Com::{
         IStream, StructuredStorage::CreateStreamOnHGlobal, STREAM_SEEK_END, STREAM_SEEK_SET,
     },
     UI::WindowsAndMessaging::{
-        SetWindowPos, HWND_BOTTOM, HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE,
-        SWP_NOOWNERZORDER, SWP_NOSIZE,
+        GetClientRect, SetWindowPos, HWND_BOTTOM, HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
     },
 };
 
@@ -46,6 +47,19 @@ pub struct EmbedBounds {
     y: f64,
     width: f64,
     height: f64,
+}
+
+/// A rectangular "hole" to punch out of the embedded browser's window region,
+/// in physical pixels relative to the webview's own top-left corner. `None`
+/// restores the full window region. Used to let a floating HTML panel (the AI
+/// mini window) show through and remain interactive over the browser without
+/// sinking the whole webview behind the app layer.
+#[derive(serde::Deserialize, Clone, Copy)]
+pub struct PunchHole {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
 }
 
 type EmbedKey = (i64, String);
@@ -419,6 +433,68 @@ fn set_ui_overlay_z_order(webview: &tauri::Webview, active: bool) -> Result<(), 
         .map_err(|_| "timed out updating browser z-order".to_string())?
 }
 
+/// Clips the embedded browser's window region to exclude `hole` (a rectangle in
+/// physical pixels relative to the webview's own origin), or restores the full
+/// region when `hole` is `None`. While the webview stays on top (receiving
+/// input everywhere it paints), the punched-out area lets the HTML layer behind
+/// it — the AI mini window — show through and stay interactive. Region
+/// coordinates are clamped to the webview's client rect to stay well-formed.
+#[cfg(windows)]
+fn apply_punch_hole(webview: &tauri::Webview, hole: Option<PunchHole>) -> Result<(), String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    webview
+        .with_webview(move |platform| {
+            let result = (|| {
+                let controller = platform.controller();
+                let mut hwnd = windows::Win32::Foundation::HWND::default();
+                unsafe { controller.ParentWindow(&mut hwnd) }.map_err(|e| e.to_string())?;
+
+                let region = match hole {
+                    None => None,
+                    Some(h) => {
+                        let mut client = RECT::default();
+                        unsafe { GetClientRect(hwnd, &mut client) }.map_err(|e| e.to_string())?;
+                        let left = h.x.max(0);
+                        let top = h.y.max(0);
+                        let right = (h.x + h.width).min(client.right).max(left);
+                        let bottom = (h.y + h.height).min(client.bottom).max(top);
+                        let full = unsafe { CreateRectRgn(0, 0, client.right, client.bottom) };
+                        let hole_rgn = unsafe { CreateRectRgn(left, top, right, bottom) };
+                        let combined = unsafe { CreateRectRgn(0, 0, 0, 0) };
+                        let kind = unsafe {
+                            CombineRgn(Some(combined), Some(full), Some(hole_rgn), RGN_DIFF)
+                        };
+                        // Scratch regions are ours to free; `combined` is either handed
+                        // to SetWindowRgn (ownership transferred on success) or freed below.
+                        let _ = unsafe { DeleteObject(full.into()) };
+                        let _ = unsafe { DeleteObject(hole_rgn.into()) };
+                        if kind == RGN_ERROR {
+                            let _ = unsafe { DeleteObject(combined.into()) };
+                            return Err("failed to compute browser punch-hole region".to_string());
+                        }
+                        Some(combined)
+                    }
+                };
+
+                // SetWindowRgn returns nonzero on success and then takes ownership of
+                // the region. On failure we still own it and must free it ourselves.
+                let ok = unsafe { SetWindowRgn(hwnd, region, true) };
+                if ok == 0 {
+                    if let Some(r) = region {
+                        let _ = unsafe { DeleteObject(r.into()) };
+                    }
+                    return Err("SetWindowRgn rejected the browser punch-hole region".to_string());
+                }
+                Ok(())
+            })();
+            let _ = sender.send(result);
+        })
+        .map_err(|e| e.to_string())?;
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .map_err(|_| "timed out applying browser punch-hole".to_string())?
+}
+
 #[tauri::command]
 pub async fn browser_embed_set_ui_overlay(
     app: tauri::AppHandle,
@@ -449,6 +525,66 @@ pub async fn browser_embed_set_ui_overlay(
         let _ = (webview, active);
         Ok(())
     }
+}
+
+#[tauri::command]
+pub async fn browser_embed_set_punch_hole(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    tab_id: i64,
+    instance_id: String,
+    owner_id: String,
+    hole: Option<PunchHole>,
+) -> Result<(), String> {
+    ensure_main_window(&window)?;
+    validate_tab_id(tab_id)?;
+    validate_token(&instance_id)?;
+    validate_token(&owner_id)?;
+    let _lifecycle = LIFECYCLE_LOCK.lock().await;
+    ensure_current_instance(&instance_id)?;
+    if !is_active(tab_id, &instance_id, Some(&owner_id)) {
+        return Ok(());
+    }
+    let Some(webview) = app.get_webview(&embed_label(tab_id)) else {
+        return Ok(());
+    };
+
+    #[cfg(windows)]
+    return apply_punch_hole(&webview, hole);
+
+    #[cfg(not(windows))]
+    {
+        let _ = (webview, hole);
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub async fn browser_embed_set_zoom(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    tab_id: i64,
+    instance_id: String,
+    owner_id: String,
+    zoom: f64,
+) -> Result<(), String> {
+    ensure_main_window(&window)?;
+    validate_tab_id(tab_id)?;
+    validate_token(&instance_id)?;
+    validate_token(&owner_id)?;
+    let _lifecycle = LIFECYCLE_LOCK.lock().await;
+    ensure_current_instance(&instance_id)?;
+    if !is_active(tab_id, &instance_id, Some(&owner_id)) {
+        return Ok(());
+    }
+    let Some(webview) = app.get_webview(&embed_label(tab_id)) else {
+        return Ok(());
+    };
+    // `set_zoom` scales the native WebView2 surface directly. Applying
+    // `document.body.style.zoom` on top of it would compound the scale
+    // (1.1 -> ~1.21x), so we rely on the native zoom alone.
+    webview.set_zoom(zoom).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]

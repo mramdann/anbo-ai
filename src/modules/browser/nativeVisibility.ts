@@ -11,6 +11,14 @@ function isTooltip(element: Element): boolean {
   );
 }
 
+// The AI mini window is a persistent, user-positioned panel — not a transient
+// overlay. It coexists with the browser via a punched-out hole in the webview
+// (see browserEmbedSetPunchHole), so it must NOT be treated as an overlay that
+// sinks the whole webview to the bottom of the z-order.
+function isAiMiniWindow(element: Element): boolean {
+  return element.closest("[data-ai-mini-window]") !== null;
+}
+
 type Rect = Pick<DOMRect, "bottom" | "height" | "left" | "right" | "top" | "width">;
 
 export function rectsIntersect(a: Rect, b: Rect): boolean {
@@ -29,6 +37,7 @@ export function rectsIntersect(a: Rect, b: Rect): boolean {
 export function hasNativeBrowserOverlay(target?: Rect): boolean {
   for (const element of document.querySelectorAll(OVERLAY_SELECTOR)) {
     if (isTooltip(element)) continue;
+    if (isAiMiniWindow(element)) continue;
     const style = window.getComputedStyle(element);
     if (style.display === "none" || style.visibility === "hidden") continue;
     const bounds = element.getBoundingClientRect();
@@ -59,7 +68,12 @@ function subscribeOverlay(listener: () => void): () => void {
   overlayListeners.add(listener);
   if (overlaySubscribers++ === 0) {
     overlayObserver = new MutationObserver(scheduleOverlayCheck);
-    overlayObserver.observe(document.body, { childList: true, subtree: true });
+    overlayObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["style", "class", "data-state"],
+    });
     scheduleOverlayCheck();
   }
   return () => {

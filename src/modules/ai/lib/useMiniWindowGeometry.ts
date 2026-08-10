@@ -53,16 +53,26 @@ export function useMiniWindowGeometry() {
   const geom = useRef<Geom>({ x: 0, y: 0, w: 0, h: 0 });
   const frame = useRef(0);
   const pending = useRef<Geom | null>(null);
+  const lastApplied = useRef<Geom | null>(null);
 
   const flush = useCallback(() => {
     frame.current = 0;
     const el = ref.current;
     const g = pending.current;
     if (!el || !g) return;
-    el.style.left = `${g.x}px`;
-    el.style.top = `${g.y}px`;
-    el.style.width = `${g.w}px`;
-    el.style.height = `${g.h}px`;
+    if (
+      !lastApplied.current ||
+      lastApplied.current.x !== g.x ||
+      lastApplied.current.y !== g.y ||
+      lastApplied.current.w !== g.w ||
+      lastApplied.current.h !== g.h
+    ) {
+      el.style.left = `${g.x}px`;
+      el.style.top = `${g.y}px`;
+      el.style.width = `${g.w}px`;
+      el.style.height = `${g.h}px`;
+      lastApplied.current = g;
+    }
   }, []);
 
   const write = useCallback(

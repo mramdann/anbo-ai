@@ -20,11 +20,14 @@ import {
   browserEmbedDispatch,
   browserEmbedNavigate,
   browserEmbedRelease,
+  browserEmbedSetPunchHole,
   browserEmbedSetUiOverlay,
   browserEmbedSnapshot,
   browserEmbedUpdate,
   browserEmbedUrl,
+  browserEmbedSetZoom,
   toPhysicalBounds,
+  type PunchHole,
 } from "./native";
 import {
   useNativeBrowserDragActive,
@@ -95,6 +98,15 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     const disposedRef = useRef(false);
     const boundsErrorRef = useRef(false);
     const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [zoom, setZoom] = useState(1.0);
+    const lastHoleRef = useRef("");
+
+    const handleZoom = useCallback((newZoom: number) => {
+      setZoom(newZoom);
+      if (native) {
+        browserEmbedSetZoom(id, ownerIdRef.current, newZoom).catch(console.error);
+      }
+    }, [id, native]);
 
     onUrlChangeRef.current = onUrlChange;
     onTitleChangeRef.current = onTitleChange;
@@ -192,9 +204,8 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
         !!element;
       const rect = canPlace ? element.getBoundingClientRect() : null;
       const hasArea = !!rect && rect.width >= 1 && rect.height >= 1;
-      const bounds = hasArea
-        ? toPhysicalBounds(rect, window.devicePixelRatio || 1)
-        : EMPTY_BOUNDS;
+      const dpr = window.devicePixelRatio || 1;
+      const bounds = hasArea ? toPhysicalBounds(rect, dpr) : EMPTY_BOUNDS;
       const shouldShow =
         canPlace && !suppressionReadyRef.current && hasArea;
       desiredRef.current = {
@@ -207,7 +218,42 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
         visible: shouldShow,
       };
       sendDesiredBounds();
-    }, [native, sendDesiredBounds]);
+
+      // Punch a hole through the webview for the AI mini window so it can float
+      // over the browser and stay interactive without sinking the whole webview
+      // behind the app layer. The hole is the intersection (physical px, relative
+      // to the webview's own origin) of the browser content rect and the panel.
+      if (IS_WINDOWS) {
+        const mini = document.querySelector(
+          '[data-ai-mini-window][data-state="open"]',
+        ) as HTMLElement | null;
+        let hole: PunchHole | null = null;
+        if (shouldShow && rect && mini) {
+          const m = mini.getBoundingClientRect();
+          const ix = Math.max(rect.left, m.left);
+          const iy = Math.max(rect.top, m.top);
+          const ir = Math.min(rect.right, m.right);
+          const ib = Math.min(rect.bottom, m.bottom);
+          if (ir > ix && ib > iy) {
+            hole = {
+              x: Math.round((ix - rect.left) * dpr),
+              y: Math.round((iy - rect.top) * dpr),
+              width: Math.round((ir - ix) * dpr),
+              height: Math.round((ib - iy) * dpr),
+            };
+          }
+        }
+        const key = hole
+          ? `${hole.x},${hole.y},${hole.width},${hole.height}`
+          : "none";
+        if (key !== lastHoleRef.current) {
+          lastHoleRef.current = key;
+          void browserEmbedSetPunchHole(id, ownerIdRef.current, hole).catch(
+            () => {},
+          );
+        }
+      }
+    }, [id, native, sendDesiredBounds]);
 
     useEffect(() => {
       if (!native) return;
@@ -367,7 +413,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       }
       if (isSelfReferenceUrl(url)) {
         boundsErrorRef.current = false;
-        setNativeError("AnboAI cannot be opened inside its own browser pane.");
+        setNativeError("Anbo cannot be opened inside its own browser pane.");
         return;
       }
       if (url === currentUrlRef.current) return;
@@ -390,7 +436,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
           } else if (isSelfReferenceUrl(next)) {
             boundsErrorRef.current = false;
             setNativeError(
-              "AnboAI cannot be opened inside its own browser pane.",
+              "Anbo cannot be opened inside its own browser pane.",
             );
           } else {
             void browserEmbedNavigate(id, ownerIdRef.current, next).catch(
@@ -442,6 +488,8 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
           onBack={() => dispatch("back")}
           onForward={() => dispatch("forward")}
           onReload={() => dispatch("reload")}
+          zoom={zoom}
+          onZoom={handleZoom}
         />
         {showXfoHint ? (
           <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-border/60 bg-amber-500/8 px-3 text-[11px] text-amber-600 dark:text-amber-400">

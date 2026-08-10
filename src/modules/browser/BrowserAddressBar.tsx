@@ -12,6 +12,8 @@ import {
   ArrowRight01Icon,
   Globe02Icon,
   LinkSquare02Icon,
+  Add01Icon,
+  Remove01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -60,11 +62,13 @@ type Props = {
   onBack: () => void;
   onForward: () => void;
   onReload: () => void;
+  zoom?: number;
+  onZoom?: (zoom: number) => void;
 };
 
 export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
   function BrowserAddressBar(
-    { url, onSubmit, onBack, onForward, onReload },
+    { url, onSubmit, onBack, onForward, onReload, zoom, onZoom },
     ref,
   ) {
     const [draft, setDraft] = useState(url);
@@ -222,6 +226,37 @@ export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
               }}
             />
           </div>
+          {onZoom && zoom !== undefined && (
+            <div className="flex shrink-0 items-center gap-0.5 border-l border-border/50 pl-1 mr-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => onZoom(Math.max(0.1, zoom - 0.1))}
+                title="Zoom Out"
+                className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <HugeiconsIcon icon={Remove01Icon} size={14} strokeWidth={1.75} />
+              </Button>
+              <div 
+                className="flex w-9 cursor-pointer items-center justify-center text-[10px] font-medium text-muted-foreground hover:text-foreground"
+                onClick={() => onZoom(1.0)}
+                title="Reset Zoom"
+              >
+                {Math.round(zoom * 100)}%
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => onZoom(Math.min(5.0, zoom + 0.1))}
+                title="Zoom In"
+                className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <HugeiconsIcon icon={Add01Icon} size={14} strokeWidth={1.75} />
+              </Button>
+            </div>
+          )}
           <Button
             type="button"
             variant="ghost"
