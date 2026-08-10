@@ -82,12 +82,69 @@
       @media (prefers-reduced-motion: reduce) {
         #anbo-startup-progress { animation: none; transform: translateX(62%); }
       }
+      /* Window controls for the pre-React "Preparing your workspace" surface.
+         Mirrors src/components/WindowControls.tsx + the Hugeicons it renders
+         (MinusSign / Square / Cancel, viewBox 0 0 24 24, strokeWidth 2) and the
+         theme tokens from globals.css, so the startup buttons are pixel-identical
+         to the Header's. Lives inside #root → React unmounts it on first render.
+         oklch values are duplicated here because globals.css isn't loaded yet. */
+      #anbo-startup-controls {
+        position: fixed;
+        top: 0;
+        right: 0;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        padding: 6px 4px 0 0;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      #anbo-startup-controls button {
+        display: grid;
+        place-items: center;
+        width: 28px;        /* size-7 */
+        height: 28px;
+        padding: 0;
+        border: 0;
+        border-radius: 8px; /* rounded-md = radius * 0.8 */
+        background: transparent;
+        color: oklch(0.723 0.014 214.4);            /* --muted-foreground (dark) */
+        cursor: pointer;
+        transition: background-color 0.15s ease, color 0.15s ease;
+      }
+      #anbo-startup-controls button:hover {
+        background: oklch(0.275 0.011 216.9);       /* --accent (dark) */
+        color: oklch(0.987 0.002 197.1);            /* --foreground (dark) */
+      }
+      #anbo-startup-controls button[data-anbo-wc="close"]:hover {
+        background: oklch(0.704 0.191 22.216 / 0.15); /* --destructive/15 (dark) */
+        color: oklch(0.704 0.191 22.216);            /* --destructive (dark) */
+      }
+      .light #anbo-startup-controls button {
+        color: oklch(0.56 0.021 213.5);             /* --muted-foreground (light) */
+      }
+      .light #anbo-startup-controls button:hover {
+        background: oklch(0.963 0.002 197.1);       /* --accent (light) */
+        color: oklch(0.148 0.004 228.8);            /* --foreground (light) */
+      }
+      .light #anbo-startup-controls button[data-anbo-wc="close"]:hover {
+        background: oklch(0.577 0.245 27.325 / 0.15); /* --destructive/15 (light) */
+        color: oklch(0.577 0.245 27.325);           /* --destructive (light) */
+      }
+      #anbo-startup-controls svg {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
     </style>
   </head>
 
   <body>
     <div id="root">
-      <div id="anbo-startup" role="status" aria-label="Starting Anbo">
+      <div id="anbo-startup" role="status" aria-label="Starting Anbo" data-tauri-drag-region>
         <div id="anbo-startup-card">
           <p id="anbo-startup-title">Anbo</p>
           <p id="anbo-startup-status">Preparing your workspace</p>
@@ -96,7 +153,71 @@
           </div>
         </div>
       </div>
+      <div id="anbo-startup-controls" aria-hidden="true">
+        <button type="button" data-anbo-wc="minimize" aria-label="Minimize" title="Minimize">
+          <svg viewBox="0 0 24 24" width="12" height="12"><path d="M20 12L4 12"/></svg>
+        </button>
+        <button type="button" data-anbo-wc="toggle_maximize" aria-label="Maximize" title="Maximize">
+          <svg viewBox="0 0 24 24" width="12" height="12"><path d="M2.5 12C2.5 7.52166 2.5 5.28249 3.89124 3.89124C5.28249 2.5 7.52166 2.5 12 2.5C16.4783 2.5 18.7175 2.5 20.1088 3.89124C21.5 5.28249 21.5 7.52166 21.5 12C21.5 16.4783 21.5 18.7175 20.1088 20.1088C18.7175 21.5 16.4783 21.5 12 21.5C7.52166 21.5 5.28249 21.5 3.89124 20.1088C2.5 18.7175 2.5 16.4783 2.5 12Z"/></svg>
+        </button>
+        <button type="button" data-anbo-wc="close" aria-label="Close" title="Close">
+          <svg viewBox="0 0 24 24" width="14" height="14"><path d="M18 6L6.00081 17.9992M17.9992 18L6 6.00085"/></svg>
+        </button>
+      </div>
     </div>
+    <script>
+      // Window controls for the pre-React "Preparing your workspace" surface.
+      // The @tauri-apps/api bundle isn't loaded yet, so we call the window
+      // plugin directly via the core internals Tauri injects at webview boot.
+      (function () {
+        var controls = document.getElementById("anbo-startup-controls");
+        if (!controls) return;
+        function label() {
+          var meta = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.metadata;
+          return meta && meta.currentWindow && meta.currentWindow.label;
+        }
+        controls.addEventListener("click", function (e) {
+          var btn = e.target.closest && e.target.closest("[data-anbo-wc]");
+          if (!btn) return;
+          var internals = window.__TAURI_INTERNALS__;
+          var l = label();
+          if (!internals || typeof internals.invoke !== "function" || !l) return;
+          try {
+            internals.invoke("plugin:window|" + btn.getAttribute("data-anbo-wc"), { label: l });
+          } catch (err) {
+            /* Tauri internals not ready yet — ignore */
+          }
+        });
+
+        // Mirror the Header: restore icon (Copy01) when maximized, else maximize
+        // icon (Square). Re-check on viewport resize (maximize/restore fires it).
+        // Self-cleans once React unmounts the startup surface.
+        var SQUARE = '<svg viewBox="0 0 24 24" width="12" height="12"><path d="M2.5 12C2.5 7.52166 2.5 5.28249 3.89124 3.89124C5.28249 2.5 7.52166 2.5 12 2.5C16.4783 2.5 18.7175 2.5 20.1088 3.89124C21.5 5.28249 21.5 7.52166 21.5 12C21.5 16.4783 21.5 18.7175 20.1088 20.1088C18.7175 21.5 16.4783 21.5 12 21.5C7.52166 21.5 5.28249 21.5 3.89124 20.1088C2.5 18.7175 2.5 16.4783 2.5 12Z"/></svg>';
+        var RESTORE = '<svg viewBox="0 0 24 24" width="12" height="12"><path d="M9 15C9 12.1716 9 10.7574 9.87868 9.87868C10.7574 9 12.1716 9 15 9L16 9C18.8284 9 20.2426 9 21.1213 9.87868C22 10.7574 22 12.1716 22 15V16C22 18.8284 22 20.2426 21.1213 21.1213C20.2426 22 18.8284 22 16 22H15C12.1716 22 10.7574 22 9.87868 21.1213C9 20.2426 9 18.8284 9 16L9 15Z"/><path d="M16.9999 9C16.9975 6.04291 16.9528 4.51121 16.092 3.46243C15.9258 3.25989 15.7401 3.07418 15.5376 2.90796C14.4312 2 12.7875 2 9.5 2C6.21252 2 4.56878 2 3.46243 2.90796C3.25989 3.07417 3.07418 3.25989 2.90796 3.46243C2 4.56878 2 6.21252 2 9.5C2 12.7875 2 14.4312 2.90796 15.5376C3.07417 15.7401 3.25989 15.9258 3.46243 16.092C4.51121 16.9528 6.04291 16.9975 9 16.9999"/></svg>';
+        var maxBtn = controls.querySelector('[data-anbo-wc="toggle_maximize"]');
+        function syncMaximize() {
+          if (!document.getElementById("anbo-startup-controls")) {
+            window.removeEventListener("resize", syncMaximize);
+            return;
+          }
+          var internals = window.__TAURI_INTERNALS__;
+          var l = label();
+          if (!internals || typeof internals.invoke !== "function" || !l || !maxBtn) return;
+          try {
+            Promise.resolve(internals.invoke("plugin:window|is_maximized", { label: l }))
+              .then(function (isMax) {
+                if (!maxBtn || !document.getElementById("anbo-startup-controls")) return;
+                maxBtn.innerHTML = isMax ? RESTORE : SQUARE;
+                maxBtn.setAttribute("aria-label", isMax ? "Restore" : "Maximize");
+                maxBtn.setAttribute("title", isMax ? "Restore" : "Maximize");
+              })
+              .catch(function () { /* ignore */ });
+          } catch (err) { /* ignore */ }
+        }
+        syncMaximize();
+        window.addEventListener("resize", syncMaximize);
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
