@@ -16,6 +16,7 @@ import {
   Message02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useEffect, useState } from "react";
 import type { Tab } from "./lib/useTabs";
 
 function useTabAgentStatus(tab: Tab) {
@@ -108,6 +109,14 @@ function PreviewIcon({
   pixels: number;
   className: string;
 }) {
+  // Track load failure in React state — never mutate the DOM directly from
+  // onError. Removing the <img> node by hand desyncs React's DOM model and
+  // throws "removeChild: node is not a child" on the next commit (the
+  // blank-screen crash when a favicon 404s during agent-driven navigation).
+  const [errored, setErrored] = useState(false);
+  useEffect(() => {
+    setErrored(false);
+  }, [favicon]);
   return (
     <span className={`relative ${className} shrink-0`}>
       <HugeiconsIcon
@@ -116,13 +125,13 @@ function PreviewIcon({
         strokeWidth={2}
         className="absolute inset-0"
       />
-      {favicon ? (
+      {favicon && !errored ? (
         <img
           key={favicon}
           src={favicon}
           alt=""
           className={`absolute inset-0 ${className} rounded-[2px] bg-background object-contain`}
-          onError={(event) => event.currentTarget.remove()}
+          onError={() => setErrored(true)}
         />
       ) : null}
     </span>

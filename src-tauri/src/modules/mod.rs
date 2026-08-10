@@ -1,5 +1,5 @@
 pub mod agent;
-pub mod anboai;
+pub mod anbo;
 pub mod app_data;
 pub mod browser_automation;
 pub mod fs;

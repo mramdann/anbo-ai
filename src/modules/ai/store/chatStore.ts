@@ -35,6 +35,8 @@ export type Live = {
   openBrowser: (url: string) => boolean;
   navigateBrowser: (url: string) => boolean;
   getActiveBrowserTabId: () => number | null;
+  switchBrowserTab: (tabId: number) => boolean;
+  closeBrowserTab: (tabId: number) => boolean;
   spawnManagedAgent: (
     prompt: string,
     sessionId: string,
@@ -163,6 +165,8 @@ const NOOP_LIVE: Live = {
   openBrowser: () => false,
   navigateBrowser: () => false,
   getActiveBrowserTabId: () => null,
+  switchBrowserTab: () => false,
+  closeBrowserTab: () => false,
   spawnManagedAgent: () => null,
   readLeafBuffer: () => null,
 };

@@ -51,7 +51,7 @@ jobs:
           New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
           $exe = Get-ChildItem -Path "$bundleDir/nsis" -Filter "*.exe" -ErrorAction Stop | Select-Object -First 1
           if (-not $exe) { throw "No .exe installer produced by Tauri" }
-          Copy-Item $exe.FullName -Destination "$stagingDir/anboai-setup.exe"
+          Copy-Item $exe.FullName -Destination "$stagingDir/anbo-setup.exe"
           Write-Host "Staged files:"
           Get-ChildItem $stagingDir
 

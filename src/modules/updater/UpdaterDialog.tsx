@@ -40,7 +40,7 @@ function formatBytes(n: number): string {
 }
 
 export function UpdaterDialog() {
-  // The AnboAI release endpoint is not live yet. Opt in when signed releases
+  // The Anbo release endpoint is not live yet. Opt in when signed releases
   // and latest.json are published instead of logging a 404 on every startup.
   const { status, install, dismiss } = useUpdater({
     autoCheck: AUTO_UPDATE_ENABLED,

@@ -36,6 +36,8 @@ type Params = {
   launchCwd: string | null;
   home: string | null;
   openBrowserTab: (url: string) => void;
+  activateTab: (tabId: number) => void;
+  closeTab: (tabId: number) => void;
   browserRefs: RefObject<Map<number, BrowserPaneHandle>>;
   newAgentTab: (
     cwd: string | undefined,
@@ -133,6 +135,19 @@ export function useAiLiveBridge(params: Params) {
         return tabs.find((tab) => tab.id === activeId)?.kind === "browser"
           ? activeId
           : null;
+      },
+      switchBrowserTab: (tabId) => {
+        const { tabs, activateTab } = ref.current;
+        const tab = tabs.find((t) => t.id === tabId);
+        if (!tab || tab.kind !== "browser") return false;
+        activateTab(tabId);
+        return true;
+      },
+      closeBrowserTab: (tabId) => {
+        const { tabs, closeTab } = ref.current;
+        if (!tabs.some((t) => t.id === tabId)) return false;
+        closeTab(tabId);
+        return true;
       },
       spawnManagedAgent: (prompt: string, sessionId: string) => {
         const trimmed = prompt.trim();

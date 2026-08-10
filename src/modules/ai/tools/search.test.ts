@@ -29,6 +29,8 @@ function makeContext(): ToolContext {
     openBrowser: () => false,
     navigateBrowser: () => false,
     getActiveBrowserTabId: () => null,
+    switchBrowserTab: () => false,
+    closeBrowserTab: () => false,
     spawnAgent: () => null,
     readAgentOutput: () => null,
     readCache: new Map(),

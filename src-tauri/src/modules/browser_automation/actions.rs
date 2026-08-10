@@ -4,6 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
+use tauri::Webview;
 
 use crate::modules::app_data::local_data_root;
 use crate::modules::browser_automation::cdp::execute_script;
@@ -154,6 +155,7 @@ pub async fn handle_action(
             let _lock = tab_lock.lock().await;
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
+            wait_for_ready(&webview, 5000).await;
             let gen = get_next_generation(tab_id);
             let js = build_snapshot_js(gen);
 
@@ -316,10 +318,19 @@ pub async fn handle_action(
                 r#"(function() {{
                     const key = {};
                     const target = document.activeElement || document.body;
-                    target.dispatchEvent(new KeyboardEvent('keydown', {{ key: key, bubbles: true }}));
-                    target.dispatchEvent(new KeyboardEvent('keypress', {{ key: key, bubbles: true }}));
-                    target.dispatchEvent(new KeyboardEvent('keyup', {{ key: key, bubbles: true }}));
-                    return JSON.stringify({{ ok: true }});
+                    const opts = {{ key: key, bubbles: true, cancelable: true }};
+                    target.dispatchEvent(new KeyboardEvent('keydown', opts));
+                    target.dispatchEvent(new KeyboardEvent('keypress', opts));
+                    target.dispatchEvent(new KeyboardEvent('keyup', opts));
+                    // Synthetic key events don't trigger the browser's native
+                    // form-submission on Enter, so submit the active form
+                    // explicitly. requestSubmit() fires submit handlers and
+                    // validation like a real submit.
+                    let submitted = false;
+                    if (key === 'Enter' && target && target.form) {{
+                        try {{ target.form.requestSubmit(); submitted = true; }} catch (e) {{}}
+                    }}
+                    return JSON.stringify({{ ok: true, submitted: submitted }});
                 }})();"#,
                 serde_json::to_string(key).unwrap()
             );
@@ -429,10 +440,261 @@ pub async fn handle_action(
             ))
         }
 
+        "select_option" | "select" => {
+            let tab_id = extract_tab_id(&params)?;
+            let ref_id = extract_ref(&params)?;
+            let value = params.get("value").and_then(|v| v.as_str()).ok_or_else(|| {
+                (
+                    error_codes::INVALID_REQUEST.to_string(),
+                    "missing 'value' parameter".to_string(),
+                )
+            })?;
+            let tab_lock = get_tab_lock(tab_id);
+            let _lock = tab_lock.lock().await;
+            let webview = get_embed_webview(app, tab_id)
+                .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
+            let cur_gen = get_current_generation(tab_id);
+            let ref_json = serde_json::to_string(&ref_id).unwrap();
+            let value_json = serde_json::to_string(value).unwrap();
+            let js = format!(
+                r#"(function() {{
+                    const refId = {};
+                    const el = document.querySelector(`[data-anbo-ref="${{CSS.escape(refId)}}"]`);
+                    if (!el) return JSON.stringify({{ ok: false, error: "stale_ref" }});
+                    const gen = el.getAttribute('data-anbo-gen');
+                    if (gen !== "gen-{}") return JSON.stringify({{ ok: false, error: "stale_ref" }});
+                    if (el.tagName !== 'SELECT') return JSON.stringify({{ ok: false, error: "not_a_select" }});
+                    const want = {};
+                    let matched = null;
+                    for (const opt of el.options) {{
+                        const label = (opt.textContent || '').trim();
+                        if (opt.value === want || label === want) {{ matched = opt; break; }}
+                    }}
+                    if (!matched) return JSON.stringify({{ ok: false, error: "option_not_found", want: want }});
+                    el.focus();
+                    el.value = matched.value;
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    return JSON.stringify({{ ok: true, value: matched.value, label: (matched.textContent || '').trim() }});
+                }})();"#,
+                ref_json, cur_gen, value_json
+            );
+            let res = execute_script(&webview, &js)
+                .await
+                .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
+            let unquoted: String = serde_json::from_str(&res).unwrap_or(res);
+            let parsed: Value = serde_json::from_str(&unquoted).unwrap_or_default();
+            if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                Ok(json!({
+                    "tabId": tab_id,
+                    "ref": ref_id,
+                    "value": parsed.get("value").cloned().unwrap_or(Value::Null),
+                    "label": parsed.get("label").cloned().unwrap_or(Value::Null),
+                    "ok": true
+                }))
+            } else {
+                let err = parsed.get("error").and_then(|v| v.as_str()).unwrap_or("stale_ref");
+                if err == "stale_ref" {
+                    Err((
+                        error_codes::STALE_REF.to_string(),
+                        format!("element ref '{ref_id}' is stale or no longer valid"),
+                    ))
+                } else {
+                    Err((
+                        error_codes::INVALID_REQUEST.to_string(),
+                        format!("select_option on ref '{ref_id}' failed: {err}"),
+                    ))
+                }
+            }
+        }
+
+        "hover" => {
+            let tab_id = extract_tab_id(&params)?;
+            let ref_id = extract_ref(&params)?;
+            let tab_lock = get_tab_lock(tab_id);
+            let _lock = tab_lock.lock().await;
+            let webview = get_embed_webview(app, tab_id)
+                .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
+            let cur_gen = get_current_generation(tab_id);
+            let ref_json = serde_json::to_string(&ref_id).unwrap();
+            let js = format!(
+                r#"(function() {{
+                    const refId = {};
+                    const el = document.querySelector(`[data-anbo-ref="${{CSS.escape(refId)}}"]`);
+                    if (!el) return JSON.stringify({{ ok: false, error: "stale_ref" }});
+                    const gen = el.getAttribute('data-anbo-gen');
+                    if (gen !== "gen-{}") return JSON.stringify({{ ok: false, error: "stale_ref" }});
+                    el.scrollIntoView({{ block: 'center' }});
+                    const r = el.getBoundingClientRect();
+                    const x = r.left + r.width / 2;
+                    const y = r.top + r.height / 2;
+                    const opts = {{ bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }};
+                    el.dispatchEvent(new MouseEvent('mouseover', opts));
+                    el.dispatchEvent(new MouseEvent('mousemove', opts));
+                    el.dispatchEvent(new MouseEvent('mouseenter', {{ bubbles: false, cancelable: false, clientX: x, clientY: y, view: window }}));
+                    return JSON.stringify({{ ok: true }});
+                }})();"#,
+                ref_json, cur_gen
+            );
+            let res = execute_script(&webview, &js)
+                .await
+                .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
+            let unquoted: String = serde_json::from_str(&res).unwrap_or(res);
+            let parsed: Value = serde_json::from_str(&unquoted).unwrap_or_default();
+            if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                Ok(json!({ "tabId": tab_id, "ref": ref_id, "ok": true }))
+            } else {
+                Err((
+                    error_codes::STALE_REF.to_string(),
+                    format!("element ref '{ref_id}' is stale or no longer valid"),
+                ))
+            }
+        }
+
+        "scroll_to_element" | "scroll_into_view" => {
+            let tab_id = extract_tab_id(&params)?;
+            let ref_id = extract_ref(&params)?;
+            let tab_lock = get_tab_lock(tab_id);
+            let _lock = tab_lock.lock().await;
+            let webview = get_embed_webview(app, tab_id)
+                .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
+            let cur_gen = get_current_generation(tab_id);
+            let ref_json = serde_json::to_string(&ref_id).unwrap();
+            let js = format!(
+                r#"(function() {{
+                    const refId = {};
+                    const el = document.querySelector(`[data-anbo-ref="${{CSS.escape(refId)}}"]`);
+                    if (!el) return JSON.stringify({{ ok: false, error: "stale_ref" }});
+                    const gen = el.getAttribute('data-anbo-gen');
+                    if (gen !== "gen-{}") return JSON.stringify({{ ok: false, error: "stale_ref" }});
+                    el.scrollIntoView({{ block: 'center', inline: 'center' }});
+                    const r = el.getBoundingClientRect();
+                    return JSON.stringify({{ ok: true, rect: {{ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }} }});
+                }})();"#,
+                ref_json, cur_gen
+            );
+            let res = execute_script(&webview, &js)
+                .await
+                .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
+            let unquoted: String = serde_json::from_str(&res).unwrap_or(res);
+            let parsed: Value = serde_json::from_str(&unquoted).unwrap_or_default();
+            if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                Ok(json!({
+                    "tabId": tab_id,
+                    "ref": ref_id,
+                    "rect": parsed.get("rect").cloned().unwrap_or(Value::Null),
+                    "ok": true
+                }))
+            } else {
+                Err((
+                    error_codes::STALE_REF.to_string(),
+                    format!("element ref '{ref_id}' is stale or no longer valid"),
+                ))
+            }
+        }
+
+        "get_text" => {
+            let tab_id = extract_tab_id(&params)?;
+            let ref_id = params.get("ref").and_then(|v| v.as_str());
+            let max_length = params.get("maxLength").and_then(|v| v.as_u64()).unwrap_or(8000);
+            let tab_lock = get_tab_lock(tab_id);
+            let _lock = tab_lock.lock().await;
+            let webview = get_embed_webview(app, tab_id)
+                .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
+            wait_for_ready(&webview, 5000).await;
+            let ref_json = serde_json::to_string(ref_id.unwrap_or("")).unwrap();
+            let js = format!(
+                r#"(function() {{
+                    const refId = {};
+                    let el = null;
+                    if (refId) {{
+                        el = document.querySelector(`[data-anbo-ref="${{CSS.escape(refId)}}"]`);
+                        if (!el) return JSON.stringify({{ ok: false, error: "stale_ref" }});
+                    }} else {{
+                        el = document.body;
+                    }}
+                    if (!el) return JSON.stringify({{ ok: false, error: "no_body" }});
+                    const text = el.innerText || el.textContent || '';
+                    const max = {};
+                    let truncated = false;
+                    let out = text;
+                    if (text.length > max) {{ out = text.slice(0, max); truncated = true; }}
+                    return JSON.stringify({{ ok: true, text: out, truncated: truncated, totalLength: text.length }});
+                }})();"#,
+                ref_json, max_length
+            );
+            let res = execute_script(&webview, &js)
+                .await
+                .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
+            let unquoted: String = serde_json::from_str(&res).unwrap_or(res);
+            let parsed: Value = serde_json::from_str(&unquoted).unwrap_or_default();
+            if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                Ok(json!({
+                    "tabId": tab_id,
+                    "ref": ref_id,
+                    "text": parsed.get("text").cloned().unwrap_or(Value::Null),
+                    "truncated": parsed.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false),
+                    "totalLength": parsed.get("totalLength").and_then(|v| v.as_u64()).unwrap_or(0)
+                }))
+            } else {
+                let err = parsed.get("error").and_then(|v| v.as_str()).unwrap_or("stale_ref");
+                Err((
+                    error_codes::STALE_REF.to_string(),
+                    format!("get_text failed: {err}"),
+                ))
+            }
+        }
+
+        "get_page_info" | "page_info" => {
+            let tab_id = extract_tab_id(&params)?;
+            let tab_lock = get_tab_lock(tab_id);
+            let _lock = tab_lock.lock().await;
+            let webview = get_embed_webview(app, tab_id)
+                .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
+            wait_for_ready(&webview, 5000).await;
+            let title_res = execute_script(&webview, "document.title")
+                .await
+                .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
+            let url_res = execute_script(&webview, "window.location.href")
+                .await
+                .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
+            let title = title_res.trim_matches('"').to_string();
+            let url = url_res.trim_matches('"').to_string();
+            Ok(json!({ "tabId": tab_id, "title": title, "url": url }))
+        }
+
         _ => Err((
             error_codes::INVALID_REQUEST.to_string(),
             format!("unknown method '{method}'"),
         )),
+    }
+}
+
+/// Poll the embed webview until its document is interactive/complete with a
+/// body, so reads (snapshot / get_text / get_page_info) issued right after a
+/// `navigate` don't race the page load and return empty/no_body. Best-effort:
+/// returns once ready or after `timeout_ms` — never errors, callers proceed.
+async fn wait_for_ready(webview: &Webview, timeout_ms: u64) {
+    let start = SystemTime::now();
+    loop {
+        let ready = execute_script(webview, "document.readyState")
+            .await
+            .unwrap_or_default()
+            .trim_matches('"')
+            .to_string();
+        if ready == "interactive" || ready == "complete" {
+            let has_body = execute_script(webview, "!!document.body")
+                .await
+                .unwrap_or_default();
+            if has_body.trim() == "true" {
+                return;
+            }
+        }
+        let elapsed = start.elapsed().map(|d| d.as_millis() as u64).unwrap_or(0);
+        if elapsed >= timeout_ms {
+            return;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
     }
 }
 

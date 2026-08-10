@@ -202,6 +202,10 @@ html[data-native-browser-live="true"]
   background: transparent !important;
 }
 
+html[data-native-browser-live="true"] #root {
+  border-color: var(--background) !important;
+}
+
 html[data-native-browser-live="true"] .dockview-theme-anbo-workspace {
   --dv-group-view-background-color: transparent;
   --dv-sash-color: var(--border);

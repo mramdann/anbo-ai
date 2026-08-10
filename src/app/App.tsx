@@ -1218,7 +1218,7 @@ export default function App() {
     gitHistoryHandle,
   ]);
 
-  const activeCwd = activeTerminalLeafCwd;
+  const activeCwd = activeTerminalLeafCwd ?? explorerRoot;
 
   const handleNewSpace = useCallback(() => {
     const { spaces, create, setActive } = useSpaces.getState();
@@ -1471,6 +1471,8 @@ export default function App() {
     launchCwd,
     home,
     openBrowserTab,
+    activateTab: setActiveId,
+    closeTab,
     browserRefs,
     newAgentTab,
     terminalRefs,
@@ -1479,12 +1481,13 @@ export default function App() {
   const shell = (
     <ThemeProvider>
       <TooltipProvider>
-        <div className="anbo-app-shell relative flex h-screen flex-col overflow-hidden bg-background text-foreground">
+        <div className="anbo-app-shell relative flex h-full flex-col overflow-hidden bg-background text-foreground">
           {showLanding ? (
             <LandingPage
               onPick={handlePickFolder}
               onUseHome={handleUseHome}
               home={home}
+              showWindowControls
             />
           ) : (
             <>

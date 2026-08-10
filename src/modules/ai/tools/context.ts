@@ -17,6 +17,10 @@ export type ToolContext = {
   navigateBrowser: (url: string) => boolean;
   /** Active native browser tab, or null when another surface is active. */
   getActiveBrowserTabId: () => number | null;
+  /** Switch the active browser tab to the given id. False if not a browser tab. */
+  switchBrowserTab: (tabId: number) => boolean;
+  /** Close the browser tab with the given id. False if no such tab. */
+  closeBrowserTab: (tabId: number) => boolean;
   /** Spawn a Claude Code agent in a new terminal tab, bound to this session. */
   spawnAgent: (prompt: string) => { tabId: number; leafId: number } | null;
   /** Read the terminal scrollback tail of a managed agent's leaf. */

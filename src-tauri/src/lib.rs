@@ -1,7 +1,7 @@
 pub mod modules;
 
 use modules::{
-    agent, anboai, app_data, browser_automation, fs, git, history, lsp, net, browser, pty, secrets,
+    agent, anbo, app_data, browser_automation, fs, git, history, lsp, net, browser, pty, secrets,
     shell, workspace,
 };
 use std::path::PathBuf;
@@ -335,7 +335,7 @@ pub fn run() {
             open_settings_window,
             agent::agent_enable_hooks,
             agent::agent_hooks_status,
-            anboai::resume::anboai_find_claude_session,
+            anbo::resume::anbo_find_claude_session,
             secrets::secrets_get,
             secrets::secrets_set,
             secrets::secrets_delete,

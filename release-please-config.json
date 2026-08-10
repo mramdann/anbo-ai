@@ -3,7 +3,7 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "package-name": "anboai",
+      "package-name": "anbo",
       "include-v-in-tag": true,
       "include-component-in-tag": false,
       "extra-files": [

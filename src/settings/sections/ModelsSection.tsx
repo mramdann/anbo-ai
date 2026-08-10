@@ -1313,7 +1313,6 @@ function CustomEndpointCard({
   const [detecting, setDetecting] = useState(false);
   const [detected, setDetected] = useState<string[] | null>(null);
   const [detectErr, setDetectErr] = useState<string | null>(null);
-  const [modelFilter, setModelFilter] = useState("");
 
   useEffect(() => setNameDraft(endpoint.name), [endpoint.name]);
   useEffect(() => setUrlDraft(endpoint.baseURL), [endpoint.baseURL]);
@@ -1339,7 +1338,6 @@ function CustomEndpointCard({
     setDetecting(true);
     setDetectErr(null);
     setDetected(null);
-    setModelFilter("");
     setDetectOpen(true);
     try {
       const models = await fetchCompatModels(urlDraft, endpointKey);
@@ -1361,9 +1359,9 @@ function CustomEndpointCard({
   const filteredModels = useMemo(
     () =>
       (detected ?? []).filter((id) =>
-        id.toLowerCase().includes(modelFilter.trim().toLowerCase()),
+        id.toLowerCase().includes(modelDraft.trim().toLowerCase()),
       ),
-    [detected, modelFilter],
+    [detected, modelDraft],
   );
 
   return (
@@ -1461,40 +1459,42 @@ function CustomEndpointCard({
 
           <FieldRow label="Model ID">
             <div className="flex flex-1 gap-1.5">
-              <Input
-                value={modelDraft}
-                onChange={(e) => setModelDraft(e.target.value)}
-                onBlur={() => {
-                  const v = modelDraft.trim();
-                  if (v !== endpoint.modelId) void onUpdate({ modelId: v });
-                }}
-                placeholder="gpt-4o, qwen3-max, glm-4.6, …"
-                spellCheck={false}
-                className="h-8 flex-1 font-mono text-[11.5px]"
-              />
               <Popover open={detectOpen} onOpenChange={setDetectOpen}>
                 <PopoverAnchor asChild>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void detect()}
-                    disabled={!urlDraft.trim() || detecting}
-                    className="h-8 px-3 text-[11px]"
-                  >
-                    {detecting ? "Detecting…" : "Detect"}
-                  </Button>
+                  <Input
+                    value={modelDraft}
+                    onChange={(e) => {
+                      setModelDraft(e.target.value);
+                      if (detected && detected.length > 0) setDetectOpen(true);
+                    }}
+                    onFocus={() => {
+                      if (detected && detected.length > 0) setDetectOpen(true);
+                    }}
+                    onBlur={() => {
+                      const v = modelDraft.trim();
+                      if (v !== endpoint.modelId) void onUpdate({ modelId: v });
+                    }}
+                    placeholder="gpt-4o, qwen3-max, glm-4.6, …"
+                    spellCheck={false}
+                    className="h-8 flex-1 font-mono text-[11.5px]"
+                  />
                 </PopoverAnchor>
-                <PopoverContent align="end" sideOffset={6} className="w-72 p-0">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void detect()}
+                  disabled={!urlDraft.trim() || detecting}
+                  className="h-8 px-3 text-[11px]"
+                >
+                  {detecting ? "Detecting…" : "Detect"}
+                </Button>
+                <PopoverContent 
+                  align="start" 
+                  sideOffset={6} 
+                  className="w-[var(--radix-popover-trigger-width)] p-0"
+                  onOpenAutoFocus={(e) => e.preventDefault()}
+                >
                   <div className="flex flex-col">
-                    <div className="border-b border-border/50 p-1.5">
-                      <Input
-                        value={modelFilter}
-                        onChange={(e) => setModelFilter(e.target.value)}
-                        placeholder="Filter models…"
-                        spellCheck={false}
-                        className="h-7 text-[11px]"
-                      />
-                    </div>
                     <div className="max-h-60 overflow-y-auto p-1">
                       {detecting ? (
                         <div className="px-2 py-3 text-center text-[11px] text-muted-foreground">

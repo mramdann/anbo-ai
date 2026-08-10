@@ -431,6 +431,40 @@ function renderToolOutput(toolName: string, output: unknown): ReactNode | null {
     );
   }
 
+  if (toolName === "browser_snapshot") {
+    if (o.status === "error") {
+      const err = typeof o.error === "string" ? o.error : "Unknown error";
+      return (
+        <div className="space-y-1">
+          <div className="text-[10px] font-medium text-destructive">Error</div>
+          <div className="rounded bg-destructive/10 px-2 py-1.5 font-mono text-[11px] text-destructive whitespace-pre-wrap">
+            {err}
+          </div>
+        </div>
+      );
+    }
+
+    const snap = o.snapshot;
+    let title = "page";
+    if (snap && typeof snap === "object") {
+      const s = snap as Record<string, unknown>;
+      if (typeof s.title === "string" && s.title) title = s.title;
+    } else if (typeof snap === "string") {
+      try {
+        const parsed = JSON.parse(snap);
+        if (parsed.title) title = parsed.title;
+      } catch (e) {}
+    }
+
+    return (
+      <div className="flex items-center gap-1.5 font-mono text-[11px]">
+        <span className="text-emerald-600 dark:text-emerald-400">✓</span>
+        <span className="text-foreground">captured snapshot</span>
+        <span className="truncate text-muted-foreground">· {title}</span>
+      </div>
+    );
+  }
+
   if (toolName === "bash_run") {
     return <BashRunOutput data={o} />;
   }

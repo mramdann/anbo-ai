@@ -119,7 +119,7 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         with:
           tagName: ${{ env.RELEASE_TAG }}
-          releaseName: "anboai ${{ env.RELEASE_TAG }}"
+          releaseName: "anbo ${{ env.RELEASE_TAG }}"
           releaseBody: ${{ env.RELEASE_BODY }}
           releaseDraft: false
           prerelease: false
@@ -136,7 +136,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ env.RELEASE_TAG }}
-          releaseName: "anboai ${{ env.RELEASE_TAG }}"
+          releaseName: "anbo ${{ env.RELEASE_TAG }}"
           releaseBody: ${{ env.RELEASE_BODY }}
           releaseDraft: false
           prerelease: false
@@ -197,8 +197,8 @@ jobs:
             test ! -e "squashfs-root/usr/lib/$lib" \
               || { echo "lib still present after repack: $lib"; exit 1; }
           done
-          test -x squashfs-root/usr/bin/anboai \
-            || { echo "anboai binary missing from repacked AppImage"; exit 1; }
+          test -x squashfs-root/usr/bin/anbo \
+            || { echo "anbo binary missing from repacked AppImage"; exit 1; }
           popd >/dev/null
 
           cp "$WORK/$BASENAME" "$APPIMAGE"
@@ -227,7 +227,7 @@ jobs:
           $exe = Get-ChildItem "$bundleDir/nsis" -Filter *.exe | Select-Object -First 1
           if (-not $exe) { throw "No NSIS .exe produced by Tauri" }
           New-Item -ItemType Directory -Path signpath-staging -Force | Out-Null
-          Copy-Item $exe.FullName signpath-staging/anboai-setup.exe
+          Copy-Item $exe.FullName signpath-staging/anbo-setup.exe
           "EXE_REAL_PATH=$($exe.FullName)" | Out-File $env:GITHUB_ENV -Append
 
       - name: Upload unsigned Windows artifact
@@ -265,7 +265,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
-          $signedExe = "signed/anboai-setup.exe"
+          $signedExe = "signed/anbo-setup.exe"
           if (-not (Test-Path $signedExe)) { throw "Signed artifact missing: $signedExe" }
           $sig = Get-AuthenticodeSignature $signedExe
           if ($null -eq $sig.SignerCertificate) { throw "$signedExe is NOT Authenticode-signed" }

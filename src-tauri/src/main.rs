@@ -1,4 +1,4 @@
-// AnboAI is a desktop GUI; diagnostics are available through the log plugin.
+// Anbo is a desktop GUI; diagnostics are available through the log plugin.
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 fn main() {

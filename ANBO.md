@@ -6,7 +6,7 @@ Anbo loads `ANBO.md` from the workspace root as agent memory (similar to AGENTS.
 
 **Anbo**: open-source AI-native terminal emulator. Tauri 2 + Rust (`portable-pty`) backend, React 19 + TypeScript + xterm.js (webgl) client, BYOK AI via Vercel AI SDK v6.
 
-- Bundle id: `com.anboai.desktop`
+- Bundle id: `com.anbo.desktop`
 - Package manager: **pnpm**
 - Platforms: macOS, Linux, Windows
 - Frontend checks: `pnpm lint`, `pnpm check-types`, `pnpm test`

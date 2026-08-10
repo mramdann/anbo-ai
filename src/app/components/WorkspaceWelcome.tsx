@@ -62,7 +62,7 @@ export function WorkspaceWelcome({
           <div className="flex items-center gap-2.5">
             <img src="/logo.svg" alt="" className="size-8" />
             <span className="font-mono text-2xl font-semibold tracking-[0.08em] text-foreground">
-              anboai
+              anbo
             </span>
           </div>
           <h1 className="mt-4 font-heading text-xl font-medium tracking-tight text-foreground">

@@ -8,10 +8,12 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
+import { WindowControls } from "@/components/WindowControls";
 import { Folder01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
+import { WorkspaceConstellation } from "./WorkspaceConstellation";
 
 type LandingPageProps = {
   onPick: (dir: string, name: string) => void;
@@ -19,6 +21,9 @@ type LandingPageProps = {
   home: string | null;
   title?: string;
   description?: string;
+  /** Render min/max/close controls — use when no Header is present (e.g. the
+   * first-run landing). */
+  showWindowControls?: boolean;
 };
 
 /** First-run empty state: no workspace chosen yet. Pick a folder (and optionally name it). */
@@ -28,6 +33,7 @@ export function LandingPage({
   home,
   title = "anbo",
   description = "Choose a folder to start working in. You can name it, or leave it blank to use the folder name.",
+  showWindowControls = false,
 }: LandingPageProps) {
   const [name, setName] = useState("");
 
@@ -42,8 +48,24 @@ export function LandingPage({
   };
 
   return (
-    <div className="flex h-full w-full items-center justify-center bg-background p-8">
-      <Empty>
+    <div className="relative flex h-full w-full items-center justify-center overflow-y-auto bg-background p-8">
+      <WorkspaceConstellation />
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(circle at 50% 36%, color-mix(in oklab, var(--background) 72%, transparent), transparent 68%)",
+        }}
+      />
+      {showWindowControls ? (
+        <div
+          data-tauri-drag-region
+          className="absolute inset-x-0 top-0 z-30 flex h-9 items-stretch justify-end"
+        >
+          <WindowControls />
+        </div>
+      ) : null}
+      <Empty className="relative">
         <EmptyHeader>
           <EmptyMedia variant="icon">
             <HugeiconsIcon icon={Folder01Icon} />

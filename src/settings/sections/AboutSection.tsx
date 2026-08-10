@@ -90,7 +90,7 @@ export function AboutSection() {
         </dd>
 
         <dt className="text-muted-foreground">Bundle ID</dt>
-        <dd className="font-mono text-[11.5px]">com.anboai.desktop</dd>
+        <dd className="font-mono text-[11.5px]">com.anbo.desktop</dd>
 
         <dt className="text-muted-foreground">License</dt>
         <dd>Apache 2.0</dd>

@@ -48,7 +48,7 @@ pub struct BrowserError {
 fn descriptor_path() -> Option<PathBuf> {
     let local_data = dirs::data_local_dir()?;
     let path = local_data
-        .join("com.anboai.desktop")
+        .join("com.anbo.desktop")
         .join("runtime")
         .join("browser")
         .join("instance.json");

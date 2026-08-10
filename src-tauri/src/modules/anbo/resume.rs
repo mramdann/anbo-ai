@@ -1,4 +1,4 @@
-//! Resume strategy — IP inti anboai (port dari server/src/resume-strategy.ts +
+//! Resume strategy — IP inti anbo (port dari server/src/resume-strategy.ts +
 //! opencode-discover.ts, lihat juga desktop-rust/src/resume.rs).
 //!
 //! Tiap tab agen me-resume percakapannya SENDIRI setelah restart. CLI yang bisa
@@ -14,7 +14,7 @@ use std::collections::HashSet;
 /// Dir projects claude (port claudeProjectsDir). Override via env utk test.
 /// Default: ~/.claude/projects.
 pub fn claude_projects_dir() -> std::path::PathBuf {
-    if let Ok(p) = std::env::var("ANBOAI_CLAUDE_PROJECTS") {
+    if let Ok(p) = std::env::var("ANBO_CLAUDE_PROJECTS") {
         return std::path::PathBuf::from(p);
     }
     dirs::home_dir()
@@ -97,7 +97,7 @@ pub fn find_claude_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>) 
         }
     }
     best.map(|(id, _)| id).inspect(|id| {
-        log::info!("[anboai] discover claude → sesi {id} (cwd={cwd})");
+        log::info!("[anbo] discover claude → sesi {id} (cwd={cwd})");
     })
 }
 
@@ -105,7 +105,7 @@ pub fn find_claude_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>) 
 /// `claimed` = sesi yg sudah dipin tab lain (cegah bentrok multi-tab di cwd sama).
 /// Return UUID terbaru yang cocok, atau null.
 #[tauri::command]
-pub fn anboai_find_claude_session(
+pub fn anbo_find_claude_session(
     cwd: String,
     since_ts: u64,
     claimed: Vec<String>,
@@ -157,11 +157,11 @@ mod tests {
 
     #[test]
     fn find_returns_newest_unclaimed_and_respects_filters() {
-        // Isolasi: arahkan ANBOAI_CLAUDE_PROJECTS ke tmp dir.
-        let tmp = std::env::temp_dir().join(format!("anboai-spike-{}", std::process::id()));
+        // Isolasi: arahkan ANBO_CLAUDE_PROJECTS ke tmp dir.
+        let tmp = std::env::temp_dir().join(format!("anbo-spike-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
-        std::env::set_var("ANBOAI_CLAUDE_PROJECTS", &tmp);
+        std::env::set_var("ANBO_CLAUDE_PROJECTS", &tmp);
 
         // cwd NYATA (jadi canonicalize di encode_claude_cwd berhasil). Nama folder
         // project di-derive lewat fungsi encode yang SAMA → tak bisa mismatch.
@@ -202,7 +202,7 @@ mod tests {
             "since_ts masa depan → tak ada yg eligible"
         );
 
-        std::env::remove_var("ANBOAI_CLAUDE_PROJECTS");
+        std::env::remove_var("ANBO_CLAUDE_PROJECTS");
         let _ = fs::remove_dir_all(&tmp);
     }
 

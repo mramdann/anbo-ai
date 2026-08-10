@@ -31,6 +31,10 @@ function makeChat(sessionId: string): Chat<UIMessage> {
     navigateBrowser: (url) => useChatStore.getState().live.navigateBrowser(url),
     getActiveBrowserTabId: () =>
       useChatStore.getState().live.getActiveBrowserTabId(),
+    switchBrowserTab: (tabId) =>
+      useChatStore.getState().live.switchBrowserTab(tabId),
+    closeBrowserTab: (tabId) =>
+      useChatStore.getState().live.closeBrowserTab(tabId),
     spawnAgent: (prompt) =>
       useChatStore.getState().live.spawnManagedAgent(prompt, sessionId),
     readAgentOutput: (leafId) =>
