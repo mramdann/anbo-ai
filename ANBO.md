@@ -157,6 +157,32 @@ BYOK. Cloud providers via `@ai-sdk/*`: **OpenAI, Anthropic, Google, xAI, Cerebra
   - **Windows**: NSIS installer in `currentUser` mode (no admin required), WebView2 via `embedBootstrapper` (offline install).
 - Auto-updater configured with a public minisign key; release artifacts at `https://github.com/mramdann/anbo-ai/releases/latest/download/latest.json`.
 
+### Releasing to GitHub
+
+Releases use [release-please](.github/workflows/release-please.yml) with the **Release PR** model. Never bump versions or edit `CHANGELOG.md` by hand — release-please does both from conventional commits.
+
+1. **Land conventional commits on `main`.** `fix:` → patch, `feat:` → minor, `!` / `BREAKING CHANGE:` → major. `docs:` / `test:` / `chore:` do not bump. Version sources (`package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`) are bumped by release-please; `Cargo.lock` is auto-synced by `scripts/check-version-sync.mjs`.
+2. **release-please opens a Release PR** titled `chore(main): release X.Y.Z` on each push to `main`; it accumulates pending changes until merged.
+3. **Merge the Release PR (squash).** This creates tag `vX.Y.Z` + the GitHub Release and triggers `build-release` (`.github/workflows/release.yml`): NSIS build → SignPath signing → patch `latest.json` with the signed signature. ~10–15 min end-to-end.
+4. **Verify before announcing.** Tag exists, the `Release Please` run is `completed/success`, and the live manifest reports the new version:
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}\n" https://api.github.com/repos/mramdann/anbo-ai/git/refs/tags/vX.Y.Z   # expect 200
+   curl -sL https://github.com/mramdann/anbo-ai/releases/latest/download/latest.json | python -c "import sys,json;print(json.load(sys.stdin)['version'])"
+   ```
+   Do **not** treat assets appearing as "done" — the unsigned installer plus a preliminary `latest.json` are uploaded before SignPath re-signs and the manifest is patched. Wait for the workflow **run** to reach `completed/success`.
+
+Merging the Release PR when `gh` is not authenticated — the git credential helper holds a usable token, so use the API:
+
+```bash
+TOKEN=$(printf "protocol=https\nhost=github.com\n\n" | git credential fill 2>/dev/null | grep '^password=' | cut -d= -f2-)
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/mramdann/anbo-ai/pulls/<PR_NUMBER>/merge" -d '{"merge_method":"squash"}'
+```
+
+**Updater.** Installed apps poll `releases/latest/download/latest.json`. Since 0.12.1, auto-check is always on (30-min poll); a dismissed version is remembered so the modal does not reappear for that version, and Settings → About → "Check for updates" always re-surfaces it. Builds before 0.12.1 never auto-polled (the `VITE_UPDATER_ENABLED` gate was unset in release builds) — those devices must use the manual check.
+
+**CI does not gate releases.** `ci.yml` (frontend Test, `cargo clippy`, macOS `cargo check`) has pre-existing failures outside the release path; `build-release` runs its own `pnpm check-version` + build and is not blocked by `ci.yml`.
+
 ## Engineering backlog
 
 Reviewed 2026-08-11. Anbo is currently a private daily-use application, not a public release target. These items are not all immediate blockers for local use, but agents must not make them worse and should address the matching item when working in that subsystem. Complete P0 before the next public release.
