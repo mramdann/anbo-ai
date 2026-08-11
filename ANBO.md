@@ -157,6 +157,44 @@ BYOK. Cloud providers via `@ai-sdk/*`: **OpenAI, Anthropic, Google, xAI, Cerebra
   - **Windows**: NSIS installer in `currentUser` mode (no admin required), WebView2 via `embedBootstrapper` (offline install).
 - Auto-updater configured with a public minisign key; release artifacts at `https://github.com/mramdann/anbo-ai/releases/latest/download/latest.json`.
 
+## Engineering backlog
+
+Reviewed 2026-08-11. Anbo is currently a private daily-use application, not a public release target. These items are not all immediate blockers for local use, but agents must not make them worse and should address the matching item when working in that subsystem. Complete P0 before the next public release.
+
+### P0: public release and security boundary
+
+- **Project memory:** `readAnboMd` in `src/modules/ai/lib/transport.ts` must not read `ANBO.md` through the generic file command. Add an atomic Rust command that canonicalizes the path, verifies it remains inside the authorized workspace, applies the protected-path deny-list, rejects unsafe symlink targets, and enforces the 32 KiB limit before reading.
+- **Network SSRF:** `src-tauri/src/modules/net.rs` must normalize IPv4-mapped IPv6 addresses and validate, resolve, classify, and pin every redirect destination. Do not rely on reqwest automatic redirects for protected requests. Add redirect-to-private and mapped loopback/metadata tests.
+- **Renderer authority:** move workspace and protected-path enforcement into Rust for privileged filesystem, shell, secret, Git, and browser commands. Split main/settings capabilities, remove unused defaults, and replace `assetProtocol.scope: ["**"]` with the narrowest required scope.
+- **Browser automation:** default automation to off. Passive reads may remain approval-free, but navigation to external/private destinations, click, type, keypress, select, close, and screenshot operations require approval bound to the exact origin, target, and payload. Disabling automation must terminate existing clients and rotate its token.
+- **Untrusted Markdown:** update or override Mermaid and DOMPurify to patched versions and make renderer XSS advisories block release CI. Keep large or hostile diagrams bounded.
+- **Release gate:** releases must be drafts until the exact tag SHA passes required frontend and Rust checks and all signed artifacts plus `latest.json` validate. Do not publish partial releases. Pin release actions and downloaded release tools to immutable revisions/checksums.
+
+### P1: correctness and lifecycle
+
+- **Editor saves:** serialize saves per document and make conflict detection atomic in `fs_write_file` by passing an expected file version/hash. A separate frontend `fs_stat` followed by write is not sufficient.
+- **Process trees:** one-shot shell, background shell, and Git commands need Unix process groups and Windows Job Objects. Timeout, explicit kill, and app exit must kill descendants, bound pipe draining, and reap retained state.
+- **LSP shutdown:** never wait for the stdin mutex before signaling a stuck server. Prefer a dedicated bounded writer queue and add a blocked-stdin shutdown test.
+- **Browser locking:** use one lock order for lifecycle and per-tab locks, never retain a global lock across webview waits, cap caller-controlled waits/output, and bound named-pipe framing and DOM snapshots before allocation.
+- **AI run context:** freeze cwd, workspace root/environment, privacy state, and canonical mutation targets for each run. Tools and approvals must use that snapshot instead of mutable foreground state. Abort must cancel backend HTTP work and subagents.
+- **Tabs and spaces:** scope tab lookup, preview replacement, reset, and disposal by `spaceId`. Changing one space's environment must not destroy tabs or processes in other spaces. Guard asynchronous environment adoption and source-control refreshes with context generations.
+- **Backend state:** cap and reap background processes, shell sessions, watches, browser registries, caches, and retained logs. Explicitly clean them up during application exit.
+
+### P2: performance and long-session stability
+
+- **Startup budget:** measure the complete modulepreload and stylesheet closure from generated `index.html` and `settings.html`. The current `.size-limit.json` startup rule counts only a few chunk names and misses eagerly preloaded AI provider, LSP, workspace, and store chunks. Lazy-load provider SDKs and feature surfaces not needed at startup.
+- **Native browser:** replace the permanent 25 Hz geometry/layout polling and broad DOM `MutationObserver` scans with resize, layout, visibility, and explicit overlay events plus a low-frequency fallback. Capture drag snapshots only for the active visible tab and release base64 freeze frames after drag.
+- **AI UI and context:** avoid scanning the full conversation on every streamed token, virtualize or collapse old messages, and enforce hard per-file, per-turn, per-session, and model-context byte/token limits. Compaction must guarantee the final request fits after system prompts and output reserve.
+- **Large content:** add conservative rendering limits for Markdown, fenced-code highlighting, and AI diff views. Large files should use bounded plain-text/patch summaries or explicit opt-in.
+- **Async work:** add cancellation/generation guards to Explorer search, directory listing, breadcrumbs, source control, session loading, and key refresh. Coalesce continuous settings slider writes and fix bounded cache eviction.
+
+### P3: delivery and tests
+
+- Current release automation is Windows-only. Do not prompt Linux/macOS users for packages that are absent. Either restore tested platform builds or explicitly scope updater behavior to supported artifacts.
+- Persist updater check/dismissal state for an available version so choosing `Later` does not reopen the modal every polling interval. Add fake-timer and updater state-transition tests.
+- Add integration tests for SSRF redirects, symlinked project memory, direct privileged IPC rejection, process descendants, LSP blocked stdin, browser lock/cancellation, concurrent editor saves, cross-space tab isolation, frozen AI run context, and shutdown cleanup.
+- Frontend coverage is currently not enforced and Rust coverage has no threshold. Prefer changed-line or subsystem thresholds for security and lifecycle invariants over a broad vanity percentage.
+
 ### Known gotchas
 
 - **React 19 strict mode** double-mounts `useEffect` in dev → terminals spawn twice on first render. The first PTY is cleaned up almost immediately. The `SPAWN_LOCK` mutex serializes this; don't be alarmed by `pty opened id=1` followed by `pty closed id=1` in dev logs.
