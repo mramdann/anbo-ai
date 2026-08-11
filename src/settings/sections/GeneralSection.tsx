@@ -547,7 +547,7 @@ export function GeneralSection() {
       <div className="flex flex-col gap-2">
         <Label>Automation</Label>
         <SettingRow
-          title="Browser automation (experimental)"
+          title="Browser automation"
           description="Allow the anbo-browser CLI and MCP server to control active native browser tabs. Available on Windows only."
         >
           <Switch
