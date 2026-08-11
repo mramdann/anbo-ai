@@ -10,6 +10,7 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
+import { Streamdown } from "streamdown";
 import { useUpdater } from "./useUpdater";
 
 type DistroKey = "arch" | "debian" | "fedora";
@@ -104,9 +105,15 @@ export function UpdaterDialog() {
                   : formatBytes(status.downloaded)
                 : manual
                   ? `You're on v${manual.currentVersion}. Pick your distro and run the command, or grab the package from GitHub.`
-                  : update?.body || "A new version is ready to install."}
+                  : "A new version is ready to install."}
           </DialogDescription>
         </DialogHeader>
+
+        {update?.body && (
+          <div className="max-h-[40vh] overflow-y-auto rounded-md border border-border/40 bg-muted/20 px-3 py-2 text-xs leading-relaxed [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:break-words [&_a]:text-primary [&_a]:underline [&_h1]:mt-2 [&_h1]:text-sm [&_h1]:font-semibold [&_h2]:mt-2 [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:mt-2 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:uppercase [&_h3]:tracking-wide [&_h3]:text-muted-foreground [&_li]:my-0 [&_ol]:my-1 [&_p]:text-xs [&_ul]:my-1">
+            <Streamdown>{update.body}</Streamdown>
+          </div>
+        )}
 
         {downloading && progress !== null && (
           <Progress value={progress} className="mt-2" />
