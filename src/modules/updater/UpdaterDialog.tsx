@@ -12,8 +12,6 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
 import { useUpdater } from "./useUpdater";
 
-const AUTO_UPDATE_ENABLED = import.meta.env.VITE_UPDATER_ENABLED === "true";
-
 type DistroKey = "arch" | "debian" | "fedora";
 
 function distroCommand(key: DistroKey, version: string): string {
@@ -40,11 +38,7 @@ function formatBytes(n: number): string {
 }
 
 export function UpdaterDialog() {
-  // The Anbo release endpoint is not live yet. Opt in when signed releases
-  // and latest.json are published instead of logging a 404 on every startup.
-  const { status, install, dismiss } = useUpdater({
-    autoCheck: AUTO_UPDATE_ENABLED,
-  });
+  const { status, install, dismiss } = useUpdater();
   const [copied, setCopied] = useState(false);
   const [distro, setDistro] = useState<DistroKey>("arch");
   const manualVersion =
