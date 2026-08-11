@@ -64,11 +64,12 @@ type Props = {
   onReload: () => void;
   zoom?: number;
   onZoom?: (zoom: number) => void;
+  aiAction?: string | null;
 };
 
 export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
   function BrowserAddressBar(
-    { url, onSubmit, onBack, onForward, onReload, zoom, onZoom },
+    { url, onSubmit, onBack, onForward, onReload, zoom, onZoom, aiAction },
     ref,
   ) {
     const [draft, setDraft] = useState(url);
@@ -205,7 +206,7 @@ export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
-          <div className="flex min-w-0 flex-1 items-center">
+          <div className="relative flex flex-1 items-center">
             <Input
               ref={inputRef}
               value={draft}
@@ -225,6 +226,12 @@ export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
                 }
               }}
             />
+            {aiAction && (
+              <div className="absolute right-8 z-10 flex items-center gap-1.5 rounded-md border border-indigo-500/40 bg-indigo-500/15 px-2 py-0.5 text-[10px] font-medium text-indigo-700 shadow-sm backdrop-blur-sm dark:border-indigo-400/30 dark:text-indigo-300 dark:bg-indigo-900/30 animate-in fade-in zoom-in duration-200 pointer-events-none">
+                <span className="flex h-1.5 w-1.5 rounded-full bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,1)] animate-pulse" />
+                AI: {aiAction}
+              </div>
+            )}
           </div>
           {onZoom && zoom !== undefined && (
             <div className="flex shrink-0 items-center gap-0.5 border-l border-border/50 pl-1 mr-1">

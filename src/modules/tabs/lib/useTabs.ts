@@ -69,6 +69,8 @@ export type BrowserTab = TabBase & {
   title: string;
   url: string;
   favicon?: string;
+  /** True while the tab's page is navigating/loading. Drives the tab spinner. */
+  loading?: boolean;
 };
 
 export type MarkdownTab = TabBase & {
@@ -144,6 +146,7 @@ export type TabPatch = Partial<{
   /** Empty string resets a terminal tab to its cwd-derived name. */
   customTitle: string;
   overrideLanguage: string | null;
+  loading: boolean;
 }>;
 
 export type GitDiffOpenInput = {
@@ -1060,6 +1063,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
             ...(patch.url !== undefined && {
               url: patch.url,
             }),
+            ...(patch.loading !== undefined && { loading: patch.loading }),
           };
         }
         if (x.kind === "markdown") {

@@ -51,6 +51,7 @@ type Props = {
   visible: boolean;
   onUrlChange: (url: string) => void;
   onTitleChange: (title: string) => void;
+  onLoadingChange?: (loading: boolean) => void;
 };
 
 type DesiredBounds = {
@@ -60,6 +61,10 @@ type DesiredBounds = {
 };
 
 const EMPTY_BOUNDS = { x: 0, y: 0, width: 0, height: 0 };
+// How long the "AI is driving this browser" pulse stays lit after the last
+// automation action. Bridges the gap between rapid actions so the indicator
+// holds steady for an entire AI session, then clears shortly after it stops.
+const AI_ACTIVITY_GRACE_MS = 8000;
 const mountedOwners = new Map<number, string>();
 const pendingReleases = new Map<number, ReturnType<typeof setTimeout>>();
 const visibleNativeBrowsers = new Set<number>();
@@ -73,7 +78,10 @@ function syncNativeBrowserSurface(): void {
 }
 
 export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
-  function BrowserPane({ id, url, visible, onUrlChange, onTitleChange }, ref) {
+  function BrowserPane(
+    { id, url, visible, onUrlChange, onTitleChange, onLoadingChange },
+    ref,
+  ) {
     const native = isTauri();
     const [iframeNonce, setIframeNonce] = useState(0);
     const [nativeError, setNativeError] = useState<string | null>(null);
@@ -99,7 +107,39 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     const boundsErrorRef = useRef(false);
     const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [zoom, setZoom] = useState(1.0);
+    const [aiAction, setAiAction] = useState<string | null>(null);
+    const aiIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [loading, setLoading] = useState(() => !!url);
+    const onLoadingChangeRef = useRef(onLoadingChange);
     const lastHoleRef = useRef("");
+
+    useEffect(() => {
+      const unlisten = listen("browser-automation-activity", (event) => {
+        const payload = event.payload as {
+          method: string;
+          params: { tabId?: number };
+        };
+        // Only react to actions targeting this browser tab.
+        if (payload.params?.tabId !== id) return;
+        setAiAction(payload.method);
+        // Keep the pulse lit for the whole AI session: each action resets the
+        // grace timer so the badge stays steady across rapid actions and only
+        // clears once the browser has been idle. Tracking the timer in a ref
+        // avoids overlapping timers and lets us clear it on unmount.
+        if (aiIdleTimerRef.current) clearTimeout(aiIdleTimerRef.current);
+        aiIdleTimerRef.current = setTimeout(() => {
+          setAiAction(null);
+          aiIdleTimerRef.current = null;
+        }, AI_ACTIVITY_GRACE_MS);
+      });
+      return () => {
+        unlisten.then((f) => f());
+        if (aiIdleTimerRef.current) {
+          clearTimeout(aiIdleTimerRef.current);
+          aiIdleTimerRef.current = null;
+        }
+      };
+    }, [id]);
 
     const handleZoom = useCallback((newZoom: number) => {
       setZoom(newZoom);
@@ -112,6 +152,22 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     onTitleChangeRef.current = onTitleChange;
     urlPropRef.current = url;
     visibleRef.current = visible;
+    onLoadingChangeRef.current = onLoadingChange;
+
+    // Propagate the per-tab loading flag up to the tab store (tab spinner).
+    useEffect(() => {
+      onLoadingChangeRef.current?.(loading);
+    }, [loading]);
+
+    // Safety net: the `loaded` page event is unreliable in the native webview
+    // (it sometimes never fires), so a tab could otherwise show the loading
+    // spinner forever even after the page fully rendered. Force-clear after a
+    // grace period. Cleared automatically once loading flips back to false.
+    useEffect(() => {
+      if (!loading) return;
+      const timer = setTimeout(() => setLoading(false), 6000);
+      return () => clearTimeout(timer);
+    }, [loading]);
 
     const reportNativeError = useCallback((error: unknown) => {
       boundsErrorRef.current = false;
@@ -206,8 +262,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       const hasArea = !!rect && rect.width >= 1 && rect.height >= 1;
       const dpr = window.devicePixelRatio || 1;
       const bounds = hasArea ? toPhysicalBounds(rect, dpr) : EMPTY_BOUNDS;
-      const shouldShow =
-        canPlace && !suppressionReadyRef.current && hasArea;
+      const shouldShow = canPlace && !suppressionReadyRef.current && hasArea;
       desiredRef.current = {
         key: shouldShow
           ? `show:${bounds.x},${bounds.y},${bounds.width},${bounds.height}:${currentUrl}`
@@ -383,9 +438,18 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
           !payload.url
         )
           return;
-        if (payload.kind === "loaded") return;
+        if (payload.kind === "navigated") {
+          setLoading(true);
+        } else if (payload.kind === "loaded") {
+          setLoading(false);
+          return;
+        }
         if (payload.kind === "title" && payload.title?.trim()) {
           onTitleChangeRef.current(payload.title.trim().slice(0, 200));
+          // The document has a title → it has loaded enough to identify itself.
+          // `loaded` is unreliable in the native webview, so treat the title as
+          // a secondary signal to stop the spinner once content is present.
+          setLoading(false);
         }
         currentUrlRef.current = payload.url;
         if (
@@ -419,6 +483,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       if (url === currentUrlRef.current) return;
       currentUrlRef.current = url;
       setNativeError(null);
+      setLoading(true);
       void browserEmbedNavigate(id, ownerIdRef.current, url).catch(
         reportNativeError,
       );
@@ -439,6 +504,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
               "Anbo cannot be opened inside its own browser pane.",
             );
           } else {
+            setLoading(true);
             void browserEmbedNavigate(id, ownerIdRef.current, next).catch(
               reportNativeError,
             );
@@ -451,11 +517,12 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
 
     const dispatch = useCallback(
       (action: "back" | "forward" | "reload") => {
-        if (native)
+        if (native) {
+          setLoading(true);
           void browserEmbedDispatch(id, ownerIdRef.current, action).catch(
             reportNativeError,
           );
-        else if (action === "reload") setIframeNonce((nonce) => nonce + 1);
+        } else if (action === "reload") setIframeNonce((nonce) => nonce + 1);
       },
       [id, native, reportNativeError],
     );
@@ -490,6 +557,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
           onReload={() => dispatch("reload")}
           zoom={zoom}
           onZoom={handleZoom}
+          aiAction={aiAction}
         />
         {showXfoHint ? (
           <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-border/60 bg-amber-500/8 px-3 text-[11px] text-amber-600 dark:text-amber-400">
@@ -505,7 +573,9 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
           className={
             url
               ? native
-                ? "relative min-h-0 flex-1 bg-transparent"
+                ? loading
+                  ? "relative min-h-0 flex-1 bg-background" // Solid background while loading
+                  : "relative min-h-0 flex-1 bg-transparent" // Transparent once loaded
                 : "relative min-h-0 flex-1 bg-white"
               : "relative min-h-0 flex-1 bg-background"
           }
@@ -523,6 +593,10 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
             native ? (
               nativeError ? (
                 <BrowserError message={nativeError} />
+              ) : loading ? (
+                <div className="absolute inset-0 flex items-center justify-center bg-background z-0">
+                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                </div>
               ) : null
             ) : (
               <iframe

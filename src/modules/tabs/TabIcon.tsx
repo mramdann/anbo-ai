@@ -1,4 +1,5 @@
 import { AgentIcon } from "@/modules/agents/lib/agentIcon";
+import { googleFaviconUrlForPage } from "@/modules/browser/browserInput";
 import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
 import {
   leafIds,
@@ -65,9 +66,20 @@ export function TabIcon({
     ) : null;
   }
   if (tab.kind === "browser") {
+    // While the page is loading, show a spinner in place of the favicon so the
+    // loading state sits right where the icon normally would.
+    if (tab.loading) {
+      return (
+        <span
+          aria-label="Loading"
+          className={`${iconClass} shrink-0 animate-spin rounded-full border-[1.5px] border-current border-t-transparent`}
+        />
+      );
+    }
     return (
       <PreviewIcon
         favicon={tab.favicon}
+        fallback={googleFaviconUrlForPage(tab.url)}
         pixels={pixels}
         className={iconClass}
       />
@@ -102,10 +114,12 @@ export function TabIcon({
 
 function PreviewIcon({
   favicon,
+  fallback,
   pixels,
   className,
 }: {
-  favicon?: string;
+  favicon?: string | null;
+  fallback?: string | null;
   pixels: number;
   className: string;
 }) {
@@ -113,10 +127,17 @@ function PreviewIcon({
   // onError. Removing the <img> node by hand desyncs React's DOM model and
   // throws "removeChild: node is not a child" on the next commit (the
   // blank-screen crash when a favicon 404s during agent-driven navigation).
-  const [errored, setErrored] = useState(false);
+  //
+  // Try sources in order: the site's own /favicon.ico first (works for standard
+  // + local sites), then Google's favicon service (catches sites whose icon
+  // lives at a custom <link rel="icon"> path). Fall through to the globe glyph
+  // when both fail.
+  const sources = [favicon, fallback].filter(Boolean) as string[];
+  const [index, setIndex] = useState(0);
   useEffect(() => {
-    setErrored(false);
-  }, [favicon]);
+    setIndex(0);
+  }, [favicon, fallback]);
+  const src = sources[index];
   return (
     <span className={`relative ${className} shrink-0`}>
       <HugeiconsIcon
@@ -125,13 +146,13 @@ function PreviewIcon({
         strokeWidth={2}
         className="absolute inset-0"
       />
-      {favicon && !errored ? (
+      {src ? (
         <img
-          key={favicon}
-          src={favicon}
+          key={src}
+          src={src}
           alt=""
           className={`absolute inset-0 ${className} rounded-[2px] bg-background object-contain`}
-          onError={() => setErrored(true)}
+          onError={() => setIndex((idx) => idx + 1)}
         />
       ) : null}
     </span>

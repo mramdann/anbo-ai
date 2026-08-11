@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { faviconUrlForPage, resolveBrowserInput } from "./browserInput";
+import {
+  faviconUrlForPage,
+  googleFaviconUrlForPage,
+  resolveBrowserInput,
+} from "./browserInput";
 
 describe("resolveBrowserInput", () => {
   it("keeps complete HTTP(S) URLs", () => {
@@ -44,5 +48,17 @@ describe("faviconUrlForPage", () => {
 
   it("rejects non-web URLs", () => {
     expect(faviconUrlForPage("file:///tmp/a.html")).toBeNull();
+  });
+});
+
+describe("googleFaviconUrlForPage", () => {
+  it("returns a Google favicon service URL for web pages", () => {
+    expect(googleFaviconUrlForPage("https://example.com/path?q=1")).toBe(
+      "https://www.google.com/s2/favicons?domain=example.com&sz=64",
+    );
+  });
+
+  it("rejects non-web URLs", () => {
+    expect(googleFaviconUrlForPage("file:///tmp/a.html")).toBeNull();
   });
 });

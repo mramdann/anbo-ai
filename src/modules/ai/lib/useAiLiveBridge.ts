@@ -145,7 +145,10 @@ export function useAiLiveBridge(params: Params) {
       },
       closeBrowserTab: (tabId) => {
         const { tabs, closeTab } = ref.current;
-        if (!tabs.some((t) => t.id === tabId)) return false;
+        const tab = tabs.find((t) => t.id === tabId);
+        // Guard like switchBrowserTab: only browser tabs may be closed via the
+        // browser tool — a shared id must never destroy a terminal/agent/editor.
+        if (!tab || tab.kind !== "browser") return false;
         closeTab(tabId);
         return true;
       },

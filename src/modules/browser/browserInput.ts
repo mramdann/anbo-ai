@@ -30,6 +30,23 @@ export function faviconUrlForPage(value: string): string | null {
   }
 }
 
+/**
+ * Secondary favicon source: Google's favicon service. Used as a fallback when
+ * the site's own `/favicon.ico` 404s — many sites put their icon at a custom
+ * path declared via `<link rel="icon">`, which the conventional lookup misses.
+ * Google crawls and caches these, so it resolves favicons the direct lookup
+ * can't, at the cost of a request to a public host.
+ */
+export function googleFaviconUrlForPage(value: string): string | null {
+  try {
+    const page = new URL(value);
+    if (page.protocol !== "http:" && page.protocol !== "https:") return null;
+    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(page.hostname)}&sz=64`;
+  } catch {
+    return null;
+  }
+}
+
 function isHttpUrl(value: string): boolean {
   try {
     const url = new URL(value);

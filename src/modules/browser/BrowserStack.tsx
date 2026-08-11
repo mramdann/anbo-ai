@@ -8,6 +8,7 @@ type Props = {
   activeId: number;
   onUrlChange: (id: number, url: string) => void;
   onTitleChange: (id: number, title: string) => void;
+  onLoadingChange: (id: number, loading: boolean) => void;
   registerHandle: (id: number, handle: BrowserPaneHandle | null) => void;
 };
 
@@ -16,6 +17,7 @@ export function BrowserStack({
   activeId,
   onUrlChange,
   onTitleChange,
+  onLoadingChange,
   registerHandle,
 }: Props) {
   const browserTabs = tabs.filter(
@@ -25,6 +27,7 @@ export function BrowserStack({
   const registerRef = useRef(registerHandle);
   const urlChangeRef = useRef(onUrlChange);
   const titleChangeRef = useRef(onTitleChange);
+  const loadingChangeRef = useRef(onLoadingChange);
   useEffect(() => {
     registerRef.current = registerHandle;
   }, [registerHandle]);
@@ -34,12 +37,16 @@ export function BrowserStack({
   useEffect(() => {
     titleChangeRef.current = onTitleChange;
   }, [onTitleChange]);
+  useEffect(() => {
+    loadingChangeRef.current = onLoadingChange;
+  }, [onLoadingChange]);
 
   const refCallbacks = useRef(
     new Map<number, (h: BrowserPaneHandle | null) => void>(),
   );
   const urlCallbacks = useRef(new Map<number, (url: string) => void>());
   const titleCallbacks = useRef(new Map<number, (title: string) => void>());
+  const loadingCallbacks = useRef(new Map<number, (loading: boolean) => void>());
 
   const getRefCallback = (id: number) => {
     let cb = refCallbacks.current.get(id);
@@ -65,6 +72,14 @@ export function BrowserStack({
     }
     return cb;
   };
+  const getLoadingCallback = (id: number) => {
+    let cb = loadingCallbacks.current.get(id);
+    if (!cb) {
+      cb = (loading: boolean) => loadingChangeRef.current(id, loading);
+      loadingCallbacks.current.set(id, cb);
+    }
+    return cb;
+  };
 
   useEffect(() => {
     const live = new Set(browserTabs.map((t) => t.id));
@@ -76,6 +91,9 @@ export function BrowserStack({
     }
     for (const id of titleCallbacks.current.keys()) {
       if (!live.has(id)) titleCallbacks.current.delete(id);
+    }
+    for (const id of loadingCallbacks.current.keys()) {
+      if (!live.has(id)) loadingCallbacks.current.delete(id);
     }
   }, [browserTabs]);
 
@@ -100,6 +118,7 @@ export function BrowserStack({
               visible={visible}
               onUrlChange={getUrlCallback(t.id)}
               onTitleChange={getTitleCallback(t.id)}
+              onLoadingChange={getLoadingCallback(t.id)}
             />
           </div>
         );

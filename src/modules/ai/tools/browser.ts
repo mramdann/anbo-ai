@@ -162,8 +162,25 @@ export function buildBrowserTools(ctx: ToolContext) {
       execute: async () => {
         try {
           const tabId = activeBrowserTabId(ctx);
+          const workspace = ctx.getWorkspaceRoot() ?? ctx.getCwd();
           const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({ action: "screenshot", tabId }),
+            requestJson: JSON.stringify({ action: "screenshot", tabId, workspace }),
+          });
+          return { status: "ok", result: res };
+        } catch (error) {
+          return { status: "error", error: String(error) };
+        }
+      },
+    }),
+
+    browser_console_logs: tool({
+      description: "Retrieve recent console.error and console.log entries from the active browser page.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        try {
+          const tabId = activeBrowserTabId(ctx);
+          const res = await invoke<string>("browser_automation_handle_action", {
+            requestJson: JSON.stringify({ action: "console_logs", tabId }),
           });
           return { status: "ok", result: res };
         } catch (error) {

@@ -28,6 +28,7 @@ type Props = {
   registerBrowserHandle: BrowserStackProps["registerHandle"];
   onBrowserUrlChange: BrowserStackProps["onUrlChange"];
   onBrowserTitleChange: BrowserStackProps["onTitleChange"];
+  onBrowserLoadingChange: BrowserStackProps["onLoadingChange"];
   onAiDiffAccept: AiDiffStackProps["onAccept"];
   onAiDiffReject: AiDiffStackProps["onReject"];
   onOpenCommitFile: GitHistoryStackProps["onOpenCommitFile"];
@@ -55,6 +56,7 @@ export function WorkspaceSurface({
   registerBrowserHandle,
   onBrowserUrlChange,
   onBrowserTitleChange,
+  onBrowserLoadingChange,
   onAiDiffAccept,
   onAiDiffReject,
   onOpenCommitFile,
@@ -123,6 +125,7 @@ export function WorkspaceSurface({
           registerHandle={registerBrowserHandle}
           onUrlChange={onBrowserUrlChange}
           onTitleChange={onBrowserTitleChange}
+          onLoadingChange={onBrowserLoadingChange}
         />
       </div>
       <div

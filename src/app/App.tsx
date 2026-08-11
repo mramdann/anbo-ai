@@ -1135,6 +1135,11 @@ export default function App() {
     [updateTab],
   );
 
+  const handleBrowserLoading = useCallback(
+    (id: number, loading: boolean) => updateTab(id, { loading }),
+    [updateTab],
+  );
+
   const authorizedCwds = useRef(new Set<string>());
   const handleTerminalCwd = useCallback(
     (leafId: number, cwd: string) => {
@@ -1615,6 +1620,7 @@ export default function App() {
                                 registerBrowserHandle={registerBrowserHandle}
                                 onBrowserUrlChange={handleBrowserUrl}
                                 onBrowserTitleChange={handleBrowserTitle}
+                                onBrowserLoadingChange={handleBrowserLoading}
                                 onAiDiffAccept={(id) =>
                                   respondToApproval(id, true)
                                 }
