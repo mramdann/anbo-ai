@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
-use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
+use tauri::webview::{Color, NewWindowResponse, PageLoadEvent, WebviewBuilder};
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, Rect, WebviewUrl};
 use url::Url;
+
+use crate::modules::browser_automation::registry::get_tab_lock;
 
 #[cfg(windows)]
 use base64::Engine;
@@ -227,6 +229,31 @@ fn spawn_browser_child(
     let navigation_app = app.clone();
     let title_app = app.clone();
     let builder = WebviewBuilder::new(embed_label(tab_id), WebviewUrl::External(target))
+        // Opaque background so a not-yet-painted webview (new tab, mid-load) shows
+        // a solid color instead of a transparent hole through to the desktop.
+        .background_color(Color(255, 255, 255, 255))
+        .initialization_script(
+            r#"
+            window.__anboLogs = window.__anboLogs || [];
+            const safeStringify = (arg) => {
+                try { return typeof arg === 'object' ? JSON.stringify(arg) : String(arg); }
+                catch (e) { return String(arg); }
+            };
+            const origLog = console.log;
+            console.log = function(...args) {
+                window.__anboLogs.push({ level: 'info', msg: args.map(safeStringify).join(' ') });
+                if (window.__anboLogs.length > 50) window.__anboLogs.shift();
+                origLog.apply(console, args);
+            };
+            const origErr = console.error;
+            console.error = function(...args) {
+                window.__anboLogs.push({ level: 'error', msg: args.map(safeStringify).join(' ') });
+                if (window.__anboLogs.length > 50) window.__anboLogs.shift();
+                origErr.apply(console, args);
+            };
+            "#,
+        )
+        .transparent(true)
         .on_navigation(move |target| navigation_allowed(target, navigation_app_url.as_ref()))
         .on_new_window(move |target, _features| {
             if popup_allowed(&target, popup_app_url.as_ref()) {
@@ -440,8 +467,11 @@ fn set_ui_overlay_z_order(webview: &tauri::Webview, active: bool) -> Result<(), 
 /// it — the AI mini window — show through and stay interactive. Region
 /// coordinates are clamped to the webview's client rect to stay well-formed.
 #[cfg(windows)]
-fn apply_punch_hole(webview: &tauri::Webview, hole: Option<PunchHole>) -> Result<(), String> {
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+async fn apply_punch_hole(webview: &tauri::Webview, hole: Option<PunchHole>) -> Result<(), String> {
+    // Await the webview-thread result on a tokio oneshot instead of blocking a
+    // worker thread with a synchronous mpsc recv — this command runs per-frame
+    // while the AI mini window is dragged, so it must not stall the runtime.
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     webview
         .with_webview(move |platform| {
             let result = (|| {
@@ -487,12 +517,14 @@ fn apply_punch_hole(webview: &tauri::Webview, hole: Option<PunchHole>) -> Result
                 }
                 Ok(())
             })();
-            let _ = sender.send(result);
+            let _ = tx.send(result);
         })
         .map_err(|e| e.to_string())?;
-    receiver
-        .recv_timeout(std::time::Duration::from_secs(1))
-        .map_err(|_| "timed out applying browser punch-hole".to_string())?
+    match tokio::time::timeout(std::time::Duration::from_secs(1), rx).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("browser punch-hole channel closed".to_string()),
+        Err(_) => Err("timed out applying browser punch-hole".to_string()),
+    }
 }
 
 #[tauri::command]
@@ -550,7 +582,7 @@ pub async fn browser_embed_set_punch_hole(
     };
 
     #[cfg(windows)]
-    return apply_punch_hole(&webview, hole);
+    return apply_punch_hole(&webview, hole).await;
 
     #[cfg(not(windows))]
     {
@@ -692,6 +724,10 @@ pub async fn browser_embed_navigate(
     validate_token(&instance_id)?;
     validate_token(&owner_id)?;
     let _lifecycle = LIFECYCLE_LOCK.lock().await;
+    // Serialize with IPC automation commands (navigate/back/forward/reload) on
+    // the same tab so a native navigate can't race an in-flight automation call.
+    let tab_lock = get_tab_lock(tab_id);
+    let _tab_lock = tab_lock.lock().await;
     ensure_current_instance(&instance_id)?;
     let target = parse_pane_url(&url)?;
     if is_active(tab_id, &instance_id, Some(&owner_id)) {
@@ -718,6 +754,9 @@ pub async fn browser_embed_dispatch(
     validate_token(&instance_id)?;
     validate_token(&owner_id)?;
     let _lifecycle = LIFECYCLE_LOCK.lock().await;
+    // Serialize with IPC automation commands on the same tab (see browser_embed_navigate).
+    let tab_lock = get_tab_lock(tab_id);
+    let _tab_lock = tab_lock.lock().await;
     ensure_current_instance(&instance_id)?;
     if !is_active(tab_id, &instance_id, Some(&owner_id)) {
         return Ok(());

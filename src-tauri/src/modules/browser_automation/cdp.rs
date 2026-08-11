@@ -2,6 +2,19 @@ use tauri::Webview;
 
 #[cfg(windows)]
 pub async fn execute_script(webview: &Webview, script: &str) -> Result<String, String> {
+    execute_script_with_timeout(webview, script, std::time::Duration::from_secs(10)).await
+}
+
+/// Same as [`execute_script`] but with a caller-controlled timeout. Use a short
+/// timeout (e.g. 2s) for readiness/wait polling: during navigation the WebView2
+/// script-completion callback is dropped, and a single drop must not be allowed
+/// to block for the full default timeout and consume the entire poll budget.
+#[cfg(windows)]
+pub async fn execute_script_with_timeout(
+    webview: &Webview,
+    script: &str,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
     use std::sync::{Arc, Mutex};
     use webview2_com::ExecuteScriptCompletedHandler;
     use windows::core::PCWSTR;
@@ -55,7 +68,7 @@ pub async fn execute_script(webview: &Webview, script: &str) -> Result<String, S
         })
         .map_err(|error| error.to_string())?;
 
-    tokio::time::timeout(std::time::Duration::from_secs(10), receiver)
+    tokio::time::timeout(timeout, receiver)
         .await
         .map_err(|_| "script execution timed out".to_string())?
         .map_err(|_| "script execution cancelled".to_string())?
@@ -63,5 +76,14 @@ pub async fn execute_script(webview: &Webview, script: &str) -> Result<String, S
 
 #[cfg(not(windows))]
 pub async fn execute_script(_webview: &Webview, _script: &str) -> Result<String, String> {
+    Err("browser automation is only supported on Windows".to_string())
+}
+
+#[cfg(not(windows))]
+pub async fn execute_script_with_timeout(
+    _webview: &Webview,
+    _script: &str,
+    _timeout: std::time::Duration,
+) -> Result<String, String> {
     Err("browser automation is only supported on Windows".to_string())
 }

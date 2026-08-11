@@ -17,6 +17,14 @@ pub fn claude_projects_dir() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("ANBO_CLAUDE_PROJECTS") {
         return std::path::PathBuf::from(p);
     }
+    // Legacy name from before the anbo rebrand — keep honoring it so existing
+    // setups/test harnesses aren't silently dropped, but nudge toward the new.
+    if let Ok(p) = std::env::var("ANBOAI_CLAUDE_PROJECTS") {
+        log::warn!(
+            "ANBOAI_CLAUDE_PROJECTS is deprecated; rename it to ANBO_CLAUDE_PROJECTS"
+        );
+        return std::path::PathBuf::from(p);
+    }
     dirs::home_dir()
         .map(|h| h.join(".claude").join("projects"))
         .unwrap_or_else(|| std::path::PathBuf::from(".claude/projects"))
@@ -28,12 +36,28 @@ pub fn claude_projects_dir() -> std::path::PathBuf {
 /// Dulu hanya /[\\/:]/ → cwd berspasi meleset folder → transkrip tak ketemu.
 pub fn encode_claude_cwd(cwd: &str) -> String {
     let resolved = std::fs::canonicalize(cwd)
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| strip_verbatim_prefix(&p.to_string_lossy()))
         .unwrap_or_else(|_| cwd.to_string());
     resolved
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()
+}
+
+/// Strip the `\\?\` verbatim prefix that `std::fs::canonicalize` prepends on
+/// Windows. Claude Code (Node `process.cwd()`) reports the path WITHOUT this
+/// prefix, so leaving it would make the encoded projects folder name gain
+/// leading dashes (`----C--...`) and never match the folder Claude creates.
+/// Verbatim UNC (`\\?\UNC\server\share`) maps back to the Node form
+/// (`\\server\share`). No-op on platforms that don't add the prefix.
+fn strip_verbatim_prefix(p: &str) -> String {
+    if let Some(rest) = p.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{}", rest)
+    } else if let Some(rest) = p.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        p.to_string()
+    }
 }
 
 /// UUID v4 format check: 8-4-4-4-12 hex.
@@ -153,6 +177,39 @@ mod tests {
             "D--a-OFFLINE-SCADA"
         );
         assert_eq!(encode_segments_only("FLORES (FCC)"), "FLORES--FCC-");
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_matches_node_cwd() {
+        // Windows canonicalize adds `\\?\`; Node process.cwd() (what Claude
+        // derives the projects folder from) does not. After stripping, the
+        // encoded name must NOT gain leading dashes.
+        let enc = |p: &str| -> String {
+            strip_verbatim_prefix(p)
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect()
+        };
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\C:\Users\ramdan\my-app"),
+            r"C:\Users\ramdan\my-app"
+        );
+        assert_eq!(
+            enc(r"\\?\C:\Users\ramdan\my-app"),
+            "C--Users-ramdan-my-app"
+        );
+        assert_eq!(
+            enc(r"\\?\C:\Users\ramdan\my-app"),
+            enc(r"C:\Users\ramdan\my-app"),
+            "verbatim and non-verbatim must encode identically"
+        );
+        // Verbatim UNC → Node UNC form.
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\UNC\server\share\dir"),
+            r"\\server\share\dir"
+        );
+        // No prefix (non-Windows / already Node form) → unchanged.
+        assert_eq!(strip_verbatim_prefix(r"/home/ramdan/my-app"), r"/home/ramdan/my-app");
     }
 
     #[test]

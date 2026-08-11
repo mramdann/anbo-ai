@@ -2,12 +2,13 @@ use base64::Engine;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
+use tauri::Emitter;
 use tauri::Webview;
 
 use crate::modules::app_data::local_data_root;
-use crate::modules::browser_automation::cdp::execute_script;
+use crate::modules::browser_automation::cdp::{execute_script, execute_script_with_timeout};
 use crate::modules::browser_automation::protocol::error_codes;
 use crate::modules::browser_automation::registry::{
     get_active_tabs, get_embed_webview, get_tab_lock,
@@ -16,6 +17,15 @@ use crate::modules::browser_automation::snapshot::{
     build_snapshot_js, format_snapshot, get_current_generation, get_next_generation,
     SnapshotPayload,
 };
+
+/// Per-poll timeout for `execute_script` inside readiness/wait loops. Short on
+/// purpose: while a tab is navigating, WebView2 drops the script callback, and a
+/// single dropped callback must not be allowed to eat the whole wait budget.
+const SCRIPT_POLL_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long to wait for a page to become interactive after issuing a navigation
+/// (navigate/back/forward/reload) before returning. Best-effort — the command
+/// returns `ok` regardless once this elapses.
+const NAVIGATE_READY_TIMEOUT_MS: u64 = 8000;
 
 fn artifacts_dir() -> Result<PathBuf, String> {
     let root = local_data_root()?;
@@ -64,6 +74,8 @@ pub async fn handle_action(
     method: &str,
     params: Value,
 ) -> Result<Value, (String, String)> {
+    let _ = app.emit("browser-automation-activity", json!({ "method": method, "params": params }));
+
     match method {
         "list_tabs" | "tabs" => {
             let tab_ids = get_active_tabs();
@@ -123,9 +135,12 @@ pub async fn handle_action(
                 "window.location.href = {};",
                 serde_json::to_string(url).unwrap()
             );
-            execute_script(&webview, &script)
-                .await
-                .map_err(|e| (error_codes::NAVIGATION_FAILED.to_string(), e))?;
+            // Setting location.href unloads the current document, so the script
+            // callback is routinely dropped mid-navigation — that's expected, not
+            // an error. Use a short timeout and ignore the outcome; wait_for_ready
+            // confirms the new page actually loaded before we return.
+            let _ = execute_script_with_timeout(&webview, &script, SCRIPT_POLL_TIMEOUT).await;
+            wait_for_ready(&webview, NAVIGATE_READY_TIMEOUT_MS).await;
 
             Ok(json!({ "tabId": tab_id, "url": url, "ok": true }))
         }
@@ -143,9 +158,14 @@ pub async fn handle_action(
                 "stop" => "window.stop();",
                 _ => unreachable!(),
             };
-            execute_script(&webview, js)
-                .await
-                .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
+            // reload/back/forward kick off an async navigation, so the script
+            // callback may be dropped as the document unloads — treat that as
+            // expected and wait for the page to become interactive. `stop` halts
+            // loading, so it needs no readiness gate.
+            let _ = execute_script_with_timeout(&webview, js, SCRIPT_POLL_TIMEOUT).await;
+            if method != "stop" {
+                wait_for_ready(&webview, NAVIGATE_READY_TIMEOUT_MS).await;
+            }
             Ok(json!({ "tabId": tab_id, "action": method, "ok": true }))
         }
 
@@ -325,21 +345,36 @@ pub async fn handle_action(
                     // Synthetic key events don't trigger the browser's native
                     // form-submission on Enter, so submit the active form
                     // explicitly. requestSubmit() fires submit handlers and
-                    // validation like a real submit.
+                    // validation like a real submit. Skip <textarea>: there a
+                    // real browser inserts a newline on Enter, not a submit.
                     let submitted = false;
-                    if (key === 'Enter' && target && target.form) {{
-                        try {{ target.form.requestSubmit(); submitted = true; }} catch (e) {{}}
+                    if (key === 'Enter' && target && target.form && target.tagName !== 'TEXTAREA') {{
+                        // requestSubmit() validates synchronously and, if it
+                        // passes, dispatches `submit` synchronously (before any
+                        // navigation). A validation failure does NOT throw, so
+                        // track an actual submit via the event rather than
+                        // assuming success after the call returns.
+                        const form = target.form;
+                        const onSubmit = () => {{ submitted = true; }};
+                        form.addEventListener('submit', onSubmit, {{ once: true }});
+                        try {{ form.requestSubmit(); }} catch (e) {{}}
+                        form.removeEventListener('submit', onSubmit);
                     }}
                     return JSON.stringify({{ ok: true, submitted: submitted }});
                 }})();"#,
                 serde_json::to_string(key).unwrap()
             );
 
-            execute_script(&webview, &js)
+            let res = execute_script(&webview, &js)
                 .await
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
+            let unquoted: String = serde_json::from_str(&res).unwrap_or(res);
+            let submitted = serde_json::from_str::<Value>(&unquoted)
+                .ok()
+                .and_then(|v| v.get("submitted").and_then(|s| s.as_bool()))
+                .unwrap_or(false);
 
-            Ok(json!({ "tabId": tab_id, "key": key, "ok": true }))
+            Ok(json!({ "tabId": tab_id, "key": key, "ok": true, "submitted": submitted }))
         }
 
         "scroll" => {
@@ -384,7 +419,9 @@ pub async fn handle_action(
                     "document.body ? document.body.innerText.includes({}) : false",
                     serde_json::to_string(text).unwrap()
                 );
-                let res = execute_script(&webview, &js).await.unwrap_or_default();
+                let res = execute_script_with_timeout(&webview, &js, SCRIPT_POLL_TIMEOUT)
+                    .await
+                    .unwrap_or_default();
                 if res.trim() == "true" {
                     return Ok(json!({ "tabId": tab_id, "found": true, "text": text }));
                 }
@@ -407,7 +444,16 @@ pub async fn handle_action(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
 
-            let dir = artifacts_dir().map_err(|e| (error_codes::INTERNAL.to_string(), e))?;
+            let workspace = params.get("workspace").and_then(|v| v.as_str());
+            let dir = if let Some(ws) = workspace {
+                let ws_path = PathBuf::from(ws);
+                let out_dir = ws_path.join(".anbo").join("artifacts");
+                fs::create_dir_all(&out_dir).map_err(|e| (error_codes::INTERNAL.to_string(), e.to_string()))?;
+                out_dir
+            } else {
+                artifacts_dir().map_err(|e| (error_codes::INTERNAL.to_string(), e))?
+            };
+
             let ts = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_millis())
@@ -658,9 +704,31 @@ pub async fn handle_action(
             let url_res = execute_script(&webview, "window.location.href")
                 .await
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
-            let title = title_res.trim_matches('"').to_string();
-            let url = url_res.trim_matches('"').to_string();
+            // execute_script returns the value as a JSON string (quoted + escaped);
+            // decode it properly so titles/URLs containing quotes survive. Sibling
+            // arms use the same serde_json::from_str pattern.
+            let title =
+                serde_json::from_str::<String>(&title_res).unwrap_or_else(|_| title_res.clone());
+            let url =
+                serde_json::from_str::<String>(&url_res).unwrap_or_else(|_| url_res.clone());
             Ok(json!({ "tabId": tab_id, "title": title, "url": url }))
+        }
+
+        "console_logs" => {
+            let tab_id = params
+                .get("tabId")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| (error_codes::INVALID_REQUEST.to_string(), "Missing tabId".into()))?;
+
+            let webview = get_embed_webview(app, tab_id)
+                .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
+            
+            let logs = execute_script(&webview, "JSON.stringify(window.__anboLogs || [])")
+                .await
+                .unwrap_or_else(|_| "[]".to_string());
+            
+            let logs = serde_json::from_str::<String>(&logs).unwrap_or_else(|_| logs);
+            Ok(json!({ "logs": serde_json::from_str::<Value>(&logs).unwrap_or(json!([])) }))
         }
 
         _ => Err((
@@ -677,15 +745,16 @@ pub async fn handle_action(
 async fn wait_for_ready(webview: &Webview, timeout_ms: u64) {
     let start = SystemTime::now();
     loop {
-        let ready = execute_script(webview, "document.readyState")
+        let ready = execute_script_with_timeout(webview, "document.readyState", SCRIPT_POLL_TIMEOUT)
             .await
             .unwrap_or_default()
             .trim_matches('"')
             .to_string();
         if ready == "interactive" || ready == "complete" {
-            let has_body = execute_script(webview, "!!document.body")
-                .await
-                .unwrap_or_default();
+            let has_body =
+                execute_script_with_timeout(webview, "!!document.body", SCRIPT_POLL_TIMEOUT)
+                    .await
+                    .unwrap_or_default();
             if has_body.trim() == "true" {
                 return;
             }
