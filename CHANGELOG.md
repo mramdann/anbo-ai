@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.12.2](https://github.com/mramdann/anbo-ai/compare/v0.12.1...v0.12.2) (2026-08-11)
+
+
+### Bug Fixes
+
+* **settings:** drop experimental label from browser automation ([2eafe42](https://github.com/mramdann/anbo-ai/commit/2eafe429089f623b6224c835b61bccf6be3b659e))
+* **ui:** make modal dialogs follow the UI zoom setting ([37c3159](https://github.com/mramdann/anbo-ai/commit/37c3159975fd39c9b1ac7e58874fef375b7ece94))
+* **ui:** render updater release notes as markdown ([dcb24f4](https://github.com/mramdann/anbo-ai/commit/dcb24f49129f51c59bfedebca38bf0698141e71b))
+
 ## [0.12.1](https://github.com/mramdann/anbo-ai/compare/v0.12.0...v0.12.1) (2026-08-11)
 
 
