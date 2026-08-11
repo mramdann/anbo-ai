@@ -29,3 +29,8 @@ stats.html
 
 # Generated Tauri sidecars
 src-tauri/binaries/
+
+# Local tool / workspace directories
+.anbo/
+.cate/
+.claude/
