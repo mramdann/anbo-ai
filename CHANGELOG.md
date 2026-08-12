@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/mramdann/anbo-ai/compare/v0.13.0...v0.13.1) (2026-08-12)
+
+
+### Bug Fixes
+
+* **browser:** isolate automation target from UI focus and scope per workspace ([52e5cf4](https://github.com/mramdann/anbo-ai/commit/52e5cf47d2f191134e68c9b2691e27df3ae8c4a0))
+
 ## [0.13.0](https://github.com/mramdann/anbo-ai/compare/v0.12.2...v0.13.0) (2026-08-12)
 
 
