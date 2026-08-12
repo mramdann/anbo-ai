@@ -160,6 +160,8 @@ export default function App() {
     openFileTab,
     pinTab,
     newBrowserTab,
+    activeBrowserTabIds,
+    setActiveBrowserTabId,
     newMarkdownTab,
     setMarkdownView,
     setOverrideLanguage,
@@ -856,8 +858,8 @@ export default function App() {
   );
 
   const openBrowserTab = useCallback(
-    (url: string) => {
-      const id = newBrowserTab(url);
+    (url: string, activate = true) => {
+      const id = newBrowserTab(url, activate);
       // Focus the address bar if the URL is empty so the user can type.
       if (!url) {
         setTimeout(() => browserRefs.current.get(id)?.focusAddressBar(), 0);
@@ -1478,6 +1480,9 @@ export default function App() {
     openBrowserTab,
     activateTab: setActiveId,
     closeTab,
+    activeSpaceId: activeSpaceId ?? DEFAULT_SPACE_ID,
+    activeBrowserTabIds,
+    setActiveBrowserTabId,
     browserRefs,
     newAgentTab,
     terminalRefs,

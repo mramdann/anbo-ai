@@ -35,9 +35,12 @@ type Params = {
   explorerRoot: string | null;
   launchCwd: string | null;
   home: string | null;
-  openBrowserTab: (url: string) => void;
+  openBrowserTab: (url: string, activate?: boolean) => number;
   activateTab: (tabId: number) => void;
   closeTab: (tabId: number) => void;
+  activeSpaceId: string;
+  activeBrowserTabIds: Record<string, number | null>;
+  setActiveBrowserTabId: (spaceId: string, id: number | null) => void;
   browserRefs: RefObject<Map<number, BrowserPaneHandle>>;
   newAgentTab: (
     cwd: string | undefined,
@@ -55,6 +58,79 @@ type Params = {
  * is published once instead of re-running on every tab/cwd change — cwd updates
  * arrive from terminal OSC on shell output and would otherwise churn constantly.
  */
+/** Dependencies the browser-automation live methods read/write. Kept as plain
+ * getters/setters so the behavior is unit-testable without React. Notably there
+ * is NO `activateTab` here — automation must never change the UI activeId. */
+export type BrowserLiveDeps = {
+  openTab: (url: string, activate: boolean) => number;
+  closeTab: (tabId: number) => void;
+  getActiveSpaceId: () => string;
+  getTargetForSpace: (spaceId: string) => number | null;
+  setTargetForSpace: (spaceId: string, id: number | null) => void;
+  getTabs: () => Tab[];
+  getActiveId: () => number;
+  getBrowser: (id: number) => BrowserPaneHandle | undefined;
+};
+
+/** Resolve the automation target for the active workspace: the target recorded
+ * for that space if it still points at a live browser tab, else the UI's active
+ * tab if that is a browser (the active tab is always in the active space), else
+ * null. Targeting is per-workspace so concurrent agents in different spaces do
+ * not contend. */
+export function resolveAutomationTarget(d: BrowserLiveDeps): number | null {
+  const space = d.getActiveSpaceId();
+  const tabs = d.getTabs();
+  const target = d.getTargetForSpace(space);
+  if (target != null && tabs.some((t) => t.id === target && t.kind === "browser")) {
+    return target;
+  }
+  const activeId = d.getActiveId();
+  const active = tabs.find((t) => t.id === activeId);
+  return active?.kind === "browser" ? activeId : null;
+}
+
+/** Browser operations exposed to the AI agent. Automation owns a per-workspace
+ * target, separate from the UI activeId, so opening/switching never steals focus
+ * and agents in different spaces never contend. */
+export function buildBrowserLive(d: BrowserLiveDeps) {
+  return {
+    openBrowser: (url: string) => {
+      const id = d.openTab(url, false); // background: do not touch UI activeId
+      d.setTargetForSpace(d.getActiveSpaceId(), id);
+      return true;
+    },
+    navigateBrowser: (url: string) => {
+      const target = resolveAutomationTarget(d);
+      if (target == null) {
+        const id = d.openTab(url, false);
+        d.setTargetForSpace(d.getActiveSpaceId(), id);
+        return true;
+      }
+      const browser = d.getBrowser(target);
+      if (!browser) return false;
+      browser.navigate(url);
+      return true;
+    },
+    getActiveBrowserTabId: () => resolveAutomationTarget(d),
+    switchBrowserTab: (tabId: number) => {
+      const tab = d.getTabs().find((t) => t.id === tabId);
+      if (tab?.kind !== "browser") return false;
+      // Automation target only — deliberately NOT activating the UI tab.
+      d.setTargetForSpace(d.getActiveSpaceId(), tabId);
+      return true;
+    },
+    closeBrowserTab: (tabId: number) => {
+      const tab = d.getTabs().find((t) => t.id === tabId);
+      if (tab?.kind !== "browser") return false;
+      d.closeTab(tabId);
+      if (resolveAutomationTarget(d) === tabId) {
+        d.setTargetForSpace(d.getActiveSpaceId(), null);
+      }
+      return true;
+    },
+  };
+}
+
 export function useAiLiveBridge(params: Params) {
   const { browserRefs, setLive, terminalRefs } = params;
   const ref = useRef(params);
@@ -114,44 +190,16 @@ export function useAiLiveBridge(params: Params) {
         const t = tabs.find((x) => x.id === activeId);
         return t?.kind === "editor" ? t.path : null;
       },
-      openBrowser: (url: string) => {
-        ref.current.openBrowserTab(url);
-        return true;
-      },
-      navigateBrowser: (url: string) => {
-        const { activeId, openBrowserTab, tabs } = ref.current;
-        const active = tabs.find((tab) => tab.id === activeId);
-        if (active?.kind !== "browser") {
-          openBrowserTab(url);
-          return true;
-        }
-        const browser = browserRefs.current.get(activeId);
-        if (!browser) return false;
-        browser.navigate(url);
-        return true;
-      },
-      getActiveBrowserTabId: () => {
-        const { activeId, tabs } = ref.current;
-        return tabs.find((tab) => tab.id === activeId)?.kind === "browser"
-          ? activeId
-          : null;
-      },
-      switchBrowserTab: (tabId) => {
-        const { tabs, activateTab } = ref.current;
-        const tab = tabs.find((t) => t.id === tabId);
-        if (!tab || tab.kind !== "browser") return false;
-        activateTab(tabId);
-        return true;
-      },
-      closeBrowserTab: (tabId) => {
-        const { tabs, closeTab } = ref.current;
-        const tab = tabs.find((t) => t.id === tabId);
-        // Guard like switchBrowserTab: only browser tabs may be closed via the
-        // browser tool — a shared id must never destroy a terminal/agent/editor.
-        if (!tab || tab.kind !== "browser") return false;
-        closeTab(tabId);
-        return true;
-      },
+      ...buildBrowserLive({
+        openTab: (url, activate) => ref.current.openBrowserTab(url, activate),
+        closeTab: (tabId) => ref.current.closeTab(tabId),
+        getActiveSpaceId: () => ref.current.activeSpaceId,
+        getTargetForSpace: (space) => ref.current.activeBrowserTabIds[space] ?? null,
+        setTargetForSpace: (space, id) => ref.current.setActiveBrowserTabId(space, id),
+        getTabs: () => ref.current.tabs,
+        getActiveId: () => ref.current.activeId,
+        getBrowser: (id) => browserRefs.current.get(id),
+      }),
       spawnManagedAgent: (prompt: string, sessionId: string) => {
         const trimmed = prompt.trim();
         if (!trimmed) return null;

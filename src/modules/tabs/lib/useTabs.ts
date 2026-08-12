@@ -352,6 +352,21 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     ];
   });
   const [activeId, setActiveId] = useState(1);
+  // Automation target is tracked PER WORKSPACE (spaceId -> tab id), so agents
+  // running in different spaces never contend over a single shared target. It
+  // is separate from the UI activeId so driving a browser never steals focus.
+  const [activeBrowserTabIds, setActiveBrowserTabIds] = useState<
+    Record<string, number | null>
+  >({});
+  const setActiveBrowserTabId = useCallback(
+    (spaceId: string, id: number | null) => {
+      setActiveBrowserTabIds((m) => {
+        if ((m[spaceId] ?? null) === id) return m;
+        return { ...m, [spaceId]: id };
+      });
+    },
+    [],
+  );
   // Gates warming until boot resolves the restore, so no shell spawns before it.
   const [booted, setBooted] = useState(false);
   const nextIdRef = useRef(3);
@@ -818,7 +833,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     });
   }, []);
 
-  const newBrowserTab = useCallback((url: string) => {
+  const newBrowserTab = useCallback((url: string, activate = true) => {
     const id = nextIdRef.current++;
     setTabs((t) => [
       ...t,
@@ -830,7 +845,9 @@ export function useTabs(initial?: Partial<TerminalTab>) {
         url,
       },
     ]);
-    setActiveId(id);
+    // `activate` controls only the UI activeId/focus. Automation callers pass
+    // false so the new tab opens in the background and never steals focus.
+    if (activate) setActiveId(id);
     return id;
   }, []);
 
@@ -1414,6 +1431,8 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     openFileTab,
     pinTab,
     newBrowserTab,
+    activeBrowserTabIds,
+    setActiveBrowserTabId,
     newMarkdownTab,
     setMarkdownView,
     openAiDiffTab,
