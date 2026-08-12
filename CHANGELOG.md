@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/mramdann/anbo-ai/compare/v0.12.2...v0.13.0) (2026-08-12)
+
+
+### Features
+
+* **browser:** expose MCP over Streamable HTTP ([c872960](https://github.com/mramdann/anbo-ai/commit/c872960aa49584ecee464e921372888fa8622e0f))
+
 ## [0.12.2](https://github.com/mramdann/anbo-ai/compare/v0.12.1...v0.12.2) (2026-08-11)
 
 
