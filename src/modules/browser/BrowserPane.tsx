@@ -1,8 +1,8 @@
+import { IS_WINDOWS } from "@/lib/platform";
 import { Alert02Icon, Globe02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { IS_WINDOWS } from "@/lib/platform";
 import {
   forwardRef,
   useCallback,
@@ -11,10 +11,12 @@ import {
   useRef,
   useState,
 } from "react";
+import { useBrowserAutomationActivity } from "./automationActivity";
 import {
-  createBrowserOwnerId,
-  isSelfReferenceUrl,
-  isSupportedBrowserUrl,
+  BrowserAddressBar,
+  type BrowserAddressBarHandle,
+} from "./BrowserAddressBar";
+import {
   BROWSER_NAV_EVENT,
   type BrowserNavEvent,
   browserEmbedDispatch,
@@ -22,21 +24,23 @@ import {
   browserEmbedRelease,
   browserEmbedSetPunchHole,
   browserEmbedSetUiOverlay,
+  browserEmbedSetZoom,
   browserEmbedSnapshot,
   browserEmbedUpdate,
   browserEmbedUrl,
-  browserEmbedSetZoom,
-  toPhysicalBounds,
+  canMeasureBrowserPane,
+  createBrowserOwnerId,
+  forgetBrowserOwnerId,
+  isSelfReferenceUrl,
+  isSupportedBrowserUrl,
   type PunchHole,
+  shouldShowBrowserPane,
+  toPhysicalBounds,
 } from "./native";
 import {
   useNativeBrowserDragActive,
   useNativeBrowserOverlayOpen,
 } from "./nativeVisibility";
-import {
-  BrowserAddressBar,
-  type BrowserAddressBarHandle,
-} from "./BrowserAddressBar";
 
 export type BrowserPaneHandle = {
   reload: () => void;
@@ -49,6 +53,7 @@ type Props = {
   id: number;
   url: string;
   visible: boolean;
+  initialLoading: boolean;
   onUrlChange: (url: string) => void;
   onTitleChange: (title: string) => void;
   onLoadingChange?: (loading: boolean) => void;
@@ -61,11 +66,7 @@ type DesiredBounds = {
 };
 
 const EMPTY_BOUNDS = { x: 0, y: 0, width: 0, height: 0 };
-// How long the "AI is driving this browser" pulse stays lit after the last
-// automation action. Bridges the gap between rapid actions so the indicator
-// holds steady for an entire AI session, then clears shortly after it stops.
-const AI_ACTIVITY_GRACE_MS = 8000;
-const mountedOwners = new Map<number, string>();
+const mountedOwnerCounts = new Map<number, number>();
 const pendingReleases = new Map<number, ReturnType<typeof setTimeout>>();
 const visibleNativeBrowsers = new Set<number>();
 
@@ -79,7 +80,15 @@ function syncNativeBrowserSurface(): void {
 
 export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
   function BrowserPane(
-    { id, url, visible, onUrlChange, onTitleChange, onLoadingChange },
+    {
+      id,
+      url,
+      visible,
+      initialLoading,
+      onUrlChange,
+      onTitleChange,
+      onLoadingChange,
+    },
     ref,
   ) {
     const native = isTauri();
@@ -88,7 +97,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     const [freezeFrame, setFreezeFrame] = useState<string | null>(null);
     const addressRef = useRef<BrowserAddressBarHandle>(null);
     const contentRef = useRef<HTMLDivElement>(null);
-    const ownerIdRef = useRef(createBrowserOwnerId());
+    const ownerIdRef = useRef(createBrowserOwnerId(id));
     const currentUrlRef = useRef(url);
     const urlPropRef = useRef(url);
     const onUrlChangeRef = useRef(onUrlChange);
@@ -107,46 +116,22 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     const boundsErrorRef = useRef(false);
     const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [zoom, setZoom] = useState(1.0);
-    const [aiAction, setAiAction] = useState<string | null>(null);
-    const aiIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const [loading, setLoading] = useState(() => !!url);
+    const aiAction = useBrowserAutomationActivity(id);
+    const [loading, setLoading] = useState(initialLoading);
     const onLoadingChangeRef = useRef(onLoadingChange);
     const lastHoleRef = useRef("");
 
-    useEffect(() => {
-      const unlisten = listen("browser-automation-activity", (event) => {
-        const payload = event.payload as {
-          method: string;
-          params: { tabId?: number };
-        };
-        // Only react to actions targeting this browser tab.
-        if (payload.params?.tabId !== id) return;
-        setAiAction(payload.method);
-        // Keep the pulse lit for the whole AI session: each action resets the
-        // grace timer so the badge stays steady across rapid actions and only
-        // clears once the browser has been idle. Tracking the timer in a ref
-        // avoids overlapping timers and lets us clear it on unmount.
-        if (aiIdleTimerRef.current) clearTimeout(aiIdleTimerRef.current);
-        aiIdleTimerRef.current = setTimeout(() => {
-          setAiAction(null);
-          aiIdleTimerRef.current = null;
-        }, AI_ACTIVITY_GRACE_MS);
-      });
-      return () => {
-        unlisten.then((f) => f());
-        if (aiIdleTimerRef.current) {
-          clearTimeout(aiIdleTimerRef.current);
-          aiIdleTimerRef.current = null;
+    const handleZoom = useCallback(
+      (newZoom: number) => {
+        setZoom(newZoom);
+        if (native) {
+          browserEmbedSetZoom(id, ownerIdRef.current, newZoom).catch(
+            console.error,
+          );
         }
-      };
-    }, [id]);
-
-    const handleZoom = useCallback((newZoom: number) => {
-      setZoom(newZoom);
-      if (native) {
-        browserEmbedSetZoom(id, ownerIdRef.current, newZoom).catch(console.error);
-      }
-    }, [id, native]);
+      },
+      [id, native],
+    );
 
     onUrlChangeRef.current = onUrlChange;
     onTitleChangeRef.current = onTitleChange;
@@ -233,11 +218,9 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     useEffect(() => {
       overlayOpenRef.current = overlayOpen;
       if (!native || !IS_WINDOWS || !visible || !url) return;
-      void browserEmbedSetUiOverlay(
-        id,
-        ownerIdRef.current,
-        overlayOpen,
-      ).catch(reportNativeError);
+      void browserEmbedSetUiOverlay(id, ownerIdRef.current, overlayOpen).catch(
+        reportNativeError,
+      );
       return () => {
         if (overlayOpen) {
           void browserEmbedSetUiOverlay(id, ownerIdRef.current, false).catch(
@@ -253,20 +236,26 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       const currentUrl = currentUrlRef.current;
       const allowedUrl =
         isSupportedBrowserUrl(currentUrl) && !isSelfReferenceUrl(currentUrl);
-      const canPlace =
-        document.visibilityState === "visible" &&
-        visibleRef.current &&
-        allowedUrl &&
-        !!element;
-      const rect = canPlace ? element.getBoundingClientRect() : null;
+      const canMeasure = canMeasureBrowserPane(
+        document.visibilityState === "visible",
+        allowedUrl,
+        !!element,
+      );
+      const rect =
+        canMeasure && element ? element.getBoundingClientRect() : null;
       const hasArea = !!rect && rect.width >= 1 && rect.height >= 1;
       const dpr = window.devicePixelRatio || 1;
       const bounds = hasArea ? toPhysicalBounds(rect, dpr) : EMPTY_BOUNDS;
-      const shouldShow = canPlace && !suppressionReadyRef.current && hasArea;
+      const shouldShow = shouldShowBrowserPane(
+        canMeasure,
+        visibleRef.current,
+        hasArea,
+        suppressionReadyRef.current,
+      );
       desiredRef.current = {
         key: shouldShow
           ? `show:${bounds.x},${bounds.y},${bounds.width},${bounds.height}:${currentUrl}`
-          : canPlace && hasArea
+          : canMeasure && hasArea
             ? `hidden:${bounds.x},${bounds.y},${bounds.width},${bounds.height}:${currentUrl}`
             : "hide",
         bounds,
@@ -331,19 +320,25 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
 
     useEffect(() => {
       disposedRef.current = false;
+      if (!native) return;
       const pending = pendingReleases.get(id);
       if (pending) clearTimeout(pending);
       pendingReleases.delete(id);
-      mountedOwners.set(id, ownerIdRef.current);
+      mountedOwnerCounts.set(id, (mountedOwnerCounts.get(id) ?? 0) + 1);
       return () => {
         disposedRef.current = true;
         if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
-        if (!native) return;
         const ownerId = ownerIdRef.current;
+        const remaining = Math.max(0, (mountedOwnerCounts.get(id) ?? 1) - 1);
+        if (remaining > 0) {
+          mountedOwnerCounts.set(id, remaining);
+          return;
+        }
+        mountedOwnerCounts.delete(id);
         const timer = setTimeout(() => {
           pendingReleases.delete(id);
-          if (mountedOwners.get(id) !== ownerId) return;
-          mountedOwners.delete(id);
+          if ((mountedOwnerCounts.get(id) ?? 0) > 0) return;
+          forgetBrowserOwnerId(id, ownerId);
           void browserEmbedRelease(id, ownerId).catch(() => {});
         }, 0);
         pendingReleases.set(id, timer);

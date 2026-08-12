@@ -21,7 +21,7 @@ describe("workspace tab overflow", () => {
         [{ left: 99.5, right: 400.5 }],
       ),
     ).toBe(0);
-    expect(formatClippedTabCount(2)).toBe("+2");
-    expect(formatClippedTabCount(120)).toBe("+99");
+    expect(formatClippedTabCount(2)).toBe("2");
+    expect(formatClippedTabCount(120)).toBe("99");
   });
 });

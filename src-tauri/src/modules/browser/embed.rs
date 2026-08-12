@@ -19,7 +19,7 @@ use webview2_com::{
 #[cfg(windows)]
 use windows::Win32::{
     Foundation::{HGLOBAL, RECT},
-    Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, RGN_DIFF, RGN_ERROR, SetWindowRgn},
+    Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_DIFF, RGN_ERROR},
     System::Com::{
         IStream, StructuredStorage::CreateStreamOnHGlobal, STREAM_SEEK_END, STREAM_SEEK_SET,
     },
@@ -301,10 +301,8 @@ fn spawn_browser_child(
     window
         .add_child(builder, position, size)
         .map_err(|error| error.to_string())?;
-    if !visible {
-        if let Some(webview) = window.app_handle().get_webview(&embed_label(tab_id)) {
-            webview.hide().map_err(|error| error.to_string())?;
-        }
+    if let Some(webview) = window.app_handle().get_webview(&embed_label(tab_id)) {
+        set_embed_presentation(&webview, visible)?;
     }
     Ok(())
 }
@@ -408,16 +406,6 @@ async fn capture_preview(webview: tauri::Webview) -> Result<String, String> {
 }
 
 #[cfg(windows)]
-pub(crate) async fn capture_preview_artifact(webview: tauri::Webview) -> Result<String, String> {
-    capture_preview_with_timeout(webview, std::time::Duration::from_secs(5)).await
-}
-
-#[cfg(not(windows))]
-pub(crate) async fn capture_preview_artifact(_webview: tauri::Webview) -> Result<String, String> {
-    Err("native screenshots are only available on Windows".to_string())
-}
-
-#[cfg(windows)]
 fn overlay_insert_after(active: bool) -> windows::Win32::Foundation::HWND {
     if active {
         HWND_BOTTOM
@@ -458,6 +446,60 @@ fn set_ui_overlay_z_order(webview: &tauri::Webview, active: bool) -> Result<(), 
     receiver
         .recv_timeout(std::time::Duration::from_secs(1))
         .map_err(|_| "timed out updating browser z-order".to_string())?
+}
+
+#[cfg(windows)]
+fn embed_insert_after(visible: bool) -> windows::Win32::Foundation::HWND {
+    overlay_insert_after(!visible)
+}
+
+#[cfg(windows)]
+fn set_embed_z_order(webview: &tauri::Webview, visible: bool) -> Result<(), String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    webview
+        .with_webview(move |platform| {
+            let result = (|| {
+                let controller = platform.controller();
+                let mut hwnd = windows::Win32::Foundation::HWND::default();
+                unsafe { controller.ParentWindow(&mut hwnd) }.map_err(|error| error.to_string())?;
+                unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        Some(embed_insert_after(visible)),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_ASYNCWINDOWPOS
+                            | SWP_NOACTIVATE
+                            | SWP_NOMOVE
+                            | SWP_NOOWNERZORDER
+                            | SWP_NOSIZE,
+                    )
+                }
+                .map_err(|error| error.to_string())
+            })();
+            let _ = sender.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .map_err(|_| "timed out updating browser presentation".to_string())?
+}
+
+#[cfg(windows)]
+fn set_embed_presentation(webview: &tauri::Webview, visible: bool) -> Result<(), String> {
+    webview.show().map_err(|error| error.to_string())?;
+    set_embed_z_order(webview, visible)
+}
+
+#[cfg(not(windows))]
+fn set_embed_presentation(webview: &tauri::Webview, visible: bool) -> Result<(), String> {
+    if visible {
+        webview.show().map_err(|error| error.to_string())
+    } else {
+        webview.hide().map_err(|error| error.to_string())
+    }
 }
 
 /// Clips the embedded browser's window region to exclude `hole` (a rectangle in
@@ -696,11 +738,7 @@ pub async fn browser_embed_update(
                 size: size.into(),
             })
             .map_err(|error| error.to_string())?;
-        if visible {
-            webview.show().map_err(|error| error.to_string())?;
-        } else {
-            webview.hide().map_err(|error| error.to_string())?;
-        }
+        set_embed_presentation(&webview, visible)?;
         return Ok(());
     }
 
@@ -989,6 +1027,15 @@ mod tests {
 
         assert_eq!(super::overlay_insert_after(true), HWND_BOTTOM);
         assert_eq!(super::overlay_insert_after(false), HWND_TOP);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn background_embed_stays_rendered_behind_the_ui() {
+        use windows::Win32::UI::WindowsAndMessaging::{HWND_BOTTOM, HWND_TOP};
+
+        assert_eq!(super::embed_insert_after(false), HWND_BOTTOM);
+        assert_eq!(super::embed_insert_after(true), HWND_TOP);
     }
 
     #[test]

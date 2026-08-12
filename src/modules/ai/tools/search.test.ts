@@ -23,6 +23,7 @@ function makeContext(): ToolContext {
   return {
     getCwd: () => "/workspace",
     getWorkspaceRoot: () => "/workspace",
+    getWorkspaceEnv: () => ({ kind: "local" }),
     getTerminalContext: () => null,
     isActiveTerminalPrivate: () => false,
     injectIntoActivePty: () => false,

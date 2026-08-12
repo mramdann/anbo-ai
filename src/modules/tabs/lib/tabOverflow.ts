@@ -16,5 +16,5 @@ export function countClippedTabs(
 }
 
 export function formatClippedTabCount(count: number): string {
-  return `+${Math.min(Math.max(0, count), 99)}`;
+  return String(Math.min(Math.max(0, count), 99));
 }

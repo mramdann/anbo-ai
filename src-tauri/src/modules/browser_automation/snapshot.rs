@@ -4,6 +4,10 @@ use std::sync::Mutex;
 
 static SNAPSHOT_GENERATIONS: Mutex<Option<HashMap<i64, u64>>> = Mutex::new(None);
 
+pub const DEFAULT_SNAPSHOT_MAX_CHARS: usize = 8_000;
+pub const MIN_SNAPSHOT_MAX_CHARS: usize = 2_000;
+pub const MAX_SNAPSHOT_MAX_CHARS: usize = 16_000;
+
 fn generations() -> &'static Mutex<Option<HashMap<i64, u64>>> {
     &SNAPSHOT_GENERATIONS
 }
@@ -34,6 +38,8 @@ pub struct SnapshotElement {
     pub checked: Option<bool>,
     pub disabled: Option<bool>,
     pub text: Option<String>,
+    #[serde(default)]
+    pub in_viewport: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,14 +71,25 @@ pub fn build_snapshot_js(generation_id: u64) -> String {
                 return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
             }}
 
+            function isInViewport(el) {{
+                const rect = el.getBoundingClientRect();
+                return rect.bottom >= 0 && rect.right >= 0 &&
+                       rect.top <= window.innerHeight && rect.left <= window.innerWidth;
+            }}
+
             function process(node) {{
                 if (!node) return;
                 if (node.nodeType === 3) {{
                     const t = (node.textContent || "").trim();
-                    if (t.length > 0 && node.parentElement && isVisible(node.parentElement)) {{
+                    if (t.length > 0 && node.parentElement &&
+                        isVisible(node.parentElement) && isInViewport(node.parentElement)) {{
                         const tag = node.parentElement.tagName.toLowerCase();
                         if (!['button', 'a', 'option', 'script', 'style'].includes(tag)) {{
-                            elements.push({{ type: 'text', text: t.substring(0, 300) }});
+                            elements.push({{
+                                type: 'text',
+                                text: t.substring(0, 300),
+                                in_viewport: true
+                            }});
                         }}
                     }}
                     return;
@@ -105,9 +122,25 @@ pub fn build_snapshot_js(generation_id: u64) -> String {
                         val = '[REDACTED]';
                     }}
 
+                    const labelledBy = (el.getAttribute('aria-labelledby') || '')
+                        .split(/\s+/)
+                        .filter(Boolean)
+                        .map(id => document.getElementById(id))
+                        .filter(Boolean)
+                        .map(node => (node.innerText || node.textContent || '').trim())
+                        .filter(Boolean)
+                        .join(' ');
+                    const labels = el.labels
+                        ? Array.from(el.labels).map(node => (node.innerText || node.textContent || '').trim()).filter(Boolean).join(' ')
+                        : '';
+                    const descendant = el.querySelector('[aria-label], img[alt], [alt], [title]');
                     let label = el.getAttribute('aria-label') ||
                                 el.getAttribute('placeholder') ||
+                                el.getAttribute('alt') ||
                                 el.getAttribute('title') ||
+                                labelledBy ||
+                                labels ||
+                                (descendant && (descendant.getAttribute('aria-label') || descendant.getAttribute('alt') || descendant.getAttribute('title'))) ||
                                 (isPassword ? '' : (el.innerText || '')) ||
                                 '';
                     label = label.trim().replace(/\s+/g, ' ').substring(0, 100);
@@ -120,7 +153,8 @@ pub fn build_snapshot_js(generation_id: u64) -> String {
                         label: label,
                         value: val,
                         checked: typeof el.checked === 'boolean' ? el.checked : null,
-                        disabled: el.disabled || false
+                        disabled: el.disabled || false,
+                        in_viewport: isInViewport(el)
                     }});
                     return;
                 }}
@@ -143,54 +177,97 @@ pub fn build_snapshot_js(generation_id: u64) -> String {
     )
 }
 
-pub fn format_snapshot(payload: &SnapshotPayload, generation_id: u64) -> String {
+pub struct FormattedSnapshot {
+    pub text: String,
+    pub truncated: bool,
+    pub included_items: usize,
+    pub total_items: usize,
+    pub max_chars: usize,
+}
+
+fn format_item(item: &SnapshotElement) -> Option<String> {
+    if item.element_type == "text" {
+        return item.text.as_ref().map(|text| format!("  Text: {text}"));
+    }
+    let ref_id = item.ref_id.as_ref()?;
+    let role = item.role.as_deref().unwrap_or("element");
+    let label = item.label.as_deref().unwrap_or("");
+    let mut extra = String::new();
+    if let Some(value) = &item.value {
+        if !value.is_empty() && role.starts_with("input") {
+            extra.push_str(&format!(" [value=\"{value}\"]"));
+        }
+    }
+    if let Some(true) = item.checked {
+        extra.push_str(" [checked]");
+    }
+    if let Some(true) = item.disabled {
+        extra.push_str(" [disabled]");
+    }
+    Some(format!("[{ref_id}] <{role}> {label}{extra}"))
+}
+
+pub fn format_snapshot(
+    payload: &SnapshotPayload,
+    generation_id: u64,
+    requested_max_chars: usize,
+) -> FormattedSnapshot {
+    let max_chars = requested_max_chars.clamp(MIN_SNAPSHOT_MAX_CHARS, MAX_SNAPSHOT_MAX_CHARS);
     let mut lines = Vec::new();
     lines.push(format!("Title: {}", payload.title));
     lines.push(format!("URL: {}", payload.url));
     lines.push(format!("Generation: {generation_id}"));
+    lines.push(format!(
+        "Scope: viewport text first, then interactive elements; limit {max_chars} characters"
+    ));
     lines.push("---".to_string());
 
-    let max_bytes = 256 * 1024;
-    let mut current_bytes = lines.iter().map(|l| l.len() + 1).sum::<usize>();
+    let mut candidates = payload
+        .elements
+        .iter()
+        .filter(|item| item.in_viewport)
+        .filter_map(format_item)
+        .collect::<Vec<_>>();
+    candidates.extend(
+        payload
+            .elements
+            .iter()
+            .filter(|item| !item.in_viewport && item.element_type != "text")
+            .filter_map(format_item),
+    );
+
+    let total_items = candidates.len();
+    let content_limit = max_chars.saturating_sub(160);
+    let mut current_chars = lines
+        .iter()
+        .map(|line| line.chars().count() + 1)
+        .sum::<usize>();
+    let mut included_items = 0;
     let mut truncated = false;
 
-    for item in &payload.elements {
-        let line = if item.element_type == "text" {
-            item.text.as_ref().map(|t| format!("  Text: {t}"))
-        } else if let Some(ref_id) = &item.ref_id {
-            let role = item.role.as_deref().unwrap_or("element");
-            let label = item.label.as_deref().unwrap_or("");
-            let mut extra = String::new();
-            if let Some(v) = &item.value {
-                if !v.is_empty() && role.starts_with("input") {
-                    extra.push_str(&format!(" [value=\"{v}\"]"));
-                }
-            }
-            if let Some(true) = item.checked {
-                extra.push_str(" [checked]");
-            }
-            if let Some(true) = item.disabled {
-                extra.push_str(" [disabled]");
-            }
-
-            Some(format!("[{ref_id}] <{role}> {label}{extra}"))
-        } else {
-            None
-        };
-
-        if let Some(line) = line {
-            if current_bytes + line.len() + 1 > max_bytes {
-                lines.push("[truncated: true]".to_string());
-                truncated = true;
-                break;
-            }
-            current_bytes += line.len() + 1;
-            lines.push(line);
+    for line in candidates {
+        if current_chars + line.chars().count() + 1 > content_limit {
+            truncated = true;
+            break;
         }
+        current_chars += line.chars().count() + 1;
+        lines.push(line);
+        included_items += 1;
     }
 
-    let _ = truncated;
-    lines.join("\n")
+    if truncated {
+        lines.push(format!(
+            "[truncated: showing {included_items} of {total_items} items; scroll and snapshot again for nearby content]"
+        ));
+    }
+
+    FormattedSnapshot {
+        text: lines.join("\n"),
+        truncated,
+        included_items,
+        total_items,
+        max_chars,
+    }
 }
 
 #[cfg(test)]
@@ -213,6 +290,7 @@ mod tests {
                     checked: None,
                     disabled: None,
                     text: Some("Welcome to Test Page".to_string()),
+                    in_viewport: true,
                 },
                 SnapshotElement {
                     element_type: "element".to_string(),
@@ -224,14 +302,16 @@ mod tests {
                     checked: None,
                     disabled: Some(false),
                     text: None,
+                    in_viewport: true,
                 },
             ],
         };
 
-        let formatted = format_snapshot(&payload, 1);
-        assert!(formatted.contains("Title: Test Page"));
-        assert!(formatted.contains("Generation: 1"));
-        assert!(formatted.contains("[e1] <button> Click Me"));
+        let formatted = format_snapshot(&payload, 1, DEFAULT_SNAPSHOT_MAX_CHARS);
+        assert!(formatted.text.contains("Title: Test Page"));
+        assert!(formatted.text.contains("Generation: 1"));
+        assert!(formatted.text.contains("[e1] <button> Click Me"));
+        assert!(!formatted.truncated);
     }
 
     #[test]
@@ -259,10 +339,39 @@ mod tests {
                 checked: None,
                 disabled: Some(false),
                 text: None,
+                in_viewport: true,
             }],
         };
 
-        let formatted = format_snapshot(&payload, 1);
-        assert!(formatted.contains("[value=\"[REDACTED]\"]"));
+        let formatted = format_snapshot(&payload, 1, DEFAULT_SNAPSHOT_MAX_CHARS);
+        assert!(formatted.text.contains("[value=\"[REDACTED]\"]"));
+    }
+
+    #[test]
+    fn snapshot_output_is_hard_capped_and_reports_truncation() {
+        let payload = SnapshotPayload {
+            title: "Large".to_string(),
+            url: "https://example.com".to_string(),
+            elements: (1..500)
+                .map(|index| SnapshotElement {
+                    element_type: "element".to_string(),
+                    ref_id: Some(format!("e{index}")),
+                    tag: Some("a".to_string()),
+                    role: Some("a".to_string()),
+                    label: Some("x".repeat(100)),
+                    value: None,
+                    checked: None,
+                    disabled: Some(false),
+                    text: None,
+                    in_viewport: false,
+                })
+                .collect(),
+        };
+
+        let formatted = format_snapshot(&payload, 1, usize::MAX);
+        assert!(formatted.truncated);
+        assert_eq!(formatted.max_chars, MAX_SNAPSHOT_MAX_CHARS);
+        assert!(formatted.text.chars().count() <= MAX_SNAPSHOT_MAX_CHARS);
+        assert!(formatted.text.contains("[truncated: showing"));
     }
 }

@@ -1,8 +1,11 @@
+import type { WorkspaceEnv } from "@/modules/workspace";
+
 export type ToolContext = {
   /** Active terminal tab cwd, used to resolve relative paths. Null = home. */
   getCwd: () => string | null;
   /** Workspace root (explorer root). Used by tools that operate over the project. */
   getWorkspaceRoot: () => string | null;
+  getWorkspaceEnv: () => WorkspaceEnv;
   /** Last N lines of the active terminal buffer (or null if not a terminal tab). */
   getTerminalContext: () => string | null;
   isActiveTerminalPrivate: () => boolean;

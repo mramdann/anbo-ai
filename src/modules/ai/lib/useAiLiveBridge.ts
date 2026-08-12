@@ -1,14 +1,17 @@
-import { type RefObject, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { useManagedAgentsStore } from "@/modules/agents/store/managedAgentsStore";
-import type { BrowserPaneHandle } from "@/modules/browser";
+import {
+  type BrowserPaneHandle,
+  markBrowserAutomationActivity,
+} from "@/modules/browser";
+import type { Tab } from "@/modules/tabs";
 import {
   findLeafCwd,
   type TerminalPaneHandle,
   whenSessionReady,
   writeToSession,
 } from "@/modules/terminal";
-import type { Tab } from "@/modules/tabs";
+import { invoke } from "@tauri-apps/api/core";
+import { type RefObject, useEffect, useRef } from "react";
 import type { Live } from "../store/chatStore";
 import { redactSensitive } from "./redact";
 
@@ -35,8 +38,7 @@ type Params = {
   explorerRoot: string | null;
   launchCwd: string | null;
   home: string | null;
-  openBrowserTab: (url: string, activate?: boolean) => number;
-  activateTab: (tabId: number) => void;
+  openBrowserTab: (url: string, activate?: boolean, spaceId?: string) => number;
   closeTab: (tabId: number) => void;
   activeSpaceId: string;
   activeBrowserTabIds: Record<string, number | null>;
@@ -55,14 +57,11 @@ type Params = {
  * act on the foreground state.
  *
  * The live object's getters read the latest state through a ref, so the bridge
- * is published once instead of re-running on every tab/cwd change — cwd updates
+ * is published once instead of re-running on every tab/cwd change. Cwd updates
  * arrive from terminal OSC on shell output and would otherwise churn constantly.
  */
-/** Dependencies the browser-automation live methods read/write. Kept as plain
- * getters/setters so the behavior is unit-testable without React. Notably there
- * is NO `activateTab` here — automation must never change the UI activeId. */
 export type BrowserLiveDeps = {
-  openTab: (url: string, activate: boolean) => number;
+  openTab: (url: string, activate: boolean, spaceId: string) => number;
   closeTab: (tabId: number) => void;
   getActiveSpaceId: () => string;
   getTargetForSpace: (spaceId: string) => number | null;
@@ -72,59 +71,73 @@ export type BrowserLiveDeps = {
   getBrowser: (id: number) => BrowserPaneHandle | undefined;
 };
 
-/** Resolve the automation target for the active workspace: the target recorded
- * for that space if it still points at a live browser tab, else the UI's active
- * tab if that is a browser (the active tab is always in the active space), else
- * null. Targeting is per-workspace so concurrent agents in different spaces do
- * not contend. */
-export function resolveAutomationTarget(d: BrowserLiveDeps): number | null {
-  const space = d.getActiveSpaceId();
+export function resolveAutomationTarget(
+  d: BrowserLiveDeps,
+  space = d.getActiveSpaceId(),
+): number | null {
   const tabs = d.getTabs();
   const target = d.getTargetForSpace(space);
-  if (target != null && tabs.some((t) => t.id === target && t.kind === "browser")) {
+  if (
+    target != null &&
+    tabs.some(
+      (tab) =>
+        tab.id === target &&
+        tab.kind === "browser" &&
+        !tab.cold &&
+        tab.spaceId === space,
+    )
+  ) {
     return target;
   }
   const activeId = d.getActiveId();
-  const active = tabs.find((t) => t.id === activeId);
-  return active?.kind === "browser" ? activeId : null;
+  const active = tabs.find((tab) => tab.id === activeId);
+  return active?.kind === "browser" && !active.cold && active.spaceId === space
+    ? activeId
+    : null;
 }
 
-/** Browser operations exposed to the AI agent. Automation owns a per-workspace
- * target, separate from the UI activeId, so opening/switching never steals focus
- * and agents in different spaces never contend. */
 export function buildBrowserLive(d: BrowserLiveDeps) {
   return {
-    openBrowser: (url: string) => {
-      const id = d.openTab(url, false); // background: do not touch UI activeId
-      d.setTargetForSpace(d.getActiveSpaceId(), id);
+    openBrowser: (url: string, requestedSpace?: string) => {
+      const space = requestedSpace ?? d.getActiveSpaceId();
+      const id = d.openTab(url, false, space);
+      d.setTargetForSpace(space, id);
+      markBrowserAutomationActivity(id, "open");
       return true;
     },
-    navigateBrowser: (url: string) => {
-      const target = resolveAutomationTarget(d);
+    navigateBrowser: (url: string, requestedSpace?: string) => {
+      const space = requestedSpace ?? d.getActiveSpaceId();
+      const target = resolveAutomationTarget(d, space);
       if (target == null) {
-        const id = d.openTab(url, false);
-        d.setTargetForSpace(d.getActiveSpaceId(), id);
+        const id = d.openTab(url, false, space);
+        d.setTargetForSpace(space, id);
+        markBrowserAutomationActivity(id, "open");
         return true;
       }
       const browser = d.getBrowser(target);
       if (!browser) return false;
+      markBrowserAutomationActivity(target, "navigate");
       browser.navigate(url);
       return true;
     },
-    getActiveBrowserTabId: () => resolveAutomationTarget(d),
-    switchBrowserTab: (tabId: number) => {
+    getActiveBrowserTabId: (requestedSpace?: string) =>
+      resolveAutomationTarget(d, requestedSpace ?? d.getActiveSpaceId()),
+    switchBrowserTab: (tabId: number, requestedSpace?: string) => {
+      const space = requestedSpace ?? d.getActiveSpaceId();
       const tab = d.getTabs().find((t) => t.id === tabId);
-      if (tab?.kind !== "browser") return false;
-      // Automation target only — deliberately NOT activating the UI tab.
-      d.setTargetForSpace(d.getActiveSpaceId(), tabId);
+      if (tab?.kind !== "browser" || tab.cold || tab.spaceId !== space)
+        return false;
+      d.setTargetForSpace(space, tabId);
       return true;
     },
-    closeBrowserTab: (tabId: number) => {
+    closeBrowserTab: (tabId: number, requestedSpace?: string) => {
+      const space = requestedSpace ?? d.getActiveSpaceId();
       const tab = d.getTabs().find((t) => t.id === tabId);
-      if (tab?.kind !== "browser") return false;
+      if (tab?.kind !== "browser" || tab.cold || tab.spaceId !== space)
+        return false;
       d.closeTab(tabId);
-      if (resolveAutomationTarget(d) === tabId) {
-        d.setTargetForSpace(d.getActiveSpaceId(), null);
+      if (resolveAutomationTarget(d, space) === tabId) {
+        d.setTargetForSpace(space, null);
       }
       return true;
     },
@@ -190,12 +203,16 @@ export function useAiLiveBridge(params: Params) {
         const t = tabs.find((x) => x.id === activeId);
         return t?.kind === "editor" ? t.path : null;
       },
+      getActiveSpaceId: () => ref.current.activeSpaceId,
       ...buildBrowserLive({
-        openTab: (url, activate) => ref.current.openBrowserTab(url, activate),
+        openTab: (url, activate, spaceId) =>
+          ref.current.openBrowserTab(url, activate, spaceId),
         closeTab: (tabId) => ref.current.closeTab(tabId),
         getActiveSpaceId: () => ref.current.activeSpaceId,
-        getTargetForSpace: (space) => ref.current.activeBrowserTabIds[space] ?? null,
-        setTargetForSpace: (space, id) => ref.current.setActiveBrowserTabId(space, id),
+        getTargetForSpace: (space) =>
+          ref.current.activeBrowserTabIds[space] ?? null,
+        setTargetForSpace: (space, id) =>
+          ref.current.setActiveBrowserTabId(space, id),
         getTabs: () => ref.current.tabs,
         getActiveId: () => ref.current.activeId,
         getBrowser: (id) => browserRefs.current.get(id),
@@ -214,9 +231,9 @@ export function useAiLiveBridge(params: Params) {
         useManagedAgentsStore
           .getState()
           .register({ leafId, tabId, sessionId, task: oneLine, cwd });
-        const hooksReady = invoke("agent_enable_hooks", { agent: "claude" }).catch(
-          () => {},
-        );
+        const hooksReady = invoke("agent_enable_hooks", {
+          agent: "claude",
+        }).catch(() => {});
         void (async () => {
           await Promise.all([whenSessionReady(leafId), hooksReady]);
           if (!writeToSession(leafId, "claude\r")) {

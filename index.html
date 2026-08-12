@@ -55,8 +55,11 @@
       }
       #anbo-startup-status {
         margin: -8px 0 0;
-        color: #737373;
+        color: oklch(0.723 0.014 214.4); /* --muted-foreground (dark) */
         font-size: 10px;
+      }
+      .light #anbo-startup-status {
+        color: oklch(0.56 0.021 213.5); /* --muted-foreground (light) */
       }
       #anbo-startup-track {
         width: 112px;

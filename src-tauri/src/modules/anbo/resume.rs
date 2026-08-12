@@ -20,9 +20,7 @@ pub fn claude_projects_dir() -> std::path::PathBuf {
     // Legacy name from before the anbo rebrand — keep honoring it so existing
     // setups/test harnesses aren't silently dropped, but nudge toward the new.
     if let Ok(p) = std::env::var("ANBOAI_CLAUDE_PROJECTS") {
-        log::warn!(
-            "ANBOAI_CLAUDE_PROJECTS is deprecated; rename it to ANBO_CLAUDE_PROJECTS"
-        );
+        log::warn!("ANBOAI_CLAUDE_PROJECTS is deprecated; rename it to ANBO_CLAUDE_PROJECTS");
         return std::path::PathBuf::from(p);
     }
     dirs::home_dir()
@@ -194,10 +192,7 @@ mod tests {
             strip_verbatim_prefix(r"\\?\C:\Users\ramdan\my-app"),
             r"C:\Users\ramdan\my-app"
         );
-        assert_eq!(
-            enc(r"\\?\C:\Users\ramdan\my-app"),
-            "C--Users-ramdan-my-app"
-        );
+        assert_eq!(enc(r"\\?\C:\Users\ramdan\my-app"), "C--Users-ramdan-my-app");
         assert_eq!(
             enc(r"\\?\C:\Users\ramdan\my-app"),
             enc(r"C:\Users\ramdan\my-app"),
@@ -209,7 +204,10 @@ mod tests {
             r"\\server\share\dir"
         );
         // No prefix (non-Windows / already Node form) → unchanged.
-        assert_eq!(strip_verbatim_prefix(r"/home/ramdan/my-app"), r"/home/ramdan/my-app");
+        assert_eq!(
+            strip_verbatim_prefix(r"/home/ramdan/my-app"),
+            r"/home/ramdan/my-app"
+        );
     }
 
     #[test]

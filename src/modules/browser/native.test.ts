@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  canMeasureBrowserPane,
+  createBrowserOwnerId,
+  forgetBrowserOwnerId,
   isSelfReferenceUrl,
   isSupportedBrowserUrl,
+  shouldShowBrowserPane,
   toPhysicalBounds,
 } from "./native";
 
@@ -41,5 +45,27 @@ describe("native browser bounds", () => {
       width: 451,
       height: 301,
     });
+  });
+
+  it("measures hidden workspace panes without showing their native surface", () => {
+    const canMeasure = canMeasureBrowserPane(true, true, true);
+
+    expect(canMeasure).toBe(true);
+    expect(shouldShowBrowserPane(canMeasure, false, true, false)).toBe(false);
+    expect(shouldShowBrowserPane(canMeasure, true, true, false)).toBe(true);
+  });
+});
+
+describe("native browser ownership", () => {
+  it("keeps one owner token per tab across workspace host handoffs", () => {
+    const first = createBrowserOwnerId(17);
+    const other = createBrowserOwnerId(18);
+    expect(first).toBe(createBrowserOwnerId(17));
+    expect(first).not.toBe(other);
+    forgetBrowserOwnerId(17, first);
+    const replacement = createBrowserOwnerId(17);
+    expect(replacement).not.toBe(first);
+    forgetBrowserOwnerId(17, replacement);
+    forgetBrowserOwnerId(18, other);
   });
 });

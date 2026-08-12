@@ -22,9 +22,11 @@ import {
 import { resolveDisplayName } from "@/modules/editor/lib/languageResolver";
 import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
 import {
+  AiBrowserIcon,
   Cancel01Icon,
   FullScreenIcon,
   Minimize01Icon,
+  MoreHorizontalIcon,
   PencilEdit02Icon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
@@ -39,6 +41,7 @@ import {
   type IDockviewPanelProps,
 } from "dockview-react";
 import "dockview/dist/styles/dockview.css";
+import { useBrowserAutomationActivity } from "@/modules/browser/automationActivity";
 import { setNativeBrowserDragActive } from "@/modules/browser/nativeVisibility";
 import {
   createContext,
@@ -84,6 +87,7 @@ export type WorkspaceDockviewProps = {
   activeId: number;
   onSelect: (id: number) => void;
   onRevealTab: (id: number) => void;
+  onTabVisibilityChange: (id: number, visible: boolean) => void;
   onNew: () => void;
   onNewBlock: () => void;
   onNewPrivate: () => void;
@@ -179,7 +183,12 @@ function tabIdForParams(params: { tabId?: unknown }): number | null {
 }
 
 function WorkspacePanel(props: IDockviewPanelProps<{ tabId: number }>) {
-  const { onRevealTab, renderTab, tabs } = useWorkspaceDockviewContext();
+  const {
+    onRevealTab,
+    onTabVisibilityChange,
+    renderTab,
+    tabs,
+  } = useWorkspaceDockviewContext();
   const [visible, setVisible] = useState(props.api.isVisible);
   useLayoutEffect(() => {
     setVisible(props.api.isVisible);
@@ -192,6 +201,11 @@ function WorkspacePanel(props: IDockviewPanelProps<{ tabId: number }>) {
   useEffect(() => {
     if (visible && tabId !== null) onRevealTab(tabId);
   }, [onRevealTab, tabId, visible]);
+  useLayoutEffect(() => {
+    if (tabId === null) return;
+    onTabVisibilityChange(tabId, visible);
+    return () => onTabVisibilityChange(tabId, false);
+  }, [onTabVisibilityChange, tabId, visible]);
   return (
     <div
       className="anbo-workspace-panel h-full"
@@ -276,10 +290,16 @@ function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
               size="icon"
               aria-label={`List ${overflowCount} hidden tabs`}
               title={`${overflowCount} hidden tabs`}
-              className="grid size-7 shrink-0 place-items-center rounded-md p-0 text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="flex h-7 w-auto min-w-7 shrink-0 items-center justify-center gap-0.5 rounded-md px-1 text-muted-foreground hover:bg-accent hover:text-foreground"
               onPointerDown={(e) => e.stopPropagation()}
             >
-              <span className="leading-none text-[10px] font-semibold tabular-nums">
+              <HugeiconsIcon
+                icon={MoreHorizontalIcon}
+                size={13}
+                strokeWidth={1.8}
+                aria-hidden
+              />
+              <span className="leading-none text-[9px] font-semibold tabular-nums">
                 {formatClippedTabCount(overflowCount)}
               </span>
             </Button>
@@ -302,13 +322,17 @@ function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
               return (
                 <DropdownMenuItem
                   key={panel.id}
+                  aria-current={isActive ? "page" : undefined}
                   onSelect={() => {
                     panel.api.setActive();
                     if (tabId !== null) context.onSelect(tabId);
                   }}
-                  className="flex cursor-default items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs focus:bg-accent focus:text-accent-foreground"
+                  className={cn(
+                    "flex cursor-default items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] focus:bg-accent focus:text-accent-foreground",
+                    isActive && "bg-accent/55 text-foreground",
+                  )}
                 >
-                  <TabIcon tab={tab} />
+                  <TabIcon tab={tab} size="sm" />
                   <span
                     className={cn(
                       "flex-1 truncate",
@@ -359,6 +383,23 @@ function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
         onLaunchAgents={context.onLaunchAgents}
       />
     </div>
+  );
+}
+
+function BrowserAutomationTabIndicator({ tabId }: { tabId: number }) {
+  const action = useBrowserAutomationActivity(tabId);
+  if (!action) return null;
+
+  return (
+    <span
+      data-no-drag
+      role="status"
+      aria-label={`Agent is automating this browser: ${action}`}
+      title={`Agent is automating this browser: ${action}`}
+      className="anbo-browser-automation-indicator"
+    >
+      <HugeiconsIcon icon={AiBrowserIcon} size={11} strokeWidth={1.8} />
+    </span>
   );
 }
 
@@ -413,10 +454,15 @@ function WorkspaceDockviewTab(
             onCancel={() => setEditing(false)}
           />
         ) : (
-          <span className={cn("truncate", preview && "italic")}>
+          <span
+            className={cn("min-w-0 flex-1 truncate", preview && "italic")}
+          >
             {labelFor(tab)}
           </span>
         )}
+        {tab.kind === "browser" ? (
+          <BrowserAutomationTabIndicator tabId={tab.id} />
+        ) : null}
         {tab.kind === "editor" && tab.dirty ? (
           <span
             title="Unsaved changes"

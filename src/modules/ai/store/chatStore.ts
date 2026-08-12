@@ -11,7 +11,11 @@ import {
 } from "../config";
 import { useTodosStore } from "./todoStore";
 import type { AgentUsage } from "../lib/agent";
-import { EMPTY_PROVIDER_KEYS, type ProviderKeys, type CustomEndpointKeys } from "../lib/keyring";
+import {
+  EMPTY_PROVIDER_KEYS,
+  type ProviderKeys,
+  type CustomEndpointKeys,
+} from "../lib/keyring";
 import {
   deleteSessionData,
   deriveTitle,
@@ -32,11 +36,12 @@ export type Live = {
   injectIntoActivePty: (text: string) => boolean;
   getWorkspaceRoot: () => string | null;
   getActiveFile: () => string | null;
-  openBrowser: (url: string) => boolean;
-  navigateBrowser: (url: string) => boolean;
-  getActiveBrowserTabId: () => number | null;
-  switchBrowserTab: (tabId: number) => boolean;
-  closeBrowserTab: (tabId: number) => boolean;
+  getActiveSpaceId: () => string;
+  openBrowser: (url: string, spaceId?: string) => boolean;
+  navigateBrowser: (url: string, spaceId?: string) => boolean;
+  getActiveBrowserTabId: (spaceId?: string) => number | null;
+  switchBrowserTab: (tabId: number, spaceId?: string) => boolean;
+  closeBrowserTab: (tabId: number, spaceId?: string) => boolean;
   spawnManagedAgent: (
     prompt: string,
     sessionId: string,
@@ -91,10 +96,7 @@ export type PendingSelection = {
   source: "terminal" | "editor";
 };
 
-export type ApprovalResponder = (
-  approvalId: string,
-  approved: boolean,
-) => void;
+export type ApprovalResponder = (approvalId: string, approved: boolean) => void;
 
 type StoreState = {
   live: Live;
@@ -162,6 +164,7 @@ const NOOP_LIVE: Live = {
   injectIntoActivePty: () => false,
   getWorkspaceRoot: () => null,
   getActiveFile: () => null,
+  getActiveSpaceId: () => "default",
   openBrowser: () => false,
   navigateBrowser: () => false,
   getActiveBrowserTabId: () => null,
@@ -274,7 +277,10 @@ export const useChatStore = create<StoreState>((set, get) => ({
     set((s) => ({
       panelOpen: true,
       focusSignal: s.focusSignal + 1,
-      pendingSelections: [...s.pendingSelections, { id, text: trimmed, source }],
+      pendingSelections: [
+        ...s.pendingSelections,
+        { id, text: trimmed, source },
+      ],
     }));
   },
   consumeSelections: () => {
@@ -436,7 +442,8 @@ export function getAgentMeta(): AgentMeta {
 }
 
 export function getActiveProviderKey(): string | null {
-  const { selectedModelId, apiKeys, customEndpointKeys } = useChatStore.getState();
+  const { selectedModelId, apiKeys, customEndpointKeys } =
+    useChatStore.getState();
   if (isCompatModelId(selectedModelId)) {
     const eid = endpointIdFromCompatModel(selectedModelId);
     return customEndpointKeys[eid] ?? null;

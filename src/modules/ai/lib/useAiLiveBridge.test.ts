@@ -1,15 +1,24 @@
-import { describe, expect, it, vi } from "vitest";
-import type { Tab } from "@/modules/tabs";
 import {
+  clearBrowserAutomationActivity,
+  getBrowserAutomationActivity,
+} from "@/modules/browser/automationActivity";
+import type { Tab } from "@/modules/tabs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  type BrowserLiveDeps,
   buildBrowserLive,
   resolveAutomationTarget,
-  type BrowserLiveDeps,
 } from "./useAiLiveBridge";
 
-const browserTab = (id: number): Tab =>
-  ({ id, kind: "browser", title: "b", url: "https://x" }) as unknown as Tab;
-const termTab = (id: number): Tab =>
-  ({ id, kind: "terminal", title: "t" }) as unknown as Tab;
+const browserTab = (id: number, spaceId = "A"): Tab =>
+  ({ id, kind: "browser", spaceId, title: "b", url: "https://x" }) as Tab;
+const termTab = (id: number, spaceId = "A"): Tab =>
+  ({ id, kind: "terminal", spaceId, title: "t" }) as unknown as Tab;
+
+afterEach(() => {
+  clearBrowserAutomationActivity(10);
+  clearBrowserAutomationActivity(99);
+});
 
 function makeDeps(
   over: {
@@ -20,133 +29,120 @@ function makeDeps(
     openTab?: BrowserLiveDeps["openTab"];
     closeTab?: BrowserLiveDeps["closeTab"];
     setTargetForSpace?: BrowserLiveDeps["setTargetForSpace"];
+    getBrowser?: BrowserLiveDeps["getBrowser"];
   } = {},
 ): BrowserLiveDeps {
   const targets = { ...(over.targets ?? {}) };
   return {
     openTab: over.openTab ?? vi.fn(() => 0),
     closeTab: over.closeTab ?? vi.fn(),
-    getActiveSpaceId: () => over.activeSpace ?? "space-a",
-    getTargetForSpace: (s) => targets[s] ?? null,
+    getActiveSpaceId: () => over.activeSpace ?? "A",
+    getTargetForSpace: (spaceId) => targets[spaceId] ?? null,
     setTargetForSpace: over.setTargetForSpace ?? vi.fn(),
     getTabs: () => over.tabs ?? [browserTab(10), browserTab(11)],
     getActiveId: () => over.activeId ?? 1,
-    getBrowser: () => undefined,
+    getBrowser: over.getBrowser ?? (() => undefined),
   };
 }
 
-describe("buildBrowserLive — per-workspace target, no UI focus steal", () => {
-  it("openBrowser opens in the background (activate=false) and targets it in the active space", () => {
+describe("buildBrowserLive", () => {
+  it("opens a background tab in the requested workspace", () => {
     const openTab = vi.fn(() => 99);
     const setTargetForSpace = vi.fn();
     const live = buildBrowserLive(
-      makeDeps({ openTab, setTargetForSpace, activeSpace: "A", tabs: [] }),
+      makeDeps({ openTab, setTargetForSpace, activeSpace: "B", tabs: [] }),
     );
 
-    expect(live.openBrowser("https://example.com")).toBe(true);
-    expect(openTab).toHaveBeenCalledWith("https://example.com", false);
+    expect(live.openBrowser("https://example.com", "A")).toBe(true);
+    expect(openTab).toHaveBeenCalledWith("https://example.com", false, "A");
     expect(setTargetForSpace).toHaveBeenCalledWith("A", 99);
+    expect(getBrowserAutomationActivity(99)).toBe("open");
   });
 
-  it("switchBrowserTab sets the target only for the active space and never activates the UI", () => {
+  it("keeps tab switching scoped and never accepts a tab from another workspace", () => {
     const setTargetForSpace = vi.fn();
     const live = buildBrowserLive(
       makeDeps({
         setTargetForSpace,
-        activeSpace: "A",
-        tabs: [browserTab(10), termTab(12)],
+        tabs: [browserTab(10, "A"), browserTab(11, "B"), termTab(12)],
       }),
     );
 
-    expect(live.switchBrowserTab(10)).toBe(true);
+    expect(live.switchBrowserTab(10, "A")).toBe(true);
     expect(setTargetForSpace).toHaveBeenCalledWith("A", 10);
-    // switching to a non-browser tab id is rejected
-    expect(live.switchBrowserTab(12)).toBe(false);
+    expect(live.switchBrowserTab(11, "A")).toBe(false);
+    expect(live.switchBrowserTab(12, "A")).toBe(false);
   });
 
-  it("per-workspace isolation: each space resolves its own target with no contention", () => {
-    const tabs = [browserTab(10), browserTab(11)];
-    const spaceA = makeDeps({ tabs, activeSpace: "A", targets: { A: 10, B: 11 } });
-    const spaceB = makeDeps({ tabs, activeSpace: "B", targets: { A: 10, B: 11 } });
+  it("resolves each workspace target without contention", () => {
+    const tabs = [browserTab(10, "A"), browserTab(11, "B")];
+    const deps = makeDeps({ tabs, targets: { A: 10, B: 11 } });
 
-    expect(resolveAutomationTarget(spaceA)).toBe(10);
-    expect(resolveAutomationTarget(spaceB)).toBe(11);
+    expect(resolveAutomationTarget(deps, "A")).toBe(10);
+    expect(resolveAutomationTarget(deps, "B")).toBe(11);
+  });
 
-    // an agent in space B opening a tab targets B, never A
-    const setB = vi.fn();
-    const liveB = buildBrowserLive(
+  it("navigates the target from the requested workspace", () => {
+    const navigate = vi.fn();
+    const live = buildBrowserLive(
       makeDeps({
-        tabs,
         activeSpace: "B",
-        openTab: vi.fn(() => 77),
-        setTargetForSpace: setB,
+        tabs: [browserTab(10, "A"), browserTab(11, "B")],
+        targets: { A: 10, B: 11 },
+        getBrowser: (id) =>
+          id === 10 ? ({ navigate } as unknown as never) : undefined,
       }),
     );
-    liveB.openBrowser("https://y");
-    expect(setB).toHaveBeenCalledWith("B", 77);
-    expect(setB).not.toHaveBeenCalledWith("A", expect.anything());
+
+    expect(live.navigateBrowser("https://example.com/docs", "A")).toBe(true);
+    expect(navigate).toHaveBeenCalledWith("https://example.com/docs");
+    expect(getBrowserAutomationActivity(10)).toBe("navigate");
   });
 
-  it("getActiveBrowserTabId: target wins; stale target falls back to UI active browser; else null", () => {
-    const tabs = [browserTab(10), browserTab(11), termTab(12)];
-    expect(
-      buildBrowserLive(makeDeps({ tabs, activeSpace: "A", targets: { A: 11 } })).getActiveBrowserTabId(),
-    ).toBe(11);
-    expect(
-      buildBrowserLive(
-        makeDeps({ tabs, activeSpace: "A", targets: { A: 99 }, activeId: 10 }),
-      ).getActiveBrowserTabId(),
-    ).toBe(10); // stale target -> UI active browser
-    expect(
-      buildBrowserLive(
-        makeDeps({ tabs, activeSpace: "A", targets: {}, activeId: 12 }),
-      ).getActiveBrowserTabId(),
-    ).toBeNull(); // UI active is a terminal -> null
-  });
-
-  it("closeBrowserTab closes the tab and clears the active space's target when it was the target", () => {
+  it("closes only tabs owned by the requested workspace", () => {
     const closeTab = vi.fn();
     const setTargetForSpace = vi.fn();
     const live = buildBrowserLive(
       makeDeps({
         closeTab,
         setTargetForSpace,
-        activeSpace: "A",
         targets: { A: 10 },
-        tabs: [browserTab(10)],
+        tabs: [browserTab(10, "A"), browserTab(11, "B")],
       }),
     );
 
-    expect(live.closeBrowserTab(10)).toBe(true);
+    expect(live.closeBrowserTab(11, "A")).toBe(false);
+    expect(live.closeBrowserTab(10, "A")).toBe(true);
     expect(closeTab).toHaveBeenCalledWith(10);
     expect(setTargetForSpace).toHaveBeenCalledWith("A", null);
-    expect(live.closeBrowserTab(77)).toBe(false); // unknown id rejected
   });
 });
 
 describe("resolveAutomationTarget", () => {
-  const tabs = [browserTab(10), browserTab(11), termTab(12)];
+  it("falls back only to an active browser in the requested workspace", () => {
+    const tabs = [browserTab(10, "A"), browserTab(11, "B"), termTab(12)];
 
-  it("prefers the active space's target when it is a live browser tab", () => {
-    expect(
-      resolveAutomationTarget(makeDeps({ tabs, activeSpace: "A", targets: { A: 11 } })),
-    ).toBe(11);
-  });
-
-  it("falls back to the UI active browser tab when the target is stale or unset", () => {
     expect(
       resolveAutomationTarget(
-        makeDeps({ tabs, activeSpace: "A", targets: { A: 99 }, activeId: 10 }),
+        makeDeps({ tabs, targets: { A: 99 }, activeId: 10 }),
+        "A",
       ),
     ).toBe(10);
     expect(
-      resolveAutomationTarget(makeDeps({ tabs, activeSpace: "A", targets: {}, activeId: 10 })),
-    ).toBe(10);
+      resolveAutomationTarget(
+        makeDeps({ tabs, targets: { A: 99 }, activeId: 11 }),
+        "A",
+      ),
+    ).toBeNull();
+    expect(
+      resolveAutomationTarget(makeDeps({ tabs, activeId: 12 }), "A"),
+    ).toBeNull();
   });
 
-  it("returns null when neither target nor UI active tab is a browser", () => {
-    expect(
-      resolveAutomationTarget(makeDeps({ tabs, activeSpace: "A", targets: {}, activeId: 12 })),
-    ).toBeNull();
+  it("rejects a recorded target that belongs to another workspace", () => {
+    const tabs = [browserTab(10, "A"), browserTab(11, "B")];
+    const deps = makeDeps({ tabs, targets: { A: 11 }, activeId: 11 });
+
+    expect(resolveAutomationTarget(deps, "A")).toBeNull();
   });
 });

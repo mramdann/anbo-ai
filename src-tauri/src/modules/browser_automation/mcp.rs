@@ -23,6 +23,8 @@ pub fn tool_definitions() -> Value {
     let tab = tab_id_prop();
     let refr = ref_prop();
     json!([
+        { "name": "browser_open", "description": "Open a native browser tab without focusing it in an explicitly selected Anbo workspace. Pass the agent's workspace root or a space id; UI focus is never used as a fallback.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["url", "workspace"] } },
+        { "name": "browser_close", "description": "Close a native browser tab in an explicitly selected Anbo workspace.", "annotations": { "destructiveHint": true, "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["tabId", "workspace"] } },
         { "name": "browser_tabs", "description": "List active native browser tabs in Anbo.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "browser_get_url", "description": "Get the current URL of a browser tab.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_navigate", "description": "Navigate a browser tab to an http(s) URL.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "url": { "type": "string" } }, "required": ["tabId", "url"] } },
@@ -30,17 +32,17 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_back", "description": "Navigate a browser tab back in history.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_forward", "description": "Navigate a browser tab forward in history.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_stop", "description": "Stop a browser tab's page load.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
-        { "name": "browser_snapshot", "description": "Get an accessibility text snapshot of a tab with stable element refs (e1, e2, ...).", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
+        { "name": "browser_snapshot", "description": "Get a token-bounded accessibility snapshot with viewport text and stable element refs. Output defaults to 8000 characters and never exceeds 16000; scroll and snapshot again for nearby content.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "maxChars": { "type": "integer", "minimum": 2000, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
         { "name": "browser_click", "description": "Click an element by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_type", "description": "Type text into an input element by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "text": { "type": "string" }, "append": { "type": "boolean", "description": "Append to existing value instead of replacing it." } }, "required": ["tabId", "ref", "text"] } },
-        { "name": "browser_press", "description": "Press a keyboard key (e.g. Enter, Tab).", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "key": { "type": "string" } }, "required": ["tabId", "key"] } },
+        { "name": "browser_press", "description": "Press a keyboard key through the browser input pipeline (e.g. Enter, Tab).", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "key": { "type": "string" } }, "required": ["tabId", "key"] } },
         { "name": "browser_scroll", "description": "Scroll the page by x/y pixels.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "x": { "type": "number" }, "y": { "type": "number" } }, "required": ["tabId"] } },
-        { "name": "browser_wait", "description": "Wait until text content appears on the page.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "text": { "type": "string" }, "timeout": { "type": "integer", "description": "Timeout in milliseconds (default 10000)." } }, "required": ["tabId", "text"] } },
-        { "name": "browser_screenshot", "description": "Capture a screenshot of a browser tab to a disk artifact.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "description": "Optional workspace root; screenshot lands under <workspace>/.anbo/artifacts." } }, "required": ["tabId"] } },
+        { "name": "browser_wait", "description": "Wait until visible page text, title, or an accessibility label appears.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "text": { "type": "string" }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "description": "Timeout in milliseconds (default 10000, maximum 60000)." } }, "required": ["tabId", "text"] } },
+        { "name": "browser_screenshot", "description": "Capture a PNG screenshot of a browser tab to a disk artifact.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "description": "Optional workspace root; screenshot lands under <workspace>/.anbo/artifacts." } }, "required": ["tabId"] } },
         { "name": "browser_select_option", "description": "Select an option on a <select> element by ref (by value or label).", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "value": { "type": "string" } }, "required": ["tabId", "ref", "value"] } },
         { "name": "browser_hover", "description": "Hover an element by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_scroll_to_element", "description": "Scroll an element into view by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
-        { "name": "browser_get_text", "description": "Get text content of an element (or the whole page body when ref is omitted).", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "maxLength": { "type": "integer", "description": "Max chars to return (default 8000)." } }, "required": ["tabId"] } },
+        { "name": "browser_get_text", "description": "Get DOM text or the accessibility name of an element, or body text when ref is omitted.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "maxLength": { "type": "integer", "minimum": 1, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
         { "name": "browser_page_info", "description": "Get the title and URL of a browser tab.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_console_logs", "description": "Get captured console logs for a browser tab.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } }
     ])
@@ -49,6 +51,8 @@ pub fn tool_definitions() -> Value {
 /// Map an MCP tool name to the `handle_action` method it dispatches to.
 pub fn tool_name_to_method(name: &str) -> Option<&'static str> {
     Some(match name {
+        "browser_open" => "open",
+        "browser_close" => "close",
         "browser_tabs" => "list_tabs",
         "browser_get_url" => "get_url",
         "browser_navigate" => "navigate",
@@ -80,7 +84,7 @@ mod tests {
     #[test]
     fn tools_have_browser_prefix_and_unique_names() {
         let tools = tool_definitions().as_array().unwrap().clone();
-        assert_eq!(tools.len(), 20);
+        assert_eq!(tools.len(), 22);
         let mut names = std::collections::HashSet::new();
         for t in &tools {
             let n = t.get("name").and_then(|v| v.as_str()).unwrap();
@@ -97,5 +101,22 @@ mod tests {
     fn unknown_tool_maps_to_none() {
         assert!(tool_name_to_method("browser_nope").is_none());
         assert!(tool_name_to_method("navigate").is_none());
+    }
+
+    #[test]
+    fn browser_close_requires_tab_and_workspace() {
+        let tools = tool_definitions();
+        let close = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "browser_close")
+            .unwrap();
+        assert_eq!(
+            close["inputSchema"]["required"],
+            json!(["tabId", "workspace"])
+        );
+        assert_eq!(close["annotations"]["destructiveHint"], true);
+        assert_eq!(tool_name_to_method("browser_close"), Some("close"));
     }
 }

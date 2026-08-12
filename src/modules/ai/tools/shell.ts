@@ -3,7 +3,7 @@ import { z } from "zod";
 import { native } from "../lib/native";
 import { checkShellCommand } from "../lib/security";
 import type { ToolContext } from "./context";
-import { currentWorkspaceEnv, workspaceScopeKey } from "@/modules/workspace";
+import { workspaceScopeKey, type WorkspaceEnv } from "@/modules/workspace";
 
 /**
  * Per-session lazy shell-session id. The agent gets one persistent shell per
@@ -14,17 +14,22 @@ const sessionShells = new Map<string, Promise<number>>();
 async function getSessionShell(
   sessionId: string,
   cwd: string | null,
+  workspace: WorkspaceEnv,
 ): Promise<number> {
   let p = sessionShells.get(sessionId);
   if (!p) {
-    p = native.shellSessionOpen(cwd);
+    p = native.shellSessionOpen(cwd, workspace);
     sessionShells.set(sessionId, p);
   }
   return p;
 }
 
-function workspaceSessionKey(sessionId: string): string {
-  return `${sessionId}:${workspaceScopeKey(currentWorkspaceEnv())}`;
+function workspaceSessionKey(
+  sessionId: string,
+  workspace: WorkspaceEnv,
+  root: string | null,
+): string {
+  return `${sessionId}:${workspaceScopeKey(workspace)}:${root ?? ""}`;
 }
 
 export function buildShellTools(ctx: ToolContext) {
@@ -44,12 +49,18 @@ export function buildShellTools(ctx: ToolContext) {
         if (!sid) return { error: "no active chat session" };
         try {
           const cwd = ctx.getCwd();
-          const shellId = await getSessionShell(workspaceSessionKey(sid), cwd);
+          const workspace = ctx.getWorkspaceEnv();
+          const shellId = await getSessionShell(
+            workspaceSessionKey(sid, workspace, ctx.getWorkspaceRoot() ?? cwd),
+            cwd,
+            workspace,
+          );
           const r = await native.shellSessionRun(
             shellId,
             command,
             cwd,
             timeout_secs,
+            workspace,
           );
           return {
             command,
@@ -79,7 +90,11 @@ export function buildShellTools(ctx: ToolContext) {
         if (!safety.ok) return { error: safety.reason };
         const effectiveCwd = cwd ?? ctx.getCwd();
         try {
-          const handle = await native.shellBgSpawn(command, effectiveCwd);
+          const handle = await native.shellBgSpawn(
+            command,
+            effectiveCwd,
+            ctx.getWorkspaceEnv(),
+          );
           return { handle, command, cwd: effectiveCwd, ok: true };
         } catch (e) {
           return { error: String(e) };

@@ -1,0 +1,201 @@
+export const BROWSER_OPEN_REQUEST_EVENT = "anbo:browser-open-request";
+export const BROWSER_OPEN_RESPONSE_EVENT = "anbo:browser-open-response";
+export const BROWSER_CLOSE_REQUEST_EVENT = "anbo:browser-close-request";
+export const BROWSER_CLOSE_RESPONSE_EVENT = "anbo:browser-close-response";
+
+export type BrowserOpenRequest = {
+  requestId: string;
+  url: string;
+  workspace?: string | null;
+};
+
+export type BrowserCloseRequest = {
+  requestId: string;
+  tabId: number;
+  workspace: string;
+};
+
+type BrowserOpenHandler = (request: BrowserOpenRequest) => void;
+type BrowserOpenSubscribe = (
+  handler: BrowserOpenHandler,
+) => Promise<() => void>;
+
+export function createBrowserOpenListener(subscribe: BrowserOpenSubscribe) {
+  let handler: BrowserOpenHandler | null = null;
+  let subscription: Promise<void> | null = null;
+  let unlisten: (() => void) | null = null;
+  let generation = 0;
+
+  const start = () => {
+    if (subscription || unlisten) return;
+    const currentGeneration = generation;
+    subscription = subscribe((request) => handler?.(request))
+      .then((dispose) => {
+        subscription = null;
+        if (generation !== currentGeneration) {
+          dispose();
+          return;
+        }
+        unlisten = dispose;
+      })
+      .catch(() => {
+        subscription = null;
+      });
+  };
+
+  return {
+    setHandler(next: BrowserOpenHandler) {
+      handler = next;
+      start();
+    },
+    stop() {
+      generation += 1;
+      handler = null;
+      unlisten?.();
+      unlisten = null;
+      subscription = null;
+    },
+  };
+}
+
+type BrowserCloseHandler = (request: BrowserCloseRequest) => void;
+type BrowserCloseSubscribe = (
+  handler: BrowserCloseHandler,
+) => Promise<() => void>;
+
+export function createBrowserCloseListener(subscribe: BrowserCloseSubscribe) {
+  let handler: BrowserCloseHandler | null = null;
+  let subscription: Promise<void> | null = null;
+  let unlisten: (() => void) | null = null;
+  let generation = 0;
+
+  const start = () => {
+    if (subscription || unlisten) return;
+    const currentGeneration = generation;
+    subscription = subscribe((request) => handler?.(request))
+      .then((dispose) => {
+        subscription = null;
+        if (generation !== currentGeneration) {
+          dispose();
+          return;
+        }
+        unlisten = dispose;
+      })
+      .catch(() => {
+        subscription = null;
+      });
+  };
+
+  return {
+    setHandler(next: BrowserCloseHandler) {
+      handler = next;
+      start();
+    },
+    stop() {
+      generation += 1;
+      handler = null;
+      unlisten?.();
+      unlisten = null;
+      subscription = null;
+    },
+  };
+}
+
+export type BrowserOpenPlacement =
+  | "visible-background-tab"
+  | "inactive-workspace";
+
+export function browserOpenPlacement(
+  targetSpaceId: string,
+  activeSpaceId: string | null,
+): BrowserOpenPlacement {
+  return targetSpaceId === activeSpaceId
+    ? "visible-background-tab"
+    : "inactive-workspace";
+}
+
+type BrowserOpenSpace = {
+  id: string;
+  root: string | null;
+  env: { kind: "local" | "wsl" };
+};
+
+type BrowserOpenSpaceResult =
+  | { ok: true; space: BrowserOpenSpace }
+  | { ok: false; error: string };
+
+function normalizedRoot(space: BrowserOpenSpace): string | null {
+  if (!space.root) return null;
+  const normalized = space.root.replace(/\\/g, "/").replace(/\/+$/, "");
+  return space.env.kind === "local" ? normalized.toLowerCase() : normalized;
+}
+
+export function resolveBrowserOpenSpace(
+  spaces: BrowserOpenSpace[],
+  workspace?: string | null,
+): BrowserOpenSpaceResult {
+  const requested = workspace?.trim();
+  if (!requested) {
+    return {
+      ok: false,
+      error:
+        "browser_open requires a workspace root or space id; the active UI workspace is never used as a fallback",
+    };
+  }
+
+  const byId = spaces.find((space) => space.id === requested);
+  if (byId) return { ok: true, space: byId };
+
+  const requestedRoot = requested.replace(/\\/g, "/").replace(/\/+$/, "");
+  const matches = spaces.filter((space) => {
+    const root = normalizedRoot(space);
+    if (root === null) return false;
+    return space.env.kind === "local"
+      ? root === requestedRoot.toLowerCase()
+      : root === requestedRoot;
+  });
+  if (matches.length === 1) return { ok: true, space: matches[0] };
+  if (matches.length > 1) {
+    return {
+      ok: false,
+      error: "workspace matches multiple Anbo spaces; pass a space id",
+    };
+  }
+  return {
+    ok: false,
+    error: `workspace is not open in Anbo: ${requested}`,
+  };
+}
+
+type BrowserCloseTarget = {
+  id: number;
+  kind: string;
+  spaceId: string;
+};
+
+type BrowserCloseTargetResult =
+  | { ok: true; space: BrowserOpenSpace; tab: BrowserCloseTarget }
+  | { ok: false; error: string };
+
+export function resolveBrowserCloseTarget(
+  tabs: BrowserCloseTarget[],
+  spaces: BrowserOpenSpace[],
+  tabId: number,
+  workspace?: string | null,
+): BrowserCloseTargetResult {
+  const resolved = resolveBrowserOpenSpace(spaces, workspace);
+  if (!resolved.ok) return resolved;
+  const tab = tabs.find(
+    (candidate) =>
+      candidate.id === tabId &&
+      candidate.kind === "browser" &&
+      candidate.spaceId === resolved.space.id,
+  );
+  if (!tab) {
+    return {
+      ok: false,
+      error: `browser tab ${tabId} is not open in workspace: ${workspace?.trim() ?? ""}`,
+    };
+  }
+  return { ok: true, space: resolved.space, tab };
+}

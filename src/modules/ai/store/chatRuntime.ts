@@ -8,7 +8,8 @@ import { BUILTIN_AGENTS } from "../lib/agents";
 import { useAgentsStore } from "./agentsStore";
 import { usePlanStore } from "./planStore";
 import { createContextAwareTransport } from "../lib/transport";
-import type { ToolContext } from "../tools/tools";
+import { createRunToolContext } from "../lib/runContext";
+import { currentWorkspaceEnv, workspaceScopeKey } from "@/modules/workspace";
 import {
   chats,
   hasKeyForModel,
@@ -18,34 +19,27 @@ import {
 } from "./chatStore";
 
 function makeChat(sessionId: string): Chat<UIMessage> {
-  const readCache = new Map<string, { size: number; hash: number }>();
-  const toolContext: ToolContext = {
-    getCwd: () => useChatStore.getState().live.getCwd(),
-    getWorkspaceRoot: () => useChatStore.getState().live.getWorkspaceRoot(),
-    getTerminalContext: () => useChatStore.getState().live.getTerminalContext(),
-    isActiveTerminalPrivate: () =>
-      useChatStore.getState().live.isActiveTerminalPrivate(),
-    injectIntoActivePty: (text) =>
-      useChatStore.getState().live.injectIntoActivePty(text),
-    openBrowser: (url) => useChatStore.getState().live.openBrowser(url),
-    navigateBrowser: (url) => useChatStore.getState().live.navigateBrowser(url),
-    getActiveBrowserTabId: () =>
-      useChatStore.getState().live.getActiveBrowserTabId(),
-    switchBrowserTab: (tabId) =>
-      useChatStore.getState().live.switchBrowserTab(tabId),
-    closeBrowserTab: (tabId) =>
-      useChatStore.getState().live.closeBrowserTab(tabId),
-    spawnAgent: (prompt) =>
-      useChatStore.getState().live.spawnManagedAgent(prompt, sessionId),
-    readAgentOutput: (leafId) =>
-      useChatStore.getState().live.readLeafBuffer(leafId),
-    readCache,
-    getSessionId: () => sessionId,
-  };
+  const readCaches = new Map<
+    string,
+    Map<string, { size: number; hash: number }>
+  >();
 
   const transport = createContextAwareTransport({
     getKeys: () => useChatStore.getState().apiKeys,
-    toolContext,
+    getToolContext: (snapshot) => {
+      const cacheKey = workspaceScopeKey(snapshot.workspaceEnv);
+      let readCache = readCaches.get(cacheKey);
+      if (!readCache) {
+        readCache = new Map();
+        readCaches.set(cacheKey, readCache);
+      }
+      return createRunToolContext(
+        () => useChatStore.getState().live,
+        snapshot,
+        readCache,
+        sessionId,
+      );
+    },
     getModelId: () => useChatStore.getState().selectedModelId,
     getCustomInstructions: () =>
       usePreferencesStore.getState().customInstructions,
@@ -61,7 +55,9 @@ function makeChat(sessionId: string): Chat<UIMessage> {
         cwd: live.getCwd(),
         terminalPrivate: live.isActiveTerminalPrivate(),
         workspaceRoot: live.getWorkspaceRoot(),
+        workspaceEnv: currentWorkspaceEnv(),
         activeFile: live.getActiveFile(),
+        spaceId: live.getActiveSpaceId(),
       };
     },
     getPlanMode: () => usePlanStore.getState().active,

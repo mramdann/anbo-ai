@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Tab } from "@/modules/tabs/lib/useTabs";
-import { selectLiveTerminals } from "./liveTerminals";
+import {
+  collectRetainedTerminalLeafIds,
+  selectLiveTerminals,
+} from "./liveTerminals";
 
 function term(id: number, over: Partial<Tab> = {}): Tab {
   return {
@@ -41,5 +44,15 @@ describe("selectLiveTerminals", () => {
       },
     ];
     expect(selectLiveTerminals(tabs).map((t) => t.id)).toEqual([1, 2]);
+  });
+
+  it("retains every agent leaf across ten workspaces", () => {
+    const tabs = Array.from({ length: 10 }, (_, index) =>
+      term(index + 1, { spaceId: `space-${index + 1}` }),
+    );
+
+    expect([...collectRetainedTerminalLeafIds(tabs)]).toEqual([
+      10, 20, 30, 40, 50, 60, 70, 80, 90, 100,
+    ]);
   });
 });

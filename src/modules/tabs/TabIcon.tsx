@@ -138,24 +138,15 @@ function PreviewIcon({
     setIndex(0);
   }, [favicon, fallback]);
   const src = sources[index];
+  if (!src) return <TabGlyph icon={Globe02Icon} pixels={pixels} />;
   return (
-    <span className={`relative ${className} shrink-0`}>
-      <HugeiconsIcon
-        icon={Globe02Icon}
-        size={pixels}
-        strokeWidth={2}
-        className="absolute inset-0"
-      />
-      {src ? (
-        <img
-          key={src}
-          src={src}
-          alt=""
-          className={`absolute inset-0 ${className} rounded-[2px] bg-background object-contain`}
-          onError={() => setIndex((idx) => idx + 1)}
-        />
-      ) : null}
-    </span>
+    <img
+      key={src}
+      src={src}
+      alt=""
+      className={`${className} shrink-0 rounded-[2px] object-contain`}
+      onError={() => setIndex((idx) => idx + 1)}
+    />
   );
 }
 

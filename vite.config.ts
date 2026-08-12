@@ -4,6 +4,7 @@ import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import path from "path";
 import { defineConfig, type PluginOption, type UserConfig } from "vite";
 import Inspect from "vite-plugin-inspect";
+import { configDefaults } from "vitest/config";
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -141,6 +142,9 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
     },
   },
   clearScreen: false,
+  test: {
+    exclude: [...configDefaults.exclude, "**/.claude/**"],
+  },
   server: {
     port: 1420,
     strictPort: true,

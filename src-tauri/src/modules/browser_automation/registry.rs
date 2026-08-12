@@ -15,6 +15,15 @@ pub fn get_tab_lock(tab_id: i64) -> Arc<AsyncMutex<()>> {
         .clone()
 }
 
+pub fn remove_tab_lock(tab_id: i64) {
+    let Ok(mut guard) = TAB_LOCKS.lock() else {
+        return;
+    };
+    if let Some(map) = guard.as_mut() {
+        map.remove(&tab_id);
+    }
+}
+
 pub fn get_active_tabs() -> Vec<i64> {
     list_active_tab_ids()
 }
@@ -26,4 +35,18 @@ pub fn get_embed_webview(app: &AppHandle, tab_id: i64) -> Result<Webview, String
     let label = embed_label(tab_id);
     app.get_webview(&label)
         .ok_or_else(|| format!("webview window for tab {tab_id} ({label}) is unavailable"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removing_a_tab_lock_releases_its_registry_entry() {
+        let first = get_tab_lock(991_337);
+        remove_tab_lock(991_337);
+        let second = get_tab_lock(991_337);
+        assert!(!Arc::ptr_eq(&first, &second));
+        remove_tab_lock(991_337);
+    }
 }

@@ -19,11 +19,10 @@ async function applyEdits(
   abs: string,
   edits: { old_string: string; new_string: string; replace_all?: boolean }[],
   kind: "edit" | "multi_edit",
-  readCache: Map<string, { size: number; hash: number }>,
+  ctx: ToolContext,
 ): Promise<EditResult> {
-  const r = await native.readFile(abs);
-  if (r.kind === "binary")
-    return { error: "binary file refused", path: abs };
+  const r = await native.readFile(abs, ctx.getWorkspaceEnv());
+  if (r.kind === "binary") return { error: "binary file refused", path: abs };
   if (r.kind === "toolarge")
     return { error: `file too large (${r.size} bytes)`, path: abs };
 
@@ -104,8 +103,8 @@ async function applyEdits(
   }
 
   try {
-    await native.writeFile(abs, content);
-    readCache.set(abs, { size: content.length, hash: djb2(content) });
+    await native.writeFile(abs, content, ctx.getWorkspaceEnv());
+    ctx.readCache.set(abs, { size: content.length, hash: djb2(content) });
     return {
       ok: true,
       replacements: totalReplacements,
@@ -118,6 +117,8 @@ async function applyEdits(
 }
 
 export function buildEditTools(ctx: ToolContext) {
+  const canonicalize = (path: string) =>
+    native.canonicalize(path, ctx.getWorkspaceEnv());
   return {
     edit: tool({
       description:
@@ -126,14 +127,16 @@ export function buildEditTools(ctx: ToolContext) {
         path: z.string(),
         old_string: z
           .string()
-          .describe("Exact substring to replace. Must be unique unless replace_all."),
+          .describe(
+            "Exact substring to replace. Must be unique unless replace_all.",
+          ),
         new_string: z.string().describe("Replacement substring."),
         replace_all: z.boolean().optional(),
       }),
       needsApproval: true,
       execute: async ({ path, old_string, new_string, replace_all }) => {
         const reqPath = resolvePath(path, ctx.getCwd());
-        const safety = await checkWritableCanonical(reqPath, native.canonicalize);
+        const safety = await checkWritableCanonical(reqPath, canonicalize);
         if (!safety.ok) return { error: safety.reason, path: reqPath };
         const abs = safety.canonical;
         if (!ctx.readCache.has(abs)) {
@@ -147,7 +150,7 @@ export function buildEditTools(ctx: ToolContext) {
           abs,
           [{ old_string, new_string, replace_all }],
           "edit",
-          ctx.readCache,
+          ctx,
         );
       },
     }),
@@ -170,7 +173,7 @@ export function buildEditTools(ctx: ToolContext) {
       needsApproval: true,
       execute: async ({ path, edits }) => {
         const reqPath = resolvePath(path, ctx.getCwd());
-        const safety = await checkWritableCanonical(reqPath, native.canonicalize);
+        const safety = await checkWritableCanonical(reqPath, canonicalize);
         if (!safety.ok) return { error: safety.reason, path: reqPath };
         const abs = safety.canonical;
         if (!ctx.readCache.has(abs)) {
@@ -180,7 +183,7 @@ export function buildEditTools(ctx: ToolContext) {
             path: abs,
           };
         }
-        return applyEdits(abs, edits, "multi_edit", ctx.readCache);
+        return applyEdits(abs, edits, "multi_edit", ctx);
       },
     }),
   } as const;

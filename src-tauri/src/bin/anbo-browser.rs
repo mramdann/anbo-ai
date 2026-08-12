@@ -158,6 +158,7 @@ async fn main() {
 fn print_usage() {
     eprintln!("Usage: anbo-browser <command> [options] [--json]");
     eprintln!("Commands:");
+    eprintln!("  open --url <url> [--workspace <root>] Open a background browser tab");
     eprintln!("  tabs                                  List active browser tabs");
     eprintln!("  get-url --tab <id>                    Get tab's current URL");
     eprintln!("  navigate --tab <id> --url <url>       Navigate tab to URL");
@@ -165,7 +166,7 @@ fn print_usage() {
     eprintln!("  back --tab <id>                       Navigate back");
     eprintln!("  forward --tab <id>                    Navigate forward");
     eprintln!("  stop --tab <id>                       Stop page load");
-    eprintln!("  snapshot --tab <id>                   Get text snapshot with stable element refs");
+    eprintln!("  snapshot --tab <id> [--max-chars <n>] Get bounded snapshot with stable refs");
     eprintln!("  click --tab <id> --ref <ref>          Click element by ref (e.g. e12)");
     eprintln!("  type --tab <id> --ref <ref> --text \"msg\" [--append]");
     eprintln!("  press --tab <id> --key <key>          Press keyboard key");
@@ -185,6 +186,8 @@ fn parse_cli_args(subcommand: &str, args: &[String]) -> Result<(String, Value), 
     let mut x = 0.0;
     let mut y = 0.0;
     let mut timeout = 10000u64;
+    let mut max_chars = None;
+    let mut workspace = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -241,6 +244,19 @@ fn parse_cli_args(subcommand: &str, args: &[String]) -> Result<(String, Value), 
                     .parse::<u64>()
                     .map_err(|_| "invalid timeout")?;
             }
+            "--max-chars" => {
+                i += 1;
+                max_chars = Some(
+                    args.get(i)
+                        .ok_or("missing value for --max-chars")?
+                        .parse::<u64>()
+                        .map_err(|_| "invalid max chars")?,
+                );
+            }
+            "--workspace" => {
+                i += 1;
+                workspace = Some(args.get(i).ok_or("missing value for --workspace")?.clone());
+            }
             "--json" => {}
             other => return Err(format!("unknown option '{other}'")),
         }
@@ -248,6 +264,10 @@ fn parse_cli_args(subcommand: &str, args: &[String]) -> Result<(String, Value), 
     }
 
     match subcommand {
+        "open" => Ok((
+            "open".to_string(),
+            json!({ "url": url.ok_or("missing --url")?, "workspace": workspace }),
+        )),
         "tabs" | "list_tabs" | "list-tabs" => Ok(("list_tabs".to_string(), json!({}))),
         "get-url" => Ok((
             "get_url".to_string(),
@@ -275,7 +295,7 @@ fn parse_cli_args(subcommand: &str, args: &[String]) -> Result<(String, Value), 
         )),
         "snapshot" => Ok((
             "snapshot".to_string(),
-            json!({ "tabId": tab_id.ok_or("missing --tab")? }),
+            json!({ "tabId": tab_id.ok_or("missing --tab")?, "maxChars": max_chars }),
         )),
         "click" => Ok((
             "click".to_string(),
@@ -427,10 +447,12 @@ async fn run_mcp_stdio() {
                     "id": id,
                     "result": {
                         "tools": [
+                            { "name": "browser_open", "description": "Open a native browser tab without focusing it in an explicitly selected Anbo workspace.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1 } }, "required": ["url", "workspace"] } },
+                            { "name": "browser_close", "description": "Close a native browser tab in an explicitly selected Anbo workspace.", "annotations": { "destructiveHint": true, "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "workspace": { "type": "string", "minLength": 1 } }, "required": ["tabId", "workspace"] } },
                             { "name": "browser_tabs", "description": "List active native browser tabs in Anbo", "inputSchema": { "type": "object", "properties": {} } },
                             { "name": "browser_get_url", "description": "Get current URL of a browser tab", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" } }, "required": ["tabId"] } },
                             { "name": "browser_navigate", "description": "Navigate a browser tab to an HTTP/HTTPS URL", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "url": { "type": "string" } }, "required": ["tabId", "url"] } },
-                            { "name": "browser_snapshot", "description": "Get accessibility text snapshot with stable element refs (e1, e2, ...)", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" } }, "required": ["tabId"] } },
+                            { "name": "browser_snapshot", "description": "Get a token-bounded accessibility snapshot with viewport text and stable refs. Defaults to 8000 characters and never exceeds 16000.", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "maxChars": { "type": "integer", "minimum": 2000, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
                             { "name": "browser_click", "description": "Click an element by ref (e1, e2, ...)", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "ref": { "type": "string" } }, "required": ["tabId", "ref"] } },
                             { "name": "browser_type", "description": "Type text into an input element by ref", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "ref": { "type": "string" }, "text": { "type": "string" }, "append": { "type": "boolean" } }, "required": ["tabId", "ref", "text"] } },
                             { "name": "browser_press", "description": "Press a keyboard key (e.g. Enter, Tab)", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "key": { "type": "string" } }, "required": ["tabId", "key"] } },
@@ -454,6 +476,8 @@ async fn run_mcp_stdio() {
                 let tool_args = params_obj.get("arguments").cloned().unwrap_or(json!({}));
 
                 let mapped_method = match name {
+                    "browser_open" => "open",
+                    "browser_close" => "close",
                     "browser_tabs" => "list_tabs",
                     "browser_get_url" => "get_url",
                     "browser_navigate" => "navigate",
@@ -538,5 +562,33 @@ mod tests {
         assert_eq!(method, "click");
         assert_eq!(params.get("tabId").unwrap().as_i64(), Some(1));
         assert_eq!(params.get("ref").unwrap().as_str(), Some("e12"));
+    }
+
+    #[test]
+    fn test_parse_cli_args_open_with_workspace() {
+        let args = vec![
+            "--url".to_string(),
+            "https://example.com".to_string(),
+            "--workspace".to_string(),
+            "C:/work/alpha".to_string(),
+        ];
+        let (method, params) = parse_cli_args("open", &args).unwrap();
+        assert_eq!(method, "open");
+        assert_eq!(params["url"], "https://example.com");
+        assert_eq!(params["workspace"], "C:/work/alpha");
+    }
+
+    #[test]
+    fn test_parse_cli_args_snapshot_with_limit() {
+        let args = vec![
+            "--tab".to_string(),
+            "7".to_string(),
+            "--max-chars".to_string(),
+            "4000".to_string(),
+        ];
+        let (method, params) = parse_cli_args("snapshot", &args).unwrap();
+        assert_eq!(method, "snapshot");
+        assert_eq!(params["tabId"], 7);
+        assert_eq!(params["maxChars"], 4000);
     }
 }

@@ -25,6 +25,7 @@ function makeContext(
   return {
     getCwd: () => null,
     getWorkspaceRoot: () => null,
+    getWorkspaceEnv: () => ({ kind: "local" }),
     getTerminalContext: () => null,
     isActiveTerminalPrivate: () => false,
     injectIntoActivePty: () => false,
@@ -64,7 +65,8 @@ describe("AI browser tools", () => {
   });
 
   it("does not invoke the backend without an active browser tab", async () => {
-    const execute = buildBrowserTools(makeContext(null)).browser_snapshot.execute;
+    const execute = buildBrowserTools(makeContext(null)).browser_snapshot
+      .execute;
     if (!execute) throw new Error("browser_snapshot has no execute");
 
     await expect(execute({}, toolOptions)).resolves.toEqual({
@@ -76,9 +78,8 @@ describe("AI browser tools", () => {
 
   it("routes external navigation through the browser lifecycle", async () => {
     const navigateBrowser = vi.fn(() => true);
-    const execute = buildBrowserTools(
-      makeContext(null, { navigateBrowser }),
-    ).browser_navigate.execute;
+    const execute = buildBrowserTools(makeContext(null, { navigateBrowser }))
+      .browser_navigate.execute;
     if (!execute) throw new Error("browser_navigate has no execute");
 
     await expect(
@@ -132,6 +133,7 @@ describe("AI browser tools", () => {
         requestJson: JSON.stringify({
           action: "screenshot",
           tabId: 42,
+          workspace: null,
         }),
       },
     );
@@ -248,9 +250,8 @@ describe("AI browser tools", () => {
 
   it("opens a new browser tab via the browser lifecycle", async () => {
     const openBrowser = vi.fn(() => true);
-    const execute = buildBrowserTools(
-      makeContext(null, { openBrowser }),
-    ).browser_new_tab.execute;
+    const execute = buildBrowserTools(makeContext(null, { openBrowser }))
+      .browser_new_tab.execute;
     if (!execute) throw new Error("browser_new_tab has no execute");
 
     await expect(
@@ -266,9 +267,8 @@ describe("AI browser tools", () => {
 
   it("switches the active browser tab by id", async () => {
     const switchBrowserTab = vi.fn(() => true);
-    const execute = buildBrowserTools(
-      makeContext(42, { switchBrowserTab }),
-    ).browser_switch_tab.execute;
+    const execute = buildBrowserTools(makeContext(42, { switchBrowserTab }))
+      .browser_switch_tab.execute;
     if (!execute) throw new Error("browser_switch_tab has no execute");
 
     await expect(execute({ tabId: 7 }, toolOptions)).resolves.toEqual({
@@ -281,9 +281,8 @@ describe("AI browser tools", () => {
 
   it("closes a browser tab by id", async () => {
     const closeBrowserTab = vi.fn(() => true);
-    const execute = buildBrowserTools(
-      makeContext(42, { closeBrowserTab }),
-    ).browser_close_tab.execute;
+    const execute = buildBrowserTools(makeContext(42, { closeBrowserTab }))
+      .browser_close_tab.execute;
     if (!execute) throw new Error("browser_close_tab has no execute");
 
     await expect(execute({ tabId: 9 }, toolOptions)).resolves.toEqual({

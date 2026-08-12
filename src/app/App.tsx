@@ -39,6 +39,25 @@ import {
 } from "@/modules/ai";
 import { AiComposerProvider } from "@/modules/ai/lib/composer";
 import { native } from "@/modules/ai/lib/native";
+import {
+  BROWSER_CLOSE_RESPONSE_EVENT,
+  BROWSER_OPEN_RESPONSE_EVENT,
+  type BrowserPaneHandle,
+  BrowserStack,
+  beginBrowserSession,
+  browserEmbedClose,
+  browserOpenPlacement,
+  clearBrowserAutomationActivity,
+  faviconUrlForPage,
+  markBrowserAutomationActivity,
+  resolveBrowserCloseTarget,
+  resolveBrowserOpenSpace,
+  selectBackgroundBrowserTabs,
+} from "@/modules/browser";
+import {
+  setBrowserCloseRequestHandler,
+  setBrowserOpenRequestHandler,
+} from "@/modules/browser/automationOpenBridge";
 import { CommandPalette, createCommandItems } from "@/modules/command-palette";
 import {
   type EditorPaneHandle,
@@ -54,12 +73,6 @@ import {
   type SearchTarget,
 } from "@/modules/header";
 import { setLspNavigator } from "@/modules/lsp";
-import {
-  beginBrowserSession,
-  faviconUrlForPage,
-  type BrowserPaneHandle,
-  browserEmbedClose,
-} from "@/modules/browser";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -97,6 +110,7 @@ import {
 import { DEFAULT_SPACE_ID } from "@/modules/tabs/lib/useTabs";
 import {
   clearFocusedTerminal,
+  collectRetainedTerminalLeafIds,
   disposeSession,
   findLeafCwd,
   hasLeaf,
@@ -115,7 +129,7 @@ import { ThemeProvider, useThemeFileEditing } from "@/modules/theme";
 import { UpdaterDialog } from "@/modules/updater";
 import { useWorkspaceEnvStore, type WorkspaceEnv } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import type { SearchAddon } from "@xterm/addon-search";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -240,6 +254,7 @@ export default function App() {
   const clearWorkspaceState = useCallback(() => {
     for (const id of liveLeavesRef.current) disposeSession(id);
     for (const id of liveBrowserIdsRef.current) {
+      clearBrowserAutomationActivity(id);
       void browserEmbedClose(id).catch(() => {});
     }
     liveBrowserIdsRef.current.clear();
@@ -370,6 +385,25 @@ export default function App() {
     () => tabs.filter((t) => t.spaceId === (activeSpaceId ?? DEFAULT_SPACE_ID)),
     [tabs, activeSpaceId],
   );
+  const [visibleDockviewTabIds, setVisibleDockviewTabIds] = useState<
+    ReadonlySet<number>
+  >(() => new Set());
+  const handleDockviewTabVisibility = useCallback(
+    (id: number, visible: boolean) => {
+      setVisibleDockviewTabIds((current) => {
+        if (current.has(id) === visible) return current;
+        const next = new Set(current);
+        if (visible) next.add(id);
+        else next.delete(id);
+        return next;
+      });
+    },
+    [],
+  );
+  const backgroundBrowserTabs = useMemo(
+    () => selectBackgroundBrowserTabs(tabs, visibleDockviewTabIds),
+    [tabs, visibleDockviewTabIds],
+  );
 
   const {
     sidebarRef,
@@ -469,12 +503,7 @@ export default function App() {
     useAppCloseGuard(tabsRef);
 
   useEffect(() => {
-    const live = new Set<number>();
-    for (const t of tabs) {
-      if (t.kind === "terminal") {
-        for (const id of leafIds(t.paneTree)) live.add(id);
-      }
-    }
+    const live = collectRetainedTerminalLeafIds(tabs);
     for (const id of liveLeavesRef.current) {
       if (!live.has(id)) disposeSession(id);
     }
@@ -488,7 +517,10 @@ export default function App() {
       tabs.filter((tab) => tab.kind === "browser").map((tab) => tab.id),
     );
     for (const id of liveBrowserIdsRef.current) {
-      if (!liveBrowsers.has(id)) void browserEmbedClose(id).catch(() => {});
+      if (!liveBrowsers.has(id)) {
+        clearBrowserAutomationActivity(id);
+        void browserEmbedClose(id).catch(() => {});
+      }
     }
     liveBrowserIdsRef.current = liveBrowsers;
   }, [tabs]);
@@ -858,16 +890,91 @@ export default function App() {
   );
 
   const openBrowserTab = useCallback(
-    (url: string, activate = true) => {
-      const id = newBrowserTab(url, activate);
+    (url: string, activate = true, spaceId?: string) => {
+      const id = newBrowserTab(url, activate, spaceId);
       // Focus the address bar if the URL is empty so the user can type.
-      if (!url) {
+      if (activate && !url) {
         setTimeout(() => browserRefs.current.get(id)?.focusAddressBar(), 0);
       }
       return id;
     },
     [newBrowserTab],
   );
+
+  useEffect(() => {
+    setBrowserOpenRequestHandler((payload) => {
+      const responseEvent = `${BROWSER_OPEN_RESPONSE_EVENT}:${payload.requestId}`;
+      let protocol: string;
+      try {
+        protocol = new URL(payload.url).protocol;
+      } catch {
+        protocol = "";
+      }
+      if (protocol !== "http:" && protocol !== "https:") {
+        void emit(responseEvent, { error: "only HTTP(S) URLs are allowed" });
+        return;
+      }
+      const { spaces, activeId: currentSpaceId } = useSpaces.getState();
+      const resolved = resolveBrowserOpenSpace(
+        spaces,
+        payload.workspace,
+      );
+      if (!resolved.ok) {
+        void emit(responseEvent, { error: resolved.error });
+        return;
+      }
+      const spaceId = resolved.space.id;
+      const foregroundTabId = activeIdRef.current;
+      const preserveForeground =
+        spaceId === currentSpaceId &&
+        tabsRef.current.some(
+          (tab) => tab.id === foregroundTabId && tab.spaceId === spaceId,
+        );
+      const tabId = openBrowserTab(payload.url, false, spaceId);
+      markBrowserAutomationActivity(tabId, "open");
+      setActiveBrowserTabId(spaceId, tabId);
+      if (preserveForeground) {
+        const restoreForeground = () => {
+          const current = activeIdRef.current;
+          if (current === tabId || current === foregroundTabId) {
+            setActiveId(foregroundTabId);
+          }
+        };
+        queueMicrotask(restoreForeground);
+        requestAnimationFrame(() => requestAnimationFrame(restoreForeground));
+      }
+      void emit(responseEvent, {
+        tabId,
+        spaceId,
+        workspace: resolved.space.root,
+        placement: browserOpenPlacement(spaceId, currentSpaceId),
+      });
+    });
+  }, [openBrowserTab, setActiveBrowserTabId, setActiveId]);
+
+  useEffect(() => {
+    setBrowserCloseRequestHandler((payload) => {
+      const responseEvent = `${BROWSER_CLOSE_RESPONSE_EVENT}:${payload.requestId}`;
+      const { spaces } = useSpaces.getState();
+      const resolved = resolveBrowserCloseTarget(
+        tabsRef.current,
+        spaces,
+        payload.tabId,
+        payload.workspace,
+      );
+      if (!resolved.ok) {
+        void emit(responseEvent, { error: resolved.error });
+        return;
+      }
+      closeTab(payload.tabId);
+      void emit(responseEvent, {
+        ok: true,
+        tabId: payload.tabId,
+        spaceId: resolved.space.id,
+        workspace: resolved.space.root,
+      });
+    });
+  }, [closeTab]);
 
   const splitActiveTabInDockview = useCallback(
     (position: "right" | "bottom") => {
@@ -1119,9 +1226,15 @@ export default function App() {
   );
 
   const registerBrowserHandle = useCallback(
-    (id: number, h: BrowserPaneHandle | null) => {
+    (
+      id: number,
+      h: BrowserPaneHandle | null,
+      previous?: BrowserPaneHandle | null,
+    ) => {
       if (h) browserRefs.current.set(id, h);
-      else browserRefs.current.delete(id);
+      else if (!previous || browserRefs.current.get(id) === previous) {
+        browserRefs.current.delete(id);
+      }
     },
     [],
   );
@@ -1478,7 +1591,6 @@ export default function App() {
     launchCwd,
     home,
     openBrowserTab,
-    activateTab: setActiveId,
     closeTab,
     activeSpaceId: activeSpaceId ?? DEFAULT_SPACE_ID,
     activeBrowserTabIds,
@@ -1597,6 +1709,7 @@ export default function App() {
                             externalSplits={dockviewExternalSplits}
                             onSelect={setActiveId}
                             onRevealTab={warmTab}
+                            onTabVisibilityChange={handleDockviewTabVisibility}
                             onNew={openNewTab}
                             onNewBlock={openNewBlockTab}
                             onNewPrivate={openNewPrivateTab}
@@ -1640,6 +1753,21 @@ export default function App() {
                               />
                             )}
                           />
+                        ) : null}
+                        {spacesHydrated && backgroundBrowserTabs.length > 0 ? (
+                          <div
+                            className="invisible pointer-events-none absolute inset-0"
+                            aria-hidden
+                          >
+                            <BrowserStack
+                              tabs={backgroundBrowserTabs}
+                              activeId={-1}
+                              registerHandle={registerBrowserHandle}
+                              onUrlChange={handleBrowserUrl}
+                              onTitleChange={handleBrowserTitle}
+                              onLoadingChange={handleBrowserLoading}
+                            />
+                          </div>
                         ) : null}
                         {spacesHydrated && showWorkspaceWelcome ? (
                           <div className="absolute inset-0 z-10 bg-background">

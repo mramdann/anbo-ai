@@ -16,8 +16,7 @@ const ZLOGIN_SCRIPT: &str = include_str!("scripts/zlogin.zsh");
 const ZSHRC_SCRIPT: &str = include_str!("scripts/zshrc.zsh");
 #[cfg(windows)]
 const FISH_INIT_SCRIPT: &str = include_str!("scripts/init.fish");
-const FISH_REINSTALL_PROMPT: &str =
-    "functions -q __anbo_install_prompt; and __anbo_install_prompt";
+const FISH_REINSTALL_PROMPT: &str = "functions -q __anbo_install_prompt; and __anbo_install_prompt";
 
 #[cfg(windows)]
 fn bashrc_script() -> &'static str {

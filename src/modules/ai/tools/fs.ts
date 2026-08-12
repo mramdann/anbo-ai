@@ -18,6 +18,8 @@ function djb2(s: string): number {
 }
 
 export function buildFsTools(ctx: ToolContext) {
+  const workspace = ctx.getWorkspaceEnv();
+  const canonicalize = (path: string) => native.canonicalize(path, workspace);
   return {
     read_file: tool({
       description:
@@ -42,11 +44,11 @@ export function buildFsTools(ctx: ToolContext) {
       }),
       execute: async ({ path, offset, limit }) => {
         const reqPath = resolvePath(path, ctx.getCwd());
-        const safety = await checkReadableCanonical(reqPath, native.canonicalize);
+        const safety = await checkReadableCanonical(reqPath, canonicalize);
         if (!safety.ok) return { error: safety.reason, path: reqPath };
         const abs = safety.canonical;
         try {
-          const r = await native.readFile(abs);
+          const r = await native.readFile(abs, workspace);
           if (r.kind === "binary")
             return { error: "binary file refused", path: abs, size: r.size };
           if (r.kind === "toolarge")
@@ -58,7 +60,12 @@ export function buildFsTools(ctx: ToolContext) {
           const hash = djb2(r.content);
           const isFullRead = offset === undefined && limit === undefined;
           const prior = ctx.readCache.get(abs);
-          if (isFullRead && prior && prior.size === r.size && prior.hash === hash) {
+          if (
+            isFullRead &&
+            prior &&
+            prior.size === r.size &&
+            prior.hash === hash
+          ) {
             return { path: abs, unchanged: true, size: r.size };
           }
           ctx.readCache.set(abs, { size: r.size, hash });
@@ -78,7 +85,10 @@ export function buildFsTools(ctx: ToolContext) {
               size: r.size,
               total_lines: lines.length,
               ...(truncated
-                ? { truncated: true, hint: "call read_file with offset to continue" }
+                ? {
+                    truncated: true,
+                    hint: "call read_file with offset to continue",
+                  }
                 : {}),
             };
           }
@@ -118,11 +128,11 @@ export function buildFsTools(ctx: ToolContext) {
       }),
       execute: async ({ path }) => {
         const reqPath = resolvePath(path, ctx.getCwd());
-        const safety = await checkReadableCanonical(reqPath, native.canonicalize);
+        const safety = await checkReadableCanonical(reqPath, canonicalize);
         if (!safety.ok) return { error: safety.reason, path: reqPath };
         const abs = safety.canonical;
         try {
-          const entries = await native.readDir(abs);
+          const entries = await native.readDir(abs, workspace);
           return {
             path: abs,
             entries: entries.map((e) => ({ name: e.name, kind: e.kind })),
@@ -143,7 +153,7 @@ export function buildFsTools(ctx: ToolContext) {
       needsApproval: true,
       execute: async ({ path, content }) => {
         const reqPath = resolvePath(path, ctx.getCwd());
-        const safety = await checkWritableCanonical(reqPath, native.canonicalize);
+        const safety = await checkWritableCanonical(reqPath, canonicalize);
         if (!safety.ok) return { error: safety.reason, path: reqPath };
         const abs = safety.canonical;
 
@@ -151,7 +161,7 @@ export function buildFsTools(ctx: ToolContext) {
           let original = "";
           let isNewFile = false;
           try {
-            const r = await native.readFile(abs);
+            const r = await native.readFile(abs, workspace);
             if (r.kind === "text") original = r.content;
           } catch {
             isNewFile = true;
@@ -172,7 +182,7 @@ export function buildFsTools(ctx: ToolContext) {
         }
 
         try {
-          await native.writeFile(abs, content);
+          await native.writeFile(abs, content, workspace);
           ctx.readCache.set(abs, { size: content.length, hash: djb2(content) });
           return { path: abs, bytesWritten: content.length, ok: true };
         } catch (e) {
@@ -190,7 +200,7 @@ export function buildFsTools(ctx: ToolContext) {
       needsApproval: true,
       execute: async ({ path }) => {
         const reqPath = resolvePath(path, ctx.getCwd());
-        const safety = await checkWritableCanonical(reqPath, native.canonicalize);
+        const safety = await checkWritableCanonical(reqPath, canonicalize);
         if (!safety.ok) return { error: safety.reason, path: reqPath };
         const abs = safety.canonical;
         if (usePlanStore.getState().active) {
@@ -206,7 +216,7 @@ export function buildFsTools(ctx: ToolContext) {
           return { path: abs, queued_for_plan_review: true, ok: true };
         }
         try {
-          await native.createDir(abs);
+          await native.createDir(abs, workspace);
           return { path: abs, ok: true };
         } catch (e) {
           return { error: String(e), path: abs };

@@ -5,44 +5,46 @@ import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { formatAiError } from "./errors";
 import { native } from "./native";
 import type { ToolContext } from "../tools/tools";
+import { selectRunSnapshot, type LiveSnapshot } from "./runContext";
+import { workspaceScopeKey } from "@/modules/workspace";
 
 const ANBO_MD_MAX_BYTES = 32 * 1024;
 type MemoryCacheEntry = { content: string | null; mtime: number };
 const projectMemoryCache = new Map<string, MemoryCacheEntry>();
 
-async function readAnboMd(workspaceRoot: string | null): Promise<string | null> {
+async function readAnboMd(
+  workspaceRoot: string | null,
+  workspaceEnv: LiveSnapshot["workspaceEnv"],
+): Promise<string | null> {
   if (!workspaceRoot) return null;
   const path = `${workspaceRoot.replace(/\/$/, "")}/ANBO.md`;
-  const cached = projectMemoryCache.get(workspaceRoot);
+  const cacheKey = `${workspaceScopeKey(workspaceEnv)}:${workspaceRoot}`;
+  const cached = projectMemoryCache.get(cacheKey);
   if (cached && Date.now() - cached.mtime < 30_000) return cached.content;
   try {
-    const r = await native.readFile(path);
+    const r = await native.readFile(path, workspaceEnv);
     if (r.kind !== "text") {
-      projectMemoryCache.set(workspaceRoot, { content: null, mtime: Date.now() });
+      projectMemoryCache.set(cacheKey, {
+        content: null,
+        mtime: Date.now(),
+      });
       return null;
     }
     const content =
       r.content.length > ANBO_MD_MAX_BYTES
         ? r.content.slice(0, ANBO_MD_MAX_BYTES)
         : r.content;
-    projectMemoryCache.set(workspaceRoot, { content, mtime: Date.now() });
+    projectMemoryCache.set(cacheKey, { content, mtime: Date.now() });
     return content;
   } catch {
-    projectMemoryCache.set(workspaceRoot, { content: null, mtime: Date.now() });
+    projectMemoryCache.set(cacheKey, { content: null, mtime: Date.now() });
     return null;
   }
 }
 
-type LiveSnapshot = {
-  cwd: string | null;
-  terminalPrivate: boolean;
-  workspaceRoot: string | null;
-  activeFile: string | null;
-};
-
 type Deps = {
   getKeys: () => ProviderKeys;
-  toolContext: ToolContext;
+  getToolContext: (live: LiveSnapshot) => ToolContext;
   getModelId: () => string;
   getCustomInstructions: () => string;
   getAgentPersona: () => { name: string; instructions: string } | null;
@@ -73,9 +75,18 @@ type SendOptions = {
 };
 
 export function createContextAwareTransport(deps: Deps) {
+  let currentRun: LiveSnapshot | null = null;
   const run = async (options: SendOptions) => {
-    const live = deps.getLive();
-    const projectMemory = await readAnboMd(live.workspaceRoot);
+    const live = selectRunSnapshot(
+      currentRun,
+      options.messages[options.messages.length - 1]?.role,
+      deps.getLive,
+    );
+    currentRun = live;
+    const projectMemory = await readAnboMd(
+      live.workspaceRoot,
+      live.workspaceEnv,
+    );
     const envBlock = formatEnvBlock(live);
     const messagesForRun = envBlock
       ? injectEnvIntoLastUser(options.messages, envBlock)
@@ -85,7 +96,7 @@ export function createContextAwareTransport(deps: Deps) {
       modelId: deps.getModelId(),
       customInstructions: deps.getCustomInstructions(),
       agentPersona: deps.getAgentPersona(),
-      toolContext: deps.toolContext,
+      toolContext: deps.getToolContext(live),
       onStep: deps.onStep,
       onUsage: deps.onUsage,
       onCompact: deps.onCompact,

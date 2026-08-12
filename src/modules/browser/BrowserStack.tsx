@@ -9,8 +9,26 @@ type Props = {
   onUrlChange: (id: number, url: string) => void;
   onTitleChange: (id: number, title: string) => void;
   onLoadingChange: (id: number, loading: boolean) => void;
-  registerHandle: (id: number, handle: BrowserPaneHandle | null) => void;
+  registerHandle: (
+    id: number,
+    handle: BrowserPaneHandle | null,
+    previous?: BrowserPaneHandle | null,
+  ) => void;
 };
+
+export function selectBackgroundBrowserTabs(
+  tabs: Tab[],
+  visibleTabIds: ReadonlySet<number>,
+): BrowserTab[] {
+  return tabs.filter(
+    (tab): tab is BrowserTab =>
+      tab.kind === "browser" && !tab.cold && !visibleTabIds.has(tab.id),
+  );
+}
+
+export function browserPaneInitialLoading(tab: BrowserTab): boolean {
+  return tab.loading ?? !!tab.url;
+}
 
 export function BrowserStack({
   tabs,
@@ -46,12 +64,19 @@ export function BrowserStack({
   );
   const urlCallbacks = useRef(new Map<number, (url: string) => void>());
   const titleCallbacks = useRef(new Map<number, (title: string) => void>());
-  const loadingCallbacks = useRef(new Map<number, (loading: boolean) => void>());
+  const loadingCallbacks = useRef(
+    new Map<number, (loading: boolean) => void>(),
+  );
 
   const getRefCallback = (id: number) => {
     let cb = refCallbacks.current.get(id);
     if (!cb) {
-      cb = (h: BrowserPaneHandle | null) => registerRef.current(id, h);
+      let current: BrowserPaneHandle | null = null;
+      cb = (handle: BrowserPaneHandle | null) => {
+        const previous = current;
+        current = handle;
+        registerRef.current(id, handle, previous);
+      };
       refCallbacks.current.set(id, cb);
     }
     return cb;
@@ -116,6 +141,7 @@ export function BrowserStack({
               id={t.id}
               url={t.url}
               visible={visible}
+              initialLoading={browserPaneInitialLoading(t)}
               onUrlChange={getUrlCallback(t.id)}
               onTitleChange={getTitleCallback(t.id)}
               onLoadingChange={getLoadingCallback(t.id)}

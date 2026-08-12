@@ -1,7 +1,7 @@
 pub mod modules;
 
 use modules::{
-    agent, anbo, app_data, browser_automation, fs, git, history, lsp, net, browser, pty, secrets,
+    agent, anbo, app_data, browser, browser_automation, fs, git, history, lsp, net, pty, secrets,
     shell, workspace,
 };
 use std::path::PathBuf;
@@ -416,8 +416,9 @@ mod launch_target_tests {
 
     #[test]
     fn file_arg_opens_file_and_uses_parent_as_workspace() {
-        let out =
-            resolve_launch_target(vec![LaunchEntry::File(PathBuf::from("/home/u/proj/main.rs"))]);
+        let out = resolve_launch_target(vec![LaunchEntry::File(PathBuf::from(
+            "/home/u/proj/main.rs",
+        ))]);
         assert_eq!(out.dir.as_deref(), Some("/home/u/proj"));
         assert_eq!(out.files, vec!["/home/u/proj/main.rs".to_string()]);
     }

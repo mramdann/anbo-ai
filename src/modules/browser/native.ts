@@ -20,6 +20,7 @@ export type EmbedBounds = {
 export type BrowserAction = "back" | "forward" | "reload" | "stop";
 
 const BROWSER_INSTANCE_ID = crypto.randomUUID();
+const browserOwnerIds = new Map<number, string>();
 let sessionReady: Promise<void> | null = null;
 
 function ensureBrowserSession(): Promise<void> {
@@ -54,24 +55,58 @@ async function retry(operation: () => Promise<void>): Promise<void> {
   throw lastError;
 }
 
-export function createBrowserOwnerId(): string {
-  return crypto.randomUUID();
+export function createBrowserOwnerId(tabId: number): string {
+  const existing = browserOwnerIds.get(tabId);
+  if (existing) return existing;
+  const ownerId = crypto.randomUUID();
+  browserOwnerIds.set(tabId, ownerId);
+  return ownerId;
+}
+
+export function forgetBrowserOwnerId(tabId: number, ownerId: string): void {
+  if (browserOwnerIds.get(tabId) === ownerId) browserOwnerIds.delete(tabId);
 }
 
 export function toPhysicalBounds(
-  rect: DOMRect | { left: number; top: number; width: number; height: number; right?: number; bottom?: number },
+  rect:
+    | DOMRect
+    | {
+        left: number;
+        top: number;
+        width: number;
+        height: number;
+        right?: number;
+        bottom?: number;
+      },
   dpr: number,
 ): EmbedBounds {
   const x = Math.round(rect.left * dpr);
   const y = Math.round(rect.top * dpr);
-  const right = Math.round((rect.right ?? (rect.left + rect.width)) * dpr);
-  const bottom = Math.round((rect.bottom ?? (rect.top + rect.height)) * dpr);
+  const right = Math.round((rect.right ?? rect.left + rect.width) * dpr);
+  const bottom = Math.round((rect.bottom ?? rect.top + rect.height) * dpr);
   return {
     x,
     y,
     width: Math.max(0, right - x),
     height: Math.max(0, bottom - y),
   };
+}
+
+export function canMeasureBrowserPane(
+  documentVisible: boolean,
+  allowedUrl: boolean,
+  hasElement: boolean,
+): boolean {
+  return documentVisible && allowedUrl && hasElement;
+}
+
+export function shouldShowBrowserPane(
+  canMeasure: boolean,
+  paneVisible: boolean,
+  hasArea: boolean,
+  suppressed: boolean,
+): boolean {
+  return canMeasure && paneVisible && hasArea && !suppressed;
 }
 
 export function isSupportedBrowserUrl(value: string): boolean {

@@ -377,6 +377,7 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_close_tab: tool({
       description: "Close the browser tab with the given id (from browser_list_tabs).",
+      needsApproval: true,
       inputSchema: z.object({
         tabId: z.number().describe("Browser tab id from browser_list_tabs."),
       }),
