@@ -157,6 +157,22 @@ BYOK. Cloud providers via `@ai-sdk/*`: **OpenAI, Anthropic, Google, xAI, Cerebra
   - **Windows**: NSIS installer in `currentUser` mode (no admin required), WebView2 via `embedBootstrapper` (offline install).
 - Auto-updater configured with a public minisign key; release artifacts at `https://github.com/mramdann/anbo-ai/releases/latest/download/latest.json`.
 
+### Browser automation & MCP
+
+Browser automation (Windows only) controls active native browser tabs. Three entry points share one backend (`actions::handle_action`):
+
+- **In-app AI panel**: direct in-process Tauri command `browser_automation_handle_action` — fastest, no setup.
+- **`anbo-browser` CLI/MCP** (`anbo-browser mcp --stdio`): a standalone stdio client that bridges to the running app over a named pipe. Built by `pnpm prepare:browser-sidecar`; **not** shipped with the installer (`bundle.externalBin` is empty), so this path is dev-only.
+- **HTTP MCP server** (hosted by the running app): Streamable HTTP at `http://127.0.0.1:7331/mcp`, so external clients like Claude Code can connect from any installed device with a static URL and no binary path. Stateless (JSON responses, no SSE/session), bound to 127.0.0.1 with Origin validation. Exposes all `browser_*` tools.
+
+Enable/disable with **Settings → Browser automation** (default on); the toggle starts/stops both the named-pipe server and the HTTP server, and `browser_automation_status` returns `{ running, mcpUrl }`. Implementation: `src-tauri/src/modules/browser_automation/{http,mcp,server,actions}.rs`.
+
+Claude Code config (`.mcp.json`):
+
+```json
+{ "mcpServers": { "anbo-browser": { "type": "http", "url": "http://127.0.0.1:7331/mcp" } } }
+```
+
 ### Releasing to GitHub
 
 Releases use [release-please](.github/workflows/release-please.yml) with the **Release PR** model. Never bump versions or edit `CHANGELOG.md` by hand — release-please does both from conventional commits.

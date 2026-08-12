@@ -108,6 +108,11 @@ pub fn start_server(app: AppHandle) -> Result<(), String> {
     SERVER_RUNNING.store(true, Ordering::SeqCst);
     let expected_token = token;
 
+    // Host the HTTP MCP endpoint alongside the named pipe (best-effort: a bind
+    // failure is logged inside the task and does not disable the pipe path).
+    // Cloned before the spawn below moves `app` into the pipe task.
+    let _ = crate::modules::browser_automation::http::start(app.clone());
+
     tauri::async_runtime::spawn(async move {
         #[cfg(windows)]
         {
@@ -168,6 +173,7 @@ pub fn start_server(_app: AppHandle) -> Result<(), String> {
 }
 
 pub fn stop_server() {
+    crate::modules::browser_automation::http::stop();
     if let Ok(mut guard) = SERVER_CANCEL_TX.lock() {
         if let Some(tx) = guard.take() {
             let _ = tx.send(());

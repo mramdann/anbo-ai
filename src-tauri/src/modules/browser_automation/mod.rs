@@ -1,5 +1,7 @@
 pub mod actions;
 pub mod cdp;
+pub mod http;
+pub mod mcp;
 pub mod protocol;
 pub mod registry;
 pub mod server;
@@ -21,7 +23,8 @@ pub async fn browser_automation_stop() -> Result<(), String> {
 #[tauri::command]
 pub async fn browser_automation_status() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
-        "running": server::is_running()
+        "running": server::is_running(),
+        "mcpUrl": if http::is_running() { Some(http::MCP_URL) } else { None }
     }))
 }
 
