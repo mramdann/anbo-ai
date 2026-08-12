@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/mramdann/anbo-ai/compare/v0.13.1...v0.14.0) (2026-08-12)
+
+
+### Features
+
+* **browser:** add workspace-scoped background automation ([87b6b07](https://github.com/mramdann/anbo-ai/commit/87b6b074a575c385b2975358c6bd9e87c41e5665))
+
 ## [0.13.1](https://github.com/mramdann/anbo-ai/compare/v0.13.0...v0.13.1) (2026-08-12)
 
 
