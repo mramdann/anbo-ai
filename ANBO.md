@@ -44,15 +44,16 @@ A change to a core subsystem (terminal/shell spawn, workspace auth, git, fs, IPC
 **Rust (`src-tauri/`)** owns all OS access. The webview never touches the FS, processes, or shells directly - everything goes through `invoke()` calls to commands registered in `src-tauri/src/lib.rs`:
 
 - `pty::pty_*` - long-lived interactive PTY sessions (xterm ↔ portable-pty), managed by `PtyState` (`RwLock<HashMap<id, Session>>`). Output streams via a Tauri `Channel<PtyEvent>`.
-- `fs::tree::*` (`fs_read_dir`, `list_subdirs`), `fs::file::*` (`fs_read_file`, `fs_write_file`, `fs_stat`, `fs_canonicalize`), `fs::mutate::*` (`fs_create_file`, `fs_create_dir`, `fs_rename`, `fs_delete`): file explorer + editor IO.
+- `fs::tree::*` (`fs_read_dir`, `list_subdirs`), `fs::file::*` (`fs_read_file`, `fs_write_file`, `fs_stat`, `fs_canonicalize`), `fs::mutate::*` (`fs_create_file`, `fs_create_dir`, `fs_rename`, `fs_delete`): file explorer + editor IO. Every renderer path is canonicalized and checked against `WorkspaceRegistry`; new targets authorize their nearest existing canonical parent. AI calls opt into the Rust protected-path guard.
 - `fs::search::*` (`fs_search`, `fs_list_files`), `fs::grep::*` (`fs_grep`, `fs_glob`): fuzzy file finder + content search (powered by `ignore` + `grep-*` crates).
 - `git::commands::*`: full source-control surface (`git_status`, `git_diff`, `git_diff_content`, `git_stage`, `git_unstage`, `git_discard`, `git_commit`, `git_fetch`, `git_pull_ff_only`, `git_push`, `git_log`, `git_show_commit`, `git_commit_files`, `git_commit_file_diff`, `git_panel_snapshot`, `git_resolve_repo`, `git_remote_url`). All gated through the workspace authorization registry.
 - `shell::shell_run_command`: one-shot subshell exec used by AI tools. Distinct from PTY sessions; not the user's interactive terminal. On Windows via PowerShell (`-NoProfile -Command`), on Unix via `$SHELL -lc`. Shared helper `build_oneshot_command`.
 - `shell::shell_session_*`: persistent agent shell with state across calls. `shell::shell_bg_*` (`spawn`, `logs`, `kill`, `list`): long-running background processes (dev servers etc.) with bounded ring-buffer log capture.
 - `workspace::*`: `workspace_authorize` / `workspace_current_dir` (the spawn/git/AI cwd authorization registry) plus the WSL bridge (`wsl_list_distros`, `wsl_default_distro`, `wsl_home`).
 - `lsp::*` (`lsp_detect`, `lsp_host_pid`, `lsp_resolve_root`, `lsp_spawn`, `lsp_send`, `lsp_kill`): language server process host. Dumb JSON-RPC pipe: Content-Length framing + process lifecycle in Rust (`lsp/framing.rs`, pure + tested), protocol intelligence on the frontend. Spawn cwd gated through the workspace registry; binaries resolve via the captured login-shell env (`lsp/env.rs`, GUI apps get a bare PATH on macOS); root detection walks up to markers but never to or above `$HOME`. Servers run in their own process group on Unix and are group-killed (cargo check / proc-macro children die with the server); Windows children get a `proc::job::ProcessJob` (kill-on-close, shared with pty). All sessions killed on `RunEvent::Exit`.
-- `net::*` (`ai_http_request`, `ai_http_stream`, `lm_ping`): AI HTTP proxy with SSRF guard; keeps provider calls and local-model pings off the webview.
-- `secrets::secrets_*`: OS keychain via the `keyring` crate. Service constant `anbo-ai`. Linux uses a file-based fallback gated behind `#[cfg(target_os = "linux")]`.
+- `net::*` (`ai_http_request`, `ai_http_stream`, `lm_ping`): AI HTTP proxy with SSRF guard; keeps provider calls and local-model pings off the webview. Redirects are followed manually, with scheme/host/DNS/IP classification and resolver pinning repeated for every hop. IPv4-mapped IPv6 is classified as IPv4.
+- `secrets::secrets_*`: OS keychain via the `keyring` crate. Rust accepts only the `anbo-ai` service and bounded account/secret inputs. Linux uses a file-based fallback gated behind `#[cfg(target_os = "linux")]`.
+- `project_memory::project_memory_read`: the only agent-memory reader. It canonicalizes the authorized workspace and `ANBO.md`, rejects symlink escapes/protected roots, and enforces 32 KiB before content crosses IPC.
 - `open_settings_window`: separate webview window for Settings (optional `tab` arg deep-links a section).
 
 ### PTY shell integration
@@ -138,7 +139,7 @@ BYOK. Cloud providers via `@ai-sdk/*`: **OpenAI, Anthropic, Google, xAI, Cerebra
 
 ### Tauri capabilities
 
-`src-tauri/capabilities/default.json` is the allowlist for plugin APIs available to the webview. New plugins (dialog, autostart, updater, window-state, store, opener, os, log are wired in `lib.rs`) typically need:
+Tauri capabilities are split by window: `default.json` is main-only, `settings.json` is settings-only, and `desktop.json` contains the updater/process permissions shared by both. Do not restore `core:default` or merge the windows back into one broad capability. The asset protocol starts with an empty static scope; `workspace_authorize` adds only canonical authorized workspace directories at runtime so local media preview keeps working without `scope: ["**"]`. New plugins typically need:
 1. `Cargo.toml` dependency
 2. `.plugin(...)` call in `lib.rs` `run()`
 3. capability entry in `default.json`
@@ -183,13 +184,13 @@ Releases use [release-please](.github/workflows/release-please.yml) with the **R
 
 1. **Land conventional commits on `main`.** `fix:` → patch, `feat:` → minor, `!` / `BREAKING CHANGE:` → major. `docs:` / `test:` / `chore:` do not bump. Version sources (`package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`) are bumped by release-please; `Cargo.lock` is auto-synced by `scripts/check-version-sync.mjs`.
 2. **release-please opens a Release PR** titled `chore(main): release X.Y.Z` on each push to `main`; it accumulates pending changes until merged.
-3. **Merge the Release PR (squash).** This creates tag `vX.Y.Z` + the GitHub Release and triggers `build-release` (`.github/workflows/release.yml`): NSIS build → SignPath signing → patch `latest.json` with the signed signature. ~10–15 min end-to-end.
-4. **Verify before announcing.** Tag exists, the `Release Please` run is `completed/success`, and the live manifest reports the new version:
+3. **Merge the Release PR (squash).** Release Please is PR-only and never publishes directly. The workflow waits for the exact merge SHA to pass the full `CI` workflow, creates the tag plus a draft release, builds NSIS into that draft, requires SignPath Authenticode plus Tauri updater signing, patches and validates `latest.json`, rechecks the tag SHA, then publishes the complete draft. Any failure leaves the release as a draft.
+4. **Verify before announcing.** Tag exists, both `Release Please` and `Release` are `completed/success`, the GitHub Release is no longer a draft, and the live manifest reports the new version:
    ```bash
    curl -s -o /dev/null -w "%{http_code}\n" https://api.github.com/repos/mramdann/anbo-ai/git/refs/tags/vX.Y.Z   # expect 200
    curl -sL https://github.com/mramdann/anbo-ai/releases/latest/download/latest.json | python -c "import sys,json;print(json.load(sys.stdin)['version'])"
    ```
-   Do **not** treat assets appearing as "done" — the unsigned installer plus a preliminary `latest.json` are uploaded before SignPath re-signs and the manifest is patched. Wait for the workflow **run** to reach `completed/success`.
+   Assets appearing in a draft are not completion evidence. Wait for the workflow run to reach `completed/success` and for the release to be published.
 
 Merging the Release PR when `gh` is not authenticated — the git credential helper holds a usable token, so use the API:
 
@@ -201,7 +202,7 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.git
 
 **Updater.** Installed apps poll `releases/latest/download/latest.json`. Since 0.12.1, auto-check is always on (30-min poll); a dismissed version is remembered so the modal does not reappear for that version, and Settings → About → "Check for updates" always re-surfaces it. Builds before 0.12.1 never auto-polled (the `VITE_UPDATER_ENABLED` gate was unset in release builds) — those devices must use the manual check.
 
-**CI status and release relationship.** As of 2026-08-13, `main` CI is green across frontend, Linux Rust/clippy/nextest, Windows, macOS, and coverage. The browser embed must not call `WebviewBuilder::transparent(true)` on macOS unless the `macos-private-api` feature is deliberately enabled, and non-Windows cfg branches must still consume platform-only payload fields so `clippy -D warnings` stays clean. `build-release` remains a separate workflow and is not blocked by `ci.yml`; the P0 release-gate backlog item below still applies.
+**CI status and release relationship.** As of 2026-08-13, `main` CI is green across frontend, Linux Rust/clippy/nextest, Windows, macOS, and coverage. The browser embed must not call `WebviewBuilder::transparent(true)` on macOS unless the `macos-private-api` feature is deliberately enabled, and non-Windows cfg branches must still consume platform-only payload fields so `clippy -D warnings` stays clean. Release publication is gated on the successful `CI` push run for the exact tag SHA. Release actions are pinned to immutable revisions, and no downloaded repackaging tool is used by the Windows-only release workflow.
 
 ### Dependency maintenance baseline
 
@@ -215,14 +216,14 @@ Reviewed 2026-08-13. The stale Release Please PR #14 and all 11 outstanding Depe
 
 ## Engineering backlog
 
-Reviewed 2026-08-11. Anbo is currently a private daily-use application, not a public release target. These items are not all immediate blockers for local use, but agents must not make them worse and should address the matching item when working in that subsystem. Complete P0 before the next public release.
+Reviewed 2026-08-13. Anbo is currently a private daily-use application, not a public release target. These items are not all immediate blockers for local use, but agents must not make them worse and should address the matching item when working in that subsystem.
 
-### P0: public release and security boundary
+### P0 completed: public release and security boundary
 
-- **Project memory:** `readAnboMd` in `src/modules/ai/lib/transport.ts` must not read `ANBO.md` through the generic file command. Add an atomic Rust command that canonicalizes the path, verifies it remains inside the authorized workspace, applies the protected-path deny-list, rejects unsafe symlink targets, and enforces the 32 KiB limit before reading.
-- **Network SSRF:** `src-tauri/src/modules/net.rs` must normalize IPv4-mapped IPv6 addresses and validate, resolve, classify, and pin every redirect destination. Do not rely on reqwest automatic redirects for protected requests. Add redirect-to-private and mapped loopback/metadata tests.
-- **Renderer authority:** move workspace and protected-path enforcement into Rust for privileged filesystem, shell, secret, Git, and browser commands. Split main/settings capabilities, remove unused defaults, and replace `assetProtocol.scope: ["**"]` with the narrowest required scope.
-- **Release gate:** releases must be drafts until the exact tag SHA passes required frontend and Rust checks and all signed artifacts plus `latest.json` validate. Do not publish partial releases. Pin release actions and downloaded release tools to immutable revisions/checksums.
+- **Project memory:** completed with the dedicated 32 KiB Rust reader, authorized canonical root checks, protected path checks, and symlink escape rejection.
+- **Network SSRF:** completed with manual per-hop redirect validation/resolution/pinning and IPv4-mapped IPv6 classification.
+- **Renderer authority:** completed for workspace path IPC, AI protected paths, shell command guards, scoped keychain access, bounded browser automation requests, split capabilities, and runtime-only authorized asset scopes. Manual editor/explorer access inside an explicitly authorized workspace remains available.
+- **Release gate:** completed with PR-only Release Please, exact-SHA CI verification, draft-only builds, mandatory SignPath plus updater signing, final artifact/manifest validation, and immutable release action revisions.
 
 ### P1: correctness and lifecycle
 

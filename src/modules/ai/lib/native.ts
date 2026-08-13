@@ -143,10 +143,19 @@ export const native = {
       path,
       workspace: currentWorkspaceEnv(),
     }),
+  readProjectMemory: (
+    workspaceRoot: string,
+    workspace = currentWorkspaceEnv(),
+  ) =>
+    invoke<string | null>("project_memory_read", {
+      workspaceRoot,
+      workspace,
+    }),
   readFile: (path: string, workspace = currentWorkspaceEnv()) =>
     invoke<ReadResult>("fs_read_file", {
       path,
       workspace,
+      protected: true,
     }),
   writeFile: (
     path: string,
@@ -157,16 +166,22 @@ export const native = {
       path,
       content,
       workspace,
+      protected: true,
     }),
   canonicalize: (path: string, workspace = currentWorkspaceEnv()) =>
     invoke<string>("fs_canonicalize", {
       path,
       workspace,
+      protected: true,
     }),
   createFile: (path: string) =>
-    invoke<void>("fs_create_file", { path, workspace: currentWorkspaceEnv() }),
+    invoke<void>("fs_create_file", {
+      path,
+      workspace: currentWorkspaceEnv(),
+      protected: true,
+    }),
   createDir: (path: string, workspace = currentWorkspaceEnv()) =>
-    invoke<void>("fs_create_dir", { path, workspace }),
+    invoke<void>("fs_create_dir", { path, workspace, protected: true }),
   // AI tooling never sees dot-prefixed entries regardless of the user's
   // explorer preference — keeps .git / .env / .ssh out of agent context.
   readDir: (path: string, workspace = currentWorkspaceEnv()) =>
@@ -174,6 +189,7 @@ export const native = {
       path,
       showHidden: false,
       workspace,
+      protected: true,
     }),
   grep: (
     params: {
@@ -192,6 +208,7 @@ export const native = {
       caseInsensitive: params.caseInsensitive ?? null,
       maxResults: params.maxResults ?? null,
       workspace,
+      protected: true,
     }),
   glob: (
     params: { pattern: string; root: string; maxResults?: number },
@@ -202,6 +219,7 @@ export const native = {
       root: params.root,
       maxResults: params.maxResults ?? null,
       workspace,
+      protected: true,
     }),
   runCommand: (
     command: string,

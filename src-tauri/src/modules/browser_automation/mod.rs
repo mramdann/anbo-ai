@@ -9,6 +9,8 @@ pub mod snapshot;
 
 use tauri::AppHandle;
 
+const MAX_ACTION_REQUEST_BYTES: usize = 64 * 1024;
+
 #[tauri::command]
 pub async fn browser_automation_start(app: AppHandle) -> Result<(), String> {
     server::start_server(app)
@@ -33,6 +35,11 @@ pub async fn browser_automation_handle_action(
     app: AppHandle,
     request_json: String,
 ) -> Result<String, String> {
+    if request_json.len() > MAX_ACTION_REQUEST_BYTES {
+        return Err(format!(
+            "browser automation request exceeds {MAX_ACTION_REQUEST_BYTES} bytes"
+        ));
+    }
     let value: serde_json::Value =
         serde_json::from_str(&request_json).map_err(|e| format!("invalid json request: {e}"))?;
     let method = value

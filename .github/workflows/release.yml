@@ -1,347 +1,253 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag_name:
-        description: Existing tag to build
+        description: Existing draft release tag to build
+        required: true
+        type: string
+      expected_sha:
+        description: Expected tag commit SHA
         required: true
         type: string
   workflow_call:
     inputs:
-      release_body:
-        description: Generated release notes
-        required: false
-        type: string
       tag_name:
-        description: Existing tag to build
+        description: Existing draft release tag to build
+        required: true
+        type: string
+      expected_sha:
+        description: Expected tag commit SHA
         required: true
         type: string
 
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      release_sha: ${{ steps.verify.outputs.release_sha }}
+    env:
+      RELEASE_TAG: ${{ inputs.tag_name }}
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      SIGNPATH_ENABLED: ${{ vars.SIGNPATH_ENABLED || 'false' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.tag_name }}
+          fetch-depth: 0
+
+      - id: verify
+        name: Verify exact tag, CI, draft, and signing configuration
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_TAG"
+          test -n "$EXPECTED_SHA"
+          test "$SIGNPATH_ENABLED" = "true" \
+            || { echo "SIGNPATH_ENABLED must be true for a production release"; exit 1; }
+          test -n "$TAURI_SIGNING_PRIVATE_KEY" \
+            || { echo "TAURI_SIGNING_PRIVATE_KEY is missing"; exit 1; }
+          test -n "$SIGNPATH_API_TOKEN" \
+            || { echo "SIGNPATH_API_TOKEN is missing"; exit 1; }
+
+          RELEASE_SHA=$(git rev-list -n 1 "refs/tags/$RELEASE_TAG")
+          test "$RELEASE_SHA" = "$EXPECTED_SHA" \
+            || { echo "Tag $RELEASE_TAG points to $RELEASE_SHA, expected $EXPECTED_SHA"; exit 1; }
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+
+          conclusion=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI \
+            --commit "$RELEASE_SHA" --event push --limit 1 \
+            --json status,conclusion \
+            --jq 'if length == 0 then "missing" else .[0].status + ":" + (.[0].conclusion // "") end')
+          test "$conclusion" = "completed:success" \
+            || { echo "Exact tag SHA has no successful CI run: $conclusion"; exit 1; }
+
+          is_draft=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft --jq .isDraft)
+          test "$is_draft" = "true" \
+            || { echo "Release $RELEASE_TAG must already exist as a draft"; exit 1; }
+          echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+
   publish-tauri:
+    needs: gate
+    runs-on: windows-latest
     permissions:
       contents: write
       id-token: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: windows-latest
-            args: "--bundles nsis"
-            rust-target: ""
-
-    runs-on: ${{ matrix.platform }}
     env:
-      RELEASE_BODY: ${{ inputs.release_body }}
-      RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
-      SIGNPATH_ENABLED: ${{ vars.SIGNPATH_ENABLED || 'false' }}
-      APPLE_SIGNING_ENABLED: ${{ vars.APPLE_SIGNING_ENABLED || 'false' }}
+      RELEASE_TAG: ${{ inputs.tag_name }}
+      RELEASE_SHA: ${{ needs.gate.outputs.release_sha }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.gate.outputs.release_sha }}
 
-      - name: Resolve release notes
-        shell: pwsh
-        run: |
-          if (-not [string]::IsNullOrWhiteSpace($env:RELEASE_BODY)) { exit 0 }
-          $version = $env:RELEASE_TAG.TrimStart('v')
-          $content = Get-Content CHANGELOG.md -Raw
-          $escaped = [regex]::Escape($version)
-          $match = [regex]::Match($content, "(?ms)^## \[$escaped\].*?\r?\n(.*?)(?=^## \[|\z)")
-          if (-not $match.Success) { throw "No CHANGELOG entry found for $version" }
-          Add-Content $env:GITHUB_ENV 'RELEASE_BODY<<ANBO_RELEASE_NOTES'
-          Add-Content $env:GITHUB_ENV $match.Groups[1].Value.Trim()
-          Add-Content $env:GITHUB_ENV 'ANBO_RELEASE_NOTES'
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
 
-      - name: Install Linux build dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            patchelf
-
-      - uses: pnpm/action-setup@v6
-
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: pnpm
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
-          targets: ${{ matrix.rust-target }}
+          toolchain: stable
 
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: ./src-tauri -> target
-          key: ${{ matrix.platform }}-${{ matrix.rust-target }}
+          key: windows-release
 
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Audit production dependencies
-        run: pnpm audit --prod --audit-level moderate
-
-      - name: Check release versions
-        run: pnpm check-version
-
-      - name: Write Apple API key to disk
-        if: startsWith(matrix.platform, 'macos') && env.APPLE_SIGNING_ENABLED == 'true'
-        shell: bash
-        env:
-          KEY_CONTENT: ${{ secrets.APPLE_API_KEY_PATH }}
+      - name: Install dependencies and validate source
         run: |
-          mkdir -p "$HOME/private_keys"
-          printf '%s' "$KEY_CONTENT" > "$HOME/private_keys/AuthKey.p8"
-          echo "APPLE_API_KEY_PATH=$HOME/private_keys/AuthKey.p8" >> "$GITHUB_ENV"
+          pnpm install --frozen-lockfile
+          pnpm audit --prod --audit-level moderate
+          pnpm check-version
 
-      - id: tauri-signed
-        if: startsWith(matrix.platform, 'macos') && env.APPLE_SIGNING_ENABLED == 'true'
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-        with:
-          tagName: ${{ env.RELEASE_TAG }}
-          releaseName: "anbo ${{ env.RELEASE_TAG }}"
-          releaseBody: ${{ env.RELEASE_BODY }}
-          releaseDraft: false
-          prerelease: false
-          args: ${{ matrix.args }}
-
-      # Defining APPLE_CERTIFICATE with an empty value still makes Tauri try to
-      # import it, so unsigned builds must use a separate step with no Apple env.
-      - id: tauri
-        if: ${{ !startsWith(matrix.platform, 'macos') || env.APPLE_SIGNING_ENABLED != 'true' }}
-        uses: tauri-apps/tauri-action@v1
+      - name: Build updater artifacts into the existing draft
+        uses: tauri-apps/tauri-action@944946e3e4cac6603d1fe8f514171e9ecd3c78aa # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ env.RELEASE_TAG }}
-          releaseName: "anbo ${{ env.RELEASE_TAG }}"
-          releaseBody: ${{ env.RELEASE_BODY }}
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }}
+          args: --bundles nsis
 
-      # Strip the bundled libwayland-* libs from the AppImage so it loads the
-      # host copies at runtime. The Ubuntu 22.04 build host ships libwayland
-      # 1.20, but recent Mesa (Fedora 43 / Arch / Bazzite, Mesa 1.22+) needs
-      # newer symbols; AppImage puts its bundled libs first on the search path,
-      # so the stale copy wins and EGL fails with EGL_BAD_PARAMETER. libgdk-3
-      # hard-links these three, so removing them only redirects resolution to
-      # the host copy, which every GTK-capable system has. They are on the
-      # AppImage excludelist for this exact reason. The re-signed AppImage and
-      # its .sig are re-uploaded here; the updater manifest is patched in the
-      # patch-appimage-updater job after all matrix legs finish, so a parallel
-      # macOS/Windows upload cannot clobber the combined latest.json.
-      - name: Fix AppImage wayland libs and re-sign
-        if: matrix.platform == 'ubuntu-22.04'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-
-          APPIMAGE=$(ls src-tauri/target/release/bundle/appimage/*.AppImage | head -n1)
-          BASENAME=$(basename "$APPIMAGE")
-          echo "Patching: $APPIMAGE"
-
-          WORK=$(mktemp -d)
-          cp "$APPIMAGE" "$WORK/"
-          pushd "$WORK" >/dev/null
-          chmod +x "./$BASENAME"
-          "./$BASENAME" --appimage-extract >/dev/null
-
-          # Fail loud if Tauri/linuxdeploy stops bundling these, so a future
-          # layout change cannot silently ship an unfixed AppImage.
-          for lib in libwayland-client.so.0 libwayland-egl.so.1 libwayland-cursor.so.0; do
-            test -e "squashfs-root/usr/lib/$lib" \
-              || { echo "expected bundled lib missing: $lib (layout changed?)"; exit 1; }
-          done
-
-          rm -f squashfs-root/usr/lib/libwayland-client.so.0 \
-                squashfs-root/usr/lib/libwayland-egl.so.1 \
-                squashfs-root/usr/lib/libwayland-cursor.so.0 \
-                squashfs-root/usr/lib/libwayland-server.so.0
-
-          curl -fsSL -o appimagetool.AppImage \
-            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
-          chmod +x appimagetool.AppImage
-          ARCH=x86_64 ./appimagetool.AppImage --appimage-extract-and-run squashfs-root "$BASENAME"
-
-          # Sanity-check the repacked image before it replaces the original.
-          rm -rf squashfs-root
-          chmod +x "./$BASENAME"
-          "./$BASENAME" --appimage-extract >/dev/null
-          for lib in libwayland-client.so.0 libwayland-egl.so.1 libwayland-cursor.so.0; do
-            test ! -e "squashfs-root/usr/lib/$lib" \
-              || { echo "lib still present after repack: $lib"; exit 1; }
-          done
-          test -x squashfs-root/usr/bin/anbo \
-            || { echo "anbo binary missing from repacked AppImage"; exit 1; }
-          popd >/dev/null
-
-          cp "$WORK/$BASENAME" "$APPIMAGE"
-
-          rm -f "$APPIMAGE.sig"
-          pnpm tauri signer sign "$APPIMAGE"
-
-          TAG="${RELEASE_TAG}"
-          gh release upload "$TAG" "$APPIMAGE" "$APPIMAGE.sig" \
-            --clobber --repo "$GITHUB_REPOSITORY"
-
-      # SignPath Authenticode-signs the Windows installer. Its bytes change,
-      # so the minisign updater signatures tauri-action produced over the
-      # unsigned file no longer match. We stage the installer under the exact
-      # name the SignPath artifact configuration expects, submit it, then
-      # re-run the Tauri signer over the signed file and re-upload it with its
-      # temporary .sig. latest.json is patched in the final
-      # patch-updater-manifest job, after every matrix leg has merged, so a
-      # parallel macOS/Linux upload cannot clobber the Windows signatures.
-      - name: Stage Windows installers for SignPath
-        if: matrix.platform == 'windows-latest' && env.SIGNPATH_ENABLED == 'true'
+      - name: Stage Windows installer for SignPath
+        id: stage
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $bundleDir = "src-tauri/target/release/bundle"
-          $exe = Get-ChildItem "$bundleDir/nsis" -Filter *.exe | Select-Object -First 1
-          if (-not $exe) { throw "No NSIS .exe produced by Tauri" }
+          $exe = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter *.exe |
+            Select-Object -First 1
+          if (-not $exe) { throw "No NSIS installer produced by Tauri" }
           New-Item -ItemType Directory -Path signpath-staging -Force | Out-Null
           Copy-Item $exe.FullName signpath-staging/anbo-setup.exe
-          "EXE_REAL_PATH=$($exe.FullName)" | Out-File $env:GITHUB_ENV -Append
+          "exe_real_path=$($exe.FullName)" | Out-File $env:GITHUB_OUTPUT -Append
 
-      - name: Upload unsigned Windows artifact
+      - name: Upload unsigned installer for signing
         id: upload-windows
-        if: matrix.platform == 'windows-latest' && env.SIGNPATH_ENABLED == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: windows-unsigned
+          name: windows-unsigned-${{ needs.gate.outputs.release_sha }}
           path: signpath-staging/
           if-no-files-found: error
+          retention-days: 1
 
-      # Requires manual approval in the SignPath UI for the production policy.
-      # The default wait timeout is 600s; bumped so the job survives the time
-      # it takes to review and approve the request during a release.
-      - name: Submit Windows installers to SignPath
-        if: matrix.platform == 'windows-latest' && env.SIGNPATH_ENABLED == 'true'
-        uses: signpath/github-action-submit-signing-request@v2
+      - name: Submit installer to SignPath
+        uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
           project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: 'release-signing'
-          artifact-configuration-slug: 'initial'
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: initial
           github-artifact-id: ${{ steps.upload-windows.outputs.artifact-id }}
           wait-for-completion: true
           wait-for-completion-timeout-in-seconds: 3600
-          output-artifact-directory: 'signed'
+          output-artifact-directory: signed
 
-      - name: Re-sign updater and upload signed Windows installers
-        if: matrix.platform == 'windows-latest' && env.SIGNPATH_ENABLED == 'true'
+      - name: Validate and upload signed updater installer
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXE_REAL_PATH: ${{ steps.stage.outputs.exe_real_path }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
           $signedExe = "signed/anbo-setup.exe"
           if (-not (Test-Path $signedExe)) { throw "Signed artifact missing: $signedExe" }
-          $sig = Get-AuthenticodeSignature $signedExe
-          if ($null -eq $sig.SignerCertificate) { throw "$signedExe is NOT Authenticode-signed" }
-          if ($sig.Status -ne 'Valid') { throw "$signedExe signature status: $($sig.Status)" }
+          $signature = Get-AuthenticodeSignature $signedExe
+          if ($null -eq $signature.SignerCertificate -or $signature.Status -ne "Valid") {
+            throw "Invalid Authenticode signature: $($signature.Status)"
+          }
           Copy-Item $signedExe $env:EXE_REAL_PATH -Force
           Remove-Item "$($env:EXE_REAL_PATH).sig" -ErrorAction SilentlyContinue
           pnpm tauri signer sign $env:EXE_REAL_PATH
-          gh release upload $env:RELEASE_TAG `
-            $env:EXE_REAL_PATH "$($env:EXE_REAL_PATH).sig" `
-            --clobber --repo $env:GITHUB_REPOSITORY
-
-      - name: Remove standalone updater signatures
-        if: matrix.platform == 'windows-latest' && env.SIGNPATH_ENABLED != 'true'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $assets = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY `
-            --json assets --jq '.assets[].name'
-          foreach ($asset in $assets) {
-            if ($asset.EndsWith('.sig') -or $asset.EndsWith('.msi')) {
-              gh release delete-asset $env:RELEASE_TAG $asset `
-                --yes --repo $env:GITHUB_REPOSITORY
-            }
+          if (-not (Test-Path "$($env:EXE_REAL_PATH).sig")) {
+            throw "Updater signature was not produced"
           }
+          gh release upload $env:RELEASE_TAG $env:EXE_REAL_PATH `
+            "$($env:EXE_REAL_PATH).sig" --clobber --repo $env:GITHUB_REPOSITORY
 
-  # SignPath changes the installer bytes after tauri-action creates latest.json.
-  # Patch the manifest only when SignPath is enabled; unsigned Windows releases
-  # already contain the correct signatures and URLs.
   patch-updater-manifest:
-    needs: publish-tauri
-    if: vars.SIGNPATH_ENABLED == 'true'
+    needs: [gate, publish-tauri]
     runs-on: ubuntu-latest
-    env:
-      RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag_name }}
     steps:
-      - name: Patch latest.json with signed Windows signatures
+      - name: Patch latest.json with signed installer metadata
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="${RELEASE_TAG}"
+          mkdir release-assets
+          cd release-assets
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern latest.json --pattern '*_x64-setup.exe.sig'
+          SIG_FILE=$(find . -maxdepth 1 -name '*_x64-setup.exe.sig' -print -quit)
+          test -n "$SIG_FILE"
+          EXE_SIG=$(cat "$SIG_FILE")
+          test -n "$EXE_SIG"
+          EXE_FILE=$(basename "$SIG_FILE" .sig)
+          DOWNLOAD="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
 
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern "latest.json" \
-            --pattern "*_x64-setup.exe.sig" --clobber
-
-          EXE_SIG=$(cat ./*_x64-setup.exe.sig)
-
-          # Re-signing an artifact re-uploads it with --clobber, which deletes
-          # and recreates the asset under a new id. tauri-action baked the old
-          # asset-id API urls into latest.json, so we also rewrite the urls of
-          # the re-signed artifacts to the tag+filename download url, which is
-          # stable across clobbers. Filenames come from the .sig names.
-          EXE_FILE=$(basename "$(ls ./*_x64-setup.exe.sig)" .sig)
-          DL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
-
-          jq -e 'has("platforms") and (.platforms | has("windows-x86_64")
-            and has("windows-x86_64-nsis"))' latest.json >/dev/null \
-            || { echo "latest.json missing an expected platform key"; exit 1; }
-
-          jq --arg sig "$EXE_SIG" --arg url "$DL/$EXE_FILE" '
+          jq -e 'has("version") and has("platforms")' latest.json >/dev/null
+          jq --arg sig "$EXE_SIG" --arg url "$DOWNLOAD/$EXE_FILE" '
             .platforms["windows-x86_64"] += {signature: $sig, url: $url}
             | .platforms["windows-x86_64-nsis"] += {signature: $sig, url: $url}
             | del(.platforms["windows-x86_64-msi"])
           ' latest.json > latest.json.tmp
           mv latest.json.tmp latest.json
+          gh release upload "$RELEASE_TAG" latest.json --clobber --repo "$GITHUB_REPOSITORY"
+          gh release delete-asset "$RELEASE_TAG" "$(basename "$SIG_FILE")" \
+            --yes --repo "$GITHUB_REPOSITORY"
 
-          gh release upload "$TAG" latest.json --clobber --repo "$GITHUB_REPOSITORY"
-          while IFS= read -r asset; do
-            gh release delete-asset "$TAG" "$asset" \
-              --yes --repo "$GITHUB_REPOSITORY"
-          done < <(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --json assets --jq '.assets[].name | select(endswith(".sig") or endswith(".msi"))')
+  publish-release:
+    needs: [gate, patch-updater-manifest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag_name }}
+      RELEASE_SHA: ${{ needs.gate.outputs.release_sha }}
+    steps:
+      - name: Validate complete draft and publish atomically
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          remote_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)
+          test "$remote_sha" = "$RELEASE_SHA"
+          test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+
+          mkdir final-assets
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir final-assets
+          EXE=$(find final-assets -maxdepth 1 -name '*_x64-setup.exe' -print -quit)
+          test -n "$EXE" && test -s "$EXE"
+          test -s final-assets/latest.json
+          VERSION=${RELEASE_TAG#v}
+          jq -e --arg version "$VERSION" '
+            .version == $version
+            and (.platforms["windows-x86_64"].signature | length > 0)
+            and (.platforms["windows-x86_64-nsis"].signature | length > 0)
+            and (.platforms["windows-x86_64"].url | endswith("_x64-setup.exe"))
+            and (.platforms["windows-x86_64-nsis"].url | endswith("_x64-setup.exe"))
+          ' final-assets/latest.json >/dev/null
+
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --latest

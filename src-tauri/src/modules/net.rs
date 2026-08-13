@@ -4,7 +4,10 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{
+    HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE, COOKIE, LOCATION,
+    PROXY_AUTHORIZATION,
+};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
@@ -21,6 +24,7 @@ const HEADER_BLOCKLIST: &[&str] = &[
     "trailer",
     "expect",
 ];
+const MAX_REDIRECTS: usize = 10;
 
 fn is_blocked_host_name(host: &str) -> bool {
     let host = host.to_ascii_lowercase();
@@ -53,6 +57,9 @@ fn ip_kind(ip: IpAddr) -> IpKind {
             IpKind::Public
         }
         IpAddr::V6(v) => {
+            if let Some(mapped) = v.to_ipv4_mapped() {
+                return ip_kind(IpAddr::V4(mapped));
+            }
             if v.is_loopback() || v.is_unspecified() || v.is_multicast() {
                 return IpKind::Loopback;
             }
@@ -227,23 +234,20 @@ pub struct HttpResponse {
 
 fn build_request(
     client: &reqwest::Client,
-    method: &str,
+    method: Method,
     url: reqwest::Url,
-    headers: Option<HashMap<String, String>>,
+    headers: HeaderMap,
     body: Option<Vec<u8>>,
-) -> Result<reqwest::RequestBuilder, String> {
-    let method = Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
-    let mut req = client.request(method, url);
-    let map = sanitize_headers(headers)?;
-    req = req.headers(map);
-    if let Some(b) = body {
-        req = req.body(b);
+) -> reqwest::RequestBuilder {
+    let mut request = client.request(method, url).headers(headers);
+    if let Some(body) = body {
+        request = request.body(body);
     }
-    Ok(req)
+    request
 }
 
 fn build_safe_client(
-    allow_private: bool,
+    _allow_private: bool,
     pinned: &[(String, Vec<IpAddr>)],
 ) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(10));
@@ -259,43 +263,92 @@ fn build_safe_client(
         }
     }
     builder
-        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
-            if attempt.previous().len() > 10 {
-                return attempt.error("too many redirects");
-            }
-            let next = attempt.url();
-            match next.scheme() {
-                "http" | "https" => {}
-                _ => return attempt.stop(),
-            }
-            if next.username() != "" || next.password().is_some() {
-                return attempt.stop();
-            }
-            let Some(host) = next.host_str() else {
-                return attempt.stop();
-            };
-            if is_blocked_host_name(host) {
-                return attempt.stop();
-            }
-            if let Ok(ip) = host.parse::<IpAddr>() {
-                let k = ip_kind(ip);
-                if k == IpKind::BlockedMetadata {
-                    return attempt.stop();
-                }
-                if !allow_private && matches!(k, IpKind::Loopback | IpKind::Private) {
-                    return attempt.stop();
-                }
-            } else if !allow_private {
-                if let Some(prev) = attempt.previous().last() {
-                    if prev.host_str() != Some(host) {
-                        return attempt.stop();
-                    }
-                }
-            }
-            attempt.follow()
-        }))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| e.to_string())
+}
+
+fn same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn apply_redirect_semantics(
+    status: reqwest::StatusCode,
+    method: &mut Method,
+    headers: &mut HeaderMap,
+    body: &mut Option<Vec<u8>>,
+) {
+    let switch_to_get = status == reqwest::StatusCode::SEE_OTHER && *method != Method::HEAD
+        || matches!(
+            status,
+            reqwest::StatusCode::MOVED_PERMANENTLY | reqwest::StatusCode::FOUND
+        ) && *method == Method::POST;
+    if switch_to_get {
+        *method = Method::GET;
+        *body = None;
+        headers.remove(CONTENT_TYPE);
+    }
+}
+
+async fn send_protected_request(
+    initial_url: reqwest::Url,
+    initial_method: Method,
+    initial_headers: HeaderMap,
+    initial_body: Option<Vec<u8>>,
+    allow_private: bool,
+) -> Result<reqwest::Response, String> {
+    let mut url = initial_url;
+    let mut method = initial_method;
+    let mut headers = initial_headers;
+    let mut body = initial_body;
+
+    for redirect_count in 0..=MAX_REDIRECTS {
+        let validated = validate_url(url.as_str(), allow_private)?;
+        let host = validated
+            .host_str()
+            .ok_or_else(|| "missing host".to_string())?
+            .to_string();
+        let safe_ips = classify_and_collect_safe_ips(&host, allow_private).await?;
+        let client = build_safe_client(allow_private, &[(host, safe_ips)])?;
+        let response = build_request(
+            &client,
+            method.clone(),
+            validated.clone(),
+            headers.clone(),
+            body.clone(),
+        )
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+        if !response.status().is_redirection() {
+            return Ok(response);
+        }
+        let Some(location) = response.headers().get(LOCATION) else {
+            return Ok(response);
+        };
+        if redirect_count == MAX_REDIRECTS {
+            return Err(format!("too many redirects; maximum is {MAX_REDIRECTS}"));
+        }
+        let location = location
+            .to_str()
+            .map_err(|_| "redirect location is not valid text".to_string())?;
+        let next = validated
+            .join(location)
+            .map_err(|e| format!("invalid redirect location: {e}"))?;
+        validate_url(next.as_str(), allow_private)?;
+        if !same_origin(&validated, &next) {
+            headers.remove(AUTHORIZATION);
+            headers.remove(COOKIE);
+            headers.remove(PROXY_AUTHORIZATION);
+        }
+        apply_redirect_semantics(response.status(), &mut method, &mut headers, &mut body);
+        url = next;
+    }
+
+    Err("redirect processing failed".into())
 }
 
 fn header_map_to_strings(headers: &HeaderMap) -> HashMap<String, String> {
@@ -318,16 +371,9 @@ pub async fn ai_http_request(
 ) -> Result<HttpResponse, String> {
     let allow_private = allow_private_network.unwrap_or(false);
     let parsed = validate_url(&url, allow_private)?;
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| "missing host".to_string())?
-        .to_string();
-    let safe_ips = classify_and_collect_safe_ips(&host, allow_private).await?;
-
-    let client = build_safe_client(allow_private, &[(host, safe_ips)])?;
-
-    let req = build_request(&client, &method, parsed, headers, body)?;
-    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let method = Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
+    let headers = sanitize_headers(headers)?;
+    let resp = send_protected_request(parsed, method, headers, body, allow_private).await?;
 
     let status = resp.status().as_u16();
     let headers = header_map_to_strings(resp.headers());
@@ -372,32 +418,28 @@ pub async fn ai_http_stream(
             return Err(e);
         }
     };
-    let host = match parsed.host_str() {
-        Some(h) => h.to_string(),
-        None => {
-            let e = "missing host".to_string();
-            let _ = on_event.send(AiStreamEvent::Error { message: e.clone() });
-            return Err(e);
-        }
-    };
-    let safe_ips = match classify_and_collect_safe_ips(&host, allow_private).await {
-        Ok(v) => v,
+    let method = match Method::from_bytes(method.as_bytes()) {
+        Ok(method) => method,
         Err(e) => {
-            let _ = on_event.send(AiStreamEvent::Error { message: e.clone() });
-            return Err(e);
-        }
-    };
-
-    let client = build_safe_client(allow_private, &[(host, safe_ips)])?;
-
-    let req = build_request(&client, &method, parsed, headers, body)?;
-    let resp = match req.send().await {
-        Ok(r) => r,
-        Err(e) => {
+            let message = e.to_string();
             let _ = on_event.send(AiStreamEvent::Error {
-                message: e.to_string(),
+                message: message.clone(),
             });
-            return Err(e.to_string());
+            return Err(message);
+        }
+    };
+    let headers = match sanitize_headers(headers) {
+        Ok(headers) => headers,
+        Err(e) => {
+            let _ = on_event.send(AiStreamEvent::Error { message: e.clone() });
+            return Err(e);
+        }
+    };
+    let resp = match send_protected_request(parsed, method, headers, body, allow_private).await {
+        Ok(response) => response,
+        Err(e) => {
+            let _ = on_event.send(AiStreamEvent::Error { message: e.clone() });
+            return Err(e);
         }
     };
 
@@ -487,6 +529,59 @@ mod tests {
             IpKind::Loopback
         );
         assert_eq!(ip_kind("::1".parse().unwrap()), IpKind::Loopback);
+        assert_eq!(
+            ip_kind("::ffff:127.0.0.1".parse().unwrap()),
+            IpKind::Loopback
+        );
+    }
+
+    #[test]
+    fn mapped_metadata_is_blocked() {
+        assert_eq!(
+            ip_kind("::ffff:169.254.169.254".parse().unwrap()),
+            IpKind::BlockedMetadata
+        );
+    }
+
+    #[tokio::test]
+    async fn redirect_destination_to_private_network_requires_opt_in() {
+        let private = "::ffff:127.0.0.1";
+        let result = classify_and_collect_safe_ips(private, false).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn redirect_destination_to_metadata_is_always_blocked() {
+        let metadata = "::ffff:169.254.169.254";
+        let result = classify_and_collect_safe_ips(metadata, true).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn manual_redirect_revalidates_mapped_metadata_destination() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("local address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: http://[::ffff:169.254.169.254]/latest/meta-data\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("write redirect");
+        });
+
+        let url = reqwest::Url::parse(&format!("http://{address}/start")).unwrap();
+        let result = send_protected_request(url, Method::GET, HeaderMap::new(), None, true).await;
+        server.await.expect("server task");
+        let error = result.expect_err("metadata redirect must be blocked");
+        assert!(error.contains("not allowed"), "got: {error}");
     }
 
     #[test]

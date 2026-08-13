@@ -8,27 +8,92 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
-  id-token: write
+  actions: read
 
 jobs:
   release-please:
     runs-on: ubuntu-latest
-    outputs:
-      body: ${{ steps.release.outputs.body }}
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - id: release
-        uses: googleapis/release-please-action@v5
+      - uses: googleapis/release-please-action@0dfd8538845b8e92600d271a895a5372865d4062 # v5
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          skip-github-release: true
+
+  await-ci:
+    needs: release-please
+    if: "${{ startsWith(github.event.head_commit.message, 'chore(main): release ') }}"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful CI for the release commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 90); do
+            result=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI \
+              --commit "$RELEASE_SHA" --event push --limit 1 \
+              --json status,conclusion \
+              --jq 'if length == 0 then "missing" else .[0].status + ":" + (.[0].conclusion // "") end')
+            case "$result" in
+              completed:success) exit 0 ;;
+              completed:*) echo "CI failed for $RELEASE_SHA: $result"; exit 1 ;;
+              *) echo "Waiting for CI on $RELEASE_SHA: $result"; sleep 20 ;;
+            esac
+          done
+          echo "Timed out waiting for CI on $RELEASE_SHA"
+          exit 1
+
+  prepare-draft:
+    needs: await-ci
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      release_sha: ${{ steps.release.outputs.release_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - id: release
+        name: Create tag and draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v$VERSION"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag already exists: $TAG"
+            exit 1
+          fi
+
+          awk -v version="$VERSION" '
+            $0 ~ "^## \\[" version "\\]" { found=1; next }
+            found && /^## \\[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG" "$RELEASE_SHA"
+          git push origin "refs/tags/$TAG"
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --draft --title "anbo $TAG" --notes-file release-notes.md
+
+          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
 
   build-release:
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    needs: prepare-draft
     uses: ./.github/workflows/release.yml
     with:
-      release_body: ${{ needs.release-please.outputs.body }}
-      tag_name: ${{ needs.release-please.outputs.tag_name }}
+      tag_name: ${{ needs.prepare-draft.outputs.tag_name }}
+      expected_sha: ${{ needs.prepare-draft.outputs.release_sha }}
     secrets: inherit

@@ -8,7 +8,6 @@ import type { ToolContext } from "../tools/tools";
 import { selectRunSnapshot, type LiveSnapshot } from "./runContext";
 import { workspaceScopeKey } from "@/modules/workspace";
 
-const ANBO_MD_MAX_BYTES = 32 * 1024;
 type MemoryCacheEntry = { content: string | null; mtime: number };
 const projectMemoryCache = new Map<string, MemoryCacheEntry>();
 
@@ -17,23 +16,11 @@ async function readAnboMd(
   workspaceEnv: LiveSnapshot["workspaceEnv"],
 ): Promise<string | null> {
   if (!workspaceRoot) return null;
-  const path = `${workspaceRoot.replace(/\/$/, "")}/ANBO.md`;
   const cacheKey = `${workspaceScopeKey(workspaceEnv)}:${workspaceRoot}`;
   const cached = projectMemoryCache.get(cacheKey);
   if (cached && Date.now() - cached.mtime < 30_000) return cached.content;
   try {
-    const r = await native.readFile(path, workspaceEnv);
-    if (r.kind !== "text") {
-      projectMemoryCache.set(cacheKey, {
-        content: null,
-        mtime: Date.now(),
-      });
-      return null;
-    }
-    const content =
-      r.content.length > ANBO_MD_MAX_BYTES
-        ? r.content.slice(0, ANBO_MD_MAX_BYTES)
-        : r.content;
+    const content = await native.readProjectMemory(workspaceRoot, workspaceEnv);
     projectMemoryCache.set(cacheKey, { content, mtime: Date.now() });
     return content;
   } catch {

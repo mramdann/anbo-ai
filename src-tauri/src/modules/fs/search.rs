@@ -4,7 +4,9 @@ use nucleo_matcher::{Config, Matcher, Utf32Str};
 use serde::Serialize;
 
 use super::to_canon;
-use crate::modules::workspace::{resolve_path, WorkspaceEnv};
+use crate::modules::workspace::{
+    authorize_existing_path, resolve_path, WorkspaceEnv, WorkspaceRegistry,
+};
 
 #[derive(Serialize, Clone)]
 pub struct SearchHit {
@@ -44,13 +46,23 @@ const PRUNE_DIRS: &[&str] = &[
     "__pycache__",
 ];
 
-#[tauri::command]
 pub fn fs_search(
     root: String,
     query: String,
     limit: Option<usize>,
     workspace: Option<WorkspaceEnv>,
     show_hidden: Option<bool>,
+) -> Result<SearchResult, String> {
+    fs_search_inner(root, query, limit, workspace, show_hidden, None)
+}
+
+fn fs_search_inner(
+    root: String,
+    query: String,
+    limit: Option<usize>,
+    workspace: Option<WorkspaceEnv>,
+    show_hidden: Option<bool>,
+    authorized_root: Option<std::path::PathBuf>,
 ) -> Result<SearchResult, String> {
     let q = query.trim();
     if q.is_empty() {
@@ -62,7 +74,7 @@ pub fn fs_search(
     let cap = limit.unwrap_or(200).min(1000);
     let show_hidden = show_hidden.unwrap_or(false);
     let workspace = WorkspaceEnv::from_option(workspace);
-    let root_path = resolve_path(&root, &workspace);
+    let root_path = authorized_root.unwrap_or_else(|| resolve_path(&root, &workspace));
     if !root_path.is_dir() {
         return Err(format!("not a directory: {root}"));
     }
@@ -123,6 +135,37 @@ pub fn fs_search(
     Ok(SearchResult { hits, truncated })
 }
 
+#[tauri::command(rename = "fs_search")]
+pub fn fs_search_command(
+    root: String,
+    query: String,
+    limit: Option<usize>,
+    workspace: Option<WorkspaceEnv>,
+    show_hidden: Option<bool>,
+    protected: Option<bool>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<SearchResult, String> {
+    let environment = WorkspaceEnv::from_option(workspace.clone());
+    let canonical = authorize_existing_path(&registry, &root, &environment)?;
+    if protected.unwrap_or(false) {
+        crate::modules::authority::ensure_unprotected(&canonical)?;
+    }
+    let mut result = fs_search_inner(
+        root,
+        query,
+        limit,
+        workspace,
+        show_hidden,
+        Some(canonical.clone()),
+    )?;
+    if protected.unwrap_or(false) {
+        result.hits.retain(|hit| {
+            crate::modules::authority::ensure_unprotected(&canonical.join(&hit.rel)).is_ok()
+        });
+    }
+    Ok(result)
+}
+
 /// Fuzzy-rank candidates against the query (path-aware, smart-case), keeping
 /// the top `cap`. Ties break toward shorter relative paths.
 fn rank_fuzzy(cands: Vec<SearchHit>, query: &str, cap: usize) -> Vec<SearchHit> {
@@ -153,13 +196,23 @@ pub struct ListFilesResult {
     pub truncated: bool,
 }
 
-#[tauri::command]
 pub fn fs_list_files(
     root: String,
     limit: Option<usize>,
     max_depth: Option<usize>,
     workspace: Option<WorkspaceEnv>,
     show_hidden: Option<bool>,
+) -> Result<ListFilesResult, String> {
+    fs_list_files_inner(root, limit, max_depth, workspace, show_hidden, None)
+}
+
+fn fs_list_files_inner(
+    root: String,
+    limit: Option<usize>,
+    max_depth: Option<usize>,
+    workspace: Option<WorkspaceEnv>,
+    show_hidden: Option<bool>,
+    authorized_root: Option<std::path::PathBuf>,
 ) -> Result<ListFilesResult, String> {
     const DEFAULT_LIMIT: usize = 2_000;
     const HARD_LIMIT: usize = 10_000;
@@ -170,7 +223,7 @@ pub fn fs_list_files(
     let depth = max_depth.unwrap_or(DEFAULT_DEPTH).clamp(1, HARD_DEPTH);
     let show_hidden = show_hidden.unwrap_or(false);
     let workspace = WorkspaceEnv::from_option(workspace);
-    let root_path = resolve_path(&root, &workspace);
+    let root_path = authorized_root.unwrap_or_else(|| resolve_path(&root, &workspace));
     if !root_path.is_dir() {
         return Err(format!("not a directory: {root}"));
     }
@@ -226,6 +279,37 @@ pub fn fs_list_files(
 
     files.sort_by_key(|a| a.to_lowercase());
     Ok(ListFilesResult { files, truncated })
+}
+
+#[tauri::command(rename = "fs_list_files")]
+pub fn fs_list_files_command(
+    root: String,
+    limit: Option<usize>,
+    max_depth: Option<usize>,
+    workspace: Option<WorkspaceEnv>,
+    show_hidden: Option<bool>,
+    protected: Option<bool>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<ListFilesResult, String> {
+    let environment = WorkspaceEnv::from_option(workspace.clone());
+    let canonical = authorize_existing_path(&registry, &root, &environment)?;
+    if protected.unwrap_or(false) {
+        crate::modules::authority::ensure_unprotected(&canonical)?;
+    }
+    let mut result = fs_list_files_inner(
+        root,
+        limit,
+        max_depth,
+        workspace,
+        show_hidden,
+        Some(canonical.clone()),
+    )?;
+    if protected.unwrap_or(false) {
+        result.files.retain(|relative| {
+            crate::modules::authority::ensure_unprotected(&canonical.join(relative)).is_ok()
+        });
+    }
+    Ok(result)
 }
 
 fn display_path(

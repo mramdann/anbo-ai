@@ -1,8 +1,8 @@
 pub mod modules;
 
 use modules::{
-    agent, anbo, app_data, browser, browser_automation, fs, git, history, lsp, net, pty, secrets,
-    shell, workspace,
+    agent, anbo, app_data, browser, browser_automation, fs, git, history, lsp, net, project_memory,
+    pty, secrets, shell, workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -260,12 +260,13 @@ pub fn run() {
             pty::pty_has_foreground_job,
             pty::pty_shell_name,
             pty::pty_list_shells,
-            fs::tree::list_subdirs,
-            fs::tree::fs_read_dir,
+            fs::tree::list_subdirs_command,
+            fs::tree::fs_read_dir_command,
             fs::file::fs_read_file,
             fs::file::fs_write_file,
             fs::file::fs_stat,
             fs::file::fs_canonicalize,
+            project_memory::project_memory_read,
             fs::mutate::fs_create_file,
             fs::mutate::fs_create_dir,
             fs::mutate::fs_rename,
@@ -279,11 +280,11 @@ pub fn run() {
             lsp::lsp_spawn,
             lsp::lsp_send,
             lsp::lsp_kill,
-            fs::search::fs_search,
-            fs::search::fs_list_files,
-            fs::grep::fs_grep,
-            fs::grep::fs_grep_interactive,
-            fs::grep::fs_glob,
+            fs::search::fs_search_command,
+            fs::search::fs_list_files_command,
+            fs::grep::fs_grep_command,
+            fs::grep::fs_grep_interactive_command,
+            fs::grep::fs_glob_command,
             browser::embed::browser_embed_update,
             browser::embed::browser_embed_begin_session,
             browser::embed::browser_embed_navigate,

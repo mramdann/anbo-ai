@@ -10,7 +10,9 @@ use ignore::{WalkBuilder, WalkState};
 use serde::Serialize;
 
 use super::to_canon;
-use crate::modules::workspace::{resolve_path, WorkspaceEnv};
+use crate::modules::workspace::{
+    authorize_existing_path, resolve_path, WorkspaceEnv, WorkspaceRegistry,
+};
 
 const FILE_SIZE_CAP: u64 = 5 * 1024 * 1024;
 const DEFAULT_MAX_RESULTS: usize = 200;
@@ -72,6 +74,7 @@ fn search_tree(
     matcher: &RegexMatcher,
     globs: &Option<GlobSet>,
     cap: usize,
+    protected: bool,
     cancel: &(dyn Fn() -> bool + Sync),
 ) -> GrepResponse {
     let walker = WalkBuilder::new(root_path)
@@ -110,6 +113,9 @@ fn search_tree(
                 return WalkState::Continue;
             }
             let path = dent.path();
+            if protected && crate::modules::authority::ensure_unprotected(path).is_err() {
+                return WalkState::Continue;
+            }
             let rel = match path.strip_prefix(&root_path) {
                 Ok(r) => to_canon(r),
                 Err(_) => return WalkState::Continue,
@@ -169,7 +175,6 @@ fn search_tree(
     }
 }
 
-#[tauri::command]
 pub fn fs_grep(
     pattern: String,
     root: String,
@@ -178,11 +183,34 @@ pub fn fs_grep(
     max_results: Option<usize>,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<GrepResponse, String> {
+    fs_grep_inner(
+        pattern,
+        root,
+        glob,
+        case_insensitive,
+        max_results,
+        workspace,
+        false,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fs_grep_inner(
+    pattern: String,
+    root: String,
+    glob: Option<Vec<String>>,
+    case_insensitive: Option<bool>,
+    max_results: Option<usize>,
+    workspace: Option<WorkspaceEnv>,
+    protected: bool,
+    authorized_root: Option<std::path::PathBuf>,
+) -> Result<GrepResponse, String> {
     if pattern.is_empty() {
         return Err("empty pattern".into());
     }
     let workspace = WorkspaceEnv::from_option(workspace);
-    let root_path = resolve_path(&root, &workspace);
+    let root_path = authorized_root.unwrap_or_else(|| resolve_path(&root, &workspace));
     if !root_path.is_dir() {
         return Err(format!("not a directory: {root}"));
     }
@@ -205,13 +233,42 @@ pub fn fs_grep(
         &matcher,
         &globs,
         cap,
+        protected,
         &|| false,
     ))
 }
 
+#[tauri::command(rename = "fs_grep")]
+#[allow(clippy::too_many_arguments)]
+pub fn fs_grep_command(
+    pattern: String,
+    root: String,
+    glob: Option<Vec<String>>,
+    case_insensitive: Option<bool>,
+    max_results: Option<usize>,
+    workspace: Option<WorkspaceEnv>,
+    protected: Option<bool>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<GrepResponse, String> {
+    let environment = WorkspaceEnv::from_option(workspace.clone());
+    let canonical = authorize_existing_path(&registry, &root, &environment)?;
+    if protected.unwrap_or(false) {
+        crate::modules::authority::ensure_unprotected(&canonical)?;
+    }
+    fs_grep_inner(
+        pattern,
+        root,
+        glob,
+        case_insensitive,
+        max_results,
+        workspace,
+        protected.unwrap_or(false),
+        Some(canonical),
+    )
+}
+
 /// Interactive content search for the command palette. Treats the query as a
 /// literal (smart-case), and self-cancels when a newer query arrives.
-#[tauri::command]
 pub fn fs_grep_interactive(
     state: tauri::State<'_, ContentSearchState>,
     pattern: String,
@@ -241,8 +298,26 @@ pub fn fs_grep_interactive(
 
     let cancel = || state.generation.load(Ordering::SeqCst) != my_gen;
     Ok(search_tree(
-        &root_path, &root, &workspace, &matcher, &None, cap, &cancel,
+        &root_path, &root, &workspace, &matcher, &None, cap, false, &cancel,
     ))
+}
+
+#[tauri::command(rename = "fs_grep_interactive")]
+pub fn fs_grep_interactive_command(
+    state: tauri::State<'_, ContentSearchState>,
+    pattern: String,
+    root: String,
+    max_results: Option<usize>,
+    workspace: Option<WorkspaceEnv>,
+    protected: Option<bool>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<GrepResponse, String> {
+    let environment = WorkspaceEnv::from_option(workspace.clone());
+    let canonical = authorize_existing_path(&registry, &root, &environment)?;
+    if protected.unwrap_or(false) {
+        crate::modules::authority::ensure_unprotected(&canonical)?;
+    }
+    fs_grep_interactive(state, pattern, root, max_results, workspace)
 }
 
 #[derive(Serialize)]
@@ -257,18 +332,28 @@ pub struct GlobResponse {
     pub truncated: bool,
 }
 
-#[tauri::command]
 pub fn fs_glob(
     pattern: String,
     root: String,
     max_results: Option<usize>,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<GlobResponse, String> {
+    fs_glob_inner(pattern, root, max_results, workspace, false, None)
+}
+
+fn fs_glob_inner(
+    pattern: String,
+    root: String,
+    max_results: Option<usize>,
+    workspace: Option<WorkspaceEnv>,
+    protected: bool,
+    authorized_root: Option<std::path::PathBuf>,
+) -> Result<GlobResponse, String> {
     if pattern.is_empty() {
         return Err("empty pattern".into());
     }
     let workspace = WorkspaceEnv::from_option(workspace);
-    let root_path = resolve_path(&root, &workspace);
+    let root_path = authorized_root.unwrap_or_else(|| resolve_path(&root, &workspace));
     if !root_path.is_dir() {
         return Err(format!("not a directory: {root}"));
     }
@@ -300,6 +385,9 @@ pub fn fs_glob(
             continue;
         }
         let path = dent.path();
+        if protected && crate::modules::authority::ensure_unprotected(path).is_err() {
+            continue;
+        }
         let rel = match path.strip_prefix(&root_path) {
             Ok(r) => to_canon(r),
             Err(_) => continue,
@@ -314,6 +402,30 @@ pub fn fs_glob(
     }
 
     Ok(GlobResponse { hits, truncated })
+}
+
+#[tauri::command(rename = "fs_glob")]
+pub fn fs_glob_command(
+    pattern: String,
+    root: String,
+    max_results: Option<usize>,
+    workspace: Option<WorkspaceEnv>,
+    protected: Option<bool>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<GlobResponse, String> {
+    let environment = WorkspaceEnv::from_option(workspace.clone());
+    let canonical = authorize_existing_path(&registry, &root, &environment)?;
+    if protected.unwrap_or(false) {
+        crate::modules::authority::ensure_unprotected(&canonical)?;
+    }
+    fs_glob_inner(
+        pattern,
+        root,
+        max_results,
+        workspace,
+        protected.unwrap_or(false),
+        Some(canonical),
+    )
 }
 
 fn display_path(
@@ -362,6 +474,7 @@ mod tests {
             &matcher,
             &None,
             100,
+            false,
             &|| false,
         );
         assert_eq!(live.hits.len(), 1, "uncancelled search finds the match");
@@ -373,8 +486,32 @@ mod tests {
             &matcher,
             &None,
             100,
+            false,
             &|| true,
         );
         assert!(stopped.hits.is_empty(), "cancelled search yields nothing");
+    }
+
+    #[test]
+    fn protected_search_never_reads_sensitive_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("safe.txt"), "needle\n").unwrap();
+        std::fs::write(dir.path().join(".env"), "needle=secret\n").unwrap();
+        let matcher = RegexMatcherBuilder::new().build("needle").unwrap();
+        let workspace = WorkspaceEnv::Local;
+        let root_display = dir.path().to_string_lossy();
+        let result = search_tree(
+            dir.path(),
+            &root_display,
+            &workspace,
+            &matcher,
+            &None,
+            100,
+            true,
+            &|| false,
+        );
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].rel, "safe.txt");
+        assert_eq!(result.files_scanned, 1);
     }
 }

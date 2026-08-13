@@ -30,6 +30,7 @@ function fetchFiles(root: string): Promise<CacheEntry> {
   const promise = invoke<ListFilesResult>("fs_list_files", {
     root,
     workspace: currentWorkspaceEnv(),
+    protected: true,
   })
     .then((res) => {
       const entry: CacheEntry = {

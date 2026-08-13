@@ -3,11 +3,12 @@
   "identifier": "default",
   "description": "Capability for the main window",
   "windows": [
-    "main",
-    "settings"
+    "main"
   ],
   "permissions": [
-    "core:default",
+    "core:path:default",
+    "core:app:allow-version",
+    "core:event:default",
     "core:window:allow-start-dragging",
     "core:window:allow-close",
     "core:window:allow-destroy",
@@ -18,16 +19,10 @@
     "core:window:allow-show",
     "core:window:allow-set-focus",
     "core:window:allow-set-title",
-    "core:event:allow-listen",
-    "core:event:allow-unlisten",
     "opener:default",
     "dialog:default",
-    "log:default",
-    "os:default",
+    "os:allow-platform",
     "notification:default",
-    "store:default",
-    "autostart:allow-enable",
-    "autostart:allow-disable",
-    "autostart:allow-is-enabled"
+    "store:default"
   ]
 }

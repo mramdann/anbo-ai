@@ -50,6 +50,7 @@ pub async fn shell_run_command(
     if trimmed.is_empty() {
         return Err("empty command".into());
     }
+    crate::modules::authority::ensure_safe_shell_command(&trimmed)?;
 
     let workspace = WorkspaceEnv::from_option(workspace);
     authorize_spawn_cwd(&registry, cwd.as_deref(), &workspace)?;
@@ -203,6 +204,7 @@ pub async fn shell_session_run(
     timeout_secs: Option<u64>,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<SessionRunOutput, String> {
+    crate::modules::authority::ensure_safe_shell_command(&command)?;
     let session = state
         .sessions
         .read()
@@ -240,6 +242,7 @@ pub fn shell_bg_spawn(
     cwd: Option<String>,
     workspace: Option<WorkspaceEnv>,
 ) -> Result<u32, String> {
+    crate::modules::authority::ensure_safe_shell_command(&command)?;
     let workspace = WorkspaceEnv::from_option(workspace);
     authorize_spawn_cwd(&registry, cwd.as_deref(), &workspace)?;
     let proc = background::spawn(command, cwd, workspace)?;

@@ -6,7 +6,10 @@ use std::time::UNIX_EPOCH;
 use ignore::WalkBuilder;
 use serde::Serialize;
 
-use crate::modules::workspace::{resolve_path, WorkspaceEnv};
+use super::to_canon;
+use crate::modules::workspace::{
+    authorize_existing_path, resolve_path, WorkspaceEnv, WorkspaceRegistry,
+};
 
 #[derive(Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -130,7 +133,6 @@ fn natural_cmp(a: &str, b: &str) -> Ordering {
 /// (files and dirs) are hidden unless `show_hidden` is set. `git_decorations`
 /// opts into the per-entry `gitignored` flag; off by default so non-explorer
 /// callers pay nothing.
-#[tauri::command]
 pub fn fs_read_dir(
     path: String,
     show_hidden: bool,
@@ -213,11 +215,38 @@ pub fn fs_read_dir(
     Ok(entries)
 }
 
+#[tauri::command(rename = "fs_read_dir")]
+pub fn fs_read_dir_command(
+    path: String,
+    show_hidden: bool,
+    git_decorations: Option<bool>,
+    workspace: Option<WorkspaceEnv>,
+    protected: Option<bool>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<Vec<DirEntry>, String> {
+    let environment = WorkspaceEnv::from_option(workspace.clone());
+    let canonical = authorize_existing_path(&registry, &path, &environment)?;
+    if protected.unwrap_or(false) {
+        crate::modules::authority::ensure_unprotected(&canonical)?;
+    }
+    let mut entries = fs_read_dir(
+        to_canon(&canonical),
+        show_hidden,
+        git_decorations,
+        Some(WorkspaceEnv::Local),
+    )?;
+    if protected.unwrap_or(false) {
+        entries.retain(|entry| {
+            crate::modules::authority::ensure_unprotected(&canonical.join(&entry.name)).is_ok()
+        });
+    }
+    Ok(entries)
+}
+
 /// Lists immediate subdirectories of `path`. Kept for the CwdBreadcrumb.
 ///
 /// Symlinks to directories are included (matches shell `cd` semantics).
 /// Hidden entries are filtered by dot-prefix only.
-#[tauri::command]
 pub fn list_subdirs(
     path: String,
     show_hidden: bool,
@@ -245,6 +274,18 @@ pub fn list_subdirs(
 
     dirs.sort_by(|a, b| natural_cmp(a, b));
     Ok(dirs)
+}
+
+#[tauri::command(rename = "list_subdirs")]
+pub fn list_subdirs_command(
+    path: String,
+    show_hidden: bool,
+    workspace: Option<WorkspaceEnv>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<Vec<String>, String> {
+    let environment = WorkspaceEnv::from_option(workspace.clone());
+    let canonical = authorize_existing_path(&registry, &path, &environment)?;
+    list_subdirs(to_canon(&canonical), show_hidden, Some(WorkspaceEnv::Local))
 }
 
 #[cfg(test)]

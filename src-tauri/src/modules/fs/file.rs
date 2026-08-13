@@ -6,7 +6,9 @@ use serde::Serialize;
 use tauri::Emitter;
 use tempfile::NamedTempFile;
 
-use crate::modules::workspace::{resolve_path, WorkspaceEnv};
+use crate::modules::workspace::{
+    authorize_existing_path, authorize_target_path, resolve_path, WorkspaceEnv, WorkspaceRegistry,
+};
 
 const MAX_READ_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 /// Ceiling for explicit "open anyway"; mirrored as FORCE_READ_LIMIT in useDocument.ts.
@@ -60,13 +62,15 @@ pub async fn fs_read_file(
     workspace: Option<WorkspaceEnv>,
     force: Option<bool>,
     max_bytes: Option<u64>,
+    protected: Option<bool>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
 ) -> Result<ReadResult, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
-    read_file_sync(
-        &resolve_path(&path, &workspace),
-        force.unwrap_or(false),
-        max_bytes,
-    )
+    let path = authorize_existing_path(&registry, &path, &workspace)?;
+    if protected.unwrap_or(false) {
+        crate::modules::authority::ensure_unprotected(&path)?;
+    }
+    read_file_sync(&path, force.unwrap_or(false), max_bytes)
 }
 
 fn read_file_sync(p: &Path, force: bool, max_bytes: Option<u64>) -> Result<ReadResult, String> {
@@ -136,10 +140,15 @@ pub async fn fs_write_file(
     content: String,
     workspace: Option<WorkspaceEnv>,
     source: Option<String>,
+    protected: Option<bool>,
     app: tauri::AppHandle,
+    registry: tauri::State<'_, WorkspaceRegistry>,
 ) -> Result<u64, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
-    let target = resolve_path(&path, &workspace);
+    let target = authorize_target_path(&registry, &path, &workspace)?;
+    if protected.unwrap_or(false) {
+        crate::modules::authority::ensure_unprotected(&target)?;
+    }
     let original_permissions = fs::metadata(&target).ok().map(|m| m.permissions());
     write_atomic(&target, content.as_bytes()).map_err(|e| {
         log::warn!("fs_write_file({}) failed: {e}", target.display());
@@ -165,16 +174,25 @@ pub async fn fs_write_file(
 pub async fn fs_canonicalize(
     path: String,
     workspace: Option<WorkspaceEnv>,
+    protected: Option<bool>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
 ) -> Result<String, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
-    let p = resolve_path(&path, &workspace);
-    let canon = std::fs::canonicalize(&p).map_err(|e| e.to_string())?;
+    let canon = authorize_existing_path(&registry, &path, &workspace)?;
+    if protected.unwrap_or(false) {
+        crate::modules::authority::ensure_unprotected(&canon)?;
+    }
     Ok(super::to_canon(&canon))
 }
 
 #[tauri::command]
-pub async fn fs_stat(path: String, workspace: Option<WorkspaceEnv>) -> Result<FileStat, String> {
+pub async fn fs_stat(
+    path: String,
+    workspace: Option<WorkspaceEnv>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<FileStat, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
+    authorize_existing_path(&registry, &path, &workspace)?;
     let p = resolve_path(&path, &workspace);
     let meta = std::fs::metadata(&p).map_err(|e| e.to_string())?;
     // fs::metadata follows symlinks, so the link check needs symlink_metadata.

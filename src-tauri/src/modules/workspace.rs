@@ -5,6 +5,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 
 // Short TTL keeps the auth-check TOCTOU window tight while still coalescing the
 // burst of canonicalize calls within a single panel refresh (~100ms).
@@ -68,6 +69,81 @@ impl WorkspaceRegistry {
         );
         Ok(canonical)
     }
+}
+
+pub fn authorize_existing_path(
+    registry: &WorkspaceRegistry,
+    path: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<PathBuf, String> {
+    let resolved = resolve_path(path, workspace);
+    let canonical = registry
+        .canonicalize_cached(&resolved)
+        .map_err(|e| format!("path not accessible: {e}"))?;
+    if !registry.is_authorized(&canonical) {
+        return Err(format!(
+            "path is outside the authorized workspace: {}",
+            canonical.display()
+        ));
+    }
+    Ok(canonical)
+}
+
+pub fn authorize_target_path(
+    registry: &WorkspaceRegistry,
+    path: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<PathBuf, String> {
+    let resolved = resolve_path(path, workspace);
+    authorize_resolved_target(registry, &resolved)
+}
+
+fn authorize_resolved_target(
+    registry: &WorkspaceRegistry,
+    resolved: &Path,
+) -> Result<PathBuf, String> {
+    let mut cursor = resolved;
+    let mut tail = Vec::new();
+
+    while !cursor.exists() {
+        let name = cursor
+            .file_name()
+            .ok_or_else(|| "path has no accessible parent".to_string())?;
+        tail.push(name.to_os_string());
+        cursor = cursor
+            .parent()
+            .ok_or_else(|| "path has no accessible parent".to_string())?;
+    }
+
+    let mut canonical = registry
+        .canonicalize_cached(cursor)
+        .map_err(|e| format!("path parent not accessible: {e}"))?;
+    if !registry.is_authorized(&canonical) {
+        return Err(format!(
+            "path is outside the authorized workspace: {}",
+            canonical.display()
+        ));
+    }
+    for component in tail.into_iter().rev() {
+        canonical.push(component);
+    }
+    Ok(canonical)
+}
+
+pub fn authorize_entry_path(
+    registry: &WorkspaceRegistry,
+    path: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<PathBuf, String> {
+    let resolved = resolve_path(path, workspace);
+    let name = resolved
+        .file_name()
+        .ok_or_else(|| "path has no file name".to_string())?;
+    let parent = resolved
+        .parent()
+        .ok_or_else(|| "path has no parent".to_string())?;
+    let parent = authorize_resolved_target(registry, parent)?;
+    Ok(parent.join(name))
 }
 
 // `None` means "use bootstrapped default". `Some` is canonicalized to defeat
@@ -144,19 +220,27 @@ pub async fn workspace_authorize(
     path: String,
     workspace: Option<WorkspaceEnv>,
     registry: tauri::State<'_, WorkspaceRegistry>,
+    app: tauri::AppHandle,
 ) -> Result<String, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
     let resolved = resolve_path(&path, &workspace);
     let canonical = registry.authorize(&resolved).map_err(|e| e.to_string())?;
+    app.asset_protocol_scope()
+        .allow_directory(&canonical, true)
+        .map_err(|e| e.to_string())?;
     Ok(crate::modules::fs::to_canon(&canonical))
 }
 
 #[tauri::command]
 pub async fn workspace_current_dir(
     registry: tauri::State<'_, WorkspaceRegistry>,
+    app: tauri::AppHandle,
 ) -> Result<String, String> {
     let launch = resolve_launch_dir();
     let canonical = registry.authorize(&launch).map_err(|e| e.to_string())?;
+    app.asset_protocol_scope()
+        .allow_directory(&canonical, true)
+        .map_err(|e| e.to_string())?;
     Ok(crate::modules::fs::to_canon(&canonical))
 }
 
@@ -912,6 +996,35 @@ mod auth_tests {
         let err = authorize_spawn_cwd(&reg, Some(&s), &WorkspaceEnv::Local)
             .expect_err("symlink-escape must be rejected");
         assert!(err.contains("outside"), "got: {err}");
+    }
+
+    #[test]
+    fn authorized_paths_reject_existing_and_new_escape_targets() {
+        let allowed = tempdir("pathauth-allowed");
+        let outside = tempdir("pathauth-outside");
+        let reg = WorkspaceRegistry::default();
+        reg.authorize(&allowed).expect("authorize root");
+
+        let outside_file = outside.join("secret.txt");
+        std::fs::write(&outside_file, b"secret").expect("write fixture");
+        let outside_file = outside_file.to_string_lossy();
+        assert!(authorize_existing_path(&reg, &outside_file, &WorkspaceEnv::Local).is_err());
+
+        let outside_new = outside.join("nested/new.txt");
+        let outside_new = outside_new.to_string_lossy();
+        assert!(authorize_target_path(&reg, &outside_new, &WorkspaceEnv::Local).is_err());
+    }
+
+    #[test]
+    fn authorized_target_uses_canonical_parent_for_new_files() {
+        let allowed = tempdir("pathauth-target");
+        let reg = WorkspaceRegistry::default();
+        reg.authorize(&allowed).expect("authorize root");
+        let requested = allowed.join("new/child.txt");
+        let actual =
+            authorize_target_path(&reg, &requested.to_string_lossy(), &WorkspaceEnv::Local)
+                .expect("authorize target");
+        assert_eq!(actual, allowed.join("new/child.txt"));
     }
 
     #[test]

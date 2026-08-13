@@ -21,6 +21,23 @@ use std::sync::Mutex;
 
 use tauri::AppHandle;
 
+const SERVICE: &str = "anbo-ai";
+const MAX_ACCOUNT_BYTES: usize = 256;
+const MAX_SECRET_BYTES: usize = 64 * 1024;
+
+fn validate_secret_key(service: &str, account: &str) -> Result<(), String> {
+    if service != SERVICE {
+        return Err("secret service is not allowed".into());
+    }
+    if account.is_empty()
+        || account.len() > MAX_ACCOUNT_BYTES
+        || account.chars().any(char::is_control)
+    {
+        return Err("invalid secret account".into());
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
@@ -119,6 +136,7 @@ pub async fn secrets_get(
     service: String,
     account: String,
 ) -> Result<Option<String>, String> {
+    validate_secret_key(&service, &account)?;
     #[cfg(target_os = "linux")]
     {
         let _ = state; // capture
@@ -145,6 +163,10 @@ pub async fn secrets_set(
     account: String,
     password: String,
 ) -> Result<(), String> {
+    validate_secret_key(&service, &account)?;
+    if password.len() > MAX_SECRET_BYTES {
+        return Err("secret is too large".into());
+    }
     #[cfg(target_os = "linux")]
     {
         let key = key(&service, &account);
@@ -172,6 +194,7 @@ pub async fn secrets_delete(
     service: String,
     account: String,
 ) -> Result<(), String> {
+    validate_secret_key(&service, &account)?;
     #[cfg(target_os = "linux")]
     {
         let key = key(&service, &account);
@@ -286,6 +309,12 @@ pub async fn secrets_get_all(
     service: String,
     accounts: Vec<String>,
 ) -> Result<Vec<Option<String>>, String> {
+    if accounts.len() > 256 {
+        return Err("too many secret accounts".into());
+    }
+    for account in &accounts {
+        validate_secret_key(&service, account)?;
+    }
     #[cfg(target_os = "linux")]
     {
         with_store(&app, &state, |m| {
