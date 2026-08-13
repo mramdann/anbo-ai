@@ -132,4 +132,31 @@ describe("startup closure budget", () => {
       }),
     ).toMatchObject({ exceeded: false, remainingBytes: 0 });
   });
+
+  it("rejects AI SDK chunks even when the byte budget still passes", () => {
+    const report = {
+      html: "index.html",
+      assets: [
+        {
+          path: "assets/ai-anthropic-hash.js",
+          kind: "js" as const,
+          rawBytes: 4,
+          gzipBytes: 4,
+        },
+      ],
+      rawBytes: 4,
+      gzipBytes: 4,
+    };
+
+    expect(
+      evaluateStartupBudget(report, {
+        name: "main",
+        html: "index.html",
+        gzipLimitBytes: 100,
+      }),
+    ).toMatchObject({
+      exceeded: true,
+      forbiddenAssets: ["assets/ai-anthropic-hash.js"],
+    });
+  });
 });

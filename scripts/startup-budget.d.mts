@@ -29,6 +29,7 @@ export interface StartupBudgetResult extends StartupBudget {
   report: StartupClosureReport;
   exceeded: boolean;
   remainingBytes: number;
+  forbiddenAssets: string[];
 }
 
 export const STARTUP_BUDGETS: StartupBudget[];

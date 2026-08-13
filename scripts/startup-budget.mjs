@@ -11,13 +11,24 @@ export const STARTUP_BUDGETS = [
   {
     name: "main window",
     html: "index.html",
-    gzipLimitBytes: 800 * KIB,
+    gzipLimitBytes: 670 * KIB,
   },
   {
     name: "settings window",
     html: "settings.html",
-    gzipLimitBytes: 480 * KIB,
+    gzipLimitBytes: 305 * KIB,
   },
+];
+
+const LAZY_AI_CHUNK_PREFIXES = [
+  "assets/ai-anthropic-",
+  "assets/ai-cerebras-",
+  "assets/ai-google-",
+  "assets/ai-groq-",
+  "assets/ai-openai-",
+  "assets/ai-openai-compat-",
+  "assets/ai-sdk-shared-",
+  "assets/ai-xai-",
 ];
 
 function parseAttributes(tag) {
@@ -152,11 +163,18 @@ export function measureStartupClosure(distDirectory, htmlName) {
 }
 
 export function evaluateStartupBudget(report, budget) {
+  const forbiddenAssets = report.assets
+    .map((asset) => asset.path)
+    .filter((path) =>
+      LAZY_AI_CHUNK_PREFIXES.some((prefix) => path.startsWith(prefix)),
+    );
   return {
     ...budget,
     report,
-    exceeded: report.gzipBytes > budget.gzipLimitBytes,
+    exceeded:
+      report.gzipBytes > budget.gzipLimitBytes || forbiddenAssets.length > 0,
     remainingBytes: budget.gzipLimitBytes - report.gzipBytes,
+    forbiddenAssets,
   };
 }
 
@@ -185,6 +203,9 @@ function printResult(result) {
     .slice(0, 5);
   for (const asset of largest) {
     console.log(`     ${kib(asset.gzipBytes).padStart(11)}  ${asset.path}`);
+  }
+  for (const path of result.forbiddenAssets) {
+    console.log(`     forbidden eager AI chunk: ${path}`);
   }
 }
 
