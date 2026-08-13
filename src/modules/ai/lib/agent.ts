@@ -23,7 +23,12 @@ import {
   type ProviderId,
 } from "../config";
 import { buildTools, type ToolContext } from "../tools/tools";
-import { compactModelMessagesDetailed } from "./compact";
+import {
+  compactModelMessagesDetailed,
+  deriveContextBudget,
+  fitSystemText,
+  serializedBytes,
+} from "./compact";
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { prepareAgentPrompt } from "./prompt";
 import { createProxyFetch } from "./proxyFetch";
@@ -385,11 +390,28 @@ export async function runAgentStream(opts: RunAgentOptions) {
   const info = resolveModel(modelId, endpoints);
   const provider = info.provider;
 
-  const stableSystem = buildStableSystem(
+  const contextLimit = getModelContextLimit(
+    modelId,
+    isCompatModelId(modelId)
+      ? endpoints.find((endpoint) =>
+          endpoint.id === endpointIdFromCompatModel(modelId),
+        )?.contextLimit
+      : opts.openaiCompatibleContextLimit,
+  );
+  const budget = deriveContextBudget(contextLimit);
+  const rawStableSystem = buildStableSystem(
     modelId,
     opts.agentPersona ?? null,
     opts.customInstructions,
     opts.projectMemory ?? null,
+  );
+  const planInstructions = opts.planMode
+    ? fitSystemText(PLAN_MODE_PROMPT, Math.floor(budget.inputBytes * 0.2))
+    : null;
+  const stableSystem = fitSystemText(
+    rawStableSystem,
+    Math.floor(budget.inputBytes * 0.45) -
+      serializedBytes(planInstructions ?? ""),
   );
 
   const history = await convertToModelMessages(opts.uiMessages);
@@ -399,13 +421,15 @@ export async function runAgentStream(opts: RunAgentOptions) {
     reasoning: keepsReasoning ? "none" : "before-last-message",
     emptyMessages: "remove",
   });
-  const compatCtxOverride = isCompatModelId(modelId)
-    ? endpoints.find((e) => e.id === endpointIdFromCompatModel(modelId))
-        ?.contextLimit
-    : opts.openaiCompatibleContextLimit;
+  const systemBytes = serializedBytes([
+    stableSystem,
+    ...(planInstructions ? [planInstructions] : []),
+  ]);
+  const historyBytes = Math.max(256, budget.inputBytes - systemBytes - 512);
   const compact = compactModelMessagesDetailed(
     prunedHistory,
-    getModelContextLimit(modelId, compatCtxOverride),
+    contextLimit,
+    { historyBytes, maxTurnBytes: Math.floor(historyBytes * 0.5) },
   );
   const compactedHistory = compact.messages;
   if (compact.compacted) {
@@ -414,7 +438,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
 
   const prompt = prepareAgentPrompt(
     stableSystem,
-    opts.planMode ? PLAN_MODE_PROMPT : null,
+    planInstructions,
     compactedHistory,
     provider,
   );
@@ -422,6 +446,7 @@ export async function runAgentStream(opts: RunAgentOptions) {
   let stepsSeen = 0;
   return streamText({
     model,
+    maxOutputTokens: budget.outputTokens,
     system: prompt.system,
     messages: prompt.messages,
     allowSystemInMessages: false,

@@ -1,6 +1,12 @@
 import type { ModelMessage } from "ai";
 import { describe, expect, it } from "vitest";
-import { compactModelMessages, compactModelMessagesDetailed } from "./compact";
+import {
+  compactModelMessages,
+  compactModelMessagesDetailed,
+  deriveContextBudget,
+  fitSystemText,
+  serializedBytes,
+} from "./compact";
 
 const BIG = "x".repeat(2000);
 
@@ -113,5 +119,33 @@ describe("compactModelMessages", () => {
   it("returns the messages array from the detailed result", () => {
     const messages = [{ role: "user", content: "hi" }] as ModelMessage[];
     expect(compactModelMessages(messages, 1000)).toBe(messages);
+  });
+});
+
+describe("hard context budgets", () => {
+  it("reserves output tokens from the provider context", () => {
+    const budget = deriveContextBudget(10_000);
+    expect(budget.outputTokens).toBe(1_500);
+    expect(budget.inputBytes).toBe(25_500);
+  });
+
+  it("hard-bounds history and keeps the newest turn", () => {
+    const messages = Array.from({ length: 20 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" : "assistant",
+      content: `${index}:${BIG}`,
+    })) as ModelMessage[];
+    const result = compactModelMessagesDetailed(messages, 2_000, {
+      historyBytes: 2_000,
+      maxTurnBytes: 1_000,
+    });
+    expect(serializedBytes(result.messages)).toBeLessThanOrEqual(2_000);
+    expect(JSON.stringify(result.messages)).toContain("18:");
+    expect(result.droppedCount).toBeGreaterThan(0);
+  });
+
+  it("bounds oversized system instructions", () => {
+    const fitted = fitSystemText(BIG.repeat(10), 1_000);
+    expect(serializedBytes(fitted)).toBeLessThanOrEqual(1_000);
+    expect(fitted).toContain("truncated to fit context");
   });
 });
