@@ -1,6 +1,6 @@
 # Testing
 
-This guide elaborates on `TERAX.md` and `CONTRIBUTING.md`. If anything conflicts with those files, they win.
+This guide elaborates on `ANBO.md` and `CONTRIBUTING.md`. If anything conflicts with `ANBO.md`, `ANBO.md` wins.
 
 ## Running checks locally
 
@@ -9,7 +9,7 @@ The canonical commands are what CI runs (`.github/workflows/ci.yml`):
 ```bash
 pnpm lint
 pnpm check-types
-pnpm test
+pnpm test:coverage
 
 cd src-tauri
 cargo clippy --all-targets --locked -- -D warnings
@@ -17,6 +17,8 @@ cargo nextest run --locked        # CI uses nextest
 ```
 
 If you do not have `cargo-nextest` installed, `cargo test --locked` is the local fallback. Install nextest with `cargo install cargo-nextest`.
+
+Frontend coverage is intentionally scoped to selected security and lifecycle policy files, with per-file thresholds configured in `vite.config.ts`. Rust CI generates LCOV with `cargo llvm-cov nextest` and enforces the backend line threshold in `.github/workflows/ci.yml`.
 
 ## What must have a test
 
@@ -77,6 +79,6 @@ When testing `src/modules/ai/lib/security.ts` or the Rust equivalents, cover:
 
 ## See also
 
-- [`TERAX.md`](../../TERAX.md) - the architecture source of truth
+- [`ANBO.md`](../../ANBO.md) - the architecture source of truth
 - [`CONTRIBUTING.md`](../../CONTRIBUTING.md) - quality bar, project layout, how to contribute
 - [`docs/README.md`](../README.md) - index of contributor guides
