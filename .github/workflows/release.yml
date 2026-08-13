@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: read
-      contents: read
+      contents: write
     outputs:
       release_sha: ${{ steps.verify.outputs.release_sha }}
     env:
