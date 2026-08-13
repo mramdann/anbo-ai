@@ -452,16 +452,38 @@ async fn capture_preview(webview: tauri::Webview) -> Result<String, String> {
 }
 
 #[cfg(windows)]
-fn overlay_insert_after(active: bool) -> windows::Win32::Foundation::HWND {
+fn overlay_insert_after(active: bool, main_webview: isize) -> isize {
     if active {
-        HWND_BOTTOM
+        main_webview
     } else {
-        HWND_TOP
+        HWND_TOP.0 as isize
     }
 }
 
 #[cfg(windows)]
-fn set_ui_overlay_z_order(webview: &tauri::Webview, active: bool) -> Result<(), String> {
+fn webview_parent_hwnd(webview: &tauri::Webview) -> Result<isize, String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    webview
+        .with_webview(move |platform| {
+            let mut hwnd = windows::Win32::Foundation::HWND::default();
+            let result = unsafe { platform.controller().ParentWindow(&mut hwnd) }
+                .map(|_| hwnd.0 as isize)
+                .map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .map_err(|_| "timed out reading browser host window".to_string())?
+}
+
+#[cfg(windows)]
+fn set_ui_overlay_z_order(
+    webview: &tauri::Webview,
+    main_webview: &tauri::Webview,
+    active: bool,
+) -> Result<(), String> {
+    let insert_after = overlay_insert_after(active, webview_parent_hwnd(main_webview)?);
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     webview
         .with_webview(move |platform| {
@@ -472,7 +494,9 @@ fn set_ui_overlay_z_order(webview: &tauri::Webview, active: bool) -> Result<(), 
                 unsafe {
                     SetWindowPos(
                         hwnd,
-                        Some(overlay_insert_after(active)),
+                        Some(windows::Win32::Foundation::HWND(
+                            insert_after as *mut std::ffi::c_void,
+                        )),
                         0,
                         0,
                         0,
@@ -496,7 +520,11 @@ fn set_ui_overlay_z_order(webview: &tauri::Webview, active: bool) -> Result<(), 
 
 #[cfg(windows)]
 fn embed_insert_after(visible: bool) -> windows::Win32::Foundation::HWND {
-    overlay_insert_after(!visible)
+    if visible {
+        HWND_TOP
+    } else {
+        HWND_BOTTOM
+    }
 }
 
 #[cfg(windows)]
@@ -641,7 +669,12 @@ pub async fn browser_embed_set_ui_overlay(
     };
 
     #[cfg(windows)]
-    return set_ui_overlay_z_order(&webview, active);
+    {
+        let main_webview = app
+            .get_webview(window.label())
+            .ok_or_else(|| "main webview is unavailable".to_string())?;
+        set_ui_overlay_z_order(&webview, &main_webview, active)
+    }
 
     #[cfg(not(windows))]
     {
@@ -1115,10 +1148,17 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn ui_overlay_moves_preview_behind_then_restores_it() {
-        use windows::Win32::UI::WindowsAndMessaging::{HWND_BOTTOM, HWND_TOP};
+        use windows::Win32::UI::WindowsAndMessaging::HWND_TOP;
 
-        assert_eq!(super::overlay_insert_after(true), HWND_BOTTOM);
-        assert_eq!(super::overlay_insert_after(false), HWND_TOP);
+        let main_webview = 42;
+        assert_eq!(
+            super::overlay_insert_after(true, main_webview),
+            main_webview
+        );
+        assert_eq!(
+            super::overlay_insert_after(false, main_webview),
+            HWND_TOP.0 as isize
+        );
     }
 
     #[cfg(windows)]
