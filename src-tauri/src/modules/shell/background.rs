@@ -1,15 +1,14 @@
 use std::io::Read;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::SystemTime;
 
-use serde::Serialize;
-use shared_child::SharedChild;
-
 use super::ringbuffer::BoundedRingBuffer;
+use crate::modules::proc::ManagedChild;
 use crate::modules::workspace::{resolve_path, WorkspaceEnv};
+use serde::Serialize;
 
 const RING_CAP: usize = 4 * 1024 * 1024;
 
@@ -17,11 +16,12 @@ pub struct BackgroundProc {
     pub command: String,
     pub cwd: Option<String>,
     pub started_at_ms: u64,
-    pub child: Arc<SharedChild>,
+    pub child: Arc<ManagedChild>,
     pub buffer: Mutex<BoundedRingBuffer>,
     pub exited: AtomicBool,
     pub exit_code: AtomicI32,
     pub exit_unknown: AtomicBool,
+    pub finished_at_ms: AtomicU64,
 }
 
 #[derive(Serialize)]
@@ -62,7 +62,7 @@ impl BackgroundProc {
     }
 
     pub fn kill(&self) {
-        let _ = self.child.kill();
+        self.child.kill_tree();
     }
 
     pub fn info(&self, handle: u32) -> BackgroundProcInfo {
@@ -113,9 +113,9 @@ pub fn spawn(
         .stderr(Stdio::piped());
     crate::modules::proc::hide_console(&mut cmd);
 
-    let shared = Arc::new(SharedChild::spawn(&mut cmd).map_err(|e| e.to_string())?);
+    let shared = ManagedChild::spawn(&mut cmd).map_err(|e| e.to_string())?;
     let kill_on_fail = || {
-        let _ = shared.kill();
+        shared.kill_tree();
     };
     let stdout_pipe = shared.take_stdout().ok_or_else(|| {
         kill_on_fail();
@@ -141,6 +141,7 @@ pub fn spawn(
         exited: AtomicBool::new(false),
         exit_code: AtomicI32::new(0),
         exit_unknown: AtomicBool::new(false),
+        finished_at_ms: AtomicU64::new(0),
     });
 
     {
@@ -183,6 +184,13 @@ pub fn spawn(
                 Err(_) => proc_ref.exit_unknown.store(true, Ordering::Release),
             }
             proc_ref.exited.store(true, Ordering::Release);
+            let finished_at_ms = SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or(0);
+            proc_ref
+                .finished_at_ms
+                .store(finished_at_ms, Ordering::Release);
         });
     }
 

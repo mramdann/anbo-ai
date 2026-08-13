@@ -1,15 +1,16 @@
 use std::io::{Read, Write};
-use std::process::{ChildStdin, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use shared_child::SharedChild;
 use tauri::ipc::{Channel, Response};
 use tauri::Manager;
 
 use super::framing::{encode_frame, FrameDecoder};
+use crate::modules::proc::ManagedChild;
 
 const READ_BUF: usize = 32 * 1024;
 const STDERR_LINE_CAP: usize = 512;
@@ -19,6 +20,8 @@ const MEM_POLL_INTERVAL: Duration = Duration::from_secs(30);
 // steady state.
 const MEM_STARTUP_GRACE: Duration = Duration::from_secs(120);
 const DEFAULT_MAX_RSS_MB: u64 = 4096;
+const WRITER_QUEUE_CAPACITY: usize = 64;
+const MAX_OUTBOUND_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,33 +32,36 @@ pub struct LspExit {
 }
 
 pub struct LspSession {
-    #[cfg(windows)]
-    _job: Option<crate::modules::proc::job::ProcessJob>,
-    child: Arc<SharedChild>,
-    stdin: Mutex<Option<ChildStdin>>,
+    child: Arc<ManagedChild>,
+    writer: Mutex<Option<SyncSender<Vec<u8>>>>,
     pub(super) exited: Arc<AtomicBool>,
 }
 
 impl LspSession {
     pub fn write_message(&self, payload: &str) -> Result<(), String> {
-        let mut guard = self.stdin.lock().unwrap();
-        let stdin = guard.as_mut().ok_or("lsp session stdin closed")?;
-        stdin
-            .write_all(&encode_frame(payload))
-            .and_then(|_| stdin.flush())
-            .map_err(|e| format!("lsp write failed: {e}"))
+        if payload.len() > MAX_OUTBOUND_MESSAGE_BYTES {
+            return Err("lsp message exceeds 8 MiB limit".into());
+        }
+        let writer = self
+            .writer
+            .lock()
+            .unwrap()
+            .as_ref()
+            .cloned()
+            .ok_or("lsp session stdin closed")?;
+        match writer.try_send(encode_frame(payload)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err("lsp writer queue is full".into()),
+            Err(TrySendError::Disconnected(_)) => Err("lsp session stdin closed".into()),
+        }
     }
 
     // Servers fork helpers (cargo check, rustc, proc-macro hosts); killing
     // only the leader leaves them burning CPU. Unix: signal the process
     // group. Windows: the Job Object covers the tree.
     pub fn kill(&self) {
-        *self.stdin.lock().unwrap() = None;
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL);
-        }
-        let _ = self.child.kill();
+        *self.writer.lock().unwrap() = None;
+        self.child.kill_tree();
     }
 }
 
@@ -86,21 +92,10 @@ pub fn spawn(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     crate::modules::proc::hide_console(&mut cmd);
-    #[cfg(unix)]
-    unsafe {
-        use std::os::unix::process::CommandExt;
-        cmd.pre_exec(|| {
-            libc::setpgid(0, 0);
-            Ok(())
-        });
-    }
-
-    let child = Arc::new(
-        SharedChild::spawn(&mut cmd)
-            .map_err(|e| format!("lsp spawn failed for {}: {e}", binary.display()))?,
-    );
+    let child = ManagedChild::spawn(&mut cmd)
+        .map_err(|e| format!("lsp spawn failed for {}: {e}", binary.display()))?;
     let kill_on_fail = || {
-        let _ = child.kill();
+        child.kill_tree();
     };
     let stdin = child.take_stdin().ok_or_else(|| {
         kill_on_fail();
@@ -115,23 +110,27 @@ pub fn spawn(
         "lsp: no stderr pipe".to_string()
     })?;
 
-    #[cfg(windows)]
-    let job = match crate::modules::proc::job::ProcessJob::create_for(child.id()) {
-        Ok(j) => Some(j),
-        Err(e) => {
-            log::warn!("lsp job-object setup failed for pid={}: {e}", child.id());
-            None
-        }
-    };
-
+    let (writer_tx, writer_rx) = mpsc::sync_channel::<Vec<u8>>(WRITER_QUEUE_CAPACITY);
     let exited = Arc::new(AtomicBool::new(false));
     let session = Arc::new(LspSession {
-        #[cfg(windows)]
-        _job: job,
         child: child.clone(),
-        stdin: Mutex::new(Some(stdin)),
+        writer: Mutex::new(Some(writer_tx)),
         exited: exited.clone(),
     });
+
+    let writer_child = child.clone();
+    thread::Builder::new()
+        .name(format!("anbo-lsp-writer-{id}"))
+        .spawn(move || {
+            let mut stdin = stdin;
+            while let Ok(frame) = writer_rx.recv() {
+                if stdin.write_all(&frame).and_then(|_| stdin.flush()).is_err() {
+                    writer_child.kill_tree();
+                    break;
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
 
     let session_reader = session.clone();
     let reader_thread = thread::Builder::new()
@@ -286,10 +285,10 @@ pub fn spawn(
 mod tests {
     use super::*;
 
-    fn dummy_session(child: Arc<SharedChild>, stdin: Option<ChildStdin>) -> LspSession {
+    fn dummy_session(child: Arc<ManagedChild>, writer: Option<SyncSender<Vec<u8>>>) -> LspSession {
         LspSession {
             child,
-            stdin: Mutex::new(stdin),
+            writer: Mutex::new(writer),
             exited: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -298,9 +297,8 @@ mod tests {
     fn drop_kills_child() {
         let mut cmd = Command::new("/bin/sh");
         cmd.args(["-c", "sleep 30"]).stdin(Stdio::piped());
-        let child = Arc::new(SharedChild::spawn(&mut cmd).expect("spawn"));
-        let stdin = child.take_stdin();
-        let session = dummy_session(child.clone(), stdin);
+        let child = ManagedChild::spawn(&mut cmd).expect("spawn");
+        let session = dummy_session(child.clone(), None);
 
         assert!(child.try_wait().expect("try_wait").is_none());
         drop(session);
@@ -321,15 +319,8 @@ mod tests {
         cmd.args(["-c", "sleep 30 & echo $!; wait"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
-        unsafe {
-            use std::os::unix::process::CommandExt;
-            cmd.pre_exec(|| {
-                libc::setpgid(0, 0);
-                Ok(())
-            });
-        }
-        let child = Arc::new(SharedChild::spawn(&mut cmd).expect("spawn"));
-        let stdin = child.take_stdin();
+        let child = ManagedChild::spawn(&mut cmd).expect("spawn");
+        let _stdin = child.take_stdin();
         let mut stdout = child.take_stdout().expect("stdout");
 
         let mut buf = [0u8; 32];
@@ -339,7 +330,7 @@ mod tests {
             .parse()
             .expect("pid");
 
-        let session = dummy_session(child.clone(), stdin);
+        let session = dummy_session(child.clone(), None);
         session.kill();
         let _ = child.wait();
 
@@ -358,11 +349,35 @@ mod tests {
     fn write_after_kill_errors() {
         let mut cmd = Command::new("/bin/cat");
         cmd.stdin(Stdio::piped()).stdout(Stdio::null());
-        let child = Arc::new(SharedChild::spawn(&mut cmd).expect("spawn"));
-        let stdin = child.take_stdin();
-        let session = dummy_session(child, stdin);
+        let child = ManagedChild::spawn(&mut cmd).expect("spawn");
+        let (writer, _reader) = mpsc::sync_channel(1);
+        let session = dummy_session(child, Some(writer));
 
         session.kill();
         assert!(session.write_message("{}").is_err());
+    }
+
+    #[test]
+    fn kill_does_not_wait_for_a_blocked_writer() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 30"]).stdin(Stdio::piped());
+        let child = ManagedChild::spawn(&mut cmd).expect("spawn");
+        let mut stdin = child.take_stdin().expect("stdin");
+        let (writer, reader) = mpsc::sync_channel::<Vec<u8>>(1);
+        let session = Arc::new(dummy_session(child.clone(), Some(writer)));
+        thread::spawn(move || {
+            while let Ok(frame) = reader.recv() {
+                let _ = stdin.write_all(&frame);
+            }
+        });
+        session
+            .write_message(&"x".repeat(1024 * 1024))
+            .expect("queue first write");
+        thread::sleep(Duration::from_millis(50));
+
+        let started = Instant::now();
+        session.kill();
+        assert!(started.elapsed() < Duration::from_millis(500));
+        let _ = child.wait();
     }
 }

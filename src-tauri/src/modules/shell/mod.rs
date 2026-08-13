@@ -11,12 +11,11 @@ use std::sync::{mpsc, Arc, RwLock};
 use std::thread;
 use std::time::Duration;
 
-use serde::Serialize;
-use shared_child::SharedChild;
-
+use crate::modules::proc::ManagedChild;
 #[cfg(windows)]
 use crate::modules::workspace::validate_wsl_distro_name;
 use crate::modules::workspace::{authorize_spawn_cwd, WorkspaceEnv, WorkspaceRegistry};
+use serde::Serialize;
 
 use background::{BackgroundLogResponse, BackgroundProc, BackgroundProcInfo};
 use session::{SessionRunOutput, ShellSession};
@@ -24,6 +23,10 @@ use session::{SessionRunOutput, ShellSession};
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_TIMEOUT_SECS: u64 = 300;
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
+const MAX_SHELL_SESSIONS: usize = 256;
+const MAX_BACKGROUND_PROCESSES: usize = 256;
+const MAX_RETAINED_EXITED: usize = 64;
+const RETAIN_EXITED_MS: u64 = 60 * 60 * 1000;
 
 #[derive(Serialize)]
 pub struct CommandOutput {
@@ -100,21 +103,27 @@ fn run_blocking(
         .stderr(Stdio::piped());
     crate::modules::proc::hide_console(&mut cmd);
 
-    let child = Arc::new(SharedChild::spawn(&mut cmd).map_err(|e| {
+    let child = ManagedChild::spawn(&mut cmd).map_err(|e| {
         log::warn!("shell_run_command spawn failed: {e}");
         e.to_string()
-    })?);
+    })?;
     let mut stdout_pipe = child.take_stdout().ok_or_else(|| {
-        let _ = child.kill();
+        child.kill_tree();
         "no stdout pipe".to_string()
     })?;
     let mut stderr_pipe = child.take_stderr().ok_or_else(|| {
-        let _ = child.kill();
+        child.kill_tree();
         "no stderr pipe".to_string()
     })?;
 
-    let stdout_handle = thread::spawn(move || drain(&mut stdout_pipe));
-    let stderr_handle = thread::spawn(move || drain(&mut stderr_pipe));
+    let (stdout_tx, stdout_rx) = mpsc::channel();
+    let (stderr_tx, stderr_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = stdout_tx.send(drain(&mut stdout_pipe));
+    });
+    thread::spawn(move || {
+        let _ = stderr_tx.send(drain(&mut stderr_pipe));
+    });
 
     let (tx, rx) = mpsc::channel();
     let waiter = Arc::clone(&child);
@@ -126,7 +135,7 @@ fn run_blocking(
         Ok(Ok(status)) => (status.code(), false),
         Ok(Err(e)) => return Err(e.to_string()),
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            let _ = child.kill();
+            child.kill_tree();
             let _ = child.wait();
             (None, true)
         }
@@ -135,8 +144,12 @@ fn run_blocking(
         }
     };
 
-    let (stdout_bytes, stdout_truncated) = stdout_handle.join().unwrap_or((Vec::new(), false));
-    let (stderr_bytes, stderr_truncated) = stderr_handle.join().unwrap_or((Vec::new(), false));
+    let (stdout_bytes, stdout_truncated) = stdout_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap_or((Vec::new(), true));
+    let (stderr_bytes, stderr_truncated) = stderr_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap_or((Vec::new(), true));
 
     Ok(CommandOutput {
         stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
@@ -169,6 +182,50 @@ impl Default for ShellState {
     }
 }
 
+impl ShellState {
+    fn reap_background(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        let mut background = self.bg.write().unwrap_or_else(|error| error.into_inner());
+        background.retain(|_, process| {
+            if !process.exited.load(Ordering::Acquire) {
+                return true;
+            }
+            let finished = process.finished_at_ms.load(Ordering::Acquire);
+            finished == 0 || now.saturating_sub(finished) <= RETAIN_EXITED_MS
+        });
+        let mut exited: Vec<_> = background
+            .iter()
+            .filter(|(_, process)| process.exited.load(Ordering::Acquire))
+            .map(|(id, process)| (*id, process.finished_at_ms.load(Ordering::Acquire)))
+            .collect();
+        exited.sort_by_key(|(_, finished)| *finished);
+        let remove_count = exited.len().saturating_sub(MAX_RETAINED_EXITED);
+        for (id, _) in exited.into_iter().take(remove_count) {
+            background.remove(&id);
+        }
+    }
+
+    pub fn kill_all(&self) {
+        let background: Vec<_> = self
+            .bg
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .drain()
+            .map(|(_, process)| process)
+            .collect();
+        for process in background {
+            process.kill();
+        }
+        self.sessions
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+    }
+}
+
 #[tauri::command]
 pub fn shell_session_open(
     state: tauri::State<ShellState>,
@@ -189,8 +246,12 @@ pub fn shell_session_open(
         }
     };
     let session = Arc::new(ShellSession::new(initial, workspace));
+    let mut sessions = state.sessions.write().unwrap();
+    if sessions.len() >= MAX_SHELL_SESSIONS {
+        return Err("shell session limit reached".into());
+    }
     let id = state.next_session_id.fetch_add(1, Ordering::Relaxed);
-    state.sessions.write().unwrap().insert(id, session);
+    sessions.insert(id, session);
     Ok(id)
 }
 
@@ -245,9 +306,18 @@ pub fn shell_bg_spawn(
     crate::modules::authority::ensure_safe_shell_command(&command)?;
     let workspace = WorkspaceEnv::from_option(workspace);
     authorize_spawn_cwd(&registry, cwd.as_deref(), &workspace)?;
+    state.reap_background();
+    if state.bg.read().unwrap().len() >= MAX_BACKGROUND_PROCESSES {
+        return Err("background process limit reached".into());
+    }
     let proc = background::spawn(command, cwd, workspace)?;
+    let mut background = state.bg.write().unwrap();
+    if background.len() >= MAX_BACKGROUND_PROCESSES {
+        proc.kill();
+        return Err("background process limit reached".into());
+    }
     let id = state.next_bg_id.fetch_add(1, Ordering::Relaxed);
-    state.bg.write().unwrap().insert(id, proc);
+    background.insert(id, proc);
     Ok(id)
 }
 
@@ -269,7 +339,7 @@ pub fn shell_bg_logs(
 
 #[tauri::command]
 pub fn shell_bg_kill(state: tauri::State<ShellState>, handle: u32) -> Result<(), String> {
-    if let Some(proc) = state.bg.read().unwrap().get(&handle).cloned() {
+    if let Some(proc) = state.bg.write().unwrap().remove(&handle) {
         proc.kill();
     }
     Ok(())
@@ -277,6 +347,7 @@ pub fn shell_bg_kill(state: tauri::State<ShellState>, handle: u32) -> Result<(),
 
 #[tauri::command]
 pub fn shell_bg_list(state: tauri::State<ShellState>) -> Result<Vec<BackgroundProcInfo>, String> {
+    state.reap_background();
     let map = state.bg.read().unwrap();
     let mut out = Vec::with_capacity(map.len());
     for (id, p) in map.iter() {

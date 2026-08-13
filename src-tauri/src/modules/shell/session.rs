@@ -14,6 +14,7 @@ pub struct ShellSession {
     pub cwd: Mutex<String>,
     pub workspace: WorkspaceEnv,
     pub pristine: AtomicBool,
+    run_lock: Mutex<()>,
     #[allow(dead_code)]
     pub started_at_ms: u64,
     sentinel: String,
@@ -54,6 +55,7 @@ impl ShellSession {
             cwd: Mutex::new(initial_cwd),
             workspace,
             pristine: AtomicBool::new(true),
+            run_lock: Mutex::new(()),
             started_at_ms,
             sentinel: generate_sentinel(),
         }
@@ -70,6 +72,10 @@ impl ShellSession {
         workspace_hint: Option<WorkspaceEnv>,
         timeout: Duration,
     ) -> Result<SessionRunOutput, String> {
+        let _run_guard = self
+            .run_lock
+            .lock()
+            .map_err(|_| "shell session lock poisoned".to_string())?;
         let trimmed = command.trim().to_string();
         if trimmed.is_empty() {
             return Err("empty command".into());

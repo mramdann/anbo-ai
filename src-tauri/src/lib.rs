@@ -1,8 +1,8 @@
 pub mod modules;
 
 use modules::{
-    agent, anbo, app_data, browser, browser_automation, fs, git, history, lsp, net, project_memory,
-    pty, secrets, shell, workspace,
+    agent, anbo, app_data, browser, browser_automation, fs, git, history, lsp, net, proc,
+    project_memory, pty, secrets, shell, workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -346,6 +346,7 @@ pub fn run() {
             net::lm_ping,
             net::ai_http_request,
             net::ai_http_stream,
+            net::ai_http_cancel,
             history::history_suggest,
             history::history_commands,
             history::history_record,
@@ -359,6 +360,15 @@ pub fn run() {
                 // on process exit; kill explicitly.
                 tauri::RunEvent::Exit => {
                     browser_automation::on_exit();
+                    browser::embed::clear_lifecycle_state();
+                    net::cancel_all_streams();
+                    proc::kill_all();
+                    if let Some(state) = app.try_state::<fs::watch::FsWatchState>() {
+                        state.clear();
+                    }
+                    if let Some(state) = app.try_state::<shell::ShellState>() {
+                        state.kill_all();
+                    }
                     if let Some(state) = app.try_state::<lsp::LspState>() {
                         state.kill_all();
                     }

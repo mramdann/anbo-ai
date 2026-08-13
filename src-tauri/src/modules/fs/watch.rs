@@ -94,6 +94,16 @@ pub struct FsWatchState {
     inner: Mutex<Option<WatchInner>>,
 }
 
+const MAX_WATCHED_PATHS: usize = 4096;
+
+impl FsWatchState {
+    pub fn clear(&self) {
+        if let Ok(mut inner) = self.inner.lock() {
+            *inner = None;
+        }
+    }
+}
+
 struct WatchInner {
     watcher: RecommendedWatcher,
     // Explorer (expanded dirs) and editor (dirs of open files) can request the
@@ -179,7 +189,15 @@ fn collect(set: &mut HashSet<String>, ev: notify::Result<Event>) {
     }
 }
 
-fn add_paths(inner: &mut WatchInner, paths: Vec<PathBuf>) {
+fn add_paths(inner: &mut WatchInner, paths: Vec<PathBuf>) -> Result<(), String> {
+    let additional = paths
+        .iter()
+        .filter(|path| !inner.refcounts.contains_key(*path))
+        .collect::<HashSet<_>>()
+        .len();
+    if inner.refcounts.len().saturating_add(additional) > MAX_WATCHED_PATHS {
+        return Err("filesystem watch limit reached".into());
+    }
     for canonical in paths {
         let current = inner.refcounts.get(&canonical).copied().unwrap_or(0);
         if current == 0 {
@@ -193,6 +211,7 @@ fn add_paths(inner: &mut WatchInner, paths: Vec<PathBuf>) {
             inner.refcounts.insert(canonical, current + 1);
         }
     }
+    Ok(())
 }
 
 fn remove_paths(inner: &mut WatchInner, paths: Vec<PathBuf>) {
@@ -243,7 +262,7 @@ pub fn fs_watch_add(
     ensure_started(&state, &app)?;
     let mut guard = state.inner.lock().expect("fs watch state poisoned");
     if let Some(inner) = guard.as_mut() {
-        add_paths(inner, prepared);
+        add_paths(inner, prepared)?;
     }
     Ok(())
 }

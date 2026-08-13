@@ -8,13 +8,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use shared_child::SharedChild;
-
 use crate::modules::git::errors::{GitError, Result};
 use crate::modules::git::types::{
     GitOutput, TextSource, DEFAULT_TIMEOUT_SECS, MAX_FILE_BYTES, MAX_OUTPUT_BYTES,
     MAX_TIMEOUT_SECS, MIN_GIT_VERSION,
 };
+use crate::modules::proc::ManagedChild;
 #[cfg(windows)]
 use crate::modules::workspace::validate_wsl_distro_name;
 use crate::modules::workspace::WorkspaceEnv;
@@ -262,7 +261,7 @@ where
         .stderr(Stdio::piped());
     crate::modules::proc::hide_console(&mut cmd);
 
-    let child = Arc::new(SharedChild::spawn(&mut cmd).map_err(|e| GitError::Spawn(e.to_string()))?);
+    let child = ManagedChild::spawn(&mut cmd).map_err(|e| GitError::Spawn(e.to_string()))?;
     let mut stdout_pipe = child
         .take_stdout()
         .ok_or_else(|| GitError::Spawn("no stdout pipe".into()))?;
@@ -270,8 +269,14 @@ where
         .take_stderr()
         .ok_or_else(|| GitError::Spawn("no stderr pipe".into()))?;
 
-    let stdout_handle = thread::spawn(move || drain(&mut stdout_pipe, 64 * 1024));
-    let stderr_handle = thread::spawn(move || drain(&mut stderr_pipe, 4 * 1024));
+    let (stdout_tx, stdout_rx) = mpsc::channel();
+    let (stderr_tx, stderr_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = stdout_tx.send(drain(&mut stdout_pipe, 64 * 1024));
+    });
+    thread::spawn(move || {
+        let _ = stderr_tx.send(drain(&mut stderr_pipe, 4 * 1024));
+    });
 
     let (tx, rx) = mpsc::channel();
     let waiter = Arc::clone(&child);
@@ -283,7 +288,7 @@ where
         Ok(Ok(status)) => (status.code(), false),
         Ok(Err(e)) => return Err(GitError::Io(e)),
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            let _ = child.kill();
+            child.kill_tree();
             let _ = child.wait();
             (None, true)
         }
@@ -292,8 +297,12 @@ where
         }
     };
 
-    let (stdout, stdout_truncated) = stdout_handle.join().unwrap_or((Vec::new(), false));
-    let (stderr, _stderr_truncated) = stderr_handle.join().unwrap_or((Vec::new(), false));
+    let (stdout, stdout_truncated) = stdout_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap_or((Vec::new(), true));
+    let (stderr, _stderr_truncated) = stderr_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap_or((Vec::new(), true));
 
     Ok(GitOutput {
         stdout,

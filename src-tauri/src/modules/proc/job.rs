@@ -10,7 +10,7 @@ use std::mem::{size_of, zeroed};
 use windows_sys::Win32::Foundation::{CloseHandle, FALSE, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
@@ -60,6 +60,15 @@ impl ProcessJob {
             }
 
             Ok(Self { handle: job })
+        }
+    }
+
+    pub fn terminate(&self) -> io::Result<()> {
+        let ok = unsafe { TerminateJobObject(self.handle, 1) };
+        if ok == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
         }
     }
 }
