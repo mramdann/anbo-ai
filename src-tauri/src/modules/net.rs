@@ -26,8 +26,14 @@ const HEADER_BLOCKLIST: &[&str] = &[
 ];
 const MAX_REDIRECTS: usize = 10;
 
+fn normalize_host(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
 fn is_blocked_host_name(host: &str) -> bool {
-    let host = host.to_ascii_lowercase();
+    let host = normalize_host(host).to_ascii_lowercase();
     matches!(
         host.as_str(),
         "metadata.google.internal" | "metadata" | "metadata.azure.com"
@@ -93,6 +99,7 @@ enum IpKind {
 /// concrete IPs we resolved. Callers can pin reqwest to these IPs to defeat
 /// DNS rebinding (where a second lookup returns a different address).
 async fn resolve_and_classify(host: &str) -> Result<(IpKind, Vec<IpAddr>), String> {
+    let host = normalize_host(host);
     // Direct literal? Skip DNS.
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Ok((ip_kind(ip), vec![ip]));
@@ -541,6 +548,12 @@ mod tests {
             ip_kind("::ffff:169.254.169.254".parse().unwrap()),
             IpKind::BlockedMetadata
         );
+    }
+
+    #[tokio::test]
+    async fn bracketed_mapped_metadata_is_blocked_without_dns() {
+        let result = classify_and_collect_safe_ips("[::ffff:169.254.169.254]", true).await;
+        assert!(result.unwrap_err().contains("not allowed"));
     }
 
     #[tokio::test]
