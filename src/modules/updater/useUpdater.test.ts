@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isNewer, shouldShowUpdate } from "./useUpdater";
+import {
+  isNewer,
+  isUpdaterPlatformSupported,
+  shouldShowUpdate,
+} from "./useUpdater";
 
 describe("isNewer", () => {
   it("treats a higher patch as newer", () => {
@@ -50,5 +54,13 @@ describe("shouldShowUpdate", () => {
     // The Settings "Check for updates" button calls check({ manual: true }) and
     // must never be silenced by a prior dismissal of the same version.
     expect(shouldShowUpdate("0.12.1", "0.12.1", true)).toBe(true);
+  });
+});
+
+describe("isUpdaterPlatformSupported", () => {
+  it("matches the platform built by the release workflow", () => {
+    expect(isUpdaterPlatformSupported("windows")).toBe(true);
+    expect(isUpdaterPlatformSupported("linux")).toBe(false);
+    expect(isUpdaterPlatformSupported("macos")).toBe(false);
   });
 });

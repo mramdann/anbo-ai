@@ -28,7 +28,7 @@ export function AboutSection() {
   const checking = status.kind === "checking";
   const downloading = status.kind === "downloading";
   const available = status.kind === "available";
-  const manualAvailable = status.kind === "manual-available";
+  const unsupported = status.kind === "unsupported";
   const ready = status.kind === "ready";
   const checkLabel =
     status.kind === "uptodate"
@@ -43,8 +43,8 @@ export function AboutSection() {
               ? "Restart to install"
               : available
                 ? `Install v${status.update.version}`
-                : manualAvailable
-                  ? `Update to v${status.info.version}`
+                : unsupported
+                  ? "Updates are available on Windows"
                   : "Check for updates";
   const onUpdateClick = () => {
     if (available) void install();
@@ -124,7 +124,7 @@ export function AboutSection() {
           <Button
             size="sm"
             onClick={onUpdateClick}
-            disabled={checking || downloading || ready}
+            disabled={checking || downloading || ready || unsupported}
           >
             {checkLabel}
           </Button>
