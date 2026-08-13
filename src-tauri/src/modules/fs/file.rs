@@ -59,23 +59,29 @@ pub async fn fs_read_file(
     path: String,
     workspace: Option<WorkspaceEnv>,
     force: Option<bool>,
+    max_bytes: Option<u64>,
 ) -> Result<ReadResult, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
-    read_file_sync(&resolve_path(&path, &workspace), force.unwrap_or(false))
+    read_file_sync(
+        &resolve_path(&path, &workspace),
+        force.unwrap_or(false),
+        max_bytes,
+    )
 }
 
-fn read_file_sync(p: &Path, force: bool) -> Result<ReadResult, String> {
+fn read_file_sync(p: &Path, force: bool, max_bytes: Option<u64>) -> Result<ReadResult, String> {
     let meta = std::fs::metadata(p).map_err(|e| {
         log::debug!("fs_read_file stat({}) failed: {e}", p.display());
         e.to_string()
     })?;
 
     let size = meta.len();
-    let limit = if force {
+    let base_limit = if force {
         FORCE_MAX_READ_BYTES
     } else {
         MAX_READ_BYTES
     };
+    let limit = max_bytes.unwrap_or(base_limit).clamp(1, base_limit);
     if size > limit {
         return Ok(ReadResult::TooLarge { size, limit });
     }
@@ -198,7 +204,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("a.txt");
         std::fs::write(&f, b"hello world").unwrap();
-        match read_file_sync(&f, false).unwrap() {
+        match read_file_sync(&f, false, None).unwrap() {
             ReadResult::Text {
                 content,
                 size,
@@ -218,7 +224,7 @@ mod tests {
         let f = dir.path().join("a.bin");
         std::fs::write(&f, b"PNG\0\x89image").unwrap();
         assert!(matches!(
-            read_file_sync(&f, false).unwrap(),
+            read_file_sync(&f, false, None).unwrap(),
             ReadResult::Binary { .. }
         ));
     }
@@ -230,7 +236,7 @@ mod tests {
         // Invalid UTF-8 with no null byte: must still classify as binary.
         std::fs::write(&f, [0xff, 0xfe, 0xfd, 0xfc]).unwrap();
         assert!(matches!(
-            read_file_sync(&f, false).unwrap(),
+            read_file_sync(&f, false, None).unwrap(),
             ReadResult::Binary { .. }
         ));
     }
@@ -241,11 +247,27 @@ mod tests {
         let f = dir.path().join("big.txt");
         std::fs::write(&f, vec![b'a'; (MAX_READ_BYTES + 1) as usize]).unwrap();
         assert!(matches!(
-            read_file_sync(&f, false).unwrap(),
+            read_file_sync(&f, false, None).unwrap(),
             ReadResult::TooLarge { .. }
         ));
         assert!(matches!(
-            read_file_sync(&f, true).unwrap(),
+            read_file_sync(&f, true, None).unwrap(),
+            ReadResult::Text { .. }
+        ));
+    }
+
+    #[test]
+    fn caller_can_lower_but_not_raise_the_read_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("bounded.txt");
+        std::fs::write(&f, b"12345").unwrap();
+
+        assert!(matches!(
+            read_file_sync(&f, false, Some(4)).unwrap(),
+            ReadResult::TooLarge { size: 5, limit: 4 }
+        ));
+        assert!(matches!(
+            read_file_sync(&f, false, Some(MAX_READ_BYTES + 1)).unwrap(),
             ReadResult::Text { .. }
         ));
     }

@@ -2,8 +2,9 @@ import { MarkdownCode } from "@/components/ai-elements/markdown-code";
 import { cn } from "@/lib/utils";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
-import { Streamdown } from "streamdown";
+import { useEffect, useRef, useState } from "react";
+import { defaultUrlTransform, Streamdown } from "streamdown";
+import { MARKDOWN_PREVIEW_MAX_BYTES } from "./policy";
 import { MarkdownViewToggle } from "./MarkdownViewToggle";
 
 type ReadResult =
@@ -25,14 +26,20 @@ type Props = {
 };
 
 const components = { code: MarkdownCode };
+const linkSafety = { enabled: true } as const;
 
 export function MarkdownPreviewPane({ path, visible, onSetView }: Props) {
   const [status, setStatus] = useState<Status>({ kind: "loading" });
+  const loadedPath = useRef<string | null>(null);
 
   useEffect(() => {
+    if (!visible || loadedPath.current === path) return;
     let cancelled = false;
+    let settled = false;
+    loadedPath.current = path;
     setStatus({ kind: "loading" });
     invoke<ReadResult>("fs_read_file", {
+      maxBytes: MARKDOWN_PREVIEW_MAX_BYTES,
       path,
       workspace: currentWorkspaceEnv(),
     })
@@ -48,11 +55,15 @@ export function MarkdownPreviewPane({ path, visible, onSetView }: Props) {
       })
       .catch((e) => {
         if (!cancelled) setStatus({ kind: "error", message: String(e) });
+      })
+      .finally(() => {
+        settled = true;
       });
     return () => {
       cancelled = true;
+      if (!settled) loadedPath.current = null;
     };
-  }, [path]);
+  }, [path, visible]);
 
   return (
     <div
@@ -86,8 +97,10 @@ export function MarkdownPreviewPane({ path, visible, onSetView }: Props) {
             <Streamdown
               className="select-text [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
               components={components}
+              linkSafety={linkSafety}
               mode="static"
               parseIncompleteMarkdown={false}
+              urlTransform={defaultUrlTransform}
             >
               {status.content}
             </Streamdown>

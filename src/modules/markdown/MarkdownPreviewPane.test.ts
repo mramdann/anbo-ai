@@ -16,4 +16,12 @@ describe("MarkdownPreviewPane Streamdown configuration", () => {
   it("does not run streaming incomplete-markdown repair for files", () => {
     expect(streamdownJsx).toMatch(/parseIncompleteMarkdown=\{false\}/);
   });
+
+  it("defers file IO until the preview is visible", () => {
+    expect(src).toMatch(/if \(!visible \|\| loadedPath\.current === path\) return/);
+  });
+
+  it("applies the preview byte limit at the IPC boundary", () => {
+    expect(src).toMatch(/maxBytes: MARKDOWN_PREVIEW_MAX_BYTES/);
+  });
 });
