@@ -47,7 +47,7 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-      - name: Size budget
+      - name: Bundle and startup budgets
         run: pnpm size
 
       - name: Dead code (advisory)
