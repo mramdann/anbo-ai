@@ -252,8 +252,10 @@ fn spawn_browser_child(
                 origErr.apply(console, args);
             };
             "#,
-        )
-        .transparent(true)
+        );
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.transparent(true);
+    let builder = builder
         .on_navigation(move |target| navigation_allowed(target, navigation_app_url.as_ref()))
         .on_new_window(move |target, _features| {
             if popup_allowed(&target, popup_app_url.as_ref()) {
@@ -628,7 +630,8 @@ pub async fn browser_embed_set_punch_hole(
 
     #[cfg(not(windows))]
     {
-        let _ = (webview, hole);
+        let _ = webview;
+        let _ = hole.map(|hole| (hole.x, hole.y, hole.width, hole.height));
         Ok(())
     }
 }
