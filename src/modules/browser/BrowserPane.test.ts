@@ -61,7 +61,9 @@ describe("BrowserPane iframe sandbox", () => {
 describe("BrowserPane native layering", () => {
   it("uses the captured browser frame only while dragging", () => {
     expect(src).toContain("browserEmbedSnapshot");
-    expect(src).toContain("native && dragActive && freezeFrame");
+    expect(src).toContain("native && visible && dragActive && freezeFrame");
+    expect(src).toContain("if (!visible || !currentUrlRef.current)");
+    expect(src).toContain("setFreezeFrame(null)");
   });
 
   it("keeps hidden navigation keyed by URL so it cannot stall", () => {
@@ -74,5 +76,12 @@ describe("BrowserPane native layering", () => {
     expect(src).toContain("browserEmbedSetUiOverlay");
     expect(src.match(/browserEmbedSnapshot\(id/g)).toHaveLength(1);
     expect(src).not.toContain("refreshFreezeFrame");
+  });
+
+  it("syncs geometry from layout events without a permanent frame loop", () => {
+    expect(src).toContain("new ResizeObserver(scheduleBounds)");
+    expect(src).toContain("subscribeNativeBrowserLayout(scheduleBounds)");
+    expect(src).not.toContain("now - lastSync >= 40");
+    expect(src).not.toContain("requestAnimationFrame(tick)");
   });
 });

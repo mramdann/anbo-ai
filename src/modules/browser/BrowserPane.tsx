@@ -38,6 +38,7 @@ import {
   toPhysicalBounds,
 } from "./native";
 import {
+  subscribeNativeBrowserLayout,
   useNativeBrowserDragActive,
   useNativeBrowserOverlayOpen,
 } from "./nativeVisibility";
@@ -103,7 +104,10 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     const onUrlChangeRef = useRef(onUrlChange);
     const onTitleChangeRef = useRef(onTitleChange);
     const visibleRef = useRef(visible);
-    const overlayOpen = useNativeBrowserOverlayOpen(contentRef);
+    const overlayOpen = useNativeBrowserOverlayOpen(
+      contentRef,
+      native && IS_WINDOWS && visible && !!url,
+    );
     const overlayOpenRef = useRef(overlayOpen);
     const dragActive = useNativeBrowserDragActive();
     const dragActiveRef = useRef(dragActive);
@@ -306,17 +310,28 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
         return;
       }
       let frame = 0;
-      let lastSync = 0;
-      const tick = (now: number) => {
-        if (now - lastSync >= 40) {
-          lastSync = now;
-          syncBounds();
+      const scheduleBounds = () => {
+        if (!frame) {
+          frame = requestAnimationFrame(() => {
+            frame = 0;
+            syncBounds();
+          });
         }
-        frame = requestAnimationFrame(tick);
       };
-      frame = requestAnimationFrame(tick);
-      return () => cancelAnimationFrame(frame);
-    }, [id, native, syncBounds, visible]);
+      const element = contentRef.current;
+      const resizeObserver = new ResizeObserver(scheduleBounds);
+      if (element) resizeObserver.observe(element);
+      const unsubscribeLayout = subscribeNativeBrowserLayout(scheduleBounds);
+      scheduleBounds();
+      return () => {
+        resizeObserver.disconnect();
+        unsubscribeLayout();
+        if (frame) {
+          cancelAnimationFrame(frame);
+          frame = 0;
+        }
+      };
+    }, [native, syncBounds, visible]);
 
     useEffect(() => {
       disposedRef.current = false;
@@ -377,6 +392,14 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       if (!native) return;
       const request = ++suppressionRequestRef.current;
       if (!dragActive) {
+        setFreezeFrame(null);
+        suppressionReadyRef.current = false;
+        sentKeyRef.current = "";
+        syncBounds();
+        return;
+      }
+      if (!visible || !currentUrlRef.current) {
+        setFreezeFrame(null);
         suppressionReadyRef.current = false;
         sentKeyRef.current = "";
         syncBounds();
@@ -411,15 +434,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       return () => {
         if (frame) cancelAnimationFrame(frame);
       };
-    }, [dragActive, id, native, syncBounds]);
-
-    useEffect(() => {
-      if (!native) return;
-      const onVisibilityChange = () => syncBounds();
-      document.addEventListener("visibilitychange", onVisibilityChange);
-      return () =>
-        document.removeEventListener("visibilitychange", onVisibilityChange);
-    }, [native, syncBounds]);
+    }, [dragActive, id, native, syncBounds, visible]);
 
     useEffect(() => {
       if (!native) return;
@@ -575,7 +590,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
               : "relative min-h-0 flex-1 bg-background"
           }
         >
-          {native && dragActive && freezeFrame && !nativeError ? (
+          {native && visible && dragActive && freezeFrame && !nativeError ? (
             <img
               src={freezeFrame}
               alt=""

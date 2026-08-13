@@ -1,4 +1,4 @@
-import { type RefObject, useSyncExternalStore } from "react";
+import { type RefObject, useCallback, useSyncExternalStore } from "react";
 
 const OVERLAY_SELECTOR =
   '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [role="menu"], .fixed';
@@ -19,7 +19,10 @@ function isAiMiniWindow(element: Element): boolean {
   return element.closest("[data-ai-mini-window]") !== null;
 }
 
-type Rect = Pick<DOMRect, "bottom" | "height" | "left" | "right" | "top" | "width">;
+type Rect = Pick<
+  DOMRect,
+  "bottom" | "height" | "left" | "right" | "top" | "width"
+>;
 
 export function rectsIntersect(a: Rect, b: Rect): boolean {
   return (
@@ -41,64 +44,138 @@ export function hasNativeBrowserOverlay(target?: Rect): boolean {
     const style = window.getComputedStyle(element);
     if (style.display === "none" || style.visibility === "hidden") continue;
     const bounds = element.getBoundingClientRect();
-    if (!target ? bounds.width > 0 && bounds.height > 0 : rectsIntersect(bounds, target)) {
+    if (
+      !target
+        ? bounds.width > 0 && bounds.height > 0
+        : rectsIntersect(bounds, target)
+    ) {
       return true;
     }
   }
   return false;
 }
 
-let overlayObserver: MutationObserver | null = null;
-let overlayRaf = 0;
-let overlaySubscribers = 0;
-const overlayListeners = new Set<() => void>();
+const LAYOUT_FALLBACK_MS = 1_500;
+const layoutListeners = new Set<() => void>();
+let layoutRaf = 0;
+let layoutFallback: ReturnType<typeof setInterval> | null = null;
+let pointerTracking = false;
 
-function recomputeOverlay() {
-  overlayRaf = 0;
-  overlayListeners.forEach((listener) => {
+function emitLayoutChange(): void {
+  layoutRaf = 0;
+  layoutListeners.forEach((listener) => {
     listener();
   });
 }
 
-function scheduleOverlayCheck() {
-  if (!overlayRaf) overlayRaf = requestAnimationFrame(recomputeOverlay);
+export function notifyNativeBrowserLayout(): void {
+  if (layoutRaf || typeof requestAnimationFrame === "undefined") return;
+  layoutRaf = requestAnimationFrame(emitLayoutChange);
 }
 
-function subscribeOverlay(listener: () => void): () => void {
-  overlayListeners.add(listener);
-  if (overlaySubscribers++ === 0) {
-    overlayObserver = new MutationObserver(scheduleOverlayCheck);
-    overlayObserver.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["style", "class", "data-state"],
-    });
-    scheduleOverlayCheck();
-  }
+function stopPointerTracking(): void {
+  if (!pointerTracking) return;
+  pointerTracking = false;
+  document.removeEventListener("pointermove", notifyNativeBrowserLayout, true);
+}
+
+function onPointerDown(): void {
+  notifyNativeBrowserLayout();
+  if (pointerTracking) return;
+  pointerTracking = true;
+  document.addEventListener("pointermove", notifyNativeBrowserLayout, true);
+}
+
+function onPointerEnd(): void {
+  stopPointerTracking();
+  notifyNativeBrowserLayout();
+}
+
+function startLayoutEvents(): void {
+  window.addEventListener("resize", notifyNativeBrowserLayout);
+  window.addEventListener("scroll", notifyNativeBrowserLayout, true);
+  window.visualViewport?.addEventListener("resize", notifyNativeBrowserLayout);
+  window.visualViewport?.addEventListener("scroll", notifyNativeBrowserLayout);
+  document.addEventListener("pointerdown", onPointerDown, true);
+  document.addEventListener("pointerup", onPointerEnd, true);
+  document.addEventListener("pointercancel", onPointerEnd, true);
+  document.addEventListener("click", notifyNativeBrowserLayout, true);
+  document.addEventListener("keydown", notifyNativeBrowserLayout, true);
+  document.addEventListener("focusin", notifyNativeBrowserLayout, true);
+  document.addEventListener("visibilitychange", notifyNativeBrowserLayout);
+  document.addEventListener("transitionrun", notifyNativeBrowserLayout, true);
+  document.addEventListener("transitionend", notifyNativeBrowserLayout, true);
+  document.addEventListener("animationstart", notifyNativeBrowserLayout, true);
+  document.addEventListener("animationend", notifyNativeBrowserLayout, true);
+  layoutFallback = setInterval(notifyNativeBrowserLayout, LAYOUT_FALLBACK_MS);
+  notifyNativeBrowserLayout();
+}
+
+function stopLayoutEvents(): void {
+  window.removeEventListener("resize", notifyNativeBrowserLayout);
+  window.removeEventListener("scroll", notifyNativeBrowserLayout, true);
+  window.visualViewport?.removeEventListener(
+    "resize",
+    notifyNativeBrowserLayout,
+  );
+  window.visualViewport?.removeEventListener(
+    "scroll",
+    notifyNativeBrowserLayout,
+  );
+  document.removeEventListener("pointerdown", onPointerDown, true);
+  document.removeEventListener("pointerup", onPointerEnd, true);
+  document.removeEventListener("pointercancel", onPointerEnd, true);
+  document.removeEventListener("click", notifyNativeBrowserLayout, true);
+  document.removeEventListener("keydown", notifyNativeBrowserLayout, true);
+  document.removeEventListener("focusin", notifyNativeBrowserLayout, true);
+  document.removeEventListener("visibilitychange", notifyNativeBrowserLayout);
+  document.removeEventListener(
+    "transitionrun",
+    notifyNativeBrowserLayout,
+    true,
+  );
+  document.removeEventListener(
+    "transitionend",
+    notifyNativeBrowserLayout,
+    true,
+  );
+  document.removeEventListener(
+    "animationstart",
+    notifyNativeBrowserLayout,
+    true,
+  );
+  document.removeEventListener("animationend", notifyNativeBrowserLayout, true);
+  stopPointerTracking();
+  if (layoutFallback) clearInterval(layoutFallback);
+  layoutFallback = null;
+  if (layoutRaf) cancelAnimationFrame(layoutRaf);
+  layoutRaf = 0;
+}
+
+export function subscribeNativeBrowserLayout(listener: () => void): () => void {
+  layoutListeners.add(listener);
+  if (layoutListeners.size === 1) startLayoutEvents();
   return () => {
-    overlayListeners.delete(listener);
-    overlaySubscribers -= 1;
-    if (overlaySubscribers === 0) {
-      overlayObserver?.disconnect();
-      overlayObserver = null;
-      if (overlayRaf) cancelAnimationFrame(overlayRaf);
-      overlayRaf = 0;
-    }
+    layoutListeners.delete(listener);
+    if (layoutListeners.size === 0) stopLayoutEvents();
   };
 }
 
 export function useNativeBrowserOverlayOpen(
   targetRef: RefObject<HTMLElement | null>,
+  enabled = true,
 ): boolean {
-  return useSyncExternalStore(
-    subscribeOverlay,
-    () => {
-      const target = targetRef.current?.getBoundingClientRect();
-      return target ? hasNativeBrowserOverlay(target) : false;
-    },
-    () => false,
+  const subscribe = useCallback(
+    (listener: () => void) =>
+      enabled ? subscribeNativeBrowserLayout(listener) : () => {},
+    [enabled],
   );
+  const getSnapshot = useCallback(() => {
+    if (!enabled) return false;
+    const target = targetRef.current?.getBoundingClientRect();
+    return target ? hasNativeBrowserOverlay(target) : false;
+  }, [enabled, targetRef]);
+  return useSyncExternalStore(subscribe, getSnapshot, () => false);
 }
 
 let dragActive = false;
@@ -110,6 +187,7 @@ export function setNativeBrowserDragActive(active: boolean): void {
   dragListeners.forEach((listener) => {
     listener();
   });
+  notifyNativeBrowserLayout();
 }
 
 export function useNativeBrowserDragActive(): boolean {
