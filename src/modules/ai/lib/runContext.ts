@@ -18,6 +18,7 @@ export function createRunToolContext(
   snapshot: LiveSnapshot,
   readCache: ReadCache,
   sessionId: string,
+  abortSignal?: AbortSignal,
 ): ToolContext {
   return {
     getCwd: () => snapshot.cwd,
@@ -50,6 +51,7 @@ export function createRunToolContext(
     readAgentOutput: (leafId) => getLive().readLeafBuffer(leafId),
     readCache,
     getSessionId: () => sessionId,
+    getAbortSignal: () => abortSignal,
   };
 }
 

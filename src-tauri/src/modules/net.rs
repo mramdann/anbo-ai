@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::time::Duration;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures_util::StreamExt;
@@ -408,8 +409,58 @@ pub enum AiStreamEvent {
     },
 }
 
+#[derive(Default)]
+struct StreamCancellationState {
+    active: HashMap<String, tokio::sync::watch::Sender<bool>>,
+    pending: HashMap<String, Instant>,
+}
+
+fn stream_cancellations() -> &'static std::sync::Mutex<StreamCancellationState> {
+    static STATE: OnceLock<std::sync::Mutex<StreamCancellationState>> = OnceLock::new();
+    STATE.get_or_init(|| std::sync::Mutex::new(StreamCancellationState::default()))
+}
+
+struct StreamCancellationGuard(String);
+
+impl Drop for StreamCancellationGuard {
+    fn drop(&mut self) {
+        if let Ok(mut streams) = stream_cancellations().lock() {
+            streams.active.remove(&self.0);
+        }
+    }
+}
+
+#[tauri::command]
+pub fn ai_http_cancel(request_id: String) -> Result<(), String> {
+    if request_id.is_empty() || request_id.len() > 128 {
+        return Err("invalid AI HTTP request id".into());
+    }
+    let mut streams = stream_cancellations()
+        .lock()
+        .map_err(|_| "AI HTTP cancellation state unavailable".to_string())?;
+    streams
+        .pending
+        .retain(|_, created| created.elapsed() < Duration::from_secs(60));
+    if let Some(cancel) = streams.active.remove(&request_id) {
+        let _ = cancel.send(true);
+    } else if streams.pending.len() < 256 {
+        streams.pending.insert(request_id, Instant::now());
+    }
+    Ok(())
+}
+
+pub fn cancel_all_streams() {
+    if let Ok(mut streams) = stream_cancellations().lock() {
+        for (_, cancel) in streams.active.drain() {
+            let _ = cancel.send(true);
+        }
+        streams.pending.clear();
+    }
+}
+
 #[tauri::command]
 pub async fn ai_http_stream(
+    request_id: String,
     url: String,
     method: String,
     headers: Option<HashMap<String, String>>,
@@ -417,6 +468,28 @@ pub async fn ai_http_stream(
     allow_private_network: Option<bool>,
     on_event: Channel<AiStreamEvent>,
 ) -> Result<(), String> {
+    if request_id.is_empty() || request_id.len() > 128 {
+        return Err("invalid AI HTTP request id".into());
+    }
+    let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+    {
+        let mut streams = stream_cancellations()
+            .lock()
+            .map_err(|_| "AI HTTP cancellation state unavailable".to_string())?;
+        streams
+            .pending
+            .retain(|_, created| created.elapsed() < Duration::from_secs(60));
+        if streams.pending.remove(&request_id).is_some() {
+            return Ok(());
+        }
+        if streams.active.len() >= 64 {
+            return Err("too many active AI HTTP streams".into());
+        }
+        if let Some(previous) = streams.active.insert(request_id.clone(), cancel_tx) {
+            let _ = previous.send(true);
+        }
+    }
+    let _cancel_guard = StreamCancellationGuard(request_id);
     let allow_private = allow_private_network.unwrap_or(false);
     let parsed = match validate_url(&url, allow_private) {
         Ok(p) => p,
@@ -442,12 +515,16 @@ pub async fn ai_http_stream(
             return Err(e);
         }
     };
-    let resp = match send_protected_request(parsed, method, headers, body, allow_private).await {
-        Ok(response) => response,
-        Err(e) => {
+    let resp = match tokio::select! {
+        result = send_protected_request(parsed, method, headers, body, allow_private) => Some(result),
+        _ = cancel_rx.changed() => None,
+    } {
+        Some(Ok(response)) => response,
+        Some(Err(e)) => {
             let _ = on_event.send(AiStreamEvent::Error { message: e.clone() });
             return Err(e);
         }
+        None => return Ok(()),
     };
 
     let status = resp.status().as_u16();
@@ -455,7 +532,12 @@ pub async fn ai_http_stream(
     let _ = on_event.send(AiStreamEvent::Headers { status, headers });
 
     let mut stream = resp.bytes_stream();
-    while let Some(item) = stream.next().await {
+    loop {
+        let item = tokio::select! {
+            item = stream.next() => item,
+            _ = cancel_rx.changed() => return Ok(()),
+        };
+        let Some(item) = item else { break };
         match item {
             Ok(chunk) => {
                 let bytes: Bytes = chunk;

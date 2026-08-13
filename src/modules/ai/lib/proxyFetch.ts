@@ -64,6 +64,7 @@ async function proxyFetchImpl(
   init: RequestInit | undefined,
   allowPrivateNetwork: boolean,
 ): Promise<Response> {
+  const requestId = `ai-${Date.now().toString(36)}-${crypto.randomUUID()}`;
   const url = input instanceof URL ? input.toString() : String(input);
   const method = (init?.method ?? "GET").toUpperCase();
   const headers = headerInitToRecord(init?.headers);
@@ -79,9 +80,12 @@ async function proxyFetchImpl(
     let streamController: ReadableStreamDefaultController<Uint8Array> | null =
       null;
     let cancelled = false;
+    const cleanup = () => signal?.removeEventListener("abort", onAbort);
 
     const onAbort = () => {
       cancelled = true;
+      cleanup();
+      void invoke("ai_http_cancel", { requestId }).catch(() => {});
       if (!resolved) {
         reject(makeAbortError());
       } else if (streamController) {
@@ -105,6 +109,8 @@ async function proxyFetchImpl(
             },
             cancel() {
               cancelled = true;
+              cleanup();
+              void invoke("ai_http_cancel", { requestId }).catch(() => {});
             },
           });
           resolved = true;
@@ -122,9 +128,11 @@ async function proxyFetchImpl(
         }
         case "end": {
           streamController?.close();
+          cleanup();
           break;
         }
         case "error": {
+          cleanup();
           if (!resolved) {
             reject(new Error(event.message));
           } else {
@@ -136,6 +144,7 @@ async function proxyFetchImpl(
     };
 
     invoke("ai_http_stream", {
+      requestId,
       url,
       method,
       headers,
@@ -143,6 +152,7 @@ async function proxyFetchImpl(
       allowPrivateNetwork,
       onEvent: channel,
     }).catch((e) => {
+      cleanup();
       if (resolved) return; // headers already arrived; chunk-side error wins
       reject(e instanceof Error ? e : new Error(String(e)));
     });

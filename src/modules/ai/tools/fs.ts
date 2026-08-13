@@ -20,6 +20,19 @@ function djb2(s: string): number {
 export function buildFsTools(ctx: ToolContext) {
   const workspace = ctx.getWorkspaceEnv();
   const canonicalize = (path: string) => native.canonicalize(path, workspace);
+  const mutationTargets = new Map<
+    string,
+    Promise<Awaited<ReturnType<typeof checkWritableCanonical>>>
+  >();
+  const resolveMutationTarget = (path: string) => {
+    const reqPath = resolvePath(path, ctx.getCwd());
+    let target = mutationTargets.get(path);
+    if (!target) {
+      target = checkWritableCanonical(reqPath, canonicalize);
+      mutationTargets.set(path, target);
+    }
+    return { reqPath, target };
+  };
   return {
     read_file: tool({
       description:
@@ -150,10 +163,13 @@ export function buildFsTools(ctx: ToolContext) {
         path: z.string(),
         content: z.string(),
       }),
-      needsApproval: true,
+      needsApproval: async ({ path }) => {
+        await resolveMutationTarget(path).target;
+        return true;
+      },
       execute: async ({ path, content }) => {
-        const reqPath = resolvePath(path, ctx.getCwd());
-        const safety = await checkWritableCanonical(reqPath, canonicalize);
+        const { reqPath, target } = resolveMutationTarget(path);
+        const safety = await target;
         if (!safety.ok) return { error: safety.reason, path: reqPath };
         const abs = safety.canonical;
 
@@ -197,10 +213,13 @@ export function buildFsTools(ctx: ToolContext) {
       inputSchema: z.object({
         path: z.string(),
       }),
-      needsApproval: true,
+      needsApproval: async ({ path }) => {
+        await resolveMutationTarget(path).target;
+        return true;
+      },
       execute: async ({ path }) => {
-        const reqPath = resolvePath(path, ctx.getCwd());
-        const safety = await checkWritableCanonical(reqPath, canonicalize);
+        const { reqPath, target } = resolveMutationTarget(path);
+        const safety = await target;
         if (!safety.ok) return { error: safety.reason, path: reqPath };
         const abs = safety.canonical;
         if (usePlanStore.getState().active) {

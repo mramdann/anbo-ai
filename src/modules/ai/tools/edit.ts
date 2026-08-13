@@ -119,6 +119,19 @@ async function applyEdits(
 export function buildEditTools(ctx: ToolContext) {
   const canonicalize = (path: string) =>
     native.canonicalize(path, ctx.getWorkspaceEnv());
+  const mutationTargets = new Map<
+    string,
+    Promise<Awaited<ReturnType<typeof checkWritableCanonical>>>
+  >();
+  const resolveMutationTarget = (path: string) => {
+    const reqPath = resolvePath(path, ctx.getCwd());
+    let target = mutationTargets.get(path);
+    if (!target) {
+      target = checkWritableCanonical(reqPath, canonicalize);
+      mutationTargets.set(path, target);
+    }
+    return { reqPath, target };
+  };
   return {
     edit: tool({
       description:
@@ -133,10 +146,13 @@ export function buildEditTools(ctx: ToolContext) {
         new_string: z.string().describe("Replacement substring."),
         replace_all: z.boolean().optional(),
       }),
-      needsApproval: true,
+      needsApproval: async ({ path }) => {
+        await resolveMutationTarget(path).target;
+        return true;
+      },
       execute: async ({ path, old_string, new_string, replace_all }) => {
-        const reqPath = resolvePath(path, ctx.getCwd());
-        const safety = await checkWritableCanonical(reqPath, canonicalize);
+        const { reqPath, target } = resolveMutationTarget(path);
+        const safety = await target;
         if (!safety.ok) return { error: safety.reason, path: reqPath };
         const abs = safety.canonical;
         if (!ctx.readCache.has(abs)) {
@@ -170,10 +186,13 @@ export function buildEditTools(ctx: ToolContext) {
           )
           .min(1),
       }),
-      needsApproval: true,
+      needsApproval: async ({ path }) => {
+        await resolveMutationTarget(path).target;
+        return true;
+      },
       execute: async ({ path, edits }) => {
-        const reqPath = resolvePath(path, ctx.getCwd());
-        const safety = await checkWritableCanonical(reqPath, canonicalize);
+        const { reqPath, target } = resolveMutationTarget(path);
+        const safety = await target;
         if (!safety.ok) return { error: safety.reason, path: reqPath };
         const abs = safety.canonical;
         if (!ctx.readCache.has(abs)) {

@@ -31,6 +31,7 @@ export type ToolContext = {
   readCache: Map<string, { size: number; hash: number }>;
   /** Active chat session id — used by tools that persist per-session state (todos). */
   getSessionId: () => string | null;
+  getAbortSignal?: () => AbortSignal | undefined;
 };
 
 export function resolvePath(rawPath: string, cwd: string | null): string {

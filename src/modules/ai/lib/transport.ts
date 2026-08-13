@@ -31,7 +31,10 @@ async function readAnboMd(
 
 type Deps = {
   getKeys: () => ProviderKeys;
-  getToolContext: (live: LiveSnapshot) => ToolContext;
+  getToolContext: (
+    live: LiveSnapshot,
+    abortSignal?: AbortSignal,
+  ) => ToolContext;
   getModelId: () => string;
   getCustomInstructions: () => string;
   getAgentPersona: () => { name: string; instructions: string } | null;
@@ -83,7 +86,7 @@ export function createContextAwareTransport(deps: Deps) {
       modelId: deps.getModelId(),
       customInstructions: deps.getCustomInstructions(),
       agentPersona: deps.getAgentPersona(),
-      toolContext: deps.getToolContext(live),
+      toolContext: deps.getToolContext(live, options.abortSignal),
       onStep: deps.onStep,
       onUsage: deps.onUsage,
       onCompact: deps.onCompact,

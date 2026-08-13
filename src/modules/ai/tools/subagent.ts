@@ -39,6 +39,7 @@ Auto-executes (no approval) — subagents are read-only by design.`,
             modelId: selectedModelId,
             toolContext: ctx,
             onStep: (label) => patchAgentMeta({ step: label }),
+            abortSignal: ctx.getAbortSignal?.(),
           });
           return {
             type,

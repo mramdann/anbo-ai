@@ -26,7 +26,7 @@ function makeChat(sessionId: string): Chat<UIMessage> {
 
   const transport = createContextAwareTransport({
     getKeys: () => useChatStore.getState().apiKeys,
-    getToolContext: (snapshot) => {
+    getToolContext: (snapshot, abortSignal) => {
       const cacheKey = workspaceScopeKey(snapshot.workspaceEnv);
       let readCache = readCaches.get(cacheKey);
       if (!readCache) {
@@ -38,6 +38,7 @@ function makeChat(sessionId: string): Chat<UIMessage> {
         snapshot,
         readCache,
         sessionId,
+        abortSignal,
       );
     },
     getModelId: () => useChatStore.getState().selectedModelId,
