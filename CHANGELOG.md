@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.14.1](https://github.com/mramdann/anbo-ai/compare/v0.14.0...v0.14.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* **ai:** enforce final context budgets ([60ad481](https://github.com/mramdann/anbo-ai/commit/60ad481a382cb5924487df33af653a7a63c76178))
+* **ai:** freeze run scope and propagate cancellation ([910220c](https://github.com/mramdann/anbo-ai/commit/910220c151172b274a69f05c1d76d6ff1498fda9))
+* **ai:** retain latest bounded turn ([fd52116](https://github.com/mramdann/anbo-ai/commit/fd52116519446b6750d0205a5422e7860d7cc0f6))
+* **browser:** clear stale URL validation state ([b1d633d](https://github.com/mramdann/anbo-ai/commit/b1d633d96bcf6e7530718146a0b8b389992a01c6))
+* **browser:** eliminate tab switching flicker ([39a384b](https://github.com/mramdann/anbo-ai/commit/39a384b048a67e02654e5eceb66f38db3bf38f7a))
+* **browser:** harden parallel automation lifecycle ([c7315cc](https://github.com/mramdann/anbo-ai/commit/c7315cc271e91060155b86035860224f6f16979e))
+* **browser:** preserve foreground z order under overlays ([f6e522a](https://github.com/mramdann/anbo-ai/commit/f6e522a1aa14fabe7a5500b7968e09907101ef0e))
+* **ci:** preserve release OIDC permission ([6ba43ad](https://github.com/mramdann/anbo-ai/commit/6ba43ad504cde60492e945c35de152afc732b208))
+* **lifecycle:** terminate managed process trees ([b2f7898](https://github.com/mramdann/anbo-ai/commit/b2f7898b7c9341efaba398afde7b4a2b80d2f23a))
+* **markdown:** bound and harden previews ([dc040dd](https://github.com/mramdann/anbo-ai/commit/dc040dd80fed9db71eafdc820d2afa451ff4029c))
+* **net:** normalize bracketed IPv6 hosts ([6f81666](https://github.com/mramdann/anbo-ai/commit/6f8166639b66c3a3390b5ae6b53fda0a5979303a))
+* **security:** complete P0 boundaries ([33626f7](https://github.com/mramdann/anbo-ai/commit/33626f7e055a4d5ecb17f6f861cf183474069f09))
+* **updater:** scope checks to Windows releases ([03b87c9](https://github.com/mramdann/anbo-ai/commit/03b87c93894ccfbb46d80a3bec703547c6815c1b))
+* **workspace:** preserve independent space runtimes ([4a852a4](https://github.com/mramdann/anbo-ai/commit/4a852a4934f036b594172ee15b35fd442a34d0aa))
+
+
+### Performance Improvements
+
+* **ai:** bound active conversation rendering ([25ca69b](https://github.com/mramdann/anbo-ai/commit/25ca69b3baed40cdf50f74fb0d0b3a07107330f8))
+* **browser:** make native layout sync event driven ([07fcad8](https://github.com/mramdann/anbo-ai/commit/07fcad865c00fa86cf04602a75c5cd2886ec5079))
+* **content:** defer expensive large previews ([f81f98b](https://github.com/mramdann/anbo-ai/commit/f81f98bb0693737cf008f728ccb2fb306f5e7280))
+* **startup:** keep provider SDKs lazy ([7d38780](https://github.com/mramdann/anbo-ai/commit/7d38780df664e0efb38db7a214cb89e7e742c092))
+* **startup:** measure generated preload closures ([80c36d7](https://github.com/mramdann/anbo-ai/commit/80c36d7643bd251ae12b323af19307996da56505))
+* **state:** bound caches and stale async work ([92bd2fa](https://github.com/mramdann/anbo-ai/commit/92bd2fadd1ecd38ae5f588ac3823cc947d40ac42))
+
 ## [0.14.0](https://github.com/mramdann/anbo-ai/compare/v0.13.1...v0.14.0) (2026-08-12)
 
 
