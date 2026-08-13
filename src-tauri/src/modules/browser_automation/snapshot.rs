@@ -42,11 +42,29 @@ pub struct SnapshotElement {
     pub in_viewport: bool,
 }
 
+pub fn remove_generation(tab_id: i64) {
+    if let Ok(mut guard) = generations().lock() {
+        if let Some(map) = guard.as_mut() {
+            map.remove(&tab_id);
+        }
+    }
+}
+
+pub fn clear_generations() {
+    if let Ok(mut guard) = generations().lock() {
+        if let Some(map) = guard.as_mut() {
+            map.clear();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotPayload {
     pub title: String,
     pub url: String,
     pub elements: Vec<SnapshotElement>,
+    #[serde(default)]
+    pub source_truncated: bool,
 }
 
 pub fn build_snapshot_js(generation_id: u64) -> String {
@@ -55,6 +73,17 @@ pub fn build_snapshot_js(generation_id: u64) -> String {
             const gen = "gen-{generation_id}";
             let refIdx = 1;
             const elements = [];
+            const maxItems = 1000;
+            let sourceTruncated = false;
+
+            function add(item) {{
+                if (elements.length >= maxItems) {{
+                    sourceTruncated = true;
+                    return false;
+                }}
+                elements.push(item);
+                return true;
+            }}
 
             try {{
                 document.querySelectorAll('[data-anbo-ref]').forEach(el => {{
@@ -79,13 +108,17 @@ pub fn build_snapshot_js(generation_id: u64) -> String {
 
             function process(node) {{
                 if (!node) return;
+                if (elements.length >= maxItems) {{
+                    sourceTruncated = true;
+                    return;
+                }}
                 if (node.nodeType === 3) {{
                     const t = (node.textContent || "").trim();
                     if (t.length > 0 && node.parentElement &&
                         isVisible(node.parentElement) && isInViewport(node.parentElement)) {{
                         const tag = node.parentElement.tagName.toLowerCase();
                         if (!['button', 'a', 'option', 'script', 'style'].includes(tag)) {{
-                            elements.push({{
+                            add({{
                                 type: 'text',
                                 text: t.substring(0, 300),
                                 in_viewport: true
@@ -106,7 +139,7 @@ pub fn build_snapshot_js(generation_id: u64) -> String {
                                       el.getAttribute('contenteditable') === 'true';
 
                 if (isInteractive && isVisible(el)) {{
-                    const ref = 'e' + (refIdx++);
+                    const ref = 'g{generation_id}-e' + (refIdx++);
                     el.setAttribute('data-anbo-ref', ref);
                     el.setAttribute('data-anbo-gen', gen);
 
@@ -117,7 +150,7 @@ pub fn build_snapshot_js(generation_id: u64) -> String {
                     }}
 
                     const isPassword = tag === 'input' && inputType === 'password';
-                    let val = el.value || null;
+                    let val = el.value == null ? null : String(el.value).substring(0, 300);
                     if (isPassword) {{
                         val = '[REDACTED]';
                     }}
@@ -145,7 +178,7 @@ pub fn build_snapshot_js(generation_id: u64) -> String {
                                 '';
                     label = label.trim().replace(/\s+/g, ' ').substring(0, 100);
 
-                    elements.push({{
+                    add({{
                         type: 'element',
                         ref_id: ref,
                         tag: tag,
@@ -161,6 +194,7 @@ pub fn build_snapshot_js(generation_id: u64) -> String {
 
                 for (let i = 0; i < el.childNodes.length; i++) {{
                     process(el.childNodes[i]);
+                    if (elements.length >= maxItems) break;
                 }}
             }}
 
@@ -169,9 +203,10 @@ pub fn build_snapshot_js(generation_id: u64) -> String {
             }}
 
             return JSON.stringify({{
-                title: document.title || "",
-                url: window.location.href || "",
-                elements: elements
+                title: (document.title || "").substring(0, 500),
+                url: (window.location.href || "").substring(0, 2000),
+                elements: elements,
+                source_truncated: sourceTruncated
             }});
         }})();"#
     )
@@ -243,7 +278,7 @@ pub fn format_snapshot(
         .map(|line| line.chars().count() + 1)
         .sum::<usize>();
     let mut included_items = 0;
-    let mut truncated = false;
+    let mut truncated = payload.source_truncated;
 
     for line in candidates {
         if current_chars + line.chars().count() + 1 > content_limit {
@@ -294,7 +329,7 @@ mod tests {
                 },
                 SnapshotElement {
                     element_type: "element".to_string(),
-                    ref_id: Some("e1".to_string()),
+                    ref_id: Some("g1-e1".to_string()),
                     tag: Some("button".to_string()),
                     role: Some("button".to_string()),
                     label: Some("Click Me".to_string()),
@@ -305,12 +340,13 @@ mod tests {
                     in_viewport: true,
                 },
             ],
+            source_truncated: false,
         };
 
         let formatted = format_snapshot(&payload, 1, DEFAULT_SNAPSHOT_MAX_CHARS);
         assert!(formatted.text.contains("Title: Test Page"));
         assert!(formatted.text.contains("Generation: 1"));
-        assert!(formatted.text.contains("[e1] <button> Click Me"));
+        assert!(formatted.text.contains("[g1-e1] <button> Click Me"));
         assert!(!formatted.truncated);
     }
 
@@ -331,7 +367,7 @@ mod tests {
             url: "http://localhost/login".to_string(),
             elements: vec![SnapshotElement {
                 element_type: "element".to_string(),
-                ref_id: Some("e1".to_string()),
+                ref_id: Some("g1-e1".to_string()),
                 tag: Some("input".to_string()),
                 role: Some("input[password]".to_string()),
                 label: Some("Password".to_string()),
@@ -341,6 +377,7 @@ mod tests {
                 text: None,
                 in_viewport: true,
             }],
+            source_truncated: false,
         };
 
         let formatted = format_snapshot(&payload, 1, DEFAULT_SNAPSHOT_MAX_CHARS);
@@ -355,7 +392,7 @@ mod tests {
             elements: (1..500)
                 .map(|index| SnapshotElement {
                     element_type: "element".to_string(),
-                    ref_id: Some(format!("e{index}")),
+                    ref_id: Some(format!("g1-e{index}")),
                     tag: Some("a".to_string()),
                     role: Some("a".to_string()),
                     label: Some("x".repeat(100)),
@@ -366,6 +403,7 @@ mod tests {
                     in_viewport: false,
                 })
                 .collect(),
+            source_truncated: false,
         };
 
         let formatted = format_snapshot(&payload, 1, usize::MAX);
@@ -373,5 +411,12 @@ mod tests {
         assert_eq!(formatted.max_chars, MAX_SNAPSHOT_MAX_CHARS);
         assert!(formatted.text.chars().count() <= MAX_SNAPSHOT_MAX_CHARS);
         assert!(formatted.text.contains("[truncated: showing"));
+    }
+
+    #[test]
+    fn snapshot_refs_include_the_generation() {
+        let script = build_snapshot_js(42);
+        assert!(script.contains("const ref = 'g42-e' + (refIdx++);"));
+        assert!(script.contains("const gen = \"gen-42\";"));
     }
 }

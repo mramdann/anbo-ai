@@ -1,18 +1,22 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use tauri::{AppHandle, Manager, Webview};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::modules::browser::embed::{embed_label, is_embed_tab_active, list_active_tab_ids};
 
-static TAB_LOCKS: Mutex<Option<HashMap<i64, Arc<AsyncMutex<()>>>>> = Mutex::new(None);
+static TAB_LOCKS: Mutex<Option<HashMap<i64, Weak<AsyncMutex<()>>>>> = Mutex::new(None);
 
 pub fn get_tab_lock(tab_id: i64) -> Arc<AsyncMutex<()>> {
     let mut guard = TAB_LOCKS.lock().unwrap();
     let map = guard.get_or_insert_with(HashMap::new);
-    map.entry(tab_id)
-        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
-        .clone()
+    map.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = map.get(&tab_id).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(AsyncMutex::new(()));
+    map.insert(tab_id, Arc::downgrade(&lock));
+    lock
 }
 
 pub fn remove_tab_lock(tab_id: i64) {
@@ -21,6 +25,14 @@ pub fn remove_tab_lock(tab_id: i64) {
     };
     if let Some(map) = guard.as_mut() {
         map.remove(&tab_id);
+    }
+}
+
+pub fn clear_tab_locks() {
+    if let Ok(mut guard) = TAB_LOCKS.lock() {
+        if let Some(map) = guard.as_mut() {
+            map.clear();
+        }
     }
 }
 

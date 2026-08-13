@@ -167,7 +167,7 @@ fn print_usage() {
     eprintln!("  forward --tab <id>                    Navigate forward");
     eprintln!("  stop --tab <id>                       Stop page load");
     eprintln!("  snapshot --tab <id> [--max-chars <n>] Get bounded snapshot with stable refs");
-    eprintln!("  click --tab <id> --ref <ref>          Click element by ref (e.g. e12)");
+    eprintln!("  click --tab <id> --ref <ref>          Click element by ref (e.g. g3-e12)");
     eprintln!("  type --tab <id> --ref <ref> --text \"msg\" [--append]");
     eprintln!("  press --tab <id> --key <key>          Press keyboard key");
     eprintln!("  scroll --tab <id> [--x 0] [--y 600]   Scroll page");
@@ -452,8 +452,8 @@ async fn run_mcp_stdio() {
                             { "name": "browser_tabs", "description": "List active native browser tabs in Anbo", "inputSchema": { "type": "object", "properties": {} } },
                             { "name": "browser_get_url", "description": "Get current URL of a browser tab", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" } }, "required": ["tabId"] } },
                             { "name": "browser_navigate", "description": "Navigate a browser tab to an HTTP/HTTPS URL", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "url": { "type": "string" } }, "required": ["tabId", "url"] } },
-                            { "name": "browser_snapshot", "description": "Get a token-bounded accessibility snapshot with viewport text and stable refs. Defaults to 8000 characters and never exceeds 16000.", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "maxChars": { "type": "integer", "minimum": 2000, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
-                            { "name": "browser_click", "description": "Click an element by ref (e1, e2, ...)", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "ref": { "type": "string" } }, "required": ["tabId", "ref"] } },
+                            { "name": "browser_snapshot", "description": "Get a token-bounded accessibility snapshot with viewport text and generation-scoped refs. Defaults to 8000 characters and never exceeds 16000. Use only refs from the latest snapshot.", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "maxChars": { "type": "integer", "minimum": 2000, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
+                            { "name": "browser_click", "description": "Click an element by generation-scoped ref (for example g3-e12)", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "ref": { "type": "string" } }, "required": ["tabId", "ref"] } },
                             { "name": "browser_type", "description": "Type text into an input element by ref", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "ref": { "type": "string" }, "text": { "type": "string" }, "append": { "type": "boolean" } }, "required": ["tabId", "ref", "text"] } },
                             { "name": "browser_press", "description": "Press a keyboard key (e.g. Enter, Tab)", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "key": { "type": "string" } }, "required": ["tabId", "key"] } },
                             { "name": "browser_scroll", "description": "Scroll the page", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "x": { "type": "number" }, "y": { "type": "number" } }, "required": ["tabId"] } },
@@ -556,12 +556,12 @@ mod tests {
             "--tab".to_string(),
             "1".to_string(),
             "--ref".to_string(),
-            "e12".to_string(),
+            "g3-e12".to_string(),
         ];
         let (method, params) = parse_cli_args("click", &args).unwrap();
         assert_eq!(method, "click");
         assert_eq!(params.get("tabId").unwrap().as_i64(), Some(1));
-        assert_eq!(params.get("ref").unwrap().as_str(), Some("e12"));
+        assert_eq!(params.get("ref").unwrap().as_str(), Some("g3-e12"));
     }
 
     #[test]

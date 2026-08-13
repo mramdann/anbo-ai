@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
 #[cfg(windows)]
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::modules::app_data::local_data_root;
 #[cfg(windows)]
@@ -184,6 +184,50 @@ pub fn stop_server() {
 }
 
 #[cfg(windows)]
+enum BoundedLine {
+    Eof,
+    Line(String),
+    TooLarge,
+    InvalidUtf8,
+}
+
+#[cfg(windows)]
+async fn read_bounded_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> std::io::Result<BoundedLine> {
+    let mut bytes = Vec::with_capacity(8192.min(max_bytes));
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            if bytes.is_empty() {
+                return Ok(BoundedLine::Eof);
+            }
+            return Ok(match String::from_utf8(bytes) {
+                Ok(line) => BoundedLine::Line(line),
+                Err(_) => BoundedLine::InvalidUtf8,
+            });
+        }
+        let take = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|position| position + 1)
+            .unwrap_or(available.len());
+        if bytes.len().saturating_add(take) > max_bytes {
+            return Ok(BoundedLine::TooLarge);
+        }
+        bytes.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if bytes.last() == Some(&b'\n') {
+            return Ok(match String::from_utf8(bytes) {
+                Ok(line) => BoundedLine::Line(line),
+                Err(_) => BoundedLine::InvalidUtf8,
+            });
+        }
+    }
+}
+
+#[cfg(windows)]
 async fn handle_client(
     stream: tokio::net::windows::named_pipe::NamedPipeServer,
     app: AppHandle,
@@ -191,12 +235,29 @@ async fn handle_client(
 ) {
     let (reader, mut writer) = tokio::io::split(stream);
     let mut buf_reader = BufReader::new(reader);
-    let mut line = String::new();
-
-    while let Ok(n) = buf_reader.read_line(&mut line).await {
-        if n == 0 {
-            break;
-        }
+    loop {
+        let line = match read_bounded_line(&mut buf_reader, MAX_REQUEST_SIZE).await {
+            Ok(BoundedLine::Eof) | Err(_) => break,
+            Ok(BoundedLine::TooLarge) => {
+                let resp = BrowserResponse::err(
+                    "unknown",
+                    error_codes::RESPONSE_TOO_LARGE,
+                    "request size exceeds 1 MiB limit",
+                );
+                let _ = send_response(&mut writer, &resp).await;
+                break;
+            }
+            Ok(BoundedLine::InvalidUtf8) => {
+                let resp = BrowserResponse::err(
+                    "unknown",
+                    error_codes::INVALID_REQUEST,
+                    "request is not valid UTF-8",
+                );
+                let _ = send_response(&mut writer, &resp).await;
+                continue;
+            }
+            Ok(BoundedLine::Line(line)) => line,
+        };
 
         if line.len() > MAX_REQUEST_SIZE {
             let resp = BrowserResponse::err(
@@ -205,12 +266,10 @@ async fn handle_client(
                 "request size exceeds 1 MiB limit",
             );
             let _ = send_response(&mut writer, &resp).await;
-            line.clear();
-            continue;
+            break;
         }
 
         let parsed: Result<BrowserRequest, _> = serde_json::from_str(&line);
-        line.clear();
 
         let req = match parsed {
             Ok(r) => r,
@@ -305,5 +364,27 @@ mod tests {
         let token = generate_random_token().unwrap();
         assert_eq!(token.len(), 64);
         assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn bounded_line_rejects_before_allocating_the_full_request() {
+        let input = vec![b'x'; 64];
+        let mut reader = BufReader::new(input.as_slice());
+        assert!(matches!(
+            read_bounded_line(&mut reader, 16).await.unwrap(),
+            BoundedLine::TooLarge
+        ));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn bounded_line_accepts_a_request_within_the_limit() {
+        let input = b"{\"ok\":true}\n";
+        let mut reader = BufReader::new(input.as_slice());
+        match read_bounded_line(&mut reader, 64).await.unwrap() {
+            BoundedLine::Line(line) => assert_eq!(line, "{\"ok\":true}\n"),
+            _ => panic!("expected line"),
+        }
     }
 }

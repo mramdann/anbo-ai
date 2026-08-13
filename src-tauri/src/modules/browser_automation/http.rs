@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use tokio::net::TcpListener;
@@ -148,9 +148,12 @@ async fn handle(
             return Ok(empty(413));
         }
     }
-    let body_bytes = match req.into_body().collect().await {
+    let body_bytes = match Limited::new(req.into_body(), MAX_REQUEST_SIZE)
+        .collect()
+        .await
+    {
         Ok(b) => b.to_bytes(),
-        Err(_) => return Ok(empty(400)),
+        Err(_) => return Ok(empty(413)),
     };
     if body_bytes.len() > MAX_REQUEST_SIZE {
         return Ok(empty(413));

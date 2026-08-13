@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::sync::{Mutex, OnceLock};
 
 use tauri::webview::{Color, NewWindowResponse, PageLoadEvent, WebviewBuilder};
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, Rect, WebviewUrl};
 use url::Url;
 
-use crate::modules::browser_automation::registry::get_tab_lock;
+use crate::modules::browser_automation::registry::{get_tab_lock, remove_tab_lock};
 
 #[cfg(windows)]
 use base64::Engine;
@@ -30,6 +31,9 @@ use windows::Win32::{
 };
 
 const BROWSER_NAV_EVENT: &str = "anbo:browser-nav";
+const MAX_ACTIVE_EMBEDS: usize = 256;
+const MAX_CLOSED_EMBEDS: usize = 16 * 1024;
+const MAX_RELEASED_OWNERS: usize = 32 * 1024;
 
 #[derive(Clone, serde::Serialize)]
 struct BrowserNavEvent {
@@ -94,6 +98,15 @@ fn current_instance() -> &'static Mutex<Option<String>> {
     CURRENT_INSTANCE.get_or_init(|| Mutex::new(None))
 }
 
+fn bounded_insert<T: Clone + Eq + Hash>(set: &mut HashSet<T>, value: T, limit: usize) {
+    if !set.contains(&value) && set.len() >= limit {
+        if let Some(oldest) = set.iter().next().cloned() {
+            set.remove(&oldest);
+        }
+    }
+    set.insert(value);
+}
+
 pub fn embed_label(tab_id: i64) -> String {
     format!("browser-embed-{tab_id}")
 }
@@ -110,6 +123,21 @@ pub fn is_embed_tab_active(tab_id: i64) -> bool {
         .lock()
         .map(|active| active.contains_key(&tab_id))
         .unwrap_or(false)
+}
+
+pub fn clear_lifecycle_state() {
+    if let Ok(mut active) = active_embeds().lock() {
+        active.clear();
+    }
+    if let Ok(mut closed) = closed_embeds().lock() {
+        closed.clear();
+    }
+    if let Ok(mut released) = released_owners().lock() {
+        released.clear();
+    }
+    if let Ok(mut current) = current_instance().lock() {
+        *current = None;
+    }
 }
 
 fn validate_tab_id(tab_id: i64) -> Result<(), String> {
@@ -236,18 +264,28 @@ fn spawn_browser_child(
             r#"
             window.__anboLogs = window.__anboLogs || [];
             const safeStringify = (arg) => {
-                try { return typeof arg === 'object' ? JSON.stringify(arg) : String(arg); }
-                catch (e) { return String(arg); }
+                try {
+                    if (arg === null || typeof arg !== 'object') return String(arg).slice(0, 2000);
+                    const result = {};
+                    for (const key of Object.keys(arg).slice(0, 20)) {
+                        const value = arg[key];
+                        result[String(key).slice(0, 100)] =
+                            value === null || typeof value !== 'object'
+                                ? String(value).slice(0, 500)
+                                : Object.prototype.toString.call(value);
+                    }
+                    return JSON.stringify(result).slice(0, 2000);
+                } catch (e) { return Object.prototype.toString.call(arg).slice(0, 2000); }
             };
             const origLog = console.log;
             console.log = function(...args) {
-                window.__anboLogs.push({ level: 'info', msg: args.map(safeStringify).join(' ') });
+                window.__anboLogs.push({ level: 'info', msg: args.slice(0, 20).map(safeStringify).join(' ').slice(0, 4000) });
                 if (window.__anboLogs.length > 50) window.__anboLogs.shift();
                 origLog.apply(console, args);
             };
             const origErr = console.error;
             console.error = function(...args) {
-                window.__anboLogs.push({ level: 'error', msg: args.map(safeStringify).join(' ') });
+                window.__anboLogs.push({ level: 'error', msg: args.slice(0, 20).map(safeStringify).join(' ').slice(0, 4000) });
                 if (window.__anboLogs.length > 50) window.__anboLogs.shift();
                 origErr.apply(console, args);
             };
@@ -313,6 +351,9 @@ fn spawn_browser_child(
 type SnapshotResult = Result<Vec<u8>, String>;
 
 #[cfg(windows)]
+const MAX_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
+
+#[cfg(windows)]
 type SnapshotSender = Arc<Mutex<Option<tokio::sync::oneshot::Sender<SnapshotResult>>>>;
 
 #[cfg(windows)]
@@ -336,6 +377,9 @@ fn read_snapshot_stream(stream: &IStream) -> SnapshotResult {
             .map_err(|error| error.to_string())?;
         let size =
             usize::try_from(size).map_err(|_| "browser snapshot is too large".to_string())?;
+        if size > MAX_PREVIEW_BYTES {
+            return Err("browser snapshot exceeds 8 MiB limit".to_string());
+        }
         let mut bytes = vec![0_u8; size];
         let mut read = 0_u32;
         stream
@@ -584,13 +628,16 @@ pub async fn browser_embed_set_ui_overlay(
     validate_tab_id(tab_id)?;
     validate_token(&instance_id)?;
     validate_token(&owner_id)?;
-    let _lifecycle = LIFECYCLE_LOCK.lock().await;
-    ensure_current_instance(&instance_id)?;
-    if !is_active(tab_id, &instance_id, Some(&owner_id)) {
-        return Ok(());
-    }
-    let Some(webview) = app.get_webview(&embed_label(tab_id)) else {
-        return Ok(());
+    let webview = {
+        let _lifecycle = LIFECYCLE_LOCK.lock().await;
+        ensure_current_instance(&instance_id)?;
+        if !is_active(tab_id, &instance_id, Some(&owner_id)) {
+            return Ok(());
+        }
+        let Some(webview) = app.get_webview(&embed_label(tab_id)) else {
+            return Ok(());
+        };
+        webview
     };
 
     #[cfg(windows)]
@@ -616,13 +663,16 @@ pub async fn browser_embed_set_punch_hole(
     validate_tab_id(tab_id)?;
     validate_token(&instance_id)?;
     validate_token(&owner_id)?;
-    let _lifecycle = LIFECYCLE_LOCK.lock().await;
-    ensure_current_instance(&instance_id)?;
-    if !is_active(tab_id, &instance_id, Some(&owner_id)) {
-        return Ok(());
-    }
-    let Some(webview) = app.get_webview(&embed_label(tab_id)) else {
-        return Ok(());
+    let webview = {
+        let _lifecycle = LIFECYCLE_LOCK.lock().await;
+        ensure_current_instance(&instance_id)?;
+        if !is_active(tab_id, &instance_id, Some(&owner_id)) {
+            return Ok(());
+        }
+        let Some(webview) = app.get_webview(&embed_label(tab_id)) else {
+            return Ok(());
+        };
+        webview
     };
 
     #[cfg(windows)]
@@ -714,16 +764,20 @@ pub async fn browser_embed_update(
         Some(parse_pane_url(&url)?)
     };
 
-    active_embeds()
+    let mut active = active_embeds()
         .lock()
-        .map_err(|_| "browser lifecycle state is unavailable".to_string())?
-        .insert(
-            tab_id,
-            ActiveEmbed {
-                instance_id: instance_id.clone(),
-                owner_id: owner_id.clone(),
-            },
-        );
+        .map_err(|_| "browser lifecycle state is unavailable".to_string())?;
+    if !active.contains_key(&tab_id) && active.len() >= MAX_ACTIVE_EMBEDS {
+        return Err("browser embed limit reached".to_string());
+    }
+    active.insert(
+        tab_id,
+        ActiveEmbed {
+            instance_id: instance_id.clone(),
+            owner_id: owner_id.clone(),
+        },
+    );
+    drop(active);
 
     let (position, size) = physical_rect(&bounds)?;
     if let Some(webview) = app.get_webview(&label) {
@@ -764,19 +818,21 @@ pub async fn browser_embed_navigate(
     validate_tab_id(tab_id)?;
     validate_token(&instance_id)?;
     validate_token(&owner_id)?;
-    let _lifecycle = LIFECYCLE_LOCK.lock().await;
-    // Serialize with IPC automation commands (navigate/back/forward/reload) on
-    // the same tab so a native navigate can't race an in-flight automation call.
     let tab_lock = get_tab_lock(tab_id);
     let _tab_lock = tab_lock.lock().await;
-    ensure_current_instance(&instance_id)?;
-    let target = parse_pane_url(&url)?;
-    if is_active(tab_id, &instance_id, Some(&owner_id)) {
-        if let Some(webview) = app.get_webview(&embed_label(tab_id)) {
-            webview
-                .navigate(target)
-                .map_err(|error| error.to_string())?;
+    let webview = {
+        let _lifecycle = LIFECYCLE_LOCK.lock().await;
+        ensure_current_instance(&instance_id)?;
+        if !is_active(tab_id, &instance_id, Some(&owner_id)) {
+            return Ok(());
         }
+        app.get_webview(&embed_label(tab_id))
+    };
+    let target = parse_pane_url(&url)?;
+    if let Some(webview) = webview {
+        webview
+            .navigate(target)
+            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -794,15 +850,17 @@ pub async fn browser_embed_dispatch(
     validate_tab_id(tab_id)?;
     validate_token(&instance_id)?;
     validate_token(&owner_id)?;
-    let _lifecycle = LIFECYCLE_LOCK.lock().await;
-    // Serialize with IPC automation commands on the same tab (see browser_embed_navigate).
     let tab_lock = get_tab_lock(tab_id);
     let _tab_lock = tab_lock.lock().await;
-    ensure_current_instance(&instance_id)?;
-    if !is_active(tab_id, &instance_id, Some(&owner_id)) {
-        return Ok(());
-    }
-    let Some(webview) = app.get_webview(&embed_label(tab_id)) else {
+    let webview = {
+        let _lifecycle = LIFECYCLE_LOCK.lock().await;
+        ensure_current_instance(&instance_id)?;
+        if !is_active(tab_id, &instance_id, Some(&owner_id)) {
+            return Ok(());
+        }
+        app.get_webview(&embed_label(tab_id))
+    };
+    let Some(webview) = webview else {
         return Ok(());
     };
     if action == "reload" {
@@ -909,10 +967,15 @@ pub async fn browser_embed_release(
     validate_token(&owner_id)?;
     let _lifecycle = LIFECYCLE_LOCK.lock().await;
     ensure_current_instance(&instance_id)?;
-    released_owners()
+    let mut released = released_owners()
         .lock()
-        .map_err(|_| "browser owner state is unavailable".to_string())?
-        .insert((tab_id, instance_id.clone(), owner_id.clone()));
+        .map_err(|_| "browser owner state is unavailable".to_string())?;
+    bounded_insert(
+        &mut released,
+        (tab_id, instance_id.clone(), owner_id.clone()),
+        MAX_RELEASED_OWNERS,
+    );
+    drop(released);
     if is_active(tab_id, &instance_id, Some(&owner_id)) {
         if let Some(webview) = app.get_webview(&embed_label(tab_id)) {
             let _ = webview.hide();
@@ -979,37 +1042,63 @@ pub async fn browser_embed_close(
     ensure_main_window(&window)?;
     validate_tab_id(tab_id)?;
     validate_token(&instance_id)?;
-    let _lifecycle = LIFECYCLE_LOCK.lock().await;
-    ensure_current_instance(&instance_id)?;
-    closed_embeds()
-        .lock()
-        .map_err(|_| "browser close state is unavailable".to_string())?
-        .insert((tab_id, instance_id.clone()));
-    if is_active(tab_id, &instance_id, None) {
-        if let Some(webview) = app.get_webview(&embed_label(tab_id)) {
-            let _ = webview.hide();
-            webview.close().map_err(|error| error.to_string())?;
-        }
-        active_embeds()
+    let tab_lock = get_tab_lock(tab_id);
+    {
+        let _tab_lock = tab_lock.lock().await;
+        let _lifecycle = LIFECYCLE_LOCK.lock().await;
+        ensure_current_instance(&instance_id)?;
+        let mut closed = closed_embeds()
             .lock()
-            .map_err(|_| "browser lifecycle state is unavailable".to_string())?
-            .remove(&tab_id);
+            .map_err(|_| "browser close state is unavailable".to_string())?;
+        bounded_insert(
+            &mut closed,
+            (tab_id, instance_id.clone()),
+            MAX_CLOSED_EMBEDS,
+        );
+        drop(closed);
+        released_owners()
+            .lock()
+            .map_err(|_| "browser owner state is unavailable".to_string())?
+            .retain(|(released_tab_id, _, _)| *released_tab_id != tab_id);
+        if is_active(tab_id, &instance_id, None) {
+            if let Some(webview) = app.get_webview(&embed_label(tab_id)) {
+                let _ = webview.hide();
+                webview.close().map_err(|error| error.to_string())?;
+            }
+            active_embeds()
+                .lock()
+                .map_err(|_| "browser lifecycle state is unavailable".to_string())?
+                .remove(&tab_id);
+        }
     }
+    remove_tab_lock(tab_id);
+    crate::modules::browser_automation::snapshot::remove_generation(tab_id);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        navigation_allowed, parse_pane_url, physical_rect, popup_allowed, should_process_update,
-        EmbedBounds,
+        bounded_insert, navigation_allowed, parse_pane_url, physical_rect, popup_allowed,
+        should_process_update, EmbedBounds,
     };
+    use std::collections::HashSet;
     use url::Url;
 
     #[test]
     fn accepts_http_and_https_urls() {
         assert!(parse_pane_url("http://localhost:3000").is_ok());
         assert!(parse_pane_url("https://example.com/path").is_ok());
+    }
+
+    #[test]
+    fn bounded_lifecycle_set_never_exceeds_its_limit() {
+        let mut values = HashSet::new();
+        bounded_insert(&mut values, 1, 2);
+        bounded_insert(&mut values, 2, 2);
+        bounded_insert(&mut values, 3, 2);
+        assert_eq!(values.len(), 2);
+        assert!(values.contains(&3));
     }
 
     #[test]

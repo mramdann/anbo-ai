@@ -57,4 +57,6 @@ pub async fn browser_automation_handle_action(
 
 pub fn on_exit() {
     server::stop_server();
+    registry::clear_tab_locks();
+    snapshot::clear_generations();
 }

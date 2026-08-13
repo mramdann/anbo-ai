@@ -1,5 +1,6 @@
 use base64::Engine;
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,6 +29,14 @@ use crate::modules::browser_automation::snapshot::{
 const SCRIPT_POLL_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_TEXT_OUTPUT_CHARS: u64 = 16_000;
 const MAX_WAIT_TIMEOUT_MS: u64 = 60_000;
+const MAX_URL_BYTES: usize = 8 * 1024;
+const MAX_INPUT_TEXT_BYTES: usize = 64 * 1024;
+const MAX_WAIT_TEXT_BYTES: usize = 2 * 1024;
+const MAX_KEY_BYTES: usize = 64;
+const MAX_WORKSPACE_BYTES: usize = 4 * 1024;
+const MAX_REF_BYTES: usize = 32;
+const MAX_SCREENSHOT_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+const SUBMISSION_OBSERVATION_MS: u64 = 3_000;
 /// How long to wait for a page to become interactive after issuing a navigation
 /// (navigate/back/forward/reload) before returning. Best-effort — the command
 /// returns `ok` regardless once this elapses.
@@ -36,6 +45,8 @@ const BROWSER_OPEN_REQUEST_EVENT: &str = "anbo:browser-open-request";
 const BROWSER_OPEN_RESPONSE_EVENT: &str = "anbo:browser-open-response";
 const BROWSER_CLOSE_REQUEST_EVENT: &str = "anbo:browser-close-request";
 const BROWSER_CLOSE_RESPONSE_EVENT: &str = "anbo:browser-close-response";
+const BROWSER_TABS_REQUEST_EVENT: &str = "anbo:browser-tabs-request";
+const BROWSER_TABS_RESPONSE_EVENT: &str = "anbo:browser-tabs-response";
 static OPEN_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(serde::Deserialize)]
@@ -46,6 +57,30 @@ struct BrowserOpenResponse {
     workspace: Option<String>,
     placement: Option<String>,
     error: Option<String>,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserTabMetadata {
+    tab_id: i64,
+    title: String,
+    url: String,
+    space_id: String,
+    workspace: Option<String>,
+    active: bool,
+    space_active: bool,
+    automation_target: bool,
+    automation_active: bool,
+    automation_method: Option<String>,
+    loading: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserTabsResponse {
+    active_tab_id: Option<i64>,
+    active_space_id: Option<String>,
+    tabs: Vec<BrowserTabMetadata>,
 }
 
 #[derive(serde::Deserialize)]
@@ -114,23 +149,59 @@ pub async fn handle_action(
         "close" => close_browser(app, &params).await,
         "list_tabs" | "tabs" => {
             let tab_ids = get_active_tabs();
+            let active_ids = tab_ids.iter().copied().collect::<HashSet<_>>();
+            let metadata = request_browser_tabs_metadata(app).await;
+            let active_tab_id = metadata
+                .as_ref()
+                .and_then(|response| response.active_tab_id)
+                .filter(|tab_id| active_ids.contains(tab_id));
+            let active_space_id = metadata
+                .as_ref()
+                .and_then(|response| response.active_space_id.clone());
+            let mut by_id = metadata
+                .map(|response| {
+                    response
+                        .tabs
+                        .into_iter()
+                        .filter(|tab| active_ids.contains(&tab.tab_id))
+                        .map(|tab| (tab.tab_id, tab))
+                        .collect::<HashMap<_, _>>()
+                })
+                .unwrap_or_default();
             let mut result = Vec::new();
             for tab_id in tab_ids {
+                if let Some(tab) = by_id.remove(&tab_id) {
+                    result.push(serde_json::to_value(tab).unwrap_or_default());
+                    continue;
+                }
                 if let Ok(webview) = get_embed_webview(app, tab_id) {
-                    let url_res = execute_script(&webview, "window.location.href").await;
-                    let title_res = execute_script(&webview, "document.title").await;
-
-                    let url = url_res.unwrap_or_default().trim_matches('"').to_string();
-                    let title = title_res.unwrap_or_default().trim_matches('"').to_string();
+                    let url = webview.url().map(|url| url.to_string()).unwrap_or_default();
+                    let title = read_script_with_retry(&webview, "document.title", 2)
+                        .await
+                        .ok()
+                        .and_then(|value| serde_json::from_str::<String>(&value).ok())
+                        .unwrap_or_default();
 
                     result.push(json!({
                         "tabId": tab_id,
                         "url": url,
                         "title": title,
+                        "spaceId": null,
+                        "workspace": null,
+                        "active": active_tab_id == Some(tab_id),
+                        "spaceActive": false,
+                        "automationTarget": false,
+                        "automationActive": false,
+                        "automationMethod": null,
+                        "loading": null,
                     }));
                 }
             }
-            Ok(json!({ "tabs": result }))
+            Ok(json!({
+                "tabs": result,
+                "activeTabId": active_tab_id,
+                "activeSpaceId": active_space_id,
+            }))
         }
 
         "get_url" => {
@@ -154,6 +225,7 @@ pub async fn handle_action(
                     "missing 'url' parameter".to_string(),
                 )
             })?;
+            ensure_bounded(url, MAX_URL_BYTES, "url")?;
 
             if !url.starts_with("http://") && !url.starts_with("https://") {
                 return Err((
@@ -254,7 +326,9 @@ pub async fn handle_action(
             let _lock = tab_lock.lock().await;
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
+            wait_for_ready(&webview, 3000).await;
             let cur_gen = get_current_generation(tab_id);
+            ensure_current_ref(&ref_id, cur_gen)?;
             let ref_json = serde_json::to_string(&ref_id).unwrap();
 
             let js = format!(
@@ -337,6 +411,7 @@ pub async fn handle_action(
                     "missing 'text' parameter".to_string(),
                 )
             })?;
+            ensure_bounded(text, MAX_INPUT_TEXT_BYTES, "text")?;
             let append = params
                 .get("append")
                 .and_then(|v| v.as_bool())
@@ -347,6 +422,7 @@ pub async fn handle_action(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
             let cur_gen = get_current_generation(tab_id);
+            ensure_current_ref(&ref_id, cur_gen)?;
             let ref_json = serde_json::to_string(&ref_id).unwrap();
 
             let js = format!(
@@ -412,6 +488,7 @@ pub async fn handle_action(
                     "missing 'key' parameter".to_string(),
                 )
             })?;
+            ensure_bounded(key, MAX_KEY_BYTES, "key")?;
 
             let tab_lock = get_tab_lock(tab_id);
             let _lock = tab_lock.lock().await;
@@ -429,10 +506,10 @@ pub async fn handle_action(
             dispatch_key(&webview, key)
                 .await
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
-            let submitted = if key == "Enter" {
+            let observation = if key == "Enter" {
                 observe_submission(&webview, &before_url).await
             } else {
-                false
+                SubmissionObservation::default()
             };
 
             Ok(json!({
@@ -440,7 +517,9 @@ pub async fn handle_action(
                 "key": key,
                 "ok": true,
                 "dispatch": "devtools",
-                "submitted": submitted
+                "submissionObserved": observation.submit_event,
+                "navigationObserved": observation.navigation,
+                "observationWindowMs": if key == "Enter" { SUBMISSION_OBSERVATION_MS } else { 0 }
             }))
         }
 
@@ -470,6 +549,7 @@ pub async fn handle_action(
                     "missing 'text' parameter".to_string(),
                 )
             })?;
+            ensure_bounded(text, MAX_WAIT_TEXT_BYTES, "text")?;
             let timeout_ms = params
                 .get("timeout")
                 .and_then(|v| v.as_u64())
@@ -481,24 +561,28 @@ pub async fn handle_action(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
 
-            let start = SystemTime::now();
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
             loop {
                 let js = build_wait_for_text_js(text);
-                let res = execute_script_with_timeout(&webview, &js, SCRIPT_POLL_TIMEOUT)
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let poll_timeout = remaining.min(Duration::from_millis(750));
+                let res = execute_script_with_timeout(&webview, &js, poll_timeout)
                     .await
                     .unwrap_or_default();
                 if res.trim() == "true" {
                     return Ok(json!({ "tabId": tab_id, "found": true, "text": text }));
                 }
 
-                let elapsed = start.elapsed().map(|d| d.as_millis() as u64).unwrap_or(0);
-                if elapsed >= timeout_ms {
+                if tokio::time::Instant::now() >= deadline {
+                    let url = webview.url().map(|url| url.to_string()).unwrap_or_default();
                     return Err((
                         error_codes::TIMEOUT.to_string(),
-                        format!("timed out waiting for text '{text}' after {timeout_ms}ms"),
+                        format!(
+                            "timed out waiting for text '{text}' after {timeout_ms}ms at {url}"
+                        ),
                     ));
                 }
-                tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+                tokio::time::sleep(Duration::from_millis(150)).await;
             }
         }
 
@@ -561,6 +645,7 @@ pub async fn handle_action(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
             let cur_gen = get_current_generation(tab_id);
+            ensure_current_ref(&ref_id, cur_gen)?;
             let ref_json = serde_json::to_string(&ref_id).unwrap();
             let value_json = serde_json::to_string(value).unwrap();
             let js = format!(
@@ -626,6 +711,7 @@ pub async fn handle_action(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
             let cur_gen = get_current_generation(tab_id);
+            ensure_current_ref(&ref_id, cur_gen)?;
             let ref_json = serde_json::to_string(&ref_id).unwrap();
             let js = format!(
                 r#"(function() {{
@@ -669,6 +755,7 @@ pub async fn handle_action(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
             let cur_gen = get_current_generation(tab_id);
+            ensure_current_ref(&ref_id, cur_gen)?;
             let ref_json = serde_json::to_string(&ref_id).unwrap();
             let js = format!(
                 r#"(function() {{
@@ -705,7 +792,11 @@ pub async fn handle_action(
 
         "get_text" => {
             let tab_id = extract_tab_id(&params)?;
-            let ref_id = params.get("ref").and_then(|v| v.as_str());
+            let ref_id = if params.get("ref").is_some() || params.get("ref_id").is_some() {
+                Some(extract_ref(&params)?)
+            } else {
+                None
+            };
             let max_length = params
                 .get("maxLength")
                 .and_then(|v| v.as_u64())
@@ -716,7 +807,10 @@ pub async fn handle_action(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
             wait_for_ready(&webview, 5000).await;
-            let ref_json = serde_json::to_string(ref_id.unwrap_or("")).unwrap();
+            if let Some(ref_id) = ref_id.as_deref() {
+                ensure_current_ref(ref_id, get_current_generation(tab_id))?;
+            }
+            let ref_json = serde_json::to_string(ref_id.as_deref().unwrap_or("")).unwrap();
             let js = format!(
                 r#"(function() {{
                     const refId = {};
@@ -795,19 +889,19 @@ pub async fn handle_action(
             let _lock = tab_lock.lock().await;
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
-            wait_for_ready(&webview, 5000).await;
-            let title_res = execute_script(&webview, "document.title")
+            wait_for_ready(&webview, 3000).await;
+            let title_res = read_script_with_retry(&webview, "document.title", 3)
                 .await
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
-            let url_res = execute_script(&webview, "window.location.href")
-                .await
-                .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
+            let url = webview
+                .url()
+                .map(|url| url.to_string())
+                .map_err(|e| (error_codes::CDP_FAILED.to_string(), e.to_string()))?;
             // execute_script returns the value as a JSON string (quoted + escaped);
             // decode it properly so titles/URLs containing quotes survive. Sibling
             // arms use the same serde_json::from_str pattern.
             let title =
                 serde_json::from_str::<String>(&title_res).unwrap_or_else(|_| title_res.clone());
-            let url = serde_json::from_str::<String>(&url_res).unwrap_or_else(|_| url_res.clone());
             Ok(json!({ "tabId": tab_id, "title": title, "url": url }))
         }
 
@@ -825,9 +919,12 @@ pub async fn handle_action(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
 
-            let logs = execute_script(&webview, "JSON.stringify(window.__anboLogs || [])")
-                .await
-                .unwrap_or_else(|_| "[]".to_string());
+            let logs = execute_script(
+                &webview,
+                "JSON.stringify((window.__anboLogs || []).slice(-50))",
+            )
+            .await
+            .unwrap_or_else(|_| "[]".to_string());
 
             let logs = serde_json::from_str::<String>(&logs).unwrap_or(logs);
             Ok(json!({ "logs": serde_json::from_str::<Value>(&logs).unwrap_or(json!([])) }))
@@ -844,8 +941,10 @@ fn build_wait_for_text_js(text: &str) -> String {
     format!(
         r#"(function() {{
             const needle = {};
-            if ((document.title || '').includes(needle)) return true;
-            if (document.body && (document.body.innerText || '').includes(needle)) return true;
+            const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+            const normalizedNeedle = normalize(needle);
+            if (normalize(document.title).includes(normalizedNeedle)) return true;
+            if (document.body && normalize(document.body.innerText).includes(normalizedNeedle)) return true;
             const candidates = document.querySelectorAll('[aria-label],[placeholder],[alt],[title]');
             const limit = Math.min(candidates.length, 2000);
             for (let i = 0; i < limit; i++) {{
@@ -856,7 +955,7 @@ fn build_wait_for_text_js(text: &str) -> String {
                     el.getAttribute('alt'),
                     el.getAttribute('title')
                 ];
-                if (values.some(value => value && value.includes(needle))) return true;
+                if (values.some(value => value && normalize(value).includes(normalizedNeedle))) return true;
             }}
             return false;
         }})()"#,
@@ -865,6 +964,9 @@ fn build_wait_for_text_js(text: &str) -> String {
 }
 
 fn decode_screenshot_response(response: &str) -> Result<Vec<u8>, String> {
+    if response.len() > MAX_SCREENSHOT_RESPONSE_BYTES {
+        return Err("screenshot response exceeds 64 MiB".to_string());
+    }
     let payload: Value = serde_json::from_str(response)
         .map_err(|error| format!("invalid screenshot response: {error}"))?;
     if let Some(error) = payload.get("error") {
@@ -938,28 +1040,58 @@ fn mouse_event_params(event_type: &str, x: f64, y: f64, pressed: bool) -> Value 
 }
 
 async fn dispatch_mouse_click(webview: &Webview, x: f64, y: f64) -> Result<(), String> {
-    call_devtools_protocol_method(
+    call_devtools_with_retry(
         webview,
         "Emulation.setFocusEmulationEnabled",
         r#"{"enabled":true}"#,
-        SCRIPT_POLL_TIMEOUT,
+        2,
     )
     .await?;
-    for (event_type, pressed) in [
-        ("mouseMoved", false),
-        ("mousePressed", true),
-        ("mouseReleased", false),
-    ] {
+    let moved = mouse_event_params("mouseMoved", x, y, false).to_string();
+    call_devtools_with_retry(webview, "Input.dispatchMouseEvent", &moved, 2).await?;
+    for (event_type, pressed) in [("mousePressed", true), ("mouseReleased", false)] {
         let params = mouse_event_params(event_type, x, y, pressed).to_string();
-        call_devtools_protocol_method(
+        if let Err(error) = call_devtools_protocol_method(
             webview,
             "Input.dispatchMouseEvent",
             &params,
-            SCRIPT_POLL_TIMEOUT,
+            Duration::from_secs(5),
         )
-        .await?;
+        .await
+        {
+            if event_type == "mousePressed" {
+                let release = mouse_event_params("mouseReleased", x, y, false).to_string();
+                let _ = call_devtools_protocol_method(
+                    webview,
+                    "Input.dispatchMouseEvent",
+                    &release,
+                    SCRIPT_POLL_TIMEOUT,
+                )
+                .await;
+            }
+            return Err(error);
+        }
     }
     Ok(())
+}
+
+async fn call_devtools_with_retry(
+    webview: &Webview,
+    method: &str,
+    params: &str,
+    attempts: usize,
+) -> Result<String, String> {
+    let mut last_error = String::new();
+    for attempt in 0..attempts.max(1) {
+        match call_devtools_protocol_method(webview, method, params, SCRIPT_POLL_TIMEOUT).await {
+            Ok(result) => return Ok(result),
+            Err(error) => last_error = error,
+        }
+        if attempt + 1 < attempts {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+    }
+    Err(last_error)
 }
 
 async fn dispatch_key(webview: &Webview, key: &str) -> Result<(), String> {
@@ -983,14 +1115,21 @@ async fn current_url(webview: &Webview) -> Result<String, String> {
     serde_json::from_str::<String>(&raw).map_err(|error| format!("invalid URL result: {error}"))
 }
 
-async fn observe_submission(webview: &Webview, before_url: &str) -> bool {
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
+#[derive(Default)]
+struct SubmissionObservation {
+    submit_event: bool,
+    navigation: bool,
+}
+
+async fn observe_submission(webview: &Webview, before_url: &str) -> SubmissionObservation {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(SUBMISSION_OBSERVATION_MS);
+    let mut observation = SubmissionObservation::default();
     loop {
         if current_url(webview)
             .await
             .is_ok_and(|url| !before_url.is_empty() && url != before_url)
         {
-            return true;
+            observation.navigation = true;
         }
         if execute_script_with_timeout(
             webview,
@@ -1000,13 +1139,61 @@ async fn observe_submission(webview: &Webview, before_url: &str) -> bool {
         .await
         .is_ok_and(|value| value.trim() == "true")
         {
-            return true;
+            observation.submit_event = true;
+        }
+        if observation.submit_event || observation.navigation {
+            return observation;
         }
         if tokio::time::Instant::now() >= deadline {
-            return false;
+            return observation;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+async fn read_script_with_retry(
+    webview: &Webview,
+    script: &str,
+    attempts: usize,
+) -> Result<String, String> {
+    let mut last_error = String::new();
+    for attempt in 0..attempts.max(1) {
+        match execute_script_with_timeout(webview, script, Duration::from_millis(1000)).await {
+            Ok(value) => return Ok(value),
+            Err(error) => last_error = error,
+        }
+        if attempt + 1 < attempts {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+    }
+    Err(last_error)
+}
+
+async fn request_browser_tabs_metadata(app: &AppHandle) -> Option<BrowserTabsResponse> {
+    let request_id = format!(
+        "{}-{}",
+        std::process::id(),
+        OPEN_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let response_event = format!("{BROWSER_TABS_RESPONSE_EVENT}:{request_id}");
+    let (sender, receiver) = tokio::sync::oneshot::channel::<String>();
+    let listener_id = app.once(response_event, move |event| {
+        let _ = sender.send(event.payload().to_string());
+    });
+    if app
+        .emit(
+            BROWSER_TABS_REQUEST_EVENT,
+            json!({ "requestId": request_id }),
+        )
+        .is_err()
+    {
+        app.unlisten(listener_id);
+        return None;
+    }
+    let received = tokio::time::timeout(Duration::from_secs(2), receiver).await;
+    app.unlisten(listener_id);
+    let payload = received.ok()?.ok()?;
+    serde_json::from_str(&payload).ok()
 }
 
 async fn open_browser(app: &AppHandle, params: &Value) -> Result<Value, (String, String)> {
@@ -1177,6 +1364,7 @@ fn extract_browser_open_params(params: &Value) -> Result<(&str, &str), (String, 
             "missing 'url' parameter".to_string(),
         )
     })?;
+    ensure_bounded(url, MAX_URL_BYTES, "url")?;
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err((
             error_codes::NAVIGATION_FAILED.to_string(),
@@ -1194,6 +1382,7 @@ fn extract_browser_open_params(params: &Value) -> Result<(&str, &str), (String, 
                 "browser_open requires a workspace root or space id".to_string(),
             )
         })?;
+    ensure_bounded(workspace, MAX_WORKSPACE_BYTES, "workspace")?;
     Ok((url, workspace))
 }
 
@@ -1210,7 +1399,18 @@ fn extract_browser_close_params(params: &Value) -> Result<(i64, &str), (String, 
                 "browser_close requires a workspace root or space id".to_string(),
             )
         })?;
+    ensure_bounded(workspace, MAX_WORKSPACE_BYTES, "workspace")?;
     Ok((tab_id, workspace))
+}
+
+fn ensure_bounded(value: &str, max_bytes: usize, field: &str) -> Result<(), (String, String)> {
+    if value.len() > max_bytes {
+        return Err((
+            error_codes::INVALID_REQUEST.to_string(),
+            format!("'{field}' exceeds {max_bytes} byte limit"),
+        ));
+    }
+    Ok(())
 }
 
 /// Poll the embed webview until its document is interactive/complete with a
@@ -1267,19 +1467,45 @@ fn extract_ref(params: &Value) -> Result<String, (String, String)> {
                 "missing or invalid 'ref' parameter".to_string(),
             )
         })?;
-    let Some(digits) = ref_id.strip_prefix('e') else {
+    ensure_bounded(ref_id, MAX_REF_BYTES, "ref")?;
+    parse_ref_generation(ref_id).map_err(|_| invalid_ref_error())?;
+    Ok(ref_id.to_string())
+}
+
+fn parse_ref_generation(ref_id: &str) -> Result<u64, ()> {
+    let rest = ref_id.strip_prefix('g').ok_or(())?;
+    let (generation, element) = rest.split_once("-e").ok_or(())?;
+    if generation.is_empty()
+        || element.is_empty()
+        || !generation.bytes().all(|byte| byte.is_ascii_digit())
+        || !element.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(());
+    }
+    let generation = generation.parse::<u64>().map_err(|_| ())?;
+    let element = element.parse::<u64>().map_err(|_| ())?;
+    if generation == 0 || element == 0 {
+        return Err(());
+    }
+    Ok(generation)
+}
+
+fn invalid_ref_error() -> (String, String) {
+    (
+        error_codes::INVALID_REQUEST.to_string(),
+        "invalid 'ref': expected g<generation>-e<index>".to_string(),
+    )
+}
+
+fn ensure_current_ref(ref_id: &str, current_generation: u64) -> Result<(), (String, String)> {
+    let generation = parse_ref_generation(ref_id).map_err(|_| invalid_ref_error())?;
+    if generation != current_generation {
         return Err((
-            error_codes::INVALID_REQUEST.to_string(),
-            "invalid 'ref': expected e followed by digits".to_string(),
-        ));
-    };
-    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err((
-            error_codes::INVALID_REQUEST.to_string(),
-            "invalid 'ref': expected e followed by digits".to_string(),
+            error_codes::STALE_REF.to_string(),
+            format!("element ref '{ref_id}' is stale or no longer valid"),
         ));
     }
-    Ok(ref_id.to_string())
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1301,18 +1527,36 @@ mod tests {
 
     #[test]
     fn test_extract_ref() {
-        let v1 = json!({ "ref": "e1" });
-        assert_eq!(extract_ref(&v1).unwrap(), "e1");
+        let v1 = json!({ "ref": "g1-e1" });
+        assert_eq!(extract_ref(&v1).unwrap(), "g1-e1");
 
-        let v2 = json!({ "ref_id": "e42" });
-        assert_eq!(extract_ref(&v2).unwrap(), "e42");
+        let v2 = json!({ "ref_id": "g42-e999" });
+        assert_eq!(extract_ref(&v2).unwrap(), "g42-e999");
 
         let v3 = json!({});
         assert!(extract_ref(&v3).is_err());
 
-        for invalid in ["", "e", "42", "e1\"]'); alert(1); //", "e-1"] {
+        for invalid in [
+            "",
+            "e1",
+            "g-e1",
+            "g1-e",
+            "g0-e1",
+            "g1-e0",
+            "g1-e1\"]'); alert(1); //",
+            "g1-e-1",
+        ] {
             assert!(extract_ref(&json!({ "ref": invalid })).is_err());
         }
+    }
+
+    #[test]
+    fn refs_are_scoped_to_the_current_snapshot_generation() {
+        assert!(ensure_current_ref("g2-e1", 2).is_ok());
+
+        let error = ensure_current_ref("g1-e1", 2).unwrap_err();
+        assert_eq!(error.0, error_codes::STALE_REF);
+        assert!(error.1.contains("g1-e1"));
     }
 
     #[test]
@@ -1363,6 +1607,7 @@ mod tests {
         assert!(script.contains("[aria-label],[placeholder],[alt],[title]"));
         assert!(script.contains("Search Wikipedia');alert(1)//"));
         assert!(!script.contains("const needle = Search Wikipedia"));
+        assert!(script.contains("replace(/\\s+/g, ' ')"));
     }
 
     #[test]

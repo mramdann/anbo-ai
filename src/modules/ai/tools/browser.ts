@@ -54,7 +54,7 @@ export function buildBrowserTools(ctx: ToolContext) {
       description:
         "Click an interactive element in the active browser page using a ref from browser_snapshot.",
       inputSchema: z.object({
-        ref: z.string().describe("Element ref from browser_snapshot, e.g. e12."),
+        ref: z.string().describe("Latest browser_snapshot ref, e.g. g3-e12."),
       }),
       execute: async ({ ref }) => {
         try {
@@ -73,7 +73,7 @@ export function buildBrowserTools(ctx: ToolContext) {
       description:
         "Type text into an input field or textarea using a ref from browser_snapshot.",
       inputSchema: z.object({
-        ref: z.string().describe("Element ref from browser_snapshot, e.g. e12."),
+        ref: z.string().describe("Latest browser_snapshot ref, e.g. g3-e12."),
         text: z.string().describe("Text content to type into the field."),
         append: z.boolean().default(false).describe("Append instead of replacing existing text."),
       }),
@@ -214,7 +214,7 @@ export function buildBrowserTools(ctx: ToolContext) {
       description:
         "Select an option in a <select> dropdown by ref. `value` may be the option's value attribute OR its visible label text.",
       inputSchema: z.object({
-        ref: z.string().describe("Element ref of the <select> from browser_snapshot, e.g. e12."),
+        ref: z.string().describe("Latest browser_snapshot ref for the <select>, e.g. g3-e12."),
         value: z
           .string()
           .describe("Option value (value attribute) or its visible label text."),
@@ -236,7 +236,7 @@ export function buildBrowserTools(ctx: ToolContext) {
       description:
         "Hover over an interactive element by ref to trigger menus, tooltips, or hover-only UI.",
       inputSchema: z.object({
-        ref: z.string().describe("Element ref from browser_snapshot, e.g. e12."),
+        ref: z.string().describe("Latest browser_snapshot ref, e.g. g3-e12."),
       }),
       execute: async ({ ref }) => {
         try {
@@ -254,7 +254,7 @@ export function buildBrowserTools(ctx: ToolContext) {
     browser_scroll_to_element: tool({
       description: "Scroll a specific element into the visible viewport by ref.",
       inputSchema: z.object({
-        ref: z.string().describe("Element ref from browser_snapshot, e.g. e12."),
+        ref: z.string().describe("Latest browser_snapshot ref, e.g. g3-e12."),
       }),
       execute: async ({ ref }) => {
         try {
