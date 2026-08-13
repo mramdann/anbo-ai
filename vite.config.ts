@@ -86,6 +86,24 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
   clearScreen: false,
   test: {
     exclude: [...configDefaults.exclude, "**/.claude/**"],
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "json-summary"],
+      include: [
+        "src/lib/boundedMap.ts",
+        "src/modules/ai/lib/compact.ts",
+        "src/modules/ai/lib/security.ts",
+        "src/modules/editor/lib/aiDiffPolicy.ts",
+        "src/modules/markdown/policy.ts",
+      ],
+      thresholds: {
+        perFile: true,
+        statements: 65,
+        branches: 50,
+        functions: 85,
+        lines: 70,
+      },
+    },
   },
   server: {
     port: 1420,

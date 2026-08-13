@@ -61,4 +61,25 @@ mod tests {
         assert!(!Arc::ptr_eq(&first, &second));
         remove_tab_lock(991_337);
     }
+
+    #[tokio::test]
+    async fn cancelling_a_waiter_leaves_the_tab_lock_reusable() {
+        let lock = get_tab_lock(991_338);
+        let guard = lock.lock().await;
+        let waiting_lock = Arc::clone(&lock);
+        let waiter = tokio::spawn(async move {
+            let _guard = waiting_lock.lock().await;
+        });
+        tokio::task::yield_now().await;
+        waiter.abort();
+        assert!(waiter
+            .await
+            .expect_err("waiter should be cancelled")
+            .is_cancelled());
+        drop(guard);
+        let reacquired =
+            tokio::time::timeout(std::time::Duration::from_millis(250), lock.lock()).await;
+        assert!(reacquired.is_ok());
+        remove_tab_lock(991_338);
+    }
 }

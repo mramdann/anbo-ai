@@ -60,3 +60,20 @@ pub fn on_exit() {
     registry::clear_tab_locks();
     snapshot::clear_generations();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{on_exit, registry, snapshot};
+    use std::sync::Arc;
+
+    #[test]
+    fn shutdown_clears_browser_locks_and_snapshot_generations() {
+        let first_lock = registry::get_tab_lock(991_339);
+        assert_eq!(snapshot::get_next_generation(991_339), 1);
+        on_exit();
+        let second_lock = registry::get_tab_lock(991_339);
+        assert!(!Arc::ptr_eq(&first_lock, &second_lock));
+        assert_eq!(snapshot::get_current_generation(991_339), 0);
+        registry::remove_tab_lock(991_339);
+    }
+}

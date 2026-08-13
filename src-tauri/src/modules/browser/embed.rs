@@ -234,10 +234,26 @@ fn should_process_update(bounds: &EmbedBounds, _visible: bool) -> bool {
 }
 
 fn ensure_main_window(window: &tauri::Window) -> Result<(), String> {
-    if window.label() != "main" {
+    ensure_main_window_label(window.label())
+}
+
+fn ensure_main_window_label(label: &str) -> Result<(), String> {
+    if label != "main" {
         return Err("browser panes can only be controlled by the main window".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod privilege_tests {
+    use super::ensure_main_window_label;
+
+    #[test]
+    fn privileged_browser_ipc_rejects_non_main_windows() {
+        assert!(ensure_main_window_label("main").is_ok());
+        assert!(ensure_main_window_label("settings").is_err());
+        assert!(ensure_main_window_label("browser-embed-7").is_err());
+    }
 }
 
 fn spawn_browser_child(

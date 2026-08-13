@@ -157,3 +157,49 @@ pub fn hide_console(cmd: &mut Command) {
 #[cfg(not(windows))]
 #[inline]
 pub fn hide_console(_cmd: &mut Command) {}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::ManagedChild;
+    use std::fs;
+    use std::process::Command;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn kill_tree_terminates_a_spawned_descendant() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let pid_file = directory.path().join("descendant.pid");
+        let script = format!(
+            "sleep 30 & child=$!; echo $child > '{}'; wait",
+            pid_file.display()
+        );
+        let mut command = Command::new("sh");
+        command.args(["-c", &script]);
+        let managed = ManagedChild::spawn(&mut command).expect("spawn managed shell");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let descendant_pid = loop {
+            if let Ok(value) = fs::read_to_string(&pid_file) {
+                if let Ok(pid) = value.trim().parse::<libc::pid_t>() {
+                    break pid;
+                }
+            }
+            assert!(Instant::now() < deadline, "descendant pid was not written");
+            thread::sleep(Duration::from_millis(20));
+        };
+        managed.kill_tree();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let alive = unsafe { libc::kill(descendant_pid, 0) } == 0;
+            if !alive {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "descendant survived managed process termination"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        let _ = managed.wait();
+    }
+}
