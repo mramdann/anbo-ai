@@ -96,7 +96,21 @@ jobs:
 
       - name: cargo nextest
         working-directory: src-tauri
-        run: cargo nextest run --locked
+        shell: bash
+        run: |
+          set -o pipefail
+          if cargo nextest run --locked 2>&1 | tee nextest.log; then
+            exit 0
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+
+          lines = Path("nextest.log").read_text(errors="replace").splitlines()
+          summary = "\n".join(lines[-80:])
+          summary = summary.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print(f"::error title=Rust nextest failure::{summary}")
+          PY
+          exit 1
 
       - name: fish shell integration
         run: fish --no-config src-tauri/src/modules/pty/scripts/init.test.fish
@@ -125,9 +139,29 @@ jobs:
         working-directory: src-tauri
         run: cargo check --all-targets --locked
 
-      - name: cargo nextest
+      - name: cargo nextest (Windows)
+        if: runner.os == 'Windows'
         working-directory: src-tauri
         run: cargo nextest run --locked --retries 2
+
+      - name: cargo nextest (Unix)
+        if: runner.os != 'Windows'
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          set -o pipefail
+          if cargo nextest run --locked --retries 2 2>&1 | tee nextest.log; then
+            exit 0
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+
+          lines = Path("nextest.log").read_text(errors="replace").splitlines()
+          summary = "\n".join(lines[-80:])
+          summary = summary.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print(f"::error title=Rust nextest failure::{summary}")
+          PY
+          exit 1
 
   coverage:
     runs-on: ubuntu-22.04
