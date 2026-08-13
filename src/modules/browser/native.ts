@@ -109,6 +109,14 @@ export function shouldShowBrowserPane(
   return canMeasure && paneVisible && hasArea && !suppressed;
 }
 
+export function browserPresentationBounds(
+  visible: boolean,
+  measured: EmbedBounds,
+  lastVisible: EmbedBounds | null,
+): EmbedBounds {
+  return visible || !lastVisible ? measured : lastVisible;
+}
+
 export function isSupportedBrowserUrl(value: string): boolean {
   try {
     const url = new URL(value);

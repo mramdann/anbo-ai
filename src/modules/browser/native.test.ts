@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  browserPresentationBounds,
   browserUrlError,
   canMeasureBrowserPane,
   createBrowserOwnerId,
@@ -68,6 +69,19 @@ describe("native browser bounds", () => {
     expect(canMeasure).toBe(true);
     expect(shouldShowBrowserPane(canMeasure, false, true, false)).toBe(false);
     expect(shouldShowBrowserPane(canMeasure, true, true, false)).toBe(true);
+  });
+
+  it("retains visible geometry when a browser moves to a background host", () => {
+    const measured = { x: 0, y: 20, width: 1000, height: 700 };
+    const lastVisible = { x: 0, y: 52, width: 1000, height: 668 };
+
+    expect(browserPresentationBounds(false, measured, lastVisible)).toBe(
+      lastVisible,
+    );
+    expect(browserPresentationBounds(true, measured, lastVisible)).toBe(
+      measured,
+    );
+    expect(browserPresentationBounds(false, measured, null)).toBe(measured);
   });
 });
 

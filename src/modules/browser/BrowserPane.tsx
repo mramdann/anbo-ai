@@ -8,6 +8,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -28,6 +29,7 @@ import {
   browserEmbedSnapshot,
   browserEmbedUpdate,
   browserEmbedUrl,
+  browserPresentationBounds,
   browserUrlError,
   canMeasureBrowserPane,
   createBrowserOwnerId,
@@ -70,14 +72,33 @@ type DesiredBounds = {
 const EMPTY_BOUNDS = { x: 0, y: 0, width: 0, height: 0 };
 const mountedOwnerCounts = new Map<number, number>();
 const pendingReleases = new Map<number, ReturnType<typeof setTimeout>>();
-const visibleNativeBrowsers = new Set<number>();
+const visibleNativeBrowserOwners = new Map<number, number>();
+const lastVisibleBrowserBounds = new Map<number, DesiredBounds["bounds"]>();
 
 function syncNativeBrowserSurface(): void {
-  if (visibleNativeBrowsers.size > 0) {
+  if (visibleNativeBrowserOwners.size > 0) {
     document.documentElement.dataset.nativeBrowserLive = "true";
   } else {
     delete document.documentElement.dataset.nativeBrowserLive;
   }
+}
+
+function acquireNativeBrowserSurface(id: number): void {
+  visibleNativeBrowserOwners.set(
+    id,
+    (visibleNativeBrowserOwners.get(id) ?? 0) + 1,
+  );
+  syncNativeBrowserSurface();
+}
+
+function releaseNativeBrowserSurface(id: number): void {
+  const remaining = (visibleNativeBrowserOwners.get(id) ?? 1) - 1;
+  if (remaining > 0) {
+    visibleNativeBrowserOwners.set(id, remaining);
+  } else {
+    visibleNativeBrowserOwners.delete(id);
+  }
+  syncNativeBrowserSurface();
 }
 
 export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
@@ -211,15 +232,13 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
         });
     }, [id, native]);
 
-    useEffect(() => {
-      if (!native || !IS_WINDOWS || !visible || !url) return;
-      visibleNativeBrowsers.add(id);
-      syncNativeBrowserSurface();
+    useLayoutEffect(() => {
+      if (!native || !IS_WINDOWS || !visible || !url || urlError) return;
+      acquireNativeBrowserSurface(id);
       return () => {
-        visibleNativeBrowsers.delete(id);
-        syncNativeBrowserSurface();
+        releaseNativeBrowserSurface(id);
       };
-    }, [id, native, url, visible]);
+    }, [id, native, url, urlError, visible]);
 
     useEffect(() => {
       overlayOpenRef.current = overlayOpen;
@@ -251,13 +270,21 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
         canMeasure && element ? element.getBoundingClientRect() : null;
       const hasArea = !!rect && rect.width >= 1 && rect.height >= 1;
       const dpr = window.devicePixelRatio || 1;
-      const bounds = hasArea ? toPhysicalBounds(rect, dpr) : EMPTY_BOUNDS;
+      const measuredBounds = hasArea
+        ? toPhysicalBounds(rect, dpr)
+        : EMPTY_BOUNDS;
+      const bounds = browserPresentationBounds(
+        visibleRef.current,
+        measuredBounds,
+        lastVisibleBrowserBounds.get(id) ?? null,
+      );
       const shouldShow = shouldShowBrowserPane(
         canMeasure,
         visibleRef.current,
         hasArea,
         suppressionReadyRef.current,
       );
+      if (shouldShow) lastVisibleBrowserBounds.set(id, bounds);
       desiredRef.current = {
         key: shouldShow
           ? `show:${bounds.x},${bounds.y},${bounds.width},${bounds.height}:${currentUrl}`
@@ -305,10 +332,10 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       }
     }, [id, native, sendDesiredBounds]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
       if (!native) return;
+      syncBounds();
       if (!visible) {
-        syncBounds();
         return;
       }
       let frame = 0;
@@ -324,7 +351,6 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       const resizeObserver = new ResizeObserver(scheduleBounds);
       if (element) resizeObserver.observe(element);
       const unsubscribeLayout = subscribeNativeBrowserLayout(scheduleBounds);
-      scheduleBounds();
       return () => {
         resizeObserver.disconnect();
         unsubscribeLayout();
@@ -355,6 +381,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
         const timer = setTimeout(() => {
           pendingReleases.delete(id);
           if ((mountedOwnerCounts.get(id) ?? 0) > 0) return;
+          lastVisibleBrowserBounds.delete(id);
           forgetBrowserOwnerId(id, ownerId);
           void browserEmbedRelease(id, ownerId).catch(() => {});
         }, 0);
@@ -545,7 +572,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
 
     return (
       <div
-        className={`flex h-full w-full flex-col overflow-hidden ${native ? "bg-transparent" : "bg-background"}`}
+        className={`flex h-full w-full flex-col overflow-hidden ${native && url && !browserError ? "bg-transparent" : "bg-background"}`}
         style={{
           visibility: visible ? "visible" : "hidden",
           pointerEvents: visible ? "auto" : "none",
@@ -576,9 +603,9 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
           className={
             url
               ? native
-                ? loading
-                  ? "relative min-h-0 flex-1 bg-background" // Solid background while loading
-                  : "relative min-h-0 flex-1 bg-transparent" // Transparent once loaded
+                ? browserError || loading
+                  ? "relative min-h-0 flex-1 bg-background"
+                  : "relative min-h-0 flex-1 bg-transparent"
                 : "relative min-h-0 flex-1 bg-white"
               : "relative min-h-0 flex-1 bg-background"
           }

@@ -25,8 +25,8 @@ use windows::Win32::{
         IStream, StructuredStorage::CreateStreamOnHGlobal, STREAM_SEEK_END, STREAM_SEEK_SET,
     },
     UI::WindowsAndMessaging::{
-        GetClientRect, SetWindowPos, HWND_BOTTOM, HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
-        SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
+        GetClientRect, SetWindowPos, HWND_BOTTOM, HWND_TOP, SET_WINDOW_POS_FLAGS,
+        SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
     },
 };
 
@@ -544,6 +544,11 @@ fn embed_insert_after(visible: bool) -> windows::Win32::Foundation::HWND {
 }
 
 #[cfg(windows)]
+fn embed_window_pos_flags() -> SET_WINDOW_POS_FLAGS {
+    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOOWNERZORDER | SWP_NOSIZE
+}
+
+#[cfg(windows)]
 fn set_embed_z_order(webview: &tauri::Webview, visible: bool) -> Result<(), String> {
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     webview
@@ -560,11 +565,7 @@ fn set_embed_z_order(webview: &tauri::Webview, visible: bool) -> Result<(), Stri
                         0,
                         0,
                         0,
-                        SWP_ASYNCWINDOWPOS
-                            | SWP_NOACTIVATE
-                            | SWP_NOMOVE
-                            | SWP_NOOWNERZORDER
-                            | SWP_NOSIZE,
+                        embed_window_pos_flags(),
                     )
                 }
                 .map_err(|error| error.to_string())
@@ -1180,10 +1181,11 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn background_embed_stays_rendered_behind_the_ui() {
-        use windows::Win32::UI::WindowsAndMessaging::{HWND_BOTTOM, HWND_TOP};
+        use windows::Win32::UI::WindowsAndMessaging::{HWND_BOTTOM, HWND_TOP, SWP_ASYNCWINDOWPOS};
 
         assert_eq!(super::embed_insert_after(false), HWND_BOTTOM);
         assert_eq!(super::embed_insert_after(true), HWND_TOP);
+        assert_eq!(super::embed_window_pos_flags().0 & SWP_ASYNCWINDOWPOS.0, 0);
     }
 
     #[test]

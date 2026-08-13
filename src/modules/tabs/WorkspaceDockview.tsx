@@ -183,12 +183,8 @@ function tabIdForParams(params: { tabId?: unknown }): number | null {
 }
 
 function WorkspacePanel(props: IDockviewPanelProps<{ tabId: number }>) {
-  const {
-    onRevealTab,
-    onTabVisibilityChange,
-    renderTab,
-    tabs,
-  } = useWorkspaceDockviewContext();
+  const { onRevealTab, onTabVisibilityChange, renderTab, tabs } =
+    useWorkspaceDockviewContext();
   const [visible, setVisible] = useState(props.api.isVisible);
   useLayoutEffect(() => {
     setVisible(props.api.isVisible);
@@ -232,9 +228,8 @@ function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
   const groupPanels = props.group.panels;
 
   const checkOverflow = useCallback(() => {
-    const header = props.group.element.querySelector<HTMLElement>(
-      ".dv-tabs-container",
-    );
+    const header =
+      props.group.element.querySelector<HTMLElement>(".dv-tabs-container");
     if (!header) {
       setOverflowCount(0);
       return;
@@ -249,9 +244,8 @@ function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
 
   useLayoutEffect(() => {
     checkOverflow();
-    const header = props.group.element.querySelector<HTMLElement>(
-      ".dv-tabs-container",
-    );
+    const header =
+      props.group.element.querySelector<HTMLElement>(".dv-tabs-container");
     if (!header) return;
 
     const observer = new ResizeObserver(() => checkOverflow());
@@ -454,9 +448,7 @@ function WorkspaceDockviewTab(
             onCancel={() => setEditing(false)}
           />
         ) : (
-          <span
-            className={cn("min-w-0 flex-1 truncate", preview && "italic")}
-          >
+          <span className={cn("min-w-0 flex-1 truncate", preview && "italic")}>
             {labelFor(tab)}
           </span>
         )}
@@ -1118,7 +1110,7 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
   );
 
   // Save the outgoing space before replacing Dockview's complete grid state.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!api || loadedSpaceRef.current === props.spaceId) return;
 
     cleanupDragRef.current?.();
@@ -1208,7 +1200,7 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
 
   // Incremental model sync keeps group membership and split geometry intact.
   // biome-ignore lint/correctness/useExhaustiveDependencies: layoutKey deliberately reruns ref-driven incremental sync.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!api || loadedSpaceRef.current !== props.spaceId) return;
     applyingLayout.current = true;
     try {
@@ -1395,7 +1387,7 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
     schedulePersistedLayout,
   ]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!api) return;
     const panel = api.getPanel(workspaceDockviewPanelId(props.activeId));
     if (panel && api.activePanel !== panel) panel.api.setActive();

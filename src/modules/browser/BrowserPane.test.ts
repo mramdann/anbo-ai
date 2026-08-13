@@ -93,4 +93,12 @@ describe("BrowserPane native layering", () => {
     expect(src).not.toContain("now - lastSync >= 40");
     expect(src).not.toContain("requestAnimationFrame(tick)");
   });
+
+  it("demotes hidden browsers immediately and preserves their visible bounds across hosts", () => {
+    expect(src).toContain("const lastVisibleBrowserBounds = new Map");
+    expect(src).toContain("lastVisibleBrowserBounds.get(id) ?? null");
+    expect(src).toContain("lastVisibleBrowserBounds.set(id, bounds)");
+    expect(src).toMatch(/useLayoutEffect\(\(\) => \{[\s\S]*?syncBounds\(\);[\s\S]*?if \(!visible\)/);
+    expect(src).not.toContain("scheduleNativeBrowserPresentationSync");
+  });
 });
