@@ -3,6 +3,7 @@ import { getCustomEndpointKey, getKey } from "@/modules/ai/lib/keyring";
 import { lspFormatDocument, useLspExtension } from "@/modules/lsp";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { onKeysChanged } from "@/modules/settings/store";
+import type { WorkspaceEnv } from "@/modules/workspace";
 import { acceptCompletion, startCompletion } from "@codemirror/autocomplete";
 import { redo, undo } from "@codemirror/commands";
 import {
@@ -84,6 +85,7 @@ export type EditorPaneHandle = {
 
 type Props = {
   path: string;
+  workspace: WorkspaceEnv;
   overrideLanguage?: string | null;
   onDirtyChange?: (dirty: boolean) => void;
   onSaved?: () => void;
@@ -104,11 +106,19 @@ function formatBytes(n: number): string {
 // skip re-rendering entirely when App re-renders (terminal events, tab churn).
 export const EditorPane = memo(
   forwardRef<EditorPaneHandle, Props>(function EditorPane(props, ref) {
-    const { path, overrideLanguage, onDirtyChange, onSaved, onClose } = props;
+    const {
+      path,
+      workspace,
+      overrideLanguage,
+      onDirtyChange,
+      onSaved,
+      onClose,
+    } = props;
 
     const { doc, onChange, save, reload, adoptDiskText, openAnyway } =
       useDocument({
         path,
+        workspace,
         onDirtyChange,
       });
     const reloadRef = useRef(reload);
@@ -176,6 +186,8 @@ export const EditorPane = memo(
     const onCloseRef = useRef(onClose);
     onCloseRef.current = onClose;
     const lspActiveRef = useRef(false);
+    const workspaceRef = useRef(workspace);
+    workspaceRef.current = workspace;
     const warnedNoLspRef = useRef(false);
     const warnedNoFormatRef = useRef(false);
 
@@ -218,15 +230,19 @@ export const EditorPane = memo(
           formatter,
           pathRef.current,
           prefs.editorCustomFormatCommand,
+          workspaceRef.current,
         );
         if (error) {
           toast.error(`${formatter} format failed`, { description: error });
         } else {
-          const readBack = await readFileText(pathRef.current);
+          const readBack = await readFileText(
+            pathRef.current,
+            workspaceRef.current,
+          );
           if (readBack !== null && view && view.state.doc === docAtSave) {
             applyFormattedContent(
               view,
-              adoptDiskTextRef.current(readBack.text, readBack.mtime),
+              adoptDiskTextRef.current(readBack.text, readBack.version),
             );
           }
         }
@@ -573,7 +589,8 @@ export const EditorPane = memo(
         );
       }
 
-      const canForce = doc.status === "toolarge" && doc.size <= FORCE_READ_LIMIT;
+      const canForce =
+        doc.status === "toolarge" && doc.size <= FORCE_READ_LIMIT;
       return (
         <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
           <div className="text-sm text-foreground">

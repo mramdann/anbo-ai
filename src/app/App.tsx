@@ -42,6 +42,7 @@ import { native } from "@/modules/ai/lib/native";
 import {
   BROWSER_CLOSE_RESPONSE_EVENT,
   BROWSER_OPEN_RESPONSE_EVENT,
+  BROWSER_TABS_RESPONSE_EVENT,
   type BrowserPaneHandle,
   BrowserStack,
   beginBrowserSession,
@@ -49,6 +50,7 @@ import {
   browserOpenPlacement,
   clearBrowserAutomationActivity,
   faviconUrlForPage,
+  getBrowserAutomationActivity,
   markBrowserAutomationActivity,
   resolveBrowserCloseTarget,
   resolveBrowserOpenSpace,
@@ -57,6 +59,7 @@ import {
 import {
   setBrowserCloseRequestHandler,
   setBrowserOpenRequestHandler,
+  setBrowserTabsRequestHandler,
 } from "@/modules/browser/automationOpenBridge";
 import { CommandPalette, createCommandItems } from "@/modules/command-palette";
 import {
@@ -162,6 +165,7 @@ export default function App() {
     reorderTabByGap,
     newTabInSpace,
     removeTabsForSpace,
+    resetSpace,
     markBooted,
     setActiveSpaceForNewTabs,
     newTab,
@@ -193,7 +197,6 @@ export default function App() {
     swapActivePaneInDirection,
     closeActivePane,
     closePaneByLeaf,
-    resetWorkspace,
     clearTabs,
   } = useTabs(getLaunchDir() ? { cwd: getLaunchDir() } : undefined);
 
@@ -251,49 +254,30 @@ export default function App() {
   const liveLeavesRef = useRef<Set<number>>(new Set());
   const liveBrowserIdsRef = useRef<Set<number>>(new Set());
 
-  const clearWorkspaceState = useCallback(() => {
-    for (const id of liveLeavesRef.current) disposeSession(id);
-    for (const id of liveBrowserIdsRef.current) {
-      clearBrowserAutomationActivity(id);
-      void browserEmbedClose(id).catch(() => {});
-    }
-    liveBrowserIdsRef.current.clear();
-    searchAddons.current.clear();
-    terminalRefs.current.clear();
-    editorRefs.current.clear();
-    browserRefs.current.clear();
-    gitHistoryHandles.current.clear();
-    gitHistoryHandleCallbacks.current.clear();
-    setActiveSearchAddon(null);
-    setActiveEditorHandle(null);
-    setGitHistoryHandle(null);
-  }, []);
-
   const workspaceEnv = useWorkspaceEnvStore((s) => s.env);
   const setWorkspaceEnv = useWorkspaceEnvStore((s) => s.setEnv);
-  const {
-    home,
-    launchCwd,
-    launchCwdResolved,
-    switchWorkspace,
-    adoptWorkspaceEnv,
-  } = useWorkspaceSwitcher({
-    tabsRef,
-    workspaceEnv,
-    setWorkspaceEnv,
-    resetWorkspace,
-    clearWorkspaceState,
-  });
+  const { home, launchCwd, launchCwdResolved, adoptWorkspaceEnv } =
+    useWorkspaceSwitcher({
+      workspaceEnv,
+      setWorkspaceEnv,
+    });
 
   const activeSpaceId = useSpaces((s) => s.activeId);
   const spacesHydrated = useSpaces((s) => s.hydrated);
   const spacesCount = useSpaces((s) => s.spaces.length);
+  const spaceEnvironments = useSpaces((s) => s.spaces);
   const showLanding = spacesHydrated && spacesCount === 0;
   const activeSpaceRoot = useSpaces(
     (s) => s.spaces.find((p) => p.id === s.activeId)?.root ?? null,
   );
   const activeSpaceName = useSpaces(
     (s) => s.spaces.find((p) => p.id === s.activeId)?.name ?? null,
+  );
+  const workspaceForSpace = useCallback(
+    (spaceId: string) =>
+      spaceEnvironments.find((space) => space.id === spaceId)?.env ??
+      workspaceEnv,
+    [spaceEnvironments, workspaceEnv],
   );
   // Welcome when the ACTIVE space has no tabs (not total tabs — other spaces may
   // have tabs). Closing the last terminal in a space → welcome for that space.
@@ -303,12 +287,56 @@ export default function App() {
 
   const handleWorkspaceChange = useCallback(
     async (env: WorkspaceEnv) => {
-      const switched = await switchWorkspace(env);
-      if (switched && activeSpaceId) {
-        useSpaces.getState().setEnv(activeSpaceId, env);
+      const spaceId = useSpaces.getState().activeId;
+      if (!spaceId) return;
+      const affected = tabsRef.current.filter((tab) => tab.spaceId === spaceId);
+      if (affected.some((tab) => tab.kind === "editor" && tab.dirty)) {
+        window.alert(
+          "Save or close unsaved editor tabs before switching workspace environment.",
+        );
+        return;
       }
+      const leafIdsToCheck = affected.flatMap((tab) =>
+        tab.kind === "terminal" ? leafIds(tab.paneTree) : [],
+      );
+      const busy = (
+        await Promise.all(leafIdsToCheck.map(leafHasForegroundProcess))
+      ).filter(Boolean).length;
+      if (
+        busy > 0 &&
+        !window.confirm(
+          `Switch environment? ${busy} running terminal process(es) in this workspace will be closed. Other workspaces will keep running.`,
+        )
+      ) {
+        return;
+      }
+      if (useSpaces.getState().activeId !== spaceId) return;
+      const nextHome = await adoptWorkspaceEnv(env);
+      if (nextHome === null || useSpaces.getState().activeId !== spaceId)
+        return;
+
+      for (const tab of affected) {
+        gitHistoryHandles.current.delete(tab.id);
+        gitHistoryHandleCallbacks.current.delete(tab.id);
+        if (tab.kind === "terminal") {
+          for (const leafId of leafIds(tab.paneTree)) {
+            liveLeavesRef.current.delete(leafId);
+            searchAddons.current.delete(leafId);
+            terminalRefs.current.delete(leafId);
+          }
+        } else if (tab.kind === "browser") {
+          liveBrowserIdsRef.current.delete(tab.id);
+          clearBrowserAutomationActivity(tab.id);
+          await browserEmbedClose(tab.id).catch(() => {});
+          browserRefs.current.delete(tab.id);
+        } else if (tab.kind === "editor") {
+          editorRefs.current.delete(tab.id);
+        }
+      }
+      useSpaces.getState().setEnv(spaceId, env);
+      resetSpace(spaceId, nextHome);
     },
-    [switchWorkspace, activeSpaceId],
+    [adoptWorkspaceEnv, resetSpace],
   );
 
   useSpacesBoot({
@@ -448,7 +476,7 @@ export default function App() {
   const isEditorTab = activeTab?.kind === "editor";
   const isGitHistoryTab = activeTab?.kind === "git-history";
 
-  useEditorFileSync({ tabs, tabsRef, editorRefs });
+  useEditorFileSync({ tabs, tabsRef, editorRefs, workspaceForSpace });
   useThemeFileEditing({ tabsRef, openFileTab });
 
   const { explorerRoot, inheritedCwdForNewTab } =
@@ -915,10 +943,7 @@ export default function App() {
         return;
       }
       const { spaces, activeId: currentSpaceId } = useSpaces.getState();
-      const resolved = resolveBrowserOpenSpace(
-        spaces,
-        payload.workspace,
-      );
+      const resolved = resolveBrowserOpenSpace(spaces, payload.workspace);
       if (!resolved.ok) {
         void emit(responseEvent, { error: resolved.error });
         return;
@@ -975,6 +1000,41 @@ export default function App() {
       });
     });
   }, [closeTab]);
+
+  useEffect(() => {
+    setBrowserTabsRequestHandler(({ requestId }) => {
+      const { spaces, activeId: currentSpaceId } = useSpaces.getState();
+      const activeBrowserId =
+        tabsRef.current.find(
+          (tab) => tab.id === activeIdRef.current && tab.kind === "browser",
+        )?.id ?? null;
+      const metadata = tabsRef.current.flatMap((tab) => {
+        if (tab.kind !== "browser") return [];
+        const space = spaces.find((candidate) => candidate.id === tab.spaceId);
+        const automationMethod = getBrowserAutomationActivity(tab.id);
+        return [
+          {
+            tabId: tab.id,
+            title: tab.title,
+            url: tab.url,
+            spaceId: tab.spaceId,
+            workspace: space?.root ?? null,
+            active: activeBrowserId === tab.id,
+            spaceActive: currentSpaceId === tab.spaceId,
+            automationTarget: activeBrowserTabIds[tab.spaceId] === tab.id,
+            automationActive: automationMethod !== null,
+            automationMethod,
+            loading: tab.loading === true,
+          },
+        ];
+      });
+      void emit(`${BROWSER_TABS_RESPONSE_EVENT}:${requestId}`, {
+        activeTabId: activeBrowserId,
+        activeSpaceId: currentSpaceId,
+        tabs: metadata,
+      });
+    });
+  }, [activeBrowserTabIds]);
 
   const splitActiveTabInDockview = useCallback(
     (position: "right" | "bottom") => {
@@ -1725,6 +1785,7 @@ export default function App() {
                             renderTab={(tab, visible) => (
                               <WorkspaceSurface
                                 tabs={[tab]}
+                                workspace={workspaceForSpace(tab.spaceId)}
                                 activeId={visible ? tab.id : -1}
                                 activeTab={visible ? tab : undefined}
                                 registerTerminalHandle={registerTerminalHandle}

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { currentWorkspaceEnv } from "@/modules/workspace";
+import { useWorkspaceEnvStore } from "@/modules/workspace";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { listenFsChanged, watchAdd, watchRemove } from "./watch";
 
@@ -82,6 +82,7 @@ type Options = {
 };
 
 export function useFileTree(rootPath: string | null, options?: Options) {
+  const workspace = useWorkspaceEnvStore((state) => state.env);
   const showHidden = usePreferencesStore((s) => s.showHidden);
   const showHiddenRef = useRef(showHidden);
   const gitDecorations = usePreferencesStore((s) => s.explorerGitDecorations);
@@ -96,6 +97,7 @@ export function useFileTree(rootPath: string | null, options?: Options) {
   const expandedRef = useRef(expanded);
   const nodesRef = useRef(nodes);
   const watchedRef = useRef<Set<string>>(new Set());
+  const generationRef = useRef(0);
 
   useEffect(() => {
     showHiddenRef.current = showHidden;
@@ -113,82 +115,102 @@ export function useFileTree(rootPath: string | null, options?: Options) {
     nodesRef.current = nodes;
   }, [nodes]);
 
-  const addWatch = useCallback((path: string) => {
-    if (watchedRef.current.has(path)) return;
-    watchedRef.current.add(path);
-    watchAdd([path]);
-  }, []);
+  const addWatch = useCallback(
+    (path: string) => {
+      if (watchedRef.current.has(path)) return;
+      watchedRef.current.add(path);
+      watchAdd([path], workspace);
+    },
+    [workspace],
+  );
 
-  const removeWatch = useCallback((path: string) => {
-    if (!watchedRef.current.delete(path)) return;
-    watchRemove([path]);
-  }, []);
+  const removeWatch = useCallback(
+    (path: string) => {
+      if (!watchedRef.current.delete(path)) return;
+      watchRemove([path], workspace);
+    },
+    [workspace],
+  );
 
-  const fetchChildren = useCallback(async (path: string) => {
-    if (nodesRef.current[path]?.status !== "loaded") {
-      setNodes((s) => ({ ...s, [path]: { status: "loading" } }));
-    }
-    try {
-      const entries = await invoke<DirEntry[]>("fs_read_dir", {
-        path,
-        showHidden: showHiddenRef.current,
-        gitDecorations: gitDecorationsRef.current,
-        workspace: currentWorkspaceEnv(),
-      });
-
-      const prev = nodesRef.current[path];
-      if (prev?.status === "loaded" && sameDirListing(prev.entries, entries)) {
-        return;
+  const fetchChildren = useCallback(
+    async (path: string) => {
+      const generation = generationRef.current;
+      if (nodesRef.current[path]?.status !== "loaded") {
+        setNodes((s) => ({ ...s, [path]: { status: "loading" } }));
       }
-
-      const liveDirs = new Set(
-        entries.filter((e) => e.kind === "dir").map((e) => joinPath(path, e.name)),
-      );
-      const removedRoots: string[] = [];
-      for (const key of Object.keys(nodesRef.current)) {
-        if (dirname(key) === path && !liveDirs.has(key)) removedRoots.push(key);
-      }
-      const dead = new Set<string>();
-      if (removedRoots.length > 0) {
-        const candidates = new Set<string>([
-          ...Object.keys(nodesRef.current),
-          ...expandedRef.current,
-          ...watchedRef.current,
-        ]);
-        for (const k of candidates) {
-          if (removedRoots.some((r) => isUnder(k, r))) dead.add(k);
-        }
-      }
-
-      setNodes((s) => {
-        const next: TreeState = {};
-        for (const [k, v] of Object.entries(s)) if (!dead.has(k)) next[k] = v;
-        next[path] = { status: "loaded", entries };
-        return next;
-      });
-
-      if (dead.size > 0) {
-        setExpanded((c) => {
-          let changed = false;
-          const n = new Set(c);
-          for (const d of dead) if (n.delete(d)) changed = true;
-          return changed ? n : c;
+      try {
+        const entries = await invoke<DirEntry[]>("fs_read_dir", {
+          path,
+          showHidden: showHiddenRef.current,
+          gitDecorations: gitDecorationsRef.current,
+          workspace,
         });
-        const toUnwatch: string[] = [];
-        for (const d of dead) if (watchedRef.current.delete(d)) toUnwatch.push(d);
-        watchRemove(toUnwatch);
+        if (generation !== generationRef.current) return;
+
+        const prev = nodesRef.current[path];
+        if (
+          prev?.status === "loaded" &&
+          sameDirListing(prev.entries, entries)
+        ) {
+          return;
+        }
+
+        const liveDirs = new Set(
+          entries
+            .filter((e) => e.kind === "dir")
+            .map((e) => joinPath(path, e.name)),
+        );
+        const removedRoots: string[] = [];
+        for (const key of Object.keys(nodesRef.current)) {
+          if (dirname(key) === path && !liveDirs.has(key))
+            removedRoots.push(key);
+        }
+        const dead = new Set<string>();
+        if (removedRoots.length > 0) {
+          const candidates = new Set<string>([
+            ...Object.keys(nodesRef.current),
+            ...expandedRef.current,
+            ...watchedRef.current,
+          ]);
+          for (const k of candidates) {
+            if (removedRoots.some((r) => isUnder(k, r))) dead.add(k);
+          }
+        }
+
+        setNodes((s) => {
+          const next: TreeState = {};
+          for (const [k, v] of Object.entries(s)) if (!dead.has(k)) next[k] = v;
+          next[path] = { status: "loaded", entries };
+          return next;
+        });
+
+        if (dead.size > 0) {
+          setExpanded((c) => {
+            let changed = false;
+            const n = new Set(c);
+            for (const d of dead) if (n.delete(d)) changed = true;
+            return changed ? n : c;
+          });
+          const toUnwatch: string[] = [];
+          for (const d of dead)
+            if (watchedRef.current.delete(d)) toUnwatch.push(d);
+          watchRemove(toUnwatch, workspace);
+        }
+      } catch (e) {
+        if (generation !== generationRef.current) return;
+        setNodes((s) => ({
+          ...s,
+          [path]: { status: "error", message: String(e) },
+        }));
       }
-    } catch (e) {
-      setNodes((s) => ({
-        ...s,
-        [path]: { status: "error", message: String(e) },
-      }));
-    }
-  }, []);
+    },
+    [workspace],
+  );
 
   // Root change → restore the cached expansion for this root, re-scope watches,
   // and persist the outgoing root's expansion on the way out.
   useEffect(() => {
+    generationRef.current += 1;
     if (!rootPath) {
       setNodes({});
       setExpanded(new Set());
@@ -213,16 +235,16 @@ export function useFileTree(rootPath: string | null, options?: Options) {
     void fetchChildren(rootPath);
     for (const d of restored) void fetchChildren(d);
     for (const p of toWatch) watchedRef.current.add(p);
-    watchAdd(toWatch);
+    watchAdd(toWatch, workspace);
 
     return () => {
       rememberExpansion(rootPath, expandedRef.current);
       if (watchedRef.current.size > 0) {
-        watchRemove([...watchedRef.current]);
+        watchRemove([...watchedRef.current], workspace);
         watchedRef.current.clear();
       }
     };
-  }, [rootPath, fetchChildren]);
+  }, [rootPath, fetchChildren, workspace]);
 
   useEffect(() => {
     let alive = true;
@@ -339,7 +361,7 @@ export function useFileTree(rootPath: string | null, options?: Options) {
       const cmd =
         pendingCreate.kind === "dir" ? "fs_create_dir" : "fs_create_file";
       try {
-        await invoke(cmd, { path, workspace: currentWorkspaceEnv() });
+        await invoke(cmd, { path, workspace });
         await fetchChildren(pendingCreate.parentPath);
       } catch (e) {
         console.error(`${cmd} failed:`, e);
@@ -347,7 +369,7 @@ export function useFileTree(rootPath: string | null, options?: Options) {
         setPendingCreate(null);
       }
     },
-    [pendingCreate, fetchChildren],
+    [pendingCreate, fetchChildren, workspace],
   );
 
   const beginRename = useCallback((path: string) => {
@@ -372,7 +394,7 @@ export function useFileTree(rootPath: string | null, options?: Options) {
         await invoke("fs_rename", {
           from: renaming,
           to,
-          workspace: currentWorkspaceEnv(),
+          workspace,
         });
         options?.onPathRenamed?.(renaming, to);
         await fetchChildren(parent);
@@ -382,20 +404,20 @@ export function useFileTree(rootPath: string | null, options?: Options) {
         setRenaming(null);
       }
     },
-    [renaming, fetchChildren, options],
+    [renaming, fetchChildren, options, workspace],
   );
 
   const deletePath = useCallback(
     async (path: string) => {
       try {
-        await invoke("fs_delete", { path, workspace: currentWorkspaceEnv() });
+        await invoke("fs_delete", { path, workspace });
         options?.onPathDeleted?.(path);
         await fetchChildren(dirname(path));
       } catch (e) {
         console.error("fs_delete failed:", e);
       }
     },
-    [fetchChildren, options],
+    [fetchChildren, options, workspace],
   );
 
   const movePath = useCallback(
@@ -415,7 +437,7 @@ export function useFileTree(rootPath: string | null, options?: Options) {
         await invoke("fs_rename", {
           from,
           to,
-          workspace: currentWorkspaceEnv(),
+          workspace,
         });
         options?.onPathRenamed?.(from, to);
         await Promise.all([fetchChildren(dirname(from)), fetchChildren(toDir)]);
@@ -423,7 +445,7 @@ export function useFileTree(rootPath: string | null, options?: Options) {
         console.error("fs_rename (move) failed:", e);
       }
     },
-    [fetchChildren, options],
+    [fetchChildren, options, workspace],
   );
 
   return {

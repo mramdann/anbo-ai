@@ -5,6 +5,7 @@ import {
   watchRemove,
 } from "@/modules/explorer/lib/watch";
 import type { Tab } from "@/modules/tabs";
+import { type WorkspaceEnv, workspaceScopeKey } from "@/modules/workspace";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { type RefObject, useEffect, useRef } from "react";
 import type { EditorPaneHandle } from "./EditorPane";
@@ -13,6 +14,7 @@ type Params = {
   tabs: Tab[];
   tabsRef: RefObject<Tab[]>;
   editorRefs: RefObject<Map<number, EditorPaneHandle>>;
+  workspaceForSpace: (spaceId: string) => WorkspaceEnv;
 };
 
 /**
@@ -20,7 +22,12 @@ type Params = {
  * diffs, external writes, and fs-watch events, and maintains the watch set for
  * the directories of open editor files.
  */
-export function useEditorFileSync({ tabs, tabsRef, editorRefs }: Params) {
+export function useEditorFileSync({
+  tabs,
+  tabsRef,
+  editorRefs,
+  workspaceForSpace,
+}: Params) {
   // When an AI diff is approved (write_file applied to disk), reload any
   // open editor tabs for that path so the user sees the new content. We
   // track which approvalIds we've already handled to fire the reload only
@@ -62,17 +69,45 @@ export function useEditorFileSync({ tabs, tabsRef, editorRefs }: Params) {
     };
   }, [tabsRef, editorRefs]);
 
-  const editorWatchRef = useRef<Set<string>>(new Set());
+  const editorWatchRef = useRef(
+    new Map<string, { workspace: WorkspaceEnv; paths: Set<string> }>(),
+  );
   useEffect(() => {
-    const want = new Set<string>();
-    for (const t of tabs) if (t.kind === "editor") want.add(parentDir(t.path));
+    const want = new Map<
+      string,
+      { workspace: WorkspaceEnv; paths: Set<string> }
+    >();
+    for (const tab of tabs) {
+      if (tab.kind !== "editor") continue;
+      const workspace = workspaceForSpace(tab.spaceId);
+      const key = workspaceScopeKey(workspace);
+      let group = want.get(key);
+      if (!group) {
+        group = { workspace, paths: new Set() };
+        want.set(key, group);
+      }
+      group.paths.add(parentDir(tab.path));
+    }
     const prev = editorWatchRef.current;
-    const toAdd = [...want].filter((d) => !prev.has(d));
-    const toRemove = [...prev].filter((d) => !want.has(d));
-    watchAdd(toAdd);
-    watchRemove(toRemove);
+    const keys = new Set([...want.keys(), ...prev.keys()]);
+    for (const key of keys) {
+      const nextGroup = want.get(key);
+      const prevGroup = prev.get(key);
+      if (nextGroup) {
+        watchAdd(
+          [...nextGroup.paths].filter((path) => !prevGroup?.paths.has(path)),
+          nextGroup.workspace,
+        );
+      }
+      if (prevGroup) {
+        watchRemove(
+          [...prevGroup.paths].filter((path) => !nextGroup?.paths.has(path)),
+          prevGroup.workspace,
+        );
+      }
+    }
     editorWatchRef.current = want;
-  }, [tabs]);
+  }, [tabs, workspaceForSpace]);
 
   useEffect(() => {
     let alive = true;

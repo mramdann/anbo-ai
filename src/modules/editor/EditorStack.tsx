@@ -1,11 +1,13 @@
 import { cn, isMarkdownPath } from "@/lib/utils";
 import { MarkdownViewToggle } from "@/modules/markdown";
 import type { EditorTab, Tab } from "@/modules/tabs";
+import type { WorkspaceEnv } from "@/modules/workspace";
 import { useEffect, useRef } from "react";
 import { EditorPane, type EditorPaneHandle } from "./EditorPane";
 
 type Props = {
   tabs: Tab[];
+  workspace: WorkspaceEnv;
   activeId: number;
   onDirtyChange: (id: number, dirty: boolean) => void;
   registerHandle: (id: number, handle: EditorPaneHandle | null) => void;
@@ -15,6 +17,7 @@ type Props = {
 
 export function EditorStack({
   tabs,
+  workspace,
   activeId,
   onDirtyChange,
   registerHandle,
@@ -114,6 +117,7 @@ export function EditorStack({
               <EditorPane
                 ref={getRefCallback(t.id)}
                 path={t.path}
+                workspace={workspace}
                 overrideLanguage={t.overrideLanguage}
                 onDirtyChange={getDirtyCallback(t.id)}
                 onClose={getCloseCallback(t.id)}

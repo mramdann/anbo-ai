@@ -3,6 +3,7 @@ import {
   browserOpenPlacement,
   createBrowserCloseListener,
   createBrowserOpenListener,
+  createBrowserTabsListener,
   resolveBrowserCloseTarget,
   resolveBrowserOpenSpace,
 } from "./automationOpen";
@@ -95,10 +96,7 @@ describe("parallel workspace resolution", () => {
 
     for (const [index, space] of manySpaces.entries()) {
       expect(
-        resolveBrowserOpenSpace(
-          manySpaces,
-          `c:/WORK/project-${index + 1}`,
-        ),
+        resolveBrowserOpenSpace(manySpaces, `c:/WORK/project-${index + 1}`),
       ).toEqual({ ok: true, space });
     }
   });
@@ -159,6 +157,32 @@ describe("createBrowserCloseListener", () => {
     expect(subscribed).toBe(1);
     expect(first).not.toHaveBeenCalled();
     expect(second).toHaveBeenCalledOnce();
+    listener.stop();
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+});
+
+describe("createBrowserTabsListener", () => {
+  it("keeps one subscription while exposing the latest metadata handler", async () => {
+    let subscribed = 0;
+    const sink: { incoming?: (request: { requestId: string }) => void } = {};
+    const dispose = vi.fn();
+    const listener = createBrowserTabsListener(async (handler) => {
+      subscribed += 1;
+      sink.incoming = handler;
+      return dispose;
+    });
+    const first = vi.fn();
+    const second = vi.fn();
+
+    listener.setHandler(first);
+    await Promise.resolve();
+    listener.setHandler(second);
+    sink.incoming?.({ requestId: "tabs-1" });
+
+    expect(subscribed).toBe(1);
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledWith({ requestId: "tabs-1" });
     listener.stop();
     expect(dispose).toHaveBeenCalledOnce();
   });

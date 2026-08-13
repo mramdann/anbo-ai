@@ -1,4 +1,6 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::UNIX_EPOCH;
 use std::{fs, io::Write};
 
@@ -14,6 +16,7 @@ const MAX_READ_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 /// Ceiling for explicit "open anyway"; mirrored as FORCE_READ_LIMIT in useDocument.ts.
 const FORCE_MAX_READ_BYTES: u64 = 50 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8 * 1024;
+static FILE_WRITE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
 
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -22,6 +25,7 @@ pub enum ReadResult {
         content: String,
         size: u64,
         mtime: u64,
+        version: String,
     },
     Binary {
         size: u64,
@@ -54,6 +58,38 @@ fn mtime_millis(meta: &fs::Metadata) -> u64 {
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn version_for(meta: &fs::Metadata, bytes: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{}:{}:{hash:016x}", meta.len(), mtime_millis(meta))
+}
+
+fn current_version(path: &Path) -> std::io::Result<Option<(u64, String)>> {
+    match fs::read(path) {
+        Ok(bytes) => {
+            let meta = fs::metadata(path)?;
+            Ok(Some((mtime_millis(&meta), version_for(&meta, &bytes))))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn file_write_lock(path: &Path) -> Arc<Mutex<()>> {
+    let locks = FILE_WRITE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut locks = locks.lock().unwrap_or_else(|error| error.into_inner());
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
+    lock
 }
 
 #[tauri::command]
@@ -102,14 +138,62 @@ fn read_file_sync(p: &Path, force: bool, max_bytes: Option<u64>) -> Result<ReadR
         return Ok(ReadResult::Binary { size });
     }
 
+    let version = version_for(&meta, &bytes);
     match String::from_utf8(bytes) {
         Ok(content) => Ok(ReadResult::Text {
             content,
             size,
             mtime: mtime_millis(&meta),
+            version,
         }),
         Err(_) => Ok(ReadResult::Binary { size }),
     }
+}
+
+#[derive(Serialize, Debug, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "lowercase")]
+pub enum WriteResult {
+    Written {
+        mtime: u64,
+        version: String,
+    },
+    Conflict {
+        #[serde(rename = "currentMtime")]
+        current_mtime: Option<u64>,
+        #[serde(rename = "currentVersion")]
+        current_version: Option<String>,
+    },
+}
+
+fn write_if_version(
+    target: &Path,
+    content: &[u8],
+    expected_version: Option<&str>,
+) -> std::io::Result<WriteResult> {
+    let write_lock = file_write_lock(target);
+    let _write_guard = write_lock
+        .lock()
+        .map_err(|_| std::io::Error::other("file write lock poisoned"))?;
+    if let Some(expected) = expected_version {
+        let current = current_version(target)?;
+        if current.as_ref().map(|(_, version)| version.as_str()) != Some(expected) {
+            return Ok(WriteResult::Conflict {
+                current_mtime: current.as_ref().map(|(mtime, _)| *mtime),
+                current_version: current.map(|(_, version)| version),
+            });
+        }
+    }
+
+    let original_permissions = fs::metadata(target).ok().map(|m| m.permissions());
+    write_atomic(target, content)?;
+    if let Some(perms) = original_permissions {
+        let _ = fs::set_permissions(target, perms);
+    }
+    let meta = fs::metadata(target)?;
+    Ok(WriteResult::Written {
+        mtime: mtime_millis(&meta),
+        version: version_for(&meta, content),
+    })
 }
 
 #[derive(Serialize, Clone)]
@@ -135,39 +219,37 @@ fn write_atomic(target: &Path, content: &[u8]) -> std::io::Result<()> {
 /// Returns the new mtime so the editor can track disk state for conflict
 /// detection without a follow-up stat.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri exposes these as named invoke arguments.
 pub async fn fs_write_file(
     path: String,
     content: String,
     workspace: Option<WorkspaceEnv>,
     source: Option<String>,
     protected: Option<bool>,
+    expected_version: Option<String>,
     app: tauri::AppHandle,
     registry: tauri::State<'_, WorkspaceRegistry>,
-) -> Result<u64, String> {
+) -> Result<WriteResult, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
     let target = authorize_target_path(&registry, &path, &workspace)?;
     if protected.unwrap_or(false) {
         crate::modules::authority::ensure_unprotected(&target)?;
     }
-    let original_permissions = fs::metadata(&target).ok().map(|m| m.permissions());
-    write_atomic(&target, content.as_bytes()).map_err(|e| {
-        log::warn!("fs_write_file({}) failed: {e}", target.display());
-        e.to_string()
-    })?;
-
-    if let Some(perms) = original_permissions {
-        let _ = fs::set_permissions(&target, perms);
+    let result = write_if_version(&target, content.as_bytes(), expected_version.as_deref())
+        .map_err(|e| {
+            log::warn!("fs_write_file({}) failed: {e}", target.display());
+            e.to_string()
+        })?;
+    if matches!(result, WriteResult::Written { .. }) {
+        let _ = app.emit(
+            "fs:file-written",
+            FileWrittenEvent {
+                path: path.clone(),
+                source,
+            },
+        );
     }
-    let mtime = fs::metadata(&target).map(|m| mtime_millis(&m)).unwrap_or(0);
-    let _ = app.emit(
-        "fs:file-written",
-        FileWrittenEvent {
-            path: path.clone(),
-            source,
-        },
-    );
-
-    Ok(mtime)
+    Ok(result)
 }
 
 #[tauri::command]
@@ -216,6 +298,7 @@ pub async fn fs_stat(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Barrier;
 
     #[test]
     fn read_file_classifies_utf8_as_text() {
@@ -227,10 +310,12 @@ mod tests {
                 content,
                 size,
                 mtime,
+                version,
             } => {
                 assert_eq!(content, "hello world");
                 assert_eq!(size, 11);
                 assert!(mtime > 0);
+                assert!(!version.is_empty());
             }
             _ => panic!("expected text"),
         }
@@ -297,6 +382,78 @@ mod tests {
         std::fs::write(&target, b"old").unwrap();
         write_atomic(&target, b"new").unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"new");
+    }
+
+    #[test]
+    fn versioned_write_rejects_a_stale_expected_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("note.txt");
+        std::fs::write(&target, b"first").unwrap();
+        let expected = current_version(&target).unwrap().unwrap().1;
+        std::fs::write(&target, b"external").unwrap();
+
+        let result = write_if_version(&target, b"editor", Some(&expected)).unwrap();
+        assert!(matches!(result, WriteResult::Conflict { .. }));
+        assert_eq!(std::fs::read(&target).unwrap(), b"external");
+    }
+
+    #[test]
+    fn versioned_write_accepts_the_current_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("note.txt");
+        std::fs::write(&target, b"first").unwrap();
+        let expected = current_version(&target).unwrap().unwrap().1;
+
+        let result = write_if_version(&target, b"editor", Some(&expected)).unwrap();
+        assert!(matches!(result, WriteResult::Written { .. }));
+        assert_eq!(std::fs::read(&target).unwrap(), b"editor");
+    }
+
+    #[test]
+    fn concurrent_versioned_writes_allow_exactly_one_winner() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("note.txt");
+        std::fs::write(&target, b"first").unwrap();
+        let expected = current_version(&target).unwrap().unwrap().1;
+        let barrier = Arc::new(Barrier::new(3));
+        let workers = [b"alpha".as_slice(), b"bravo".as_slice()].map(|content| {
+            let target = target.clone();
+            let expected = expected.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                write_if_version(&target, content, Some(&expected)).unwrap()
+            })
+        });
+        barrier.wait();
+        let results = workers.map(|worker| worker.join().unwrap());
+
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, WriteResult::Written { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, WriteResult::Conflict { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn file_write_locks_are_released_after_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("note.txt");
+        let first = file_write_lock(&target);
+        let weak = Arc::downgrade(&first);
+        drop(first);
+        let second = file_write_lock(&target);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(Arc::strong_count(&second), 1);
     }
 
     #[cfg(unix)]

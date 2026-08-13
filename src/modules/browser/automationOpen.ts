@@ -2,6 +2,8 @@ export const BROWSER_OPEN_REQUEST_EVENT = "anbo:browser-open-request";
 export const BROWSER_OPEN_RESPONSE_EVENT = "anbo:browser-open-response";
 export const BROWSER_CLOSE_REQUEST_EVENT = "anbo:browser-close-request";
 export const BROWSER_CLOSE_RESPONSE_EVENT = "anbo:browser-close-response";
+export const BROWSER_TABS_REQUEST_EVENT = "anbo:browser-tabs-request";
+export const BROWSER_TABS_RESPONSE_EVENT = "anbo:browser-tabs-response";
 
 export type BrowserOpenRequest = {
   requestId: string;
@@ -13,6 +15,24 @@ export type BrowserCloseRequest = {
   requestId: string;
   tabId: number;
   workspace: string;
+};
+
+export type BrowserTabsRequest = {
+  requestId: string;
+};
+
+export type BrowserTabMetadata = {
+  tabId: number;
+  title: string;
+  url: string;
+  spaceId: string;
+  workspace: string | null;
+  active: boolean;
+  spaceActive: boolean;
+  automationTarget: boolean;
+  automationActive: boolean;
+  automationMethod: string | null;
+  loading: boolean;
 };
 
 type BrowserOpenHandler = (request: BrowserOpenRequest) => void;
@@ -88,6 +108,49 @@ export function createBrowserCloseListener(subscribe: BrowserCloseSubscribe) {
 
   return {
     setHandler(next: BrowserCloseHandler) {
+      handler = next;
+      start();
+    },
+    stop() {
+      generation += 1;
+      handler = null;
+      unlisten?.();
+      unlisten = null;
+      subscription = null;
+    },
+  };
+}
+
+type BrowserTabsHandler = (request: BrowserTabsRequest) => void;
+type BrowserTabsSubscribe = (
+  handler: BrowserTabsHandler,
+) => Promise<() => void>;
+
+export function createBrowserTabsListener(subscribe: BrowserTabsSubscribe) {
+  let handler: BrowserTabsHandler | null = null;
+  let subscription: Promise<void> | null = null;
+  let unlisten: (() => void) | null = null;
+  let generation = 0;
+
+  const start = () => {
+    if (subscription || unlisten) return;
+    const currentGeneration = generation;
+    subscription = subscribe((request) => handler?.(request))
+      .then((dispose) => {
+        subscription = null;
+        if (generation !== currentGeneration) {
+          dispose();
+          return;
+        }
+        unlisten = dispose;
+      })
+      .catch(() => {
+        subscription = null;
+      });
+  };
+
+  return {
+    setHandler(next: BrowserTabsHandler) {
       handler = next;
       start();
     },

@@ -1,17 +1,29 @@
 import { notifyDocumentSaved } from "@/modules/lsp";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { currentWorkspaceEnv } from "@/modules/workspace";
+import type { WorkspaceEnv } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { detectEol, type Eol, normalizeToLf, restoreEol } from "./eol";
 
 type ReadResult =
-  | { kind: "text"; content: string; size: number; mtime: number }
+  | {
+      kind: "text";
+      content: string;
+      size: number;
+      mtime: number;
+      version: string;
+    }
   | { kind: "binary"; size: number }
   | { kind: "toolarge"; size: number; limit: number };
 
-type FileStat = { size: number; mtime: number; kind: string };
+type WriteResult =
+  | { status: "written"; mtime: number; version: string }
+  | {
+      status: "conflict";
+      currentMtime: number | null;
+      currentVersion: string | null;
+    };
 
 /// Mirrors FORCE_MAX_READ_BYTES in src-tauri fs/file.rs.
 export const FORCE_READ_LIMIT = 50 * 1024 * 1024;
@@ -25,10 +37,11 @@ export type DocumentState =
 
 type Options = {
   path: string;
+  workspace: WorkspaceEnv;
   onDirtyChange?: (dirty: boolean) => void;
 };
 
-export function useDocument({ path, onDirtyChange }: Options) {
+export function useDocument({ path, workspace, onDirtyChange }: Options) {
   const [doc, setDoc] = useState<DocumentState>({ status: "loading" });
   const [dirty, setDirty] = useState(false);
 
@@ -56,45 +69,60 @@ export function useDocument({ path, onDirtyChange }: Options) {
     }
   }, []);
 
-  const diskMtimeRef = useRef<number | null>(null);
+  const diskVersionRef = useRef<string | null>(null);
+  const pathRef = useRef(path);
+  pathRef.current = path;
+  const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const enqueueWriteRef = useRef<(overwrite?: boolean) => Promise<boolean>>(
+    async () => false,
+  );
 
-  const writeToDisk = useCallback(async () => {
-    const content = bufferRef.current;
-    const mtime = await invoke<number>("fs_write_file", {
-      path,
-      content: restoreEol(content, eolRef.current),
-      workspace: currentWorkspaceEnv(),
-      source: "editor",
-    });
-    diskMtimeRef.current = mtime;
-    savedRef.current = content;
-    // Edits typed while the write was in flight must stay dirty.
-    setDirty(bufferRef.current !== content);
-    notifyDocumentSaved(path);
-  }, [path]);
-
-  // False when the write was withheld because the file changed on disk
-  // since load; overwriting is an explicit user action from the toast.
-  const saveNow = useCallback(async (): Promise<boolean> => {
-    const known = diskMtimeRef.current;
-    if (known !== null) {
-      const stat = await invoke<FileStat>("fs_stat", {
-        path,
-        workspace: currentWorkspaceEnv(),
-      }).catch(() => null);
-      if (stat && stat.mtime !== known) {
-        const name = path.split(/[\\/]/).pop() ?? path;
-        toast.warning("File changed on disk", {
-          id: `save-conflict:${path}`,
-          description: `${name} was modified by another program while you had unsaved changes. Overwrite to keep your version.`,
-          action: { label: "Overwrite", onClick: () => void writeToDisk() },
+  const enqueueWrite = useCallback(
+    (overwrite = false): Promise<boolean> => {
+      const requestPath = path;
+      const content = bufferRef.current;
+      const diskContent = restoreEol(content, eolRef.current);
+      const run = writeQueueRef.current.then(async () => {
+        const result = await invoke<WriteResult>("fs_write_file", {
+          path: requestPath,
+          content: diskContent,
+          workspace,
+          source: "editor",
+          expectedVersion: overwrite ? null : diskVersionRef.current,
         });
-        return false;
-      }
-    }
-    await writeToDisk();
-    return true;
-  }, [path, writeToDisk]);
+        if (result.status === "conflict") {
+          const name = requestPath.split(/[\\/]/).pop() ?? requestPath;
+          toast.warning("File changed on disk", {
+            id: `save-conflict:${requestPath}`,
+            description: `${name} was modified by another program while you had unsaved changes. Overwrite to keep your version.`,
+            action: {
+              label: "Overwrite",
+              onClick: () => {
+                if (pathRef.current === requestPath) {
+                  void enqueueWriteRef.current(true);
+                }
+              },
+            },
+          });
+          return false;
+        }
+        if (pathRef.current === requestPath) {
+          diskVersionRef.current = result.version;
+          savedRef.current = content;
+          setDirty(bufferRef.current !== content);
+        }
+        notifyDocumentSaved(requestPath);
+        return true;
+      });
+      writeQueueRef.current = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return run;
+    },
+    [path, workspace],
+  );
+  enqueueWriteRef.current = enqueueWrite;
 
   // Notify parent of dirty transitions.
   const onDirtyChangeRef = useRef(onDirtyChange);
@@ -113,7 +141,7 @@ export function useDocument({ path, onDirtyChange }: Options) {
   const adoptRead = useCallback((res: ReadResult, skipIfUnchanged = false) => {
     if (res.kind === "text") {
       eolRef.current = detectEol(res.content);
-      diskMtimeRef.current = res.mtime;
+      diskVersionRef.current = res.version;
       const content = normalizeToLf(res.content);
       if (skipIfUnchanged && content === savedRef.current) return;
       savedRef.current = content;
@@ -131,10 +159,10 @@ export function useDocument({ path, onDirtyChange }: Options) {
     (force: boolean) =>
       invoke<ReadResult>("fs_read_file", {
         path,
-        workspace: currentWorkspaceEnv(),
+        workspace,
         force,
       }),
-    [path],
+    [path, workspace],
   );
 
   // Load on path change.
@@ -183,18 +211,18 @@ export function useDocument({ path, onDirtyChange }: Options) {
   const save = useCallback(async (): Promise<boolean> => {
     clearAutoSaveTimer();
     if (bufferRef.current === savedRef.current) return true;
-    return saveNow();
-  }, [clearAutoSaveTimer, saveNow]);
+    return enqueueWrite();
+  }, [clearAutoSaveTimer, enqueueWrite]);
 
   // Adopt externally formatted disk content as the saved baseline before the
   // matching editor dispatch lands, so the buffer never flashes dirty. The
-  // formatter's own write must also become the known mtime, or the next save
+  // formatter's own write must also become the known version, or the next save
   // would report it as an external conflict.
   // Returns the LF-normalized text the caller should dispatch.
   const adoptDiskText = useCallback(
-    (diskText: string, mtime: number): string => {
+    (diskText: string, version: string): string => {
       eolRef.current = detectEol(diskText);
-      diskMtimeRef.current = mtime;
+      diskVersionRef.current = version;
       const content = normalizeToLf(diskText);
       savedRef.current = content;
       setDirty(bufferRef.current !== content);
@@ -214,11 +242,11 @@ export function useDocument({ path, onDirtyChange }: Options) {
       const { autoSave: active, autoSaveDelay: delay } = autoSaveRef.current;
       if (active && isDirty) {
         timeoutRef.current = setTimeout(() => {
-          saveNow().catch((e) => console.error("[autosave]", e));
+          enqueueWrite().catch((e) => console.error("[autosave]", e));
         }, delay);
       }
     },
-    [clearAutoSaveTimer, saveNow],
+    [clearAutoSaveTimer, enqueueWrite],
   );
 
   useEffect(() => clearAutoSaveTimer, [path, clearAutoSaveTimer]);

@@ -4,6 +4,7 @@ import { GitHistoryStack } from "@/modules/git-history";
 import { MarkdownStack } from "@/modules/markdown";
 import { BrowserStack } from "@/modules/browser";
 import type { Tab } from "@/modules/tabs";
+import type { WorkspaceEnv } from "@/modules/workspace";
 import { TerminalStack } from "@/modules/terminal";
 import type { ComponentProps } from "react";
 
@@ -15,6 +16,7 @@ type GitHistoryStackProps = ComponentProps<typeof GitHistoryStack>;
 
 type Props = {
   tabs: Tab[];
+  workspace: WorkspaceEnv;
   activeId: number;
   activeTab: Tab | undefined;
   registerTerminalHandle: TerminalStackProps["registerHandle"];
@@ -43,6 +45,7 @@ type Props = {
  */
 export function WorkspaceSurface({
   tabs,
+  workspace,
   activeId,
   activeTab,
   registerTerminalHandle,
@@ -105,6 +108,7 @@ export function WorkspaceSurface({
       >
         <EditorStack
           tabs={tabs}
+          workspace={workspace}
           activeId={activeId}
           registerHandle={registerEditorHandle}
           onDirtyChange={onEditorDirtyChange}

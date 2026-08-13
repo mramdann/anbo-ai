@@ -334,6 +334,33 @@ export function planSpaceRemoval(
   return { tabs: next, disposeLeafIds, activeId };
 }
 
+export function planSpaceReset(
+  tabs: Tab[],
+  spaceId: string,
+  cwd: string | undefined,
+  tabId: number,
+  leafId: number,
+): { tabs: Tab[]; disposeLeafIds: number[]; activeId: number } {
+  const removed = tabs.filter((tab) => tab.spaceId === spaceId);
+  const disposeLeafIds = removed
+    .filter((tab) => tab.kind === "terminal")
+    .flatMap((tab) => leafIds((tab as TerminalTab).paneTree));
+  const nextTab: TerminalTab = {
+    id: tabId,
+    kind: "terminal",
+    spaceId,
+    title: "shell",
+    cwd,
+    paneTree: { kind: "leaf", id: leafId, cwd },
+    activeLeafId: leafId,
+  };
+  return {
+    tabs: [...tabs.filter((tab) => tab.spaceId !== spaceId), nextTab],
+    disposeLeafIds,
+    activeId: tabId,
+  };
+}
+
 export function useTabs(initial?: Partial<TerminalTab>) {
   const [tabs, setTabs] = useState<Tab[]>(() => {
     const tabId = 1;
@@ -1387,6 +1414,20 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     for (const lid of toDispose) disposeSession(lid);
   }, []);
 
+  const resetSpace = useCallback((spaceId: string, cwd?: string) => {
+    const tabId = nextIdRef.current++;
+    const leafId = nextIdRef.current++;
+    let toDispose: number[] = [];
+    setTabs((curr) => {
+      const plan = planSpaceReset(curr, spaceId, cwd, tabId, leafId);
+      toDispose = plan.disposeLeafIds;
+      return plan.tabs;
+    });
+    setActiveId(tabId);
+    for (const id of toDispose) disposeSession(id);
+    return tabId;
+  }, []);
+
   // Workspace tanpa tab terbuka (welcome state). Buang semua tab + dispose sesi PTY.
   // activeId=-1 → efek warming tak menemukan tab → tak ada spawn.
   const clearTabs = useCallback(() => {
@@ -1452,6 +1493,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     closeActivePane,
     closePaneByLeaf,
     resetWorkspace,
+    resetSpace,
     clearTabs,
   };
 }
