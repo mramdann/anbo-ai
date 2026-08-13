@@ -107,10 +107,10 @@ export function AiDiffPane({
   // Language resolves before mount; reconfiguring after would leave the
   // merge view's deleted-chunk widgets unhighlighted.
   const [lang, setLang] = useState<Extension | null>(
-    () => resolveLanguageSync(path)?.ext ?? null,
+    () => (shouldRender ? resolveLanguageSync(path)?.ext ?? null : null),
   );
   useEffect(() => {
-    if (lang) return;
+    if (!shouldRender || lang) return;
     let cancelled = false;
     resolveLanguage(path).then((res) => {
       if (!cancelled && res) setLang(res.ext);
@@ -118,7 +118,7 @@ export function AiDiffPane({
     return () => {
       cancelled = true;
     };
-  }, [path, lang]);
+  }, [path, lang, shouldRender]);
 
   const extensions = useMemo(
     () =>

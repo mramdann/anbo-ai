@@ -300,6 +300,17 @@ function hardFitHistory(
     }
   }
   let fitted = selected.flat();
+  if (fitted.length === 0 && messages.length > 0) {
+    const latestUser = [...messages]
+      .reverse()
+      .find((message) => message.role === "user");
+    fitted = [
+      boundMessage(
+        latestUser ?? messages[messages.length - 1],
+        Math.max(256, historyBytes - 128),
+      ),
+    ];
+  }
   while (fitted.length > 1 && serializedBytes(fitted) > historyBytes) {
     fitted.shift();
     droppedCount += 1;

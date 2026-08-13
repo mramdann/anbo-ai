@@ -148,4 +148,18 @@ describe("hard context budgets", () => {
     expect(serializedBytes(fitted)).toBeLessThanOrEqual(1_000);
     expect(fitted).toContain("truncated to fit context");
   });
+
+  it("retains a bounded latest user turn when tool history cannot fit", () => {
+    const messages = [
+      readCall("huge", "/large.txt"),
+      readResult("huge", BIG.repeat(20)),
+      { role: "user", content: `latest:${BIG}` } as ModelMessage,
+    ];
+    const result = compactModelMessagesDetailed(messages, 1_000, {
+      historyBytes: 700,
+      maxTurnBytes: 350,
+    });
+    expect(serializedBytes(result.messages)).toBeLessThanOrEqual(700);
+    expect(JSON.stringify(result.messages)).toContain("latest:");
+  });
 });
