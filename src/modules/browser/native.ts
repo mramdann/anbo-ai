@@ -131,6 +131,20 @@ export function isSelfReferenceUrl(
   }
 }
 
+export function browserUrlError(
+  value: string,
+  appUrl = window.location.href,
+): string | null {
+  if (!value) return null;
+  if (!isSupportedBrowserUrl(value)) {
+    return "Only HTTP(S) URLs can load in the browser.";
+  }
+  if (isSelfReferenceUrl(value, appUrl)) {
+    return "Anbo cannot be opened inside its own browser pane.";
+  }
+  return null;
+}
+
 export async function browserEmbedUpdate(
   tabId: number,
   ownerId: string,

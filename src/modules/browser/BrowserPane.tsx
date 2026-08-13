@@ -28,6 +28,7 @@ import {
   browserEmbedSnapshot,
   browserEmbedUpdate,
   browserEmbedUrl,
+  browserUrlError,
   canMeasureBrowserPane,
   createBrowserOwnerId,
   forgetBrowserOwnerId,
@@ -124,6 +125,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     const [loading, setLoading] = useState(initialLoading);
     const onLoadingChangeRef = useRef(onLoadingChange);
     const lastHoleRef = useRef("");
+    const urlError = browserUrlError(url);
 
     const handleZoom = useCallback(
       (newZoom: number) => {
@@ -480,24 +482,18 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
 
     useEffect(() => {
       if (!native || !url) return;
-      if (!isSupportedBrowserUrl(url)) {
+      if (urlError) {
         boundsErrorRef.current = false;
-        setNativeError("Only HTTP(S) URLs can load in the browser.");
         return;
       }
-      if (isSelfReferenceUrl(url)) {
-        boundsErrorRef.current = false;
-        setNativeError("Anbo cannot be opened inside its own browser pane.");
-        return;
-      }
+      setNativeError(null);
       if (url === currentUrlRef.current) return;
       currentUrlRef.current = url;
-      setNativeError(null);
       setLoading(true);
       void browserEmbedNavigate(id, ownerIdRef.current, url).catch(
         reportNativeError,
       );
-    }, [id, native, reportNativeError, url]);
+    }, [id, native, reportNativeError, url, urlError]);
 
     const navigate = useCallback(
       (next: string) => {
@@ -505,14 +501,10 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
         onUrlChangeRef.current(next);
         setNativeError(null);
         if (native) {
-          if (!isSupportedBrowserUrl(next)) {
+          const validationError = browserUrlError(next);
+          if (validationError) {
             boundsErrorRef.current = false;
-            setNativeError("Only HTTP(S) URLs can load in the browser.");
-          } else if (isSelfReferenceUrl(next)) {
-            boundsErrorRef.current = false;
-            setNativeError(
-              "Anbo cannot be opened inside its own browser pane.",
-            );
+            setNativeError(validationError);
           } else {
             setLoading(true);
             void browserEmbedNavigate(id, ownerIdRef.current, next).catch(
@@ -549,6 +541,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     );
 
     const showXfoHint = !native && url ? !isLocalUrl(url) : false;
+    const browserError = urlError ?? nativeError;
 
     return (
       <div
@@ -590,7 +583,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
               : "relative min-h-0 flex-1 bg-background"
           }
         >
-          {native && visible && dragActive && freezeFrame && !nativeError ? (
+          {native && visible && dragActive && freezeFrame && !browserError ? (
             <img
               src={freezeFrame}
               alt=""
@@ -601,8 +594,8 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
           ) : null}
           {url ? (
             native ? (
-              nativeError ? (
-                <BrowserError message={nativeError} />
+              browserError ? (
+                <BrowserError message={browserError} />
               ) : loading ? (
                 <div className="absolute inset-0 flex items-center justify-center bg-background z-0">
                   <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />

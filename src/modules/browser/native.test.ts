@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  browserUrlError,
   canMeasureBrowserPane,
   createBrowserOwnerId,
   forgetBrowserOwnerId,
@@ -28,6 +29,20 @@ describe("native browser URL policy", () => {
     expect(
       isSelfReferenceUrl("http://localhost:5173", "http://localhost:1420/app"),
     ).toBe(false);
+  });
+
+  it("derives validation errors from the current URL", () => {
+    const appUrl = "http://localhost:1420/app";
+    expect(browserUrlError("", appUrl)).toBeNull();
+    expect(
+      browserUrlError("https://www.youtube.com/watch?v=1", appUrl),
+    ).toBeNull();
+    expect(browserUrlError("about:blank", appUrl)).toBe(
+      "Only HTTP(S) URLs can load in the browser.",
+    );
+    expect(browserUrlError("http://localhost:1420/inside", appUrl)).toBe(
+      "Anbo cannot be opened inside its own browser pane.",
+    );
   });
 });
 

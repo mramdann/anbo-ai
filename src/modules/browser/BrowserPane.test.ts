@@ -72,6 +72,15 @@ describe("BrowserPane native layering", () => {
     );
   });
 
+  it("derives URL validation errors so transient native URLs cannot leave stale UI", () => {
+    expect(src).toContain("const urlError = browserUrlError(url)");
+    expect(src).toContain("const browserError = urlError ?? nativeError");
+    expect(src).toContain("setNativeError(null);");
+    expect(src.indexOf("setNativeError(null);")).toBeLessThan(
+      src.indexOf("if (url === currentUrlRef.current) return"),
+    );
+  });
+
   it("moves dropdown overlays through native z-order without capture polling", () => {
     expect(src).toContain("browserEmbedSetUiOverlay");
     expect(src.match(/browserEmbedSnapshot\(id/g)).toHaveLength(1);
