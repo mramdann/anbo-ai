@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { firePendingReviewForSession } from "@/modules/agents/lib/review";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { onKeysChanged } from "@/modules/settings/store";
@@ -58,11 +58,13 @@ export function useAiBootstrap(): {
 
   const prefsHydrated = usePreferencesStore((s) => s.hydrated);
   const [keysLoaded, setKeysLoaded] = useState(false);
+  const keyLoadGeneration = useRef(0);
   useEffect(() => {
     let alive = true;
     const reload = () => {
+      const generation = ++keyLoadGeneration.current;
       void getAllKeys().then((keys) => {
-        if (!alive) return;
+        if (!alive || generation !== keyLoadGeneration.current) return;
         setApiKeys(keys);
         setKeysLoaded(true);
       });
@@ -70,7 +72,7 @@ export function useAiBootstrap(): {
       void getAllCustomEndpointKeys(
         usePreferencesStore.getState().customEndpoints,
       ).then((epKeys) => {
-        if (!alive) return;
+        if (!alive || generation !== keyLoadGeneration.current) return;
         setCustomEndpointKeys(epKeys);
       });
     };

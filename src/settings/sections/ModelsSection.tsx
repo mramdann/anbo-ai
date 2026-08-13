@@ -94,7 +94,13 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { ProviderIcon } from "../components/ProviderIcon";
 import { ProviderKeyCard } from "../components/ProviderKeyCard";
 import { SectionHeader } from "../components/SectionHeader";
@@ -158,6 +164,7 @@ export function ModelsSection() {
   const [keys, setKeys] = useState<KeysMap | null>(null);
   const [epKeys, setEpKeys] = useState<CustomEndpointKeys>({});
   const [adding, setAdding] = useState<Set<ProviderId>>(new Set());
+  const endpointKeyGeneration = useRef(0);
 
   const defaultModel = usePreferencesStore((s) => s.defaultModelId);
   const lmstudioBaseURL = usePreferencesStore((s) => s.lmstudioBaseURL);
@@ -179,7 +186,10 @@ export function ModelsSection() {
   }, []);
 
   useEffect(() => {
-    void getAllCustomEndpointKeys(customEndpoints).then(setEpKeys);
+    const generation = ++endpointKeyGeneration.current;
+    void getAllCustomEndpointKeys(customEndpoints).then((nextKeys) => {
+      if (generation === endpointKeyGeneration.current) setEpKeys(nextKeys);
+    });
   }, [customEndpoints]);
 
   const onSaveKey = async (provider: ProviderId, value: string) => {

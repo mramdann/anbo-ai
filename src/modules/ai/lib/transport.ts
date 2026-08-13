@@ -7,9 +7,10 @@ import { native } from "./native";
 import type { ToolContext } from "../tools/tools";
 import { selectRunSnapshot, type LiveSnapshot } from "./runContext";
 import { workspaceScopeKey } from "@/modules/workspace";
+import { BoundedMap } from "@/lib/boundedMap";
 
 type MemoryCacheEntry = { content: string | null; mtime: number };
-const projectMemoryCache = new Map<string, MemoryCacheEntry>();
+const projectMemoryCache = new BoundedMap<string, MemoryCacheEntry>(16);
 
 async function readAnboMd(
   workspaceRoot: string | null,

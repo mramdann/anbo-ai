@@ -14,7 +14,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
-import { currentWorkspaceEnv } from "@/modules/workspace";
+import { useWorkspaceEnvStore } from "@/modules/workspace";
 import {
   forwardRef,
   useEffect,
@@ -70,6 +70,7 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
   ref,
 ) {
   const showHidden = usePreferencesStore((s) => s.showHidden);
+  const workspace = useWorkspaceEnvStore((state) => state.env);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchHit[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -78,6 +79,7 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastKeyboardNavAt = useRef(0);
+  const requestGeneration = useRef(0);
 
   const active = query.trim().length > 0;
 
@@ -98,6 +100,7 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
   }, [open]);
 
   useEffect(() => {
+    const generation = ++requestGeneration.current;
     const q = query.trim();
     if (q.length < MIN_QUERY_LEN) {
       setResults([]);
@@ -115,22 +118,23 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
           query: q,
           limit: 200,
           showHidden,
-          workspace: currentWorkspaceEnv(),
+          workspace,
         });
-        if (alive) {
+        if (alive && generation === requestGeneration.current) {
           setResults(res.hits);
           setTruncated(res.truncated);
           setSelectedIndex(0);
         }
       } catch (e) {
-        if (alive) {
+        if (alive && generation === requestGeneration.current) {
           console.error("fs_search failed:", e);
           setResults([]);
           setTruncated(false);
           setSelectedIndex(0);
         }
       } finally {
-        if (alive) setSearching(false);
+        if (alive && generation === requestGeneration.current)
+          setSearching(false);
       }
     }, DEBOUNCE_MS);
 
@@ -138,7 +142,7 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
       alive = false;
       clearTimeout(handle);
     };
-  }, [query, rootPath, showHidden]);
+  }, [query, rootPath, showHidden, workspace]);
 
   useImperativeHandle(
     ref,

@@ -17,12 +17,13 @@ import {
   touchChat,
   useChatStore,
 } from "./chatStore";
+import { BoundedMap } from "@/lib/boundedMap";
 
 function makeChat(sessionId: string): Chat<UIMessage> {
-  const readCaches = new Map<
+  const readCaches = new BoundedMap<
     string,
     Map<string, { size: number; hash: number }>
-  >();
+  >(8);
 
   const transport = createContextAwareTransport({
     getKeys: () => useChatStore.getState().apiKeys,
@@ -30,7 +31,7 @@ function makeChat(sessionId: string): Chat<UIMessage> {
       const cacheKey = workspaceScopeKey(snapshot.workspaceEnv);
       let readCache = readCaches.get(cacheKey);
       if (!readCache) {
-        readCache = new Map();
+        readCache = new BoundedMap(512);
         readCaches.set(cacheKey, readCache);
       }
       return createRunToolContext(

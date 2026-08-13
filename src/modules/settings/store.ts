@@ -377,6 +377,11 @@ async function writePref<T>(key: string, value: T): Promise<void> {
   await emit(PREFS_CHANGED_EVENT, { key, value });
 }
 
+async function writeContinuousPref<T>(key: string, value: T): Promise<void> {
+  await store.set(key, value);
+  await emit(PREFS_CHANGED_EVENT, { key, value });
+}
+
 export async function loadPreferences(): Promise<Preferences> {
   // Single IPC roundtrip — fetching keys individually fans out to one
   // `plugin:store|get` per setting and is the dominant boot cost.
@@ -615,11 +620,11 @@ export async function setBackgroundImageId(
 }
 
 export async function setBackgroundOpacity(value: number): Promise<void> {
-  await writePref(KEY_BG_OPACITY, clampBgOpacity(value));
+  await writeContinuousPref(KEY_BG_OPACITY, clampBgOpacity(value));
 }
 
 export async function setBackgroundBlur(value: number): Promise<void> {
-  await writePref(KEY_BG_BLUR, clampBlur(value));
+  await writeContinuousPref(KEY_BG_BLUR, clampBlur(value));
 }
 
 export async function setDefaultModel(value: string): Promise<void> {
@@ -839,7 +844,7 @@ export async function setLastWslDistro(value: string | null): Promise<void> {
 }
 
 export async function setZoomLevel(value: number): Promise<void> {
-  await writePref(KEY_ZOOM_LEVEL, value);
+  await writeContinuousPref(KEY_ZOOM_LEVEL, value);
 }
 
 export const AUTO_SAVE_DELAY_MIN = 100;

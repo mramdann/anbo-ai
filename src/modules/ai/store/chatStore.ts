@@ -202,6 +202,7 @@ const pendingPersist = new Map<
   string,
   { latest: UIMessage[]; timer: ReturnType<typeof setTimeout> }
 >();
+let sessionSwitchGeneration = 0;
 
 function flushPersistEntry(id: string) {
   const entry = pendingPersist.get(id);
@@ -332,6 +333,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
   },
 
   newSession: () => {
+    sessionSwitchGeneration += 1;
     const id = newSessionId();
     const meta: SessionMeta = {
       id,
@@ -350,6 +352,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     if (get().activeSessionId === id) return;
     if (!get().sessions.some((s) => s.id === id)) return;
 
+    const generation = ++sessionSwitchGeneration;
     // Lazily seed the chat with persisted messages the first time we open
     // this session. Subsequent switches reuse the cached Chat instance.
     const flip = () => {
@@ -361,12 +364,15 @@ export const useChatStore = create<StoreState>((set, get) => ({
       return;
     }
     void loadMessages(id).then((m) => {
+      if (generation !== sessionSwitchGeneration) return;
+      if (!get().sessions.some((session) => session.id === id)) return;
       if (m && m.length > 0 && !chats.has(id)) seedMessages.set(id, m);
       flip();
     });
   },
 
   deleteSession: (id) => {
+    sessionSwitchGeneration += 1;
     const remaining = get().sessions.filter((s) => s.id !== id);
     chats.get(id)?.stop();
     chats.delete(id);

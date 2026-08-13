@@ -32,6 +32,7 @@ import {
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { prepareAgentPrompt } from "./prompt";
 import { createProxyFetch } from "./proxyFetch";
+import { BoundedMap } from "@/lib/boundedMap";
 
 const localProxyFetch = createProxyFetch({ allowPrivateNetwork: true });
 
@@ -76,7 +77,7 @@ export type BuildModelOptions = {
   openaiCompatibleBaseURL?: string;
 };
 
-const modelCache = new Map<string, LanguageModel>();
+const modelCache = new BoundedMap<string, LanguageModel>(16);
 
 export async function buildLanguageModel(
   provider: ProviderId,
