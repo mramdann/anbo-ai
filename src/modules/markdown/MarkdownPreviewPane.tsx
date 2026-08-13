@@ -2,9 +2,12 @@ import { MarkdownCode } from "@/components/ai-elements/markdown-code";
 import { cn } from "@/lib/utils";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { defaultUrlTransform, Streamdown } from "streamdown";
-import { MARKDOWN_PREVIEW_MAX_BYTES } from "./policy";
+import {
+  boundLargeMarkdownFences,
+  MARKDOWN_PREVIEW_MAX_BYTES,
+} from "./policy";
 import { MarkdownViewToggle } from "./MarkdownViewToggle";
 
 type ReadResult =
@@ -31,6 +34,13 @@ const linkSafety = { enabled: true } as const;
 export function MarkdownPreviewPane({ path, visible, onSetView }: Props) {
   const [status, setStatus] = useState<Status>({ kind: "loading" });
   const loadedPath = useRef<string | null>(null);
+  const boundedMarkdown = useMemo(
+    () =>
+      status.kind === "ready"
+        ? boundLargeMarkdownFences(status.content)
+        : null,
+    [status],
+  );
 
   useEffect(() => {
     if (!visible || loadedPath.current === path) return;
@@ -93,18 +103,26 @@ export function MarkdownPreviewPane({ path, visible, onSetView }: Props) {
               File is {status.size} bytes; limit {status.limit}.
             </p>
           )}
-          {status.kind === "ready" && (
-            <Streamdown
-              className="select-text [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
-              components={components}
-              linkSafety={linkSafety}
-              mode="static"
-              parseIncompleteMarkdown={false}
-              urlTransform={defaultUrlTransform}
-            >
-              {status.content}
-            </Streamdown>
-          )}
+          {boundedMarkdown ? (
+            <>
+              {boundedMarkdown.truncatedFences > 0 ? (
+                <div className="mb-4 rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                  {boundedMarkdown.truncatedFences} large code fence previewed
+                  with a safe limit. Switch to Raw for the full content.
+                </div>
+              ) : null}
+              <Streamdown
+                className="select-text [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+                components={components}
+                linkSafety={linkSafety}
+                mode="static"
+                parseIncompleteMarkdown={false}
+                urlTransform={defaultUrlTransform}
+              >
+                {boundedMarkdown.content}
+              </Streamdown>
+            </>
+          ) : null}
         </div>
       </div>
     </div>

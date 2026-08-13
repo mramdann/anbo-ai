@@ -15,6 +15,7 @@ import {
 } from "./lib/extensions";
 import { resolveLanguage, resolveLanguageSync } from "./lib/languageResolver";
 import { useEditorThemeExt } from "./lib/useEditorThemeExt";
+import { aiDiffRenderPolicy } from "./lib/aiDiffPolicy";
 
 type Props = {
   path: string;
@@ -96,6 +97,12 @@ export function AiDiffPane({
 }: Props) {
   const cmRef = useRef<ReactCodeMirrorRef>(null);
   const themeExt = useEditorThemeExt();
+  const policy = useMemo(
+    () => aiDiffRenderPolicy(originalContent, proposedContent),
+    [originalContent, proposedContent],
+  );
+  const [renderDeferred, setRenderDeferred] = useState(false);
+  const shouldRender = !policy.deferred || renderDeferred;
 
   // Language resolves before mount; reconfiguring after would leave the
   // merge view's deleted-chunk widgets unhighlighted.
@@ -114,27 +121,33 @@ export function AiDiffPane({
   }, [path, lang]);
 
   const extensions = useMemo(
-    () => [
-      ...SHARED_EXT,
-      DEFAULT_INDENT,
-      languageCompartment.of(lang ?? []),
-      ...READONLY_EXT,
-      unifiedMergeView({
-        original: originalContent,
-        mergeControls: false,
-        highlightChanges: true,
-        gutter: true,
-        syntaxHighlightDeletions: true,
-        collapseUnchanged: { margin: 3, minSize: 6 },
-      }),
-      DIFF_THEME,
-    ],
-    [originalContent, lang],
+    () =>
+      shouldRender
+        ? [
+            ...SHARED_EXT,
+            DEFAULT_INDENT,
+            languageCompartment.of(lang ?? []),
+            ...READONLY_EXT,
+            unifiedMergeView({
+              original: originalContent,
+              mergeControls: false,
+              highlightChanges: true,
+              gutter: true,
+              syntaxHighlightDeletions: true,
+              collapseUnchanged: { margin: 3, minSize: 6 },
+            }),
+            DIFF_THEME,
+          ]
+        : [],
+    [originalContent, lang, shouldRender],
   );
 
   const stats = useMemo(
-    () => computeLineStats(originalContent, proposedContent),
-    [originalContent, proposedContent],
+    () =>
+      shouldRender
+        ? computeLineStats(originalContent, proposedContent)
+        : null,
+    [originalContent, proposedContent, shouldRender],
   );
 
   return (
@@ -160,10 +173,10 @@ export function AiDiffPane({
           </span>
           <span className="flex shrink-0 items-center gap-1.5 text-[10.5px] tabular-nums">
             <span className="text-emerald-600 dark:text-emerald-400">
-              +{stats.added}
+              +{stats?.added ?? "?"}
             </span>
             <span className="text-rose-600 dark:text-rose-400">
-              −{stats.removed}
+              -{stats?.removed ?? "?"}
             </span>
           </span>
         </div>
@@ -192,25 +205,54 @@ export function AiDiffPane({
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        <CodeMirror
-          ref={cmRef}
-          value={proposedContent}
-          theme={themeExt}
-          extensions={extensions}
-          editable={false}
-          height="100%"
-          className="h-full"
-          basicSetup={{
-            lineNumbers: true,
-            foldGutter: true,
-            highlightActiveLine: false,
-            highlightActiveLineGutter: false,
-            searchKeymap: true,
-          }}
-        />
+        {shouldRender ? (
+          <CodeMirror
+            ref={cmRef}
+            value={proposedContent}
+            theme={themeExt}
+            extensions={extensions}
+            editable={false}
+            height="100%"
+            className="h-full"
+            basicSetup={{
+              lineNumbers: true,
+              foldGutter: true,
+              highlightActiveLine: false,
+              highlightActiveLineGutter: false,
+              searchKeymap: true,
+            }}
+          />
+        ) : (
+          <div className="flex h-full items-center justify-center p-6">
+            <div className="max-w-md rounded-lg border border-border/60 bg-card/50 p-5 text-center">
+              <div className="text-sm font-medium text-foreground">
+                Large diff preview paused
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                This diff contains {formatBytes(policy.totalBytes)} across{" "}
+                {policy.totalLines.toLocaleString()} lines. Accept and Reject
+                remain available without building the full highlighted view.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-4"
+                onClick={() => setRenderDeferred(true)}
+              >
+                Render full diff
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function computeLineStats(
