@@ -31,6 +31,10 @@ import {
 } from "@hugeicons/core-free-icons";
 import { SLASH_COMMANDS, ANBO_CMD_RE } from "../lib/slashCommands";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  DEFAULT_VISIBLE_MESSAGE_COUNT,
+  visibleMessageWindow,
+} from "../lib/messageWindow";
 import { useChatStore } from "../store/chatStore";
 import { sendMessage } from "../store/chatRuntime";
 import type {
@@ -40,7 +44,7 @@ import type {
   UIMessage,
   UIMessagePart,
 } from "ai";
-import { memo, useCallback, useMemo } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { AiToolApproval } from "./AiToolApproval";
 
 function CommandSnippet({ name }: { name: string }) {
@@ -186,6 +190,13 @@ export function AiChatView({
   addToolApprovalResponse,
 }: Props) {
   const isBusy = status === "submitted" || status === "streaming";
+  const [visibleCount, setVisibleCount] = useState(
+    DEFAULT_VISIBLE_MESSAGE_COUNT,
+  );
+  const messageWindow = useMemo(
+    () => visibleMessageWindow(messages, visibleCount),
+    [messages, visibleCount],
+  );
   const lastMessage = messages[messages.length - 1];
   const showSpinner = isBusy && lastMessage?.role === "user";
   const streamingMessageId =
@@ -220,7 +231,26 @@ export function AiChatView({
   return (
     <Conversation>
       <ConversationContent className="gap-5 p-3">
-        {messages.map((m) => (
+        {messageWindow.hiddenCount > 0 ? (
+          <button
+            type="button"
+            onClick={() =>
+              setVisibleCount((count) =>
+                Math.min(
+                  messages.length,
+                  count + DEFAULT_VISIBLE_MESSAGE_COUNT,
+                ),
+              )
+            }
+            className="self-center rounded-md border border-border/50 bg-card/60 px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            Show {Math.min(
+              DEFAULT_VISIBLE_MESSAGE_COUNT,
+              messageWindow.hiddenCount,
+            )} previous messages
+          </button>
+        ) : null}
+        {messageWindow.visible.map((m) => (
           <RenderedMessage
             key={m.id}
             message={m}

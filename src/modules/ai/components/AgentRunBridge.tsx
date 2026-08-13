@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { native } from "../lib/native";
 import { checkReadable } from "../lib/security";
 import { resolvePath } from "../tools/tools";
+import { activeRunMessages } from "../lib/messageWindow";
 import {
   flushPersist,
   useChatStore,
@@ -81,6 +82,8 @@ function Bridge({
     persistMessages(sessionId, messages);
   }, [sessionId, messages, persistMessages]);
 
+  const runMessages = useMemo(() => activeRunMessages(messages), [messages]);
+
   // Flush the debounced write whenever the chat goes idle (or errors),
   // and on unmount, so a closed app or session-switch never loses the tail.
   useEffect(() => {
@@ -94,14 +97,14 @@ function Bridge({
 
   const approvalsPending = useMemo(() => {
     let n = 0;
-    for (const m of messages) {
+    for (const m of runMessages) {
       if (m.role !== "assistant") continue;
       for (const p of m.parts) {
         if ((p as { state?: string }).state === "approval-requested") n++;
       }
     }
     return n;
-  }, [messages]);
+  }, [runMessages]);
 
   useEffect(() => {
     let runStatus: AgentRunStatus;
@@ -139,7 +142,7 @@ function Bridge({
   // only text/reasoning tokens have arrived (the common case).
   const fileMutationFingerprint = useMemo(() => {
     let fp = "";
-    for (const m of messages) {
+    for (const m of runMessages) {
       if (m.role !== "assistant") continue;
       for (const p of m.parts as AnyPart[]) {
         const t = (p as { type?: string }).type;
@@ -156,7 +159,7 @@ function Bridge({
       }
     }
     return fp;
-  }, [messages]);
+  }, [runMessages]);
 
   useEffect(() => {
     type Pending = {
@@ -178,7 +181,7 @@ function Bridge({
     const pending: Pending[] = [];
     const toClose = new Set<string>();
 
-    for (const m of messages) {
+    for (const m of runMessages) {
       if (m.role !== "assistant") continue;
       for (const part of m.parts as AnyPart[]) {
         const info = extractFileMutation(part);
@@ -246,7 +249,7 @@ function Bridge({
     return () => {
       cancelled = true;
     };
-  }, [messages, fileMutationFingerprint, openAiDiffTab, closeAiDiffTab]);
+  }, [runMessages, fileMutationFingerprint, openAiDiffTab, closeAiDiffTab]);
 
   return null;
 }
