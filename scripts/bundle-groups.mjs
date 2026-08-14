@@ -24,15 +24,7 @@ export function bundleChunkName(id) {
     return "react";
   }
 
-  if (
-    [
-      "/src/modules/editor/lib/chromeTheme.",
-      "/src/modules/editor/lib/cmThemes.",
-      "/src/modules/editor/lib/extensions.",
-      "/src/modules/editor/lib/themes.",
-      "/src/modules/editor/lib/useEditorThemeExt.",
-    ].some((source) => normalized.includes(source))
-  ) {
+  if (normalized.includes("/src/modules/editor/")) {
     return "editor-runtime";
   }
 
