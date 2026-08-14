@@ -48,6 +48,14 @@ describe("production bundle groups", () => {
     expect(
       bundleChunkName("/repo/node_modules/@xterm/xterm/lib/xterm.js"),
     ).toBe("xterm");
+    expect(
+      bundleChunkName("/repo/node_modules/dockview/dist/esm/dockview.js"),
+    ).toBeNull();
+    expect(
+      bundleChunkName(
+        "/repo/node_modules/dockview-react/dist/esm/dockview-react.js",
+      ),
+    ).toBeNull();
     expect(bundleChunkName("/repo/src/App.tsx")).toBeNull();
   });
 });

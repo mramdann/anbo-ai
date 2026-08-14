@@ -55,8 +55,12 @@ export function bundleChunkName(id) {
   if (packageName === "xterm" || packageName.startsWith("@xterm/")) {
     return "xterm";
   }
+  // Keep Dockview in the graph chosen by Rolldown. Forcing dockview and
+  // dockview-react into a named chunk can create a production-only cycle with
+  // shared application chunks (dockview -> shared app chunk -> dockview), so a
+  // base class is still undefined when the chunk is evaluated.
   if (packageName === "dockview" || packageName === "dockview-react") {
-    return "dockview";
+    return null;
   }
 
   const language = packageName.match(/^@codemirror\/lang-([\w-]+)$/);

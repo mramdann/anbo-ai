@@ -61,6 +61,22 @@
       .light #anbo-startup-status {
         color: oklch(0.56 0.021 213.5); /* --muted-foreground (light) */
       }
+      #anbo-startup-error {
+        display: none;
+        max-width: min(420px, calc(100vw - 48px));
+        margin: -6px 0 0;
+        color: oklch(0.704 0.191 22.216);
+        font-size: 10px;
+        line-height: 1.45;
+        text-align: center;
+        overflow-wrap: anywhere;
+      }
+      #anbo-startup[data-error="true"] #anbo-startup-error {
+        display: block;
+      }
+      #anbo-startup[data-error="true"] #anbo-startup-track {
+        display: none;
+      }
       #anbo-startup-track {
         width: 112px;
         height: 2px;
@@ -151,6 +167,7 @@
         <div id="anbo-startup-card">
           <p id="anbo-startup-title">Anbo</p>
           <p id="anbo-startup-status">Preparing your workspace</p>
+          <p id="anbo-startup-error" aria-live="polite"></p>
           <div id="anbo-startup-track" aria-hidden="true">
             <div id="anbo-startup-progress"></div>
           </div>
@@ -169,6 +186,46 @@
       </div>
     </div>
     <script>
+      // A module evaluation error happens before React can replace this startup
+      // surface. Keep the failure visible instead of spinning forever.
+      (function () {
+        var settled = false;
+        function messageOf(value) {
+          var text = "";
+          try {
+            text = value && value.message ? value.message : String(value || "Unknown startup error");
+          } catch (e) {
+            text = "Unknown startup error";
+          }
+          return text.length > 500 ? text.slice(0, 497) + "..." : text;
+        }
+        function showStartupError(value) {
+          var startup = document.getElementById("anbo-startup");
+          if (!startup) return;
+          settled = true;
+          startup.dataset.error = "true";
+          startup.setAttribute("role", "alert");
+          var status = document.getElementById("anbo-startup-status");
+          var detail = document.getElementById("anbo-startup-error");
+          if (status) status.textContent = "Anbo could not start";
+          if (detail) detail.textContent = messageOf(value);
+        }
+        window.addEventListener("error", function (event) {
+          showStartupError(event.error || event.message);
+        });
+        window.addEventListener("unhandledrejection", function (event) {
+          showStartupError(event.reason);
+        });
+        window.addEventListener("anbo:startup-error", function (event) {
+          showStartupError(event.detail);
+        });
+        window.setTimeout(function () {
+          if (!settled && document.getElementById("anbo-startup")) {
+            showStartupError("Startup timed out. Restart Anbo and check the application log.");
+          }
+        }, 15000);
+      })();
+
       // Window controls for the pre-React "Preparing your workspace" surface.
       // The @tauri-apps/api bundle isn't loaded yet, so we call the window
       // plugin directly via the core internals Tauri injects at webview boot.

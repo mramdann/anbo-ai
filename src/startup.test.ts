@@ -10,5 +10,9 @@ describe("startup surface", () => {
     expect(html).toContain('role="status"');
     expect(html).toContain("Preparing your workspace");
     expect(html).toContain("anbo-startup-slide");
+    expect(html).toContain('id="anbo-startup-error"');
+    expect(html).toContain('window.addEventListener("error"');
+    expect(html).toContain('window.addEventListener("unhandledrejection"');
+    expect(html).toContain('window.addEventListener("anbo:startup-error"');
   });
 });

@@ -46,6 +46,11 @@ jobs:
 
       - name: Build frontend
         run: pnpm build
+        env:
+          TAURI_ENV_PLATFORM: windows
+
+      - name: Execute production bundle
+        run: pnpm smoke:production
 
       - name: Bundle and startup budgets
         run: pnpm size

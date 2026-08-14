@@ -19,15 +19,52 @@ if (import.meta.env.DEV && import.meta.env.VITE_REACT_SCAN === "true") {
   scan({ enabled: true });
 }
 
-// Reap PTY sessions orphaned by a prior webview load before any tab spawns.
-await invoke("pty_close_all").catch(() => {});
+const STARTUP_STEP_TIMEOUT_MS = 8_000;
 
-// Seed before first paint so default tab mounts at target cwd (no flicker).
-await initLaunchDir();
+function withStartupTimeout<T>(label: string, promise: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(
+      () => reject(new Error(`${label} timed out`)),
+      STARTUP_STEP_TIMEOUT_MS,
+    );
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <App />,
-);
+async function bootstrap(): Promise<void> {
+  // Reap PTY sessions orphaned by a prior webview load before any tab spawns.
+  await withStartupTimeout(
+    "Closing orphaned terminals",
+    invoke("pty_close_all").catch(() => {}),
+  );
+
+  // Seed before first paint so default tab mounts at target cwd (no flicker).
+  await withStartupTimeout("Resolving launch workspace", initLaunchDir());
+
+  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+    <App />,
+  );
+  // Production smoke tests assert this marker after executing the real bundle.
+  // It is intentionally set only after the complete eager module graph and
+  // bootstrap steps have evaluated successfully.
+  document.documentElement.dataset.anboBundleReady = "true";
+}
+
+void bootstrap().catch((error) => {
+  console.error("[anbo] startup failed:", error);
+  window.dispatchEvent(
+    new CustomEvent("anbo:startup-error", { detail: String(error) }),
+  );
+});
 
 // Window starts hidden (per tauri.conf.json) so users never see a transparent
 // shadow-only frame before React paints. Use setTimeout — rAF is throttled

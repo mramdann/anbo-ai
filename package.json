@@ -12,6 +12,7 @@
     "dev": "vite",
     "dev:inspect": "INSPECT=true vite",
     "build": "tsc && vite build",
+    "smoke:production": "node scripts/production-smoke.mjs",
     "build:app": "pnpm build && pnpm prepare:browser-sidecar",
     "preview": "vite preview",
     "prepare:browser-sidecar": "node scripts/prepare-browser-sidecar.mjs",
