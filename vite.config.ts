@@ -5,7 +5,6 @@ import path from "path";
 import { defineConfig, type PluginOption, type UserConfig } from "vite";
 import Inspect from "vite-plugin-inspect";
 import { configDefaults } from "vitest/config";
-import { bundleChunkName } from "./scripts/bundle-groups.mjs";
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -68,29 +67,6 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
           "console.info",
           "console.trace",
         ],
-      },
-      output: {
-        // Lazy groups must not capture shared runtime dependencies recursively.
-        codeSplitting: {
-          includeDependenciesRecursively: false,
-          groups: [
-            {
-              name: bundleChunkName,
-              test: (id: string) => {
-                const chunk = bundleChunkName(id);
-                return chunk !== null && chunk !== "editor-runtime";
-              },
-              priority: 2,
-            },
-            {
-              name: "editor-runtime",
-              test: (id: string) =>
-                bundleChunkName(id) === "editor-runtime",
-              includeDependenciesRecursively: true,
-              priority: 1,
-            },
-          ],
-        },
       },
     },
   },

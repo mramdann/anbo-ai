@@ -86,6 +86,23 @@ function withStartupTimeout<T>(label: string, promise: Promise<T>): Promise<T> {
 }
 
 async function bootstrap(): Promise<void> {
+  if (
+    new URLSearchParams(window.location.search).has(
+      "anbo-production-editor-smoke",
+    )
+  ) {
+    const { default: EditorProductionSmoke } = await import(
+      "./app/EditorProductionSmoke"
+    );
+    ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+      <RootErrorBoundary>
+        <EditorProductionSmoke />
+      </RootErrorBoundary>,
+    );
+    document.documentElement.dataset.anboBundleReady = "true";
+    return;
+  }
+
   // Reap PTY sessions orphaned by a prior webview load before any tab spawns.
   await withStartupTimeout(
     "Closing orphaned terminals",

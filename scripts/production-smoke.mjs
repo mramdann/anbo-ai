@@ -77,74 +77,99 @@ if (!address || typeof address === "string") {
   throw new Error("production smoke server did not expose a TCP address");
 }
 
-const profile = mkdtempSync(join(tmpdir(), "anbo-production-smoke-"));
 const url = `http://127.0.0.1:${address.port}/`;
-let stdout = "";
-let stderr = "";
+
+async function dumpPage(pageUrl, label) {
+  const profile = mkdtempSync(join(tmpdir(), "anbo-production-smoke-"));
+  let stdout = "";
+  let stderr = "";
+
+  try {
+    const child = spawn(
+      browser,
+      [
+        "--headless=new",
+        "--disable-background-networking",
+        "--disable-extensions",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-sandbox",
+        `--user-data-dir=${profile}`,
+        "--virtual-time-budget=5000",
+        "--enable-logging=stderr",
+        "--v=0",
+        "--dump-dom",
+        pageUrl,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+
+    const exitCode = await new Promise((resolveExit, rejectExit) => {
+      const timeout = setTimeout(() => {
+        child.kill();
+        rejectExit(new Error(`${label} headless browser timed out`));
+      }, 30_000);
+      child.once("error", (error) => {
+        clearTimeout(timeout);
+        rejectExit(error);
+      });
+      child.once("close", (code) => {
+        clearTimeout(timeout);
+        resolveExit(code);
+      });
+    });
+
+    if (exitCode !== 0) {
+      throw new Error(
+        `${label} headless browser exited with ${exitCode}\n${stderr}`,
+      );
+    }
+    if (!stdout.includes('data-anbo-bundle-ready="true"')) {
+      throw new Error(
+        `${label} production entry bundle did not finish evaluating\n${stderr.slice(-4000)}`,
+      );
+    }
+    if (stdout.includes('id="anbo-startup"')) {
+      throw new Error(
+        `${label} startup surface remained after bundle evaluation\n${stderr.slice(-4000)}`,
+      );
+    }
+    if (stderr.includes("Class extends value undefined")) {
+      throw new Error(
+        `${label} production bundle contains a chunk cycle\n${stderr.slice(-4000)}`,
+      );
+    }
+    return { stdout, stderr };
+  } finally {
+    rmSync(profile, { recursive: true, force: true });
+  }
+}
 
 try {
-  const child = spawn(
-    browser,
-    [
-      "--headless=new",
-      "--disable-background-networking",
-      "--disable-extensions",
-      "--disable-gpu",
-      "--no-first-run",
-      "--no-sandbox",
-      `--user-data-dir=${profile}`,
-      "--virtual-time-budget=5000",
-      "--enable-logging=stderr",
-      "--v=0",
-      "--dump-dom",
-      url,
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+  await dumpPage(url, "main window");
+  const editor = await dumpPage(
+    `${url}?anbo-production-editor-smoke=1`,
+    "editor",
   );
-
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    stdout += chunk;
-  });
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk;
-  });
-
-  const exitCode = await new Promise((resolveExit, rejectExit) => {
-    const timeout = setTimeout(() => {
-      child.kill();
-      rejectExit(new Error("headless browser timed out"));
-    }, 30_000);
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      rejectExit(error);
-    });
-    child.once("close", (code) => {
-      clearTimeout(timeout);
-      resolveExit(code);
-    });
-  });
-
-  if (exitCode !== 0) {
-    throw new Error(`headless browser exited with ${exitCode}\n${stderr}`);
-  }
-  if (!stdout.includes('data-anbo-bundle-ready="true"')) {
+  if (!editor.stdout.includes('data-anbo-editor-smoke="pass"')) {
+    const detail = editor.stdout.match(
+      /data-anbo-editor-smoke-error="([^"]*)"/,
+    )?.[1];
     throw new Error(
-      `production entry bundle did not finish evaluating\n${stderr.slice(-4000)}`,
+      `production editor layout smoke failed${detail ? `: ${detail}` : ""}\n${editor.stderr.slice(-4000)}`,
     );
   }
-  if (stdout.includes('id="anbo-startup"')) {
-    throw new Error(
-      `startup surface remained after bundle evaluation\n${stderr.slice(-4000)}`,
-    );
-  }
-  if (stderr.includes("Class extends value undefined")) {
-    throw new Error(`production bundle contains a chunk cycle\n${stderr.slice(-4000)}`);
-  }
 
-  console.log("Production bundle smoke test passed");
+  console.log("Production bundle and editor layout smoke tests passed");
 } finally {
   await new Promise((resolveClose) => server.close(resolveClose));
-  rmSync(profile, { recursive: true, force: true });
 }
