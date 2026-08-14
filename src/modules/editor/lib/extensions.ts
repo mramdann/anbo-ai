@@ -1,9 +1,10 @@
 import { detectMonoFontFamily } from "@/lib/fonts";
-import { indentUnit } from "@codemirror/language";
+import { indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { lintGutter } from "@codemirror/lint";
 import { search } from "@codemirror/search";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { classHighlighter } from "@lezer/highlight";
 import { chromeTheme } from "./chromeTheme";
 
 // Compartments allow runtime reconfiguration without rebuilding state.
@@ -31,6 +32,7 @@ export const DEFAULT_INDENT: Extension = indentExtension("  ");
 const SHARED_EXTENSIONS: readonly Extension[] = Object.freeze([
   search({ top: true }),
   lintGutter(),
+  syntaxHighlighting(classHighlighter),
   chromeTheme(),
   EditorView.theme({
     "&, &.cm-editor, &.cm-editor.cm-focused": {

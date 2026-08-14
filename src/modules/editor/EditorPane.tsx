@@ -622,7 +622,7 @@ export const EditorPane = memo(
           theme={themeExt}
           extensions={extensions}
           height="100%"
-          className="flex-1 min-h-0 overflow-hidden"
+          className="anbo-code-editor flex-1 min-h-0 overflow-hidden"
           basicSetup={{
             lineNumbers: true,
             highlightActiveLineGutter: true,

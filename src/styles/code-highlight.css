@@ -1,4 +1,4 @@
-/* Token palette for Lezer `classHighlighter` output (chat code blocks).
+/* Token palette for Lezer `classHighlighter` output in editors and chat.
  * Class names follow @lezer/highlight defaults: tok-keyword, tok-string, etc.
  * Light/dark split through the existing `.dark` variant. */
 
@@ -51,7 +51,8 @@
 }
 
 .tok-atom,
-.tok-bool {
+.tok-bool,
+.tok-literal {
   color: var(--tok-bool);
 }
 
@@ -81,7 +82,9 @@
 }
 
 .tok-variableName,
-.tok-name {
+.tok-variableName2,
+.tok-name,
+.tok-labelName {
   color: var(--tok-name);
 }
 
@@ -176,4 +179,12 @@
 .tok-invalid {
   color: var(--tok-invalid);
   text-decoration: underline wavy;
+}
+
+.tok-inserted {
+  color: var(--tok-string);
+}
+
+.tok-deleted {
+  color: var(--tok-invalid);
 }

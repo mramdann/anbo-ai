@@ -213,7 +213,7 @@ export function AiDiffPane({
             extensions={extensions}
             editable={false}
             height="100%"
-            className="h-full"
+            className="anbo-code-editor h-full"
             basicSetup={{
               lineNumbers: true,
               foldGutter: true,

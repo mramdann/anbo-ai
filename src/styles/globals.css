@@ -335,6 +335,87 @@ html[data-native-browser-live="true"] footer {
   box-sizing: border-box;
 }
 
+.anbo-code-editor .cm-editor,
+.anbo-code-editor .cm-editor.cm-focused {
+  background-color: transparent !important;
+  color: var(--foreground);
+  outline: none;
+  padding: 8px;
+}
+.anbo-code-editor .cm-scroller {
+  background-color: transparent !important;
+  font-family: "JetBrains Mono", SFMono-Regular, Menlo, monospace;
+  font-size: calc(var(--editor-font-size, 13px) * var(--app-zoom, 1));
+  line-height: 1.55;
+}
+.anbo-code-editor .cm-content {
+  background-color: transparent !important;
+  caret-color: var(--foreground);
+}
+.anbo-code-editor .cm-gutters,
+.anbo-code-editor .cm-gutter {
+  background-color: transparent !important;
+  color: var(--muted-foreground);
+}
+.anbo-code-editor .cm-gutter-lint {
+  width: 0;
+}
+.anbo-code-editor .cm-lineNumbers .cm-gutterElement {
+  opacity: 0.55;
+}
+.anbo-code-editor .cm-foldGutter {
+  width: 10px;
+}
+.anbo-code-editor .cm-foldGutter .cm-gutterElement {
+  color: var(--muted-foreground);
+  opacity: 0.5;
+}
+.anbo-code-editor .cm-activeLine {
+  background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+  border-radius: 0 5px 5px 0;
+}
+.anbo-code-editor .cm-lineNumbers .cm-activeLineGutter {
+  border-radius: 5px 0 0 5px;
+  user-select: none;
+}
+.anbo-code-editor .cm-cursor,
+.anbo-code-editor .cm-dropCursor {
+  border-left-color: var(--foreground);
+}
+.anbo-code-editor .cm-fat-cursor {
+  background: color-mix(
+    in srgb,
+    var(--foreground) 35%,
+    transparent
+  ) !important;
+  border-radius: 2px;
+  color: var(--foreground) !important;
+  outline: 1px solid
+    color-mix(in srgb, var(--foreground) 55%, transparent) !important;
+}
+.anbo-code-editor .cm-editor:not(.cm-focused) .cm-fat-cursor {
+  background: transparent !important;
+  outline-color: color-mix(
+    in srgb,
+    var(--foreground) 35%,
+    transparent
+  ) !important;
+}
+.anbo-code-editor .cm-selectionBackground,
+.anbo-code-editor .cm-editor.cm-focused .cm-selectionBackground,
+.anbo-code-editor .cm-content ::selection {
+  background-color: color-mix(
+    in srgb,
+    var(--foreground) 18%,
+    transparent
+  ) !important;
+}
+.anbo-code-editor .cm-panels {
+  background-color: var(--popover);
+  border-color: var(--border);
+  color: var(--popover-foreground);
+}
+
 body {
   -webkit-user-select: none;
   user-select: none;
