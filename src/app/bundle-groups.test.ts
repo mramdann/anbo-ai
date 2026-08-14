@@ -28,23 +28,45 @@ describe("production bundle groups", () => {
       bundleChunkName(
         "C:/repo/node_modules/.pnpm/@ai-sdk+anthropic@3/node_modules/@ai-sdk/anthropic/dist/index.mjs",
       ),
-    ).toBe("ai-anthropic");
+    ).toBeNull();
     expect(
       bundleChunkName(
         "C:/repo/node_modules/.pnpm/@ai-sdk+anthropic@3/node_modules/@ai-sdk/provider-utils/dist/index.mjs",
       ),
-    ).toBe("ai-sdk-shared");
+    ).toBeNull();
+    expect(
+      bundleChunkName(
+        "C:/repo/node_modules/.pnpm/ai@6/node_modules/ai/dist/index.mjs",
+      ),
+    ).toBeNull();
+    expect(
+      bundleChunkName(
+        "C:/repo/node_modules/.pnpm/throttleit@2/node_modules/throttleit/index.js",
+      ),
+    ).toBeNull();
   });
 
-  it("keeps named lazy language chunks and core groups stable", () => {
+  it("keeps one editor runtime while language implementations stay lazy", () => {
     expect(
       bundleChunkName(
         "/repo/node_modules/@codemirror/legacy-modes/mode/powershell.js",
       ),
-    ).toBe("cm-legacy-powershell");
+    ).toBeNull();
     expect(
       bundleChunkName("/repo/node_modules/@codemirror/lang-rust/dist/index.js"),
-    ).toBe("cm-lang-rust");
+    ).toBeNull();
+    expect(
+      bundleChunkName("/repo/node_modules/@codemirror/state/dist/index.js"),
+    ).toBe("editor-runtime");
+    expect(
+      bundleChunkName("/repo/node_modules/@uiw/react-codemirror/esm/index.js"),
+    ).toBe("editor-runtime");
+    expect(
+      bundleChunkName("/repo/node_modules/@lezer/highlight/dist/index.js"),
+    ).toBe("editor-runtime");
+    expect(
+      bundleChunkName("/repo/src/modules/editor/lib/useEditorThemeExt.ts"),
+    ).toBe("editor-runtime");
     expect(
       bundleChunkName("/repo/node_modules/@xterm/xterm/lib/xterm.js"),
     ).toBe("xterm");

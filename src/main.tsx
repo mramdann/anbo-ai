@@ -3,6 +3,7 @@ import "./styles/globals.css";
 
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Component, type ErrorInfo, type ReactNode } from "react";
 import ReactDOM from "react-dom/client";
 import App from "./app/App";
 import { initLaunchDir } from "./lib/launchDir";
@@ -20,6 +21,50 @@ if (import.meta.env.DEV && import.meta.env.VITE_REACT_SCAN === "true") {
 }
 
 const STARTUP_STEP_TIMEOUT_MS = 8_000;
+
+type RootErrorBoundaryState = { error: Error | null };
+
+class RootErrorBoundary extends Component<
+  { children: ReactNode },
+  RootErrorBoundaryState
+> {
+  state: RootErrorBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: Error): RootErrorBoundaryState {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    console.error("[anbo] React root failed:", error, info.componentStack);
+  }
+
+  render(): ReactNode {
+    if (!this.state.error) return this.props.children;
+    const detail = String(this.state.error.stack ?? this.state.error).slice(
+      0,
+      1_500,
+    );
+    return (
+      <main className="flex h-full items-center justify-center bg-background p-6 text-foreground">
+        <section className="w-full max-w-2xl rounded-xl border border-destructive/40 bg-card p-5 shadow-xl">
+          <h1 className="text-base font-semibold">
+            Anbo could not open this workspace
+          </h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Your workspace data is still preserved. Restart Anbo after reporting
+            the error below.
+          </p>
+          <pre
+            data-testid="root-error-detail"
+            className="mt-4 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-3 text-xs"
+          >
+            {detail}
+          </pre>
+        </section>
+      </main>
+    );
+  }
+}
 
 function withStartupTimeout<T>(label: string, promise: Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -51,7 +96,9 @@ async function bootstrap(): Promise<void> {
   await withStartupTimeout("Resolving launch workspace", initLaunchDir());
 
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-    <App />,
+    <RootErrorBoundary>
+      <App />
+    </RootErrorBoundary>,
   );
   // Production smoke tests assert this marker after executing the real bundle.
   // It is intentionally set only after the complete eager module graph and

@@ -15,13 +15,6 @@ export function packageNameFromModuleId(id) {
     : segments[0];
 }
 
-function legacyModeName(id) {
-  const match = normalizedId(id).match(
-    /\/node_modules\/@codemirror\/legacy-modes\/mode\/([\w-]+)/,
-  );
-  return match ? `cm-legacy-${match[1]}` : null;
-}
-
 export function bundleChunkName(id) {
   const normalized = normalizedId(id);
   if (
@@ -29,6 +22,18 @@ export function bundleChunkName(id) {
     normalized.includes("/vite/dist/")
   ) {
     return "react";
+  }
+
+  if (
+    [
+      "/src/modules/editor/lib/chromeTheme.",
+      "/src/modules/editor/lib/cmThemes.",
+      "/src/modules/editor/lib/extensions.",
+      "/src/modules/editor/lib/themes.",
+      "/src/modules/editor/lib/useEditorThemeExt.",
+    ].some((source) => normalized.includes(source))
+  ) {
+    return "editor-runtime";
   }
 
   const packageName = packageNameFromModuleId(normalized);
@@ -41,42 +46,40 @@ export function bundleChunkName(id) {
   ) {
     return "react";
   }
-  if (packageName === "@ai-sdk/anthropic") return "ai-anthropic";
-  if (packageName === "@ai-sdk/google") return "ai-google";
-  if (packageName === "@ai-sdk/openai-compatible") {
-    return "ai-openai-compat";
+  if (
+    packageName === "ai" ||
+    packageName === "throttleit" ||
+    packageName.startsWith("@ai-sdk/")
+  ) {
+    // Preserve provider lazy imports without forcing cyclic shared chunks.
+    return null;
   }
-  if (packageName === "@ai-sdk/openai") return "ai-openai";
-  if (packageName === "@ai-sdk/cerebras") return "ai-cerebras";
-  if (packageName === "@ai-sdk/groq") return "ai-groq";
-  if (packageName === "@ai-sdk/xai") return "ai-xai";
-  if (packageName.startsWith("@ai-sdk/")) return "ai-sdk-shared";
 
   if (packageName === "xterm" || packageName.startsWith("@xterm/")) {
     return "xterm";
   }
-  // Keep Dockview in the graph chosen by Rolldown. Forcing dockview and
-  // dockview-react into a named chunk can create a production-only cycle with
-  // shared application chunks (dockview -> shared app chunk -> dockview), so a
-  // base class is still undefined when the chunk is evaluated.
+  // Let Rolldown place Dockview to avoid a cyclic shared application chunk.
   if (packageName === "dockview" || packageName === "dockview-react") {
     return null;
   }
 
-  const language = packageName.match(/^@codemirror\/lang-([\w-]+)$/);
-  if (language) return `cm-lang-${language[1]}`;
-  if (packageName === "@codemirror/legacy-modes") {
-    return legacyModeName(normalized) ?? "codemirror";
-  }
-  if (packageName === "@replit/codemirror-lang-svelte") {
-    return "cm-lang-svelte";
+  if (
+    packageName.startsWith("@codemirror/lang-") ||
+    packageName === "@codemirror/legacy-modes" ||
+    packageName === "@replit/codemirror-lang-svelte"
+  ) {
+    return null;
   }
   if (
+    packageName === "codemirror" ||
     packageName.startsWith("@codemirror/") ||
     packageName.startsWith("@uiw/codemirror") ||
-    packageName === "@replit/codemirror-vim"
+    packageName === "@uiw/react-codemirror" ||
+    packageName === "@replit/codemirror-vim" ||
+    packageName.startsWith("@lezer/")
   ) {
-    return "codemirror";
+    // Keep one CodeMirror facet runtime; language implementations stay lazy.
+    return "editor-runtime";
   }
   if (packageName === "streamdown" || packageName.startsWith("@streamdown/")) {
     return "streamdown";

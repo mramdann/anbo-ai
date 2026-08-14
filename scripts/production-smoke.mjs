@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, resolve, sep } from "node:path";
+import { assertNoStaticChunkCycles } from "./production-chunk-graph.mjs";
 
 const distRoot = resolve("dist");
 const indexPath = join(distRoot, "index.html");
@@ -10,6 +11,8 @@ const indexPath = join(distRoot, "index.html");
 if (!existsSync(indexPath)) {
   throw new Error("dist/index.html is missing; run the production build first");
 }
+
+assertNoStaticChunkCycles(join(distRoot, "assets"));
 
 const browserCandidates = [
   process.env.CHROME_PATH,
