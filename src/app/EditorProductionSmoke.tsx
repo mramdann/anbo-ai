@@ -1,8 +1,8 @@
 import { buildSharedExtensions } from "@/modules/editor/lib/extensions";
 import { EDITOR_THEME_EXT } from "@/modules/editor/lib/themes";
 import { html } from "@codemirror/lang-html";
-import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
-import { useEffect, useRef } from "react";
+import CodeMirror from "@uiw/react-codemirror";
+import { useEffect } from "react";
 
 const EXPECTED_TEXT = '<main data-theme="dark">Anbo</main>';
 
@@ -158,12 +158,7 @@ function reportEditorLayout(): void {
 }
 
 export default function EditorProductionSmoke() {
-  const editorRef = useRef<ReactCodeMirrorRef>(null);
-
   useEffect(() => {
-    editorRef.current?.view?.dispatch({
-      selection: { anchor: 1, head: EXPECTED_TEXT.length - 1 },
-    });
     const timer = window.setTimeout(reportEditorLayout, 150);
     return () => window.clearTimeout(timer);
   }, []);
@@ -175,8 +170,8 @@ export default function EditorProductionSmoke() {
         className="h-64 overflow-hidden rounded border border-border"
       >
         <CodeMirror
-          ref={editorRef}
           value={EXPECTED_TEXT}
+          selection={{ anchor: 1, head: EXPECTED_TEXT.length - 1 }}
           theme={EDITOR_THEME_EXT.atomone}
           extensions={[...buildSharedExtensions(), html()]}
           height="100%"
