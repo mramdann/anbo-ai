@@ -9,9 +9,10 @@ function reportEditorLayout(): void {
   const editor = document.querySelector<HTMLElement>(".cm-editor");
   const scroller = document.querySelector<HTMLElement>(".cm-scroller");
   const content = document.querySelector<HTMLElement>(".cm-content");
+  const gutters = document.querySelector<HTMLElement>(".cm-gutters");
   const firstLine = document.querySelector<HTMLElement>(".cm-line");
   const result = document.getElementById("editor-production-smoke");
-  if (!editor || !scroller || !content || !firstLine || !result) {
+  if (!editor || !scroller || !content || !gutters || !firstLine || !result) {
     document.documentElement.dataset.anboEditorSmoke = "fail";
     document.documentElement.dataset.anboEditorSmokeError =
       "CodeMirror DOM did not mount";
@@ -20,6 +21,7 @@ function reportEditorLayout(): void {
 
   const scrollerRect = scroller.getBoundingClientRect();
   const contentRect = content.getBoundingClientRect();
+  const guttersRect = gutters.getBoundingClientRect();
   const firstLineRect = firstLine.getBoundingClientRect();
   const scrollerStyle = getComputedStyle(scroller);
   const firstLineStyle = getComputedStyle(firstLine);
@@ -32,6 +34,12 @@ function reportEditorLayout(): void {
   const contentOverlapsScroller =
     contentRect.top < scrollerRect.bottom &&
     contentRect.bottom > scrollerRect.top;
+  const horizontalEditorLayout =
+    scrollerStyle.flexDirection === "row" &&
+    guttersRect.left >= scrollerRect.left &&
+    guttersRect.right <= contentRect.left + 1 &&
+    contentRect.top < guttersRect.bottom &&
+    contentRect.bottom > guttersRect.top;
   const visibleText =
     firstLineStyle.visibility !== "hidden" &&
     firstLineStyle.display !== "none" &&
@@ -41,6 +49,7 @@ function reportEditorLayout(): void {
     scrollerStyle.display === "flex" &&
     lineInsideScroller &&
     contentOverlapsScroller &&
+    horizontalEditorLayout &&
     visibleText;
 
   document.documentElement.dataset.anboEditorSmoke = passed ? "pass" : "fail";
@@ -51,6 +60,7 @@ function reportEditorLayout(): void {
       scrollerDisplay: scrollerStyle.display,
       lineInsideScroller,
       contentOverlapsScroller,
+      horizontalEditorLayout,
       visibleText,
       scroller: {
         left: scrollerRect.left,
@@ -63,6 +73,12 @@ function reportEditorLayout(): void {
         top: contentRect.top,
         right: contentRect.right,
         bottom: contentRect.bottom,
+      },
+      gutters: {
+        left: guttersRect.left,
+        top: guttersRect.top,
+        right: guttersRect.right,
+        bottom: guttersRect.bottom,
       },
       firstLine: {
         left: firstLineRect.left,
