@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.6](https://github.com/mramdann/anbo-ai/compare/v0.14.5...v0.14.6) (2026-08-14)
+
+
+### Bug Fixes
+
+* **editor:** preserve production theme styling ([8d42f88](https://github.com/mramdann/anbo-ai/commit/8d42f88a77a274427cf2ec64c4295bec289b0744))
+
 ## [0.14.5](https://github.com/mramdann/anbo-ai/compare/v0.14.4...v0.14.5) (2026-08-14)
 
 
