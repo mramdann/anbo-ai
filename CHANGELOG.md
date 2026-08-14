@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.14.5](https://github.com/mramdann/anbo-ai/compare/v0.14.4...v0.14.5) (2026-08-14)
+
+
+### Bug Fixes
+
+* **editor:** restore visible file contents in production WebView2 by anchoring CodeMirror's layout-critical styles globally, keeping gutters beside the document instead of stacking above it ([6b53390](https://github.com/mramdann/anbo-ai/commit/6b53390f9eb394203b372b0561cbdfdbe4870d00))
+* **startup:** include the production chunk-cycle and root render fallback fixes prepared in v0.14.3 and v0.14.4, preventing restored workspaces from remaining on the splash screen without a useful error
+
+
+### Reliability
+
+* strengthen the production editor smoke test to verify horizontal gutter/content flex direction and viewport geometry
+* retain static JavaScript chunk-cycle detection so an invalid installer cannot pass CI
+
 ## [0.14.4](https://github.com/mramdann/anbo-ai/compare/v0.14.3...v0.14.4) (2026-08-14)
 
 
