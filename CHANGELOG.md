@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.14.3](https://github.com/mramdann/anbo-ai/compare/v0.14.2...v0.14.3) (2026-08-14)
+
+
+### Bug Fixes
+
+* **startup:** eliminate production-only Dockview, AI SDK, and CodeMirror chunk initialization cycles that blocked restored workspaces
+* **editor:** preserve one CodeMirror runtime so editor base styles and theme facets render content correctly while language implementations remain lazy
+* **build:** add AST-based static chunk-cycle detection and a root render fallback to prevent blank production windows
+
 ## [0.14.2](https://github.com/mramdann/anbo-ai/compare/v0.14.1...v0.14.2) (2026-08-14)
 
 
