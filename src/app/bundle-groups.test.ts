@@ -70,6 +70,9 @@ describe("production bundle groups", () => {
     expect(bundleChunkName("/repo/src/modules/editor/EditorStack.tsx")).toBe(
       "editor-runtime",
     );
+    expect(bundleChunkName("/repo/src/modules/lsp/useLspExtension.ts")).toBe(
+      "editor-runtime",
+    );
     expect(
       bundleChunkName("/repo/node_modules/@xterm/xterm/lib/xterm.js"),
     ).toBe("xterm");
