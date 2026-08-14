@@ -1,8 +1,8 @@
 import { buildSharedExtensions } from "@/modules/editor/lib/extensions";
 import { EDITOR_THEME_EXT } from "@/modules/editor/lib/themes";
 import { html } from "@codemirror/lang-html";
-import CodeMirror from "@uiw/react-codemirror";
-import { useEffect } from "react";
+import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
+import { useEffect, useRef } from "react";
 
 const EXPECTED_TEXT = '<main data-theme="dark">Anbo</main>';
 
@@ -18,6 +18,12 @@ function reportEditorLayout(): void {
   const syntaxToken = document.querySelector<HTMLElement>(
     ".cm-content .tok-typeName",
   );
+  const selectionLayer = document.querySelector<HTMLElement>(
+    ".cm-scroller > .cm-selectionLayer",
+  );
+  const selectionMarker = selectionLayer?.querySelector<HTMLElement>(
+    ".cm-selectionBackground",
+  );
   const result = document.getElementById("editor-production-smoke");
   if (
     !editor ||
@@ -27,6 +33,8 @@ function reportEditorLayout(): void {
     !firstLine ||
     !gutterNumber ||
     !syntaxToken ||
+    !selectionLayer ||
+    !selectionMarker ||
     !result
   ) {
     document.documentElement.dataset.anboEditorSmoke = "fail";
@@ -44,6 +52,9 @@ function reportEditorLayout(): void {
   const firstLineStyle = getComputedStyle(firstLine);
   const gutterNumberStyle = getComputedStyle(gutterNumber);
   const syntaxTokenStyle = getComputedStyle(syntaxToken);
+  const selectionLayerStyle = getComputedStyle(selectionLayer);
+  const selectionMarkerStyle = getComputedStyle(selectionMarker);
+  const selectionMarkerRect = selectionMarker.getBoundingClientRect();
   const textMatches = content.textContent?.includes("Anbo") ?? false;
   const lineInsideScroller =
     firstLineRect.top >= scrollerRect.top &&
@@ -69,6 +80,16 @@ function reportEditorLayout(): void {
   const syntaxStyled =
     syntaxToken.classList.contains("tok-typeName") &&
     syntaxTokenStyle.color !== contentStyle.color;
+  const nativeSelectionSuppressed =
+    firstLineStyle.caretColor === "transparent" ||
+    firstLineStyle.caretColor === "rgba(0, 0, 0, 0)";
+  const selectionLayered =
+    selectionLayerStyle.position === "absolute" &&
+    selectionMarkerStyle.position === "absolute" &&
+    selectionMarkerRect.left >= scrollerRect.left - 1 &&
+    selectionMarkerRect.right <= scrollerRect.right + 1 &&
+    selectionMarkerRect.top >= scrollerRect.top - 1 &&
+    selectionMarkerRect.bottom <= firstLineRect.bottom + 1;
   const passed =
     textMatches &&
     scrollerStyle.display === "flex" &&
@@ -77,7 +98,9 @@ function reportEditorLayout(): void {
     horizontalEditorLayout &&
     visibleText &&
     chromeStyled &&
-    syntaxStyled;
+    syntaxStyled &&
+    nativeSelectionSuppressed &&
+    selectionLayered;
 
   document.documentElement.dataset.anboEditorSmoke = passed ? "pass" : "fail";
   result.dataset.result = passed ? "pass" : "fail";
@@ -91,10 +114,21 @@ function reportEditorLayout(): void {
       visibleText,
       chromeStyled,
       syntaxStyled,
+      nativeSelectionSuppressed,
+      selectionLayered,
       contentColor: contentStyle.color,
       syntaxColor: syntaxTokenStyle.color,
       gutterOpacity: gutterNumberStyle.opacity,
       fontFamily: scrollerStyle.fontFamily,
+      caretColor: firstLineStyle.caretColor,
+      selectionLayerPosition: selectionLayerStyle.position,
+      selectionMarkerPosition: selectionMarkerStyle.position,
+      selectionMarker: {
+        left: selectionMarkerRect.left,
+        top: selectionMarkerRect.top,
+        right: selectionMarkerRect.right,
+        bottom: selectionMarkerRect.bottom,
+      },
       scroller: {
         left: scrollerRect.left,
         top: scrollerRect.top,
@@ -124,8 +158,13 @@ function reportEditorLayout(): void {
 }
 
 export default function EditorProductionSmoke() {
+  const editorRef = useRef<ReactCodeMirrorRef>(null);
+
   useEffect(() => {
-    const timer = window.setTimeout(reportEditorLayout, 100);
+    editorRef.current?.view?.dispatch({
+      selection: { anchor: 1, head: EXPECTED_TEXT.length - 1 },
+    });
+    const timer = window.setTimeout(reportEditorLayout, 150);
     return () => window.clearTimeout(timer);
   }, []);
 
@@ -136,6 +175,7 @@ export default function EditorProductionSmoke() {
         className="h-64 overflow-hidden rounded border border-border"
       >
         <CodeMirror
+          ref={editorRef}
           value={EXPECTED_TEXT}
           theme={EDITOR_THEME_EXT.atomone}
           extensions={[...buildSharedExtensions(), html()]}

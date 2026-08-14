@@ -306,6 +306,9 @@ html[data-native-browser-live="true"] footer {
   overflow-wrap: normal;
   outline: none;
 }
+.cm-content[contenteditable="true"] {
+  -webkit-user-modify: read-write-plaintext-only;
+}
 .cm-lineWrapping {
   flex-shrink: 1;
   white-space: break-spaces;
@@ -316,12 +319,102 @@ html[data-native-browser-live="true"] footer {
   display: block;
   padding: 0 2px 0 6px;
 }
+.cm-layer {
+  contain: size style;
+  left: 0;
+  position: absolute;
+  top: 0;
+  user-select: none;
+}
+.cm-layer > * {
+  position: absolute;
+}
+.cm-selectionBackground {
+  background-color: color-mix(in srgb, var(--foreground) 18%, transparent);
+}
+.cm-cursorLayer {
+  pointer-events: none;
+}
+.cm-editor.cm-focused > .cm-scroller > .cm-cursorLayer {
+  animation: steps(1) cm-blink 1.2s infinite;
+}
+@keyframes cm-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+@keyframes cm-blink2 {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+.cm-cursor,
+.cm-dropCursor {
+  border-left: 1.2px solid var(--foreground);
+  margin-left: -0.6px;
+  pointer-events: none;
+}
+.cm-cursor {
+  display: none;
+}
+.cm-editor.cm-focused > .cm-scroller > .cm-cursorLayer .cm-cursor {
+  display: block;
+}
+.cm-dropCursor {
+  position: absolute;
+}
+.cm-selectionHandle {
+  background-color: currentColor;
+  width: 1.5px;
+}
+.cm-selectionHandle-start::before,
+.cm-selectionHandle-end::before {
+  background-color: inherit;
+  border-radius: 50%;
+  content: "";
+  height: 8px;
+  left: -3.25px;
+  position: absolute;
+  width: 8px;
+}
+.cm-selectionHandle-start::before {
+  top: -8px;
+}
+.cm-selectionHandle-end::before {
+  bottom: -8px;
+}
+.cm-iso {
+  unicode-bidi: isolate;
+}
+.cm-announced {
+  position: fixed;
+  top: -10000px;
+}
+@media print {
+  .cm-announced {
+    display: none;
+  }
+}
 .cm-gutters {
   box-sizing: border-box;
   display: flex;
   flex-shrink: 0;
   height: 100%;
   z-index: 200;
+}
+.cm-gutters-before {
+  inset-inline-start: 0;
+}
+.cm-gutters-after {
+  inset-inline-end: 0;
 }
 .cm-gutter {
   box-sizing: border-box;
@@ -333,6 +426,75 @@ html[data-native-browser-live="true"] footer {
 }
 .cm-gutterElement {
   box-sizing: border-box;
+}
+.cm-lineNumbers .cm-gutterElement {
+  min-width: 20px;
+  padding: 0 3px 0 5px;
+  text-align: right;
+  white-space: nowrap;
+}
+.cm-panels {
+  box-sizing: border-box;
+  left: 0;
+  position: sticky;
+  right: 0;
+  z-index: 300;
+}
+.cm-panels-top {
+  top: 0;
+}
+.cm-panels-bottom {
+  bottom: 0;
+}
+.cm-dialog {
+  padding: 2px 19px 4px 6px;
+  position: relative;
+}
+.cm-dialog label {
+  font-size: 80%;
+}
+.cm-dialog-close {
+  background-color: inherit;
+  border: none;
+  font: inherit;
+  font-size: 14px;
+  padding: 0;
+  position: absolute;
+  right: 4px;
+  top: 3px;
+}
+.cm-tab {
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: bottom;
+}
+.cm-widgetBuffer {
+  display: inline;
+  height: 1em;
+  vertical-align: text-top;
+  width: 0;
+}
+.cm-placeholder {
+  color: var(--muted-foreground);
+  display: inline-block;
+  user-select: none;
+  vertical-align: top;
+}
+
+.cm-editor .cm-line,
+.cm-editor .cm-content {
+  caret-color: transparent !important;
+}
+.cm-editor .cm-line::selection,
+.cm-editor .cm-line ::selection {
+  background-color: transparent !important;
+}
+.cm-editor .cm-content :focus {
+  caret-color: initial !important;
+}
+.cm-editor .cm-content :focus::selection,
+.cm-editor .cm-content :focus ::selection {
+  background-color: Highlight !important;
 }
 
 .anbo-code-editor .cm-editor,
@@ -350,7 +512,7 @@ html[data-native-browser-live="true"] footer {
 }
 .anbo-code-editor .cm-content {
   background-color: transparent !important;
-  caret-color: var(--foreground);
+  caret-color: transparent !important;
 }
 .anbo-code-editor .cm-gutters,
 .anbo-code-editor .cm-gutter {
@@ -402,8 +564,7 @@ html[data-native-browser-live="true"] footer {
   ) !important;
 }
 .anbo-code-editor .cm-selectionBackground,
-.anbo-code-editor .cm-editor.cm-focused .cm-selectionBackground,
-.anbo-code-editor .cm-content ::selection {
+.anbo-code-editor .cm-editor.cm-focused .cm-selectionBackground {
   background-color: color-mix(
     in srgb,
     var(--foreground) 18%,
