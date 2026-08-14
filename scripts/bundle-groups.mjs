@@ -24,13 +24,6 @@ export function bundleChunkName(id) {
     return "react";
   }
 
-  if (
-    normalized.includes("/src/modules/editor/") ||
-    normalized.includes("/src/modules/lsp/")
-  ) {
-    return "editor-runtime";
-  }
-
   const packageName = packageNameFromModuleId(normalized);
   if (!packageName) return null;
 

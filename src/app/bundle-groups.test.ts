@@ -72,13 +72,13 @@ describe("production bundle groups", () => {
     ).toBe("editor-runtime");
     expect(
       bundleChunkName("/repo/src/modules/editor/lib/useEditorThemeExt.ts"),
-    ).toBe("editor-runtime");
-    expect(bundleChunkName("/repo/src/modules/editor/EditorStack.tsx")).toBe(
-      "editor-runtime",
-    );
-    expect(bundleChunkName("/repo/src/modules/lsp/useLspExtension.ts")).toBe(
-      "editor-runtime",
-    );
+    ).toBeNull();
+    expect(
+      bundleChunkName("/repo/src/modules/editor/EditorStack.tsx"),
+    ).toBeNull();
+    expect(
+      bundleChunkName("/repo/src/modules/lsp/useLspExtension.ts"),
+    ).toBeNull();
     expect(
       bundleChunkName("/repo/node_modules/@xterm/xterm/lib/xterm.js"),
     ).toBe("xterm");
