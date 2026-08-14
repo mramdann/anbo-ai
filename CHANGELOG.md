@@ -5,11 +5,9 @@
 
 ### Bug Fixes
 
-* **build:** capture editor dependencies atomically ([d8196a9](https://github.com/mramdann/anbo-ai/commit/d8196a9547a0449a3f0f2ebfabaa072e014155e4))
-* **build:** isolate codemirror runtime ([1565d0e](https://github.com/mramdann/anbo-ai/commit/1565d0e44d337919635a8ab9f622a541d93d31ea))
-* **editor:** co-locate lsp facets ([858285a](https://github.com/mramdann/anbo-ai/commit/858285abc8cef7cadb26df7270ab7b445e9f55e8))
-* **editor:** keep runtime chunk atomic ([556d251](https://github.com/mramdann/anbo-ai/commit/556d2519f1361ead7e823d0b27ea00b417261d41))
-* **editor:** stabilize production runtime chunks ([2196405](https://github.com/mramdann/anbo-ai/commit/219640532cfe563488a880c1cae45ebcaa7ef626))
+* **startup:** eliminate production-only Dockview, AI SDK, and CodeMirror chunk initialization cycles that blocked restored workspaces
+* **editor:** preserve one CodeMirror runtime so editor base styles and theme facets render content correctly while language implementations remain lazy
+* **build:** add AST-based static chunk-cycle detection and a root render fallback to prevent blank production windows
 
 ## [0.14.2](https://github.com/mramdann/anbo-ai/compare/v0.14.1...v0.14.2) (2026-08-14)
 
