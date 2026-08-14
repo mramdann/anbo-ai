@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.2](https://github.com/mramdann/anbo-ai/compare/v0.14.1...v0.14.2) (2026-08-14)
+
+
+### Bug Fixes
+
+* **startup:** prevent production dockview chunk cycle ([f7fca80](https://github.com/mramdann/anbo-ai/commit/f7fca807bb700c2cf5bb138b73e372966760b2da))
+
 ## [0.14.1](https://github.com/mramdann/anbo-ai/compare/v0.14.0...v0.14.1) (2026-08-13)
 
 
