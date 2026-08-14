@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.4](https://github.com/mramdann/anbo-ai/compare/v0.14.3...v0.14.4) (2026-08-14)
+
+
+### Bug Fixes
+
+* **editor:** preserve production layout ([1b195d5](https://github.com/mramdann/anbo-ai/commit/1b195d5e1f551cd859123257a8b55199368eba85))
+
 ## [0.14.3](https://github.com/mramdann/anbo-ai/compare/v0.14.2...v0.14.3) (2026-08-14)
 
 
