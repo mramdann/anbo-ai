@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.7](https://github.com/mramdann/anbo-ai/compare/v0.14.6...v0.14.7) (2026-08-14)
+
+
+### Bug Fixes
+
+* **editor:** restore bounded text selection ([573acbc](https://github.com/mramdann/anbo-ai/commit/573acbc0489f27c6d4887a17817db3a896879e6a))
+
 ## [0.14.6](https://github.com/mramdann/anbo-ai/compare/v0.14.5...v0.14.6) (2026-08-14)
 
 
