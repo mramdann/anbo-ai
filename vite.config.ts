@@ -76,7 +76,18 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
           groups: [
             {
               name: bundleChunkName,
-              test: (id: string) => bundleChunkName(id) !== null,
+              test: (id: string) => {
+                const chunk = bundleChunkName(id);
+                return chunk !== null && chunk !== "editor-runtime";
+              },
+              priority: 2,
+            },
+            {
+              name: "editor-runtime",
+              test: (id: string) =>
+                bundleChunkName(id) === "editor-runtime",
+              includeDependenciesRecursively: true,
+              priority: 1,
             },
           ],
         },

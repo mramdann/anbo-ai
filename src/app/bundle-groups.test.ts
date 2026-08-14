@@ -1,8 +1,14 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   bundleChunkName,
   packageNameFromModuleId,
 } from "../../scripts/bundle-groups.mjs";
+
+const viteConfig = readFileSync(
+  new URL("../../vite.config.ts", import.meta.url),
+  "utf8",
+);
 
 describe("production bundle groups", () => {
   it("finds the actual package after the final pnpm node_modules segment", () => {
@@ -85,5 +91,12 @@ describe("production bundle groups", () => {
       ),
     ).toBeNull();
     expect(bundleChunkName("/repo/src/App.tsx")).toBeNull();
+  });
+
+  it("captures editor dependencies without absorbing shared runtime groups", () => {
+    expect(viteConfig).toContain('chunk !== "editor-runtime"');
+    expect(viteConfig).toContain('name: "editor-runtime"');
+    expect(viteConfig).toContain("includeDependenciesRecursively: true");
+    expect(viteConfig).toContain("priority: 2");
   });
 });

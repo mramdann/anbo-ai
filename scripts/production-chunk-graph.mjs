@@ -1,11 +1,27 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, normalize } from "node:path/posix";
-
-const STATIC_IMPORT_RE =
-  /\b(?:import|export)\s*(?:[^"']*?\bfrom\s*)?["']([^"']+)["']/g;
+import ts from "typescript";
 
 export function staticChunkImports(source) {
-  return [...source.matchAll(STATIC_IMPORT_RE)].map((match) => match[1]);
+  const file = ts.createSourceFile(
+    "chunk.js",
+    source,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.JS,
+  );
+  const imports = [];
+  for (const statement of file.statements) {
+    if (
+      (ts.isImportDeclaration(statement) ||
+        ts.isExportDeclaration(statement)) &&
+      statement.moduleSpecifier &&
+      ts.isStringLiteral(statement.moduleSpecifier)
+    ) {
+      imports.push(statement.moduleSpecifier.text);
+    }
+  }
+  return imports;
 }
 
 export function findStaticChunkCycle(sources) {
