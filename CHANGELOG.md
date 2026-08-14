@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.5](https://github.com/mramdann/anbo-ai/compare/v0.14.4...v0.14.5) (2026-08-14)
+
+
+### Bug Fixes
+
+* **editor:** anchor webview layout styles ([6b53390](https://github.com/mramdann/anbo-ai/commit/6b53390f9eb394203b372b0561cbdfdbe4870d00))
+
 ## [0.14.4](https://github.com/mramdann/anbo-ai/compare/v0.14.3...v0.14.4) (2026-08-14)
 
 
