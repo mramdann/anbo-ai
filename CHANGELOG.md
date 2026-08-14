@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.14.4](https://github.com/mramdann/anbo-ai/compare/v0.14.3...v0.14.4) (2026-08-14)
+
+
+### Bug Fixes
+
+* **editor:** restore visible file contents and correct CodeMirror layout in production installers by keeping its runtime in Rolldown's natural module graph ([1b195d5](https://github.com/mramdann/anbo-ai/commit/1b195d5e1f551cd859123257a8b55199368eba85))
+* **startup:** include the production chunk-cycle and root render fallback fixes prepared in v0.14.3, preventing the workspace from remaining on the splash screen without a useful error
+
+
+### Reliability
+
+* execute a real CodeMirror production smoke test that verifies rendered text, base flex styles, and first-line viewport geometry
+* retain the static JavaScript chunk-cycle gate so invalid production bundles fail CI before an installer is published
+
 ## [0.14.3](https://github.com/mramdann/anbo-ai/compare/v0.14.2...v0.14.3) (2026-08-14)
 
 
