@@ -210,7 +210,7 @@ export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
             <Input
               ref={inputRef}
               value={draft}
-              placeholder="Search Google or enter a URL"
+              placeholder="Search Google, enter a URL, or open a workspace HTML file"
               spellCheck={false}
               autoComplete="off"
               className="h-7 w-full bg-background px-2 text-xs placeholder:text-muted-foreground/70 focus-visible:ring-0"

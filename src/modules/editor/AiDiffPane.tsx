@@ -8,6 +8,7 @@ import { Cancel01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { aiDiffRenderPolicy } from "./lib/aiDiffPolicy";
 import {
   buildSharedExtensions,
   DEFAULT_INDENT,
@@ -15,7 +16,7 @@ import {
 } from "./lib/extensions";
 import { resolveLanguage, resolveLanguageSync } from "./lib/languageResolver";
 import { useEditorThemeExt } from "./lib/useEditorThemeExt";
-import { aiDiffRenderPolicy } from "./lib/aiDiffPolicy";
+import { useEditorWindowPresentation } from "./lib/useEditorWindowPresentation";
 
 type Props = {
   path: string;
@@ -96,6 +97,7 @@ export function AiDiffPane({
   onReject,
 }: Props) {
   const cmRef = useRef<ReactCodeMirrorRef>(null);
+  useEditorWindowPresentation(cmRef);
   const themeExt = useEditorThemeExt();
   const policy = useMemo(
     () => aiDiffRenderPolicy(originalContent, proposedContent),
@@ -106,8 +108,8 @@ export function AiDiffPane({
 
   // Language resolves before mount; reconfiguring after would leave the
   // merge view's deleted-chunk widgets unhighlighted.
-  const [lang, setLang] = useState<Extension | null>(
-    () => (shouldRender ? resolveLanguageSync(path)?.ext ?? null : null),
+  const [lang, setLang] = useState<Extension | null>(() =>
+    shouldRender ? (resolveLanguageSync(path)?.ext ?? null) : null,
   );
   useEffect(() => {
     if (!shouldRender || lang) return;
@@ -144,9 +146,7 @@ export function AiDiffPane({
 
   const stats = useMemo(
     () =>
-      shouldRender
-        ? computeLineStats(originalContent, proposedContent)
-        : null,
+      shouldRender ? computeLineStats(originalContent, proposedContent) : null,
     [originalContent, proposedContent, shouldRender],
   );
 

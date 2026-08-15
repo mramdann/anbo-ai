@@ -172,7 +172,6 @@ export default function App() {
     newBlockTab,
     newAgentTab,
     newAgentGroupTab,
-    armAgentResume,
     pinAgentResumeSession,
     newPrivateTab,
     openFileTab,
@@ -277,6 +276,18 @@ export default function App() {
     (spaceId: string) =>
       spaceEnvironments.find((space) => space.id === spaceId)?.env ??
       workspaceEnv,
+    [spaceEnvironments, workspaceEnv],
+  );
+  const browserWorkspaceContext = useCallback(
+    (spaceId: string) => {
+      const space = spaceEnvironments.find(
+        (candidate) => candidate.id === spaceId,
+      );
+      return {
+        root: space?.root ?? null,
+        workspace: space?.env ?? workspaceEnv,
+      };
+    },
     [spaceEnvironments, workspaceEnv],
   );
   // Welcome when the ACTIVE space has no tabs (not total tabs — other spaces may
@@ -690,7 +701,13 @@ export default function App() {
   const resumedAgentLeavesRef = useRef(new Set<number>());
   const handleAgentSession = useCallback(
     (leafId: number, agent: string, sessionId: string) => {
-      if (agent === "opencode") pinAgentResumeSession(leafId, sessionId);
+      switch (agent) {
+        case "claude":
+        case "gemini":
+        case "pi":
+        case "opencode":
+          pinAgentResumeSession(leafId, sessionId);
+      }
     },
     [pinAgentResumeSession],
   );
@@ -781,11 +798,7 @@ export default function App() {
             resume,
             command.command,
           );
-          if (await writeToReadySession(leafId, `${launchCommand}\r`)) {
-            if (resume && resume.agent !== "opencode") {
-              armAgentResume(leafId);
-            }
-          } else {
+          if (!(await writeToReadySession(leafId, `${launchCommand}\r`))) {
             console.error(
               `[anbo] agent terminal ${leafId} closed before launch`,
             );
@@ -798,7 +811,6 @@ export default function App() {
       void launch();
     },
     [
-      armAgentResume,
       customCliAgents,
       inheritedCwdForNewTab,
       newAgentGroupTab,
@@ -1701,6 +1713,7 @@ export default function App() {
                   <ResizablePanel
                     id="sidebar"
                     panelRef={sidebarRef}
+                    groupResizeBehavior="preserve-pixel-size"
                     defaultSize={
                       initialSidebarCollapsed
                         ? "0px"
@@ -1800,6 +1813,9 @@ export default function App() {
                                 onBrowserUrlChange={handleBrowserUrl}
                                 onBrowserTitleChange={handleBrowserTitle}
                                 onBrowserLoadingChange={handleBrowserLoading}
+                                getBrowserWorkspaceContext={
+                                  browserWorkspaceContext
+                                }
                                 onAiDiffAccept={(id) =>
                                   respondToApproval(id, true)
                                 }
@@ -1827,6 +1843,7 @@ export default function App() {
                               onUrlChange={handleBrowserUrl}
                               onTitleChange={handleBrowserTitle}
                               onLoadingChange={handleBrowserLoading}
+                              getWorkspaceContext={browserWorkspaceContext}
                             />
                           </div>
                         ) : null}

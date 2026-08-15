@@ -6,42 +6,40 @@ import {
   normalizePersistedAgentResume,
 } from "./resume";
 
-const IDS = [
-  "00000000-0000-4000-8000-000000000001",
-  "00000000-0000-4000-8000-000000000002",
-];
-
-function idAllocator(): () => string {
-  let index = 0;
-  return () => IDS[index++];
-}
-
 describe("agent resume commands", () => {
   it.each([
-    ["claude", "claude --session-id", "claude --resume"],
-    ["gemini", "gemini --session-id", "gemini --resume"],
-    ["pi", "pi --session-id", "pi --session"],
+    ["claude", "claude --resume"],
+    ["gemini", "gemini --resume"],
+    ["pi", "pi --session"],
   ] as const)(
-    "pins and resumes %s by exact session id",
-    (agent, start, resume) => {
-      const [state] = createAgentResumeStates(agent, agent, 1, idAllocator());
-      expect(state?.sessionId).toBe(IDS[0]);
+    "launches %s unchanged and resumes only after its real session id is known",
+    (agent, resume) => {
+      const [state] = createAgentResumeStates(agent, agent, 1);
+      expect(state?.sessionId).toBeUndefined();
       expect(state?.armed).toBe(false);
-      expect(buildAgentLaunchCommand(state, agent)).toBe(`${start} ${IDS[0]}`);
-      expect(state && buildAgentResumeCommand(state)).toBe(
-        `${resume} ${IDS[0]}`,
+      expect(buildAgentLaunchCommand(state, agent)).toBe(agent);
+      if (!state) throw new Error("missing resume descriptor");
+      expect(
+        buildAgentResumeCommand({
+          ...state,
+          sessionId: "00000000-0000-4000-8000-000000000001",
+        }),
+      ).toBe(
+        `${resume} 00000000-0000-4000-8000-000000000001`,
       );
     },
   );
 
-  it("allocates a distinct session id for every exact-resume pane", () => {
+  it("does not invent session ids for parallel panes", () => {
     const states = createAgentResumeStates(
       "claude",
       "claude --model opus",
       2,
-      idAllocator(),
     );
-    expect(states.map((state) => state?.sessionId)).toEqual(IDS);
+    expect(states.map((state) => state?.sessionId)).toEqual([
+      undefined,
+      undefined,
+    ]);
   });
 
   it("does not claim unsupported or custom agents are resumable", () => {
@@ -57,7 +55,6 @@ describe("agent resume commands", () => {
       "opencode",
       "opencode --model x/y",
       1,
-      idAllocator(),
     );
     expect(pending).toEqual({
       agent: "opencode",
@@ -98,14 +95,9 @@ describe("agent resume commands", () => {
   });
 
   it("keeps Gemini's sandbox short flag resumable", () => {
-    const [state] = createAgentResumeStates(
-      "gemini",
-      "gemini -s",
-      1,
-      idAllocator(),
-    );
+    const [state] = createAgentResumeStates("gemini", "gemini -s", 1);
     expect(buildAgentLaunchCommand(state, "gemini -s")).toBe(
-      `gemini -s --session-id ${IDS[0]}`,
+      "gemini -s",
     );
   });
 

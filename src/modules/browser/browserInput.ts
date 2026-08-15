@@ -4,6 +4,10 @@ export function resolveBrowserInput(raw: string): string | null {
   const value = raw.trim();
   if (!value) return null;
 
+  const localFile = windowsPathToFileUrl(value);
+  if (localFile) return localFile;
+  if (/^file:\/\//i.test(value))
+    return isFileUrl(value) ? new URL(value).href : null;
   if (/^https?:\/\//i.test(value)) {
     return isHttpUrl(value) ? value : null;
   }
@@ -18,6 +22,17 @@ export function resolveBrowserInput(raw: string): string | null {
   }
 
   return `${GOOGLE_SEARCH_URL}${encodeURIComponent(value)}`;
+}
+
+export function windowsPathToFileUrl(value: string): string | null {
+  if (!/^[a-zA-Z]:[\\/]/.test(value)) return null;
+  const normalized = value.replace(/\\/g, "/");
+  const drive = normalized.slice(0, 2);
+  const segments = normalized
+    .slice(3)
+    .split("/")
+    .map((segment) => encodeURIComponent(segment));
+  return `file:///${drive}/${segments.join("/")}`;
 }
 
 export function faviconUrlForPage(value: string): string | null {
@@ -51,6 +66,14 @@ function isHttpUrl(value: string): boolean {
   try {
     const url = new URL(value);
     return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isFileUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === "file:";
   } catch {
     return false;
   }

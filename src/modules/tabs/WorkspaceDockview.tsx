@@ -14,6 +14,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import {
+  isWindowPresentationBlocked,
+  subscribeWindowPresentation,
+} from "@/lib/windowPresentation";
 import type { AgentLaunchRequest } from "@/modules/agents/lib/launcher";
 import {
   ALL_LANGUAGES,
@@ -22,7 +26,7 @@ import {
 import { resolveDisplayName } from "@/modules/editor/lib/languageResolver";
 import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
 import {
-  AiBrowserIcon,
+  BotIcon,
   Cancel01Icon,
   FullScreenIcon,
   Minimize01Icon,
@@ -392,7 +396,12 @@ function BrowserAutomationTabIndicator({ tabId }: { tabId: number }) {
       title={`Agent is automating this browser: ${action}`}
       className="anbo-browser-automation-indicator"
     >
-      <HugeiconsIcon icon={AiBrowserIcon} size={11} strokeWidth={1.8} />
+      <HugeiconsIcon
+        icon={BotIcon}
+        size={11}
+        strokeWidth={1.8}
+        className="anbo-browser-automation-robot"
+      />
     </span>
   );
 }
@@ -690,6 +699,7 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
   const applyingLayout = useRef(false);
   const latest = useRef(props);
   const apiRef = useRef<DockviewApi | null>(null);
+  const dockviewElementRef = useRef<HTMLDivElement | null>(null);
   const ghostElRef = useRef<HTMLDivElement | null>(null);
   const ghostOffsetRef = useRef({ x: 0, y: 0 });
   const lastPointerRef = useRef({ x: 0, y: 0 });
@@ -1175,6 +1185,36 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
 
   useEffect(() => {
     if (!api) return;
+    const element = dockviewElementRef.current;
+    if (!element) return;
+    let frame = 0;
+    const layout = () => {
+      frame = 0;
+      if (isWindowPresentationBlocked()) return;
+      const width = element.clientWidth;
+      const height = element.clientHeight;
+      if (width < 2 || height < 2) return;
+      api.layout(width, height, true);
+    };
+    const schedule = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(layout);
+    };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(element);
+    const unsubscribe = subscribeWindowPresentation((next) => {
+      if (next === "ready") layout();
+    });
+    layout();
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      observer.disconnect();
+      unsubscribe();
+    };
+  }, [api]);
+
+  useEffect(() => {
+    if (!api) return;
     let disposed = false;
     let cleanupQueued = false;
     const cleanupEmptyGroups = () => {
@@ -1441,11 +1481,13 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
     <WorkspaceDockviewContext.Provider value={contextValue}>
       <div className="anbo-workspace-dockview" onClickCapture={onClickCapture}>
         <DockviewReact
+          ref={dockviewElementRef}
           components={components}
           defaultTabComponent={WorkspaceDockviewTab}
           rightHeaderActionsComponent={WorkspaceDockviewActions}
           disableDnd
           disableFloatingGroups
+          disableAutoResizing
           noPanelsOverlay="emptyGroup"
           scrollbars="native"
           theme={workspaceTheme}

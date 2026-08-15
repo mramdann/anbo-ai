@@ -18,4 +18,10 @@ describe("WorkspaceDockview active tab highlight", () => {
     expect(css).toContain("@media (prefers-reduced-motion: reduce)");
     expect(css).toContain("animation: none");
   });
+
+  it("animates the browser automation robot with a reduced-motion fallback", () => {
+    expect(css).toContain("@keyframes anbo-browser-automation-robot-hop");
+    expect(css).toContain(".anbo-browser-automation-robot");
+    expect(css).toContain("transform-origin: center bottom");
+  });
 });

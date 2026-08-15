@@ -5,7 +5,6 @@ import {
 } from "@/modules/agents/lib/launcher";
 import type { PersistedAgentResume } from "@/modules/agents/lib/resume";
 import {
-  armLeafAgentResume,
   findLeafCwd,
   hasLeaf,
   insertNodeBeside,
@@ -167,7 +166,7 @@ function titleFromUrl(url: string): string {
     const u = new URL(url);
     return u.host || url;
   } catch {
-    return url || "browser";
+    return url || "Browser";
   }
 }
 
@@ -629,18 +628,6 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     },
     [newAgentGroupTab],
   );
-
-  const armAgentResume = useCallback((leafId: number) => {
-    setTabs((current) =>
-      current.map((tab) => {
-        if (tab.kind !== "terminal" || !hasLeaf(tab.paneTree, leafId)) {
-          return tab;
-        }
-        const paneTree = armLeafAgentResume(tab.paneTree, leafId);
-        return paneTree === tab.paneTree ? tab : { ...tab, paneTree };
-      }),
-    );
-  }, []);
 
   const pinAgentResumeSession = useCallback(
     (leafId: number, sessionId: string) => {
@@ -1464,7 +1451,6 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     newBlockTab,
     newAgentTab,
     newAgentGroupTab,
-    armAgentResume,
     pinAgentResumeSession,
     newPrivateTab,
     openFileTab,

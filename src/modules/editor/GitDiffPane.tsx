@@ -20,6 +20,7 @@ import {
 } from "./lib/extensions";
 import { resolveLanguage, resolveLanguageSync } from "./lib/languageResolver";
 import { useEditorThemeExt } from "./lib/useEditorThemeExt";
+import { useEditorWindowPresentation } from "./lib/useEditorWindowPresentation";
 
 type WorkingSource = {
   kind: "working";
@@ -138,6 +139,7 @@ function loadStateFromCache(source: WorkingSource | CommitSource): LoadState {
 
 export function GitDiffPane({ source, chipLabel, active }: Props) {
   const cmRef = useRef<ReactCodeMirrorRef>(null);
+  useEditorWindowPresentation(cmRef);
   const themeExt = useEditorThemeExt();
   const [state, setState] = useState<LoadState>(() =>
     active ? loadStateFromCache(source) : { kind: "idle" },
@@ -236,9 +238,7 @@ export function GitDiffPane({ source, chipLabel, active }: Props) {
     let cancelled = false;
     resolveLanguage(path).then((res) => {
       if (cancelled || !res) return;
-      setState((s) =>
-        s.kind === "loaded" ? { ...s, langExt: res.ext } : s,
-      );
+      setState((s) => (s.kind === "loaded" ? { ...s, langExt: res.ext } : s));
     });
     return () => {
       cancelled = true;

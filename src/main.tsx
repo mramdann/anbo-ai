@@ -8,10 +8,13 @@ import ReactDOM from "react-dom/client";
 import App from "./app/App";
 import { initLaunchDir } from "./lib/launchDir";
 import { USE_CUSTOM_WINDOW_CONTROLS } from "./lib/platform";
+import { initializeWindowPresentation } from "./lib/windowPresentation";
 
 if (USE_CUSTOM_WINDOW_CONTROLS) {
   document.documentElement.dataset.chrome = "borderless";
 }
+
+initializeWindowPresentation();
 
 // Render-instrumentation overlay, opt-in: `VITE_REACT_SCAN=true pnpm dev`.
 // Dev-only dynamic import so it never reaches the production bundle.

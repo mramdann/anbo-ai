@@ -162,9 +162,16 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("__anbo_hook") {
+        if let (Some(agent), Some(event)) = (args.get(2), args.get(3)) {
+            agent::run_hook_helper(agent, event);
+        }
+        std::process::exit(0);
+    }
+
     #[cfg(windows)]
     {
-        let args: Vec<String> = std::env::args().collect();
         if args.get(1).map(String::as_str) == Some("__anbo_notify") {
             if let (Some(agent), Some(event)) = (args.get(2), args.get(3)) {
                 agent::emit_conout_marker(agent, event);
@@ -285,6 +292,8 @@ pub fn run() {
             fs::grep::fs_grep_command,
             fs::grep::fs_grep_interactive_command,
             fs::grep::fs_glob_command,
+            browser::data::browser_data_usage,
+            browser::data::browser_clear_data,
             browser::embed::browser_embed_update,
             browser::embed::browser_embed_begin_session,
             browser::embed::browser_embed_navigate,
@@ -295,6 +304,7 @@ pub fn run() {
             browser::embed::browser_embed_set_punch_hole,
             browser::embed::browser_embed_set_zoom,
             browser::embed::browser_embed_suspend,
+            browser::embed::browser_embed_suspend_all_presentations,
             browser::embed::browser_embed_release,
             browser::embed::browser_embed_close,
             browser_automation::browser_automation_start,

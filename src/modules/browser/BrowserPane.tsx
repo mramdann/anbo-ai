@@ -1,5 +1,10 @@
 import { IS_WINDOWS } from "@/lib/platform";
-import { Alert02Icon, Globe02Icon } from "@hugeicons/core-free-icons";
+import type { WorkspaceEnv } from "@/modules/workspace";
+import {
+  isWindowPresentationCovered,
+  subscribeWindowPresentation,
+} from "@/lib/windowPresentation";
+import { Alert02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -17,6 +22,8 @@ import {
   BrowserAddressBar,
   type BrowserAddressBarHandle,
 } from "./BrowserAddressBar";
+import { BrowserStartPage } from "./BrowserStartPage";
+import { recordBrowserVisit } from "./history";
 import {
   BROWSER_NAV_EVENT,
   type BrowserNavEvent,
@@ -34,6 +41,7 @@ import {
   canMeasureBrowserPane,
   createBrowserOwnerId,
   forgetBrowserOwnerId,
+  isReportableBrowserNavUrl,
   isSelfReferenceUrl,
   isSupportedBrowserUrl,
   type PunchHole,
@@ -41,6 +49,7 @@ import {
   toPhysicalBounds,
 } from "./native";
 import {
+  notifyNativeBrowserLayout,
   subscribeNativeBrowserLayout,
   useNativeBrowserDragActive,
   useNativeBrowserOverlayOpen,
@@ -57,6 +66,8 @@ type Props = {
   id: number;
   url: string;
   visible: boolean;
+  workspaceRoot: string | null;
+  workspace: WorkspaceEnv;
   initialLoading: boolean;
   onUrlChange: (url: string) => void;
   onTitleChange: (title: string) => void;
@@ -107,6 +118,8 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       id,
       url,
       visible,
+      workspaceRoot,
+      workspace,
       initialLoading,
       onUrlChange,
       onTitleChange,
@@ -122,6 +135,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     const contentRef = useRef<HTMLDivElement>(null);
     const ownerIdRef = useRef(createBrowserOwnerId(id));
     const currentUrlRef = useRef(url);
+    const workspaceContextRef = useRef({ root: workspaceRoot, workspace });
     const urlPropRef = useRef(url);
     const onUrlChangeRef = useRef(onUrlChange);
     const onTitleChangeRef = useRef(onTitleChange);
@@ -165,6 +179,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     urlPropRef.current = url;
     visibleRef.current = visible;
     onLoadingChangeRef.current = onLoadingChange;
+    workspaceContextRef.current = { root: workspaceRoot, workspace };
 
     // Propagate the per-tab loading flag up to the tab store (tab spinner).
     useEffect(() => {
@@ -198,9 +213,17 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
         currentUrlRef.current,
         desired.bounds,
         desired.visible,
+        workspaceContextRef.current,
       )
         .then(() => {
           if (disposedRef.current) return;
+          if (IS_WINDOWS && desired.visible) {
+            // Restoring the native paint region also resets any AI mini-window
+            // punch hole. Recompute it only after the visible bounds update has
+            // completed so the final region cannot be overwritten by a race.
+            lastHoleRef.current = "";
+            notifyNativeBrowserLayout();
+          }
           if (IS_WINDOWS && overlayOpenRef.current) {
             void browserEmbedSetUiOverlay(id, ownerIdRef.current, true).catch(
               () => {},
@@ -262,7 +285,8 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       const allowedUrl =
         isSupportedBrowserUrl(currentUrl) && !isSelfReferenceUrl(currentUrl);
       const canMeasure = canMeasureBrowserPane(
-        document.visibilityState === "visible",
+        document.visibilityState === "visible" &&
+          !isWindowPresentationCovered(),
         allowedUrl,
         !!element,
       );
@@ -300,7 +324,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       // over the browser and stay interactive without sinking the whole webview
       // behind the app layer. The hole is the intersection (physical px, relative
       // to the webview's own origin) of the browser content rect and the panel.
-      if (IS_WINDOWS) {
+      if (IS_WINDOWS && shouldShow) {
         const mini = document.querySelector(
           '[data-ai-mini-window][data-state="open"]',
         ) as HTMLElement | null;
@@ -351,9 +375,14 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       const resizeObserver = new ResizeObserver(scheduleBounds);
       if (element) resizeObserver.observe(element);
       const unsubscribeLayout = subscribeNativeBrowserLayout(scheduleBounds);
+      // Minimize can suspend animation frames before a queued layout callback
+      // runs. Apply presentation transitions immediately so the native child
+      // surface is parked before Windows starts composing the restore frame.
+      const unsubscribePresentation = subscribeWindowPresentation(syncBounds);
       return () => {
         resizeObserver.disconnect();
         unsubscribeLayout();
+        unsubscribePresentation();
         if (frame) {
           cancelAnimationFrame(frame);
           frame = 0;
@@ -474,17 +503,20 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
           !payload ||
           payload.tabId !== id ||
           payload.ownerId !== ownerIdRef.current ||
-          !payload.url
+          !isReportableBrowserNavUrl(payload.url)
         )
           return;
         if (payload.kind === "navigated") {
           setLoading(true);
         } else if (payload.kind === "loaded") {
           setLoading(false);
+          recordBrowserVisit(payload.url);
           return;
         }
         if (payload.kind === "title" && payload.title?.trim()) {
-          onTitleChangeRef.current(payload.title.trim().slice(0, 200));
+          const title = payload.title.trim().slice(0, 200);
+          onTitleChangeRef.current(title);
+          recordBrowserVisit(payload.url, title);
           // The document has a title → it has loaded enough to identify itself.
           // `loaded` is unreliable in the native webview, so treat the title as
           // a secondary signal to stop the spinner once content is present.
@@ -517,9 +549,12 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       if (url === currentUrlRef.current) return;
       currentUrlRef.current = url;
       setLoading(true);
-      void browserEmbedNavigate(id, ownerIdRef.current, url).catch(
-        reportNativeError,
-      );
+      void browserEmbedNavigate(
+        id,
+        ownerIdRef.current,
+        url,
+        workspaceContextRef.current,
+      ).catch(reportNativeError);
     }, [id, native, reportNativeError, url, urlError]);
 
     const navigate = useCallback(
@@ -534,11 +569,16 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
             setNativeError(validationError);
           } else {
             setLoading(true);
-            void browserEmbedNavigate(id, ownerIdRef.current, next).catch(
-              reportNativeError,
-            );
+            void browserEmbedNavigate(
+              id,
+              ownerIdRef.current,
+              next,
+              workspaceContextRef.current,
+            ).catch(reportNativeError);
           }
           syncBounds();
+        } else {
+          recordBrowserVisit(next);
         }
       },
       [id, native, reportNativeError, syncBounds],
@@ -640,7 +680,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
               />
             )
           ) : (
-            <EmptyState />
+            <BrowserStartPage visible={visible} onNavigate={navigate} />
           )}
         </div>
       </div>
@@ -660,25 +700,6 @@ function BrowserError({ message }: { message: string }) {
         </p>
         <p className="max-w-md text-[11px] leading-relaxed text-muted-foreground">
           {message}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="flex h-full w-full flex-col items-center justify-center gap-4 px-6 text-center">
-      <div className="flex size-12 items-center justify-center rounded-2xl border border-border/60 bg-card text-muted-foreground">
-        <HugeiconsIcon icon={Globe02Icon} size={20} strokeWidth={1.5} />
-      </div>
-      <div className="space-y-1.5">
-        <p className="text-sm font-medium text-foreground">
-          Open a browser page
-        </p>
-        <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
-          Enter an HTTP(S) URL or choose a running local development server from
-          the Ports menu.
         </p>
       </div>
     </div>

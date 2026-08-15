@@ -1,4 +1,8 @@
 import { resolveFontFamily } from "@/lib/fonts";
+import {
+  isWindowPresentationBlocked,
+  subscribeWindowPresentation,
+} from "@/lib/windowPresentation";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { TerminalCursorStyle } from "@/modules/settings/store";
 import { buildTerminalTheme } from "@/styles/terminalTheme";
@@ -10,12 +14,12 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { type FontWeight, Terminal } from "@xterm/xterm";
 import { shouldCursorBlink } from "./cursorBlink";
+import { terminalReadlineSequence } from "./keymap";
 import {
   readTerminalClipboard,
   writeTerminalClipboard,
 } from "./terminalClipboard";
 import { pasteIntoTerminal } from "./terminalPaste";
-import { terminalReadlineSequence } from "./keymap";
 
 export const POOL_MAX_SIZE = 5;
 const FIT_DEBOUNCE_MS = 8;
@@ -93,6 +97,46 @@ function bindWindowActivityListeners(): void {
   window.addEventListener("focus", sync);
   window.addEventListener("blur", sync);
   document.addEventListener("visibilitychange", sync);
+  subscribeWindowPresentation((next) => {
+    if (next !== "ready") return;
+    queueMicrotask(restoreVisibleSlotsAfterWindowRestore);
+  });
+}
+
+function canFitTerminal(container: HTMLElement): boolean {
+  return (
+    !isWindowPresentationBlocked() &&
+    container.clientWidth >= 2 &&
+    container.clientHeight >= 2
+  );
+}
+
+function restoreVisibleSlotsAfterWindowRestore(): void {
+  if (isWindowPresentationBlocked()) return;
+  for (const slot of slots) {
+    const leafId = slot.currentLeafId;
+    const container = slot.host.parentElement;
+    if (
+      leafId === null ||
+      slot.parked ||
+      !container ||
+      !canFitTerminal(container) ||
+      !adapter?.isLeafVisible(leafId)
+    ) {
+      continue;
+    }
+    slot.lastW = container.clientWidth;
+    slot.lastH = container.clientHeight;
+    slot.fitAddon.fit();
+    slot.lastCols = slot.term.cols;
+    slot.lastRows = slot.term.rows;
+    const bridge = adapter.resolveLeaf(leafId);
+    bridge?.resizePty(slot.lastCols, slot.lastRows);
+    bridge?.kickPty(slot.lastCols, slot.lastRows);
+    try {
+      slot.term.refresh(0, slot.term.rows - 1);
+    } catch {}
+  }
 }
 
 function setWindowActive(active: boolean): void {
@@ -287,7 +331,8 @@ function createSlot(): Slot {
       if (event.type === "keydown") {
         const targetLeafId = slot.currentLeafId;
         void readTerminalClipboard().then((text) => {
-          if (text && slot.currentLeafId === targetLeafId) slot.term.paste(text);
+          if (text && slot.currentLeafId === targetLeafId)
+            slot.term.paste(text);
         });
       }
       event.preventDefault();
@@ -490,7 +535,7 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
   }
 
   setupResizeObserver(slot, p);
-  slot.fitAddon.fit();
+  if (canFitTerminal(p.container)) slot.fitAddon.fit();
   slot.lastCols = slot.term.cols;
   slot.lastRows = slot.term.rows;
   slot.lastW = p.container.clientWidth;
@@ -560,7 +605,7 @@ function rewireSlot(slot: Slot, p: AcquireParams): void {
     p.container.appendChild(slot.host);
   }
   setupResizeObserver(slot, p);
-  slot.fitAddon.fit();
+  if (canFitTerminal(p.container)) slot.fitAddon.fit();
   slot.lastW = p.container.clientWidth;
   slot.lastH = p.container.clientHeight;
   if (slot.term.cols !== p.cols || slot.term.rows !== p.rows) {
@@ -581,7 +626,8 @@ function setupResizeObserver(slot: Slot, p: AcquireParams): void {
   const container = p.container;
   const flushPty = () => {
     slot.ptyTimer = null;
-    if (slot.currentLeafId !== p.leafId) return;
+    if (slot.currentLeafId !== p.leafId || isWindowPresentationBlocked())
+      return;
     if (slot.term.cols === slot.lastCols && slot.term.rows === slot.lastRows)
       return;
     slot.lastCols = slot.term.cols;
@@ -590,11 +636,16 @@ function setupResizeObserver(slot: Slot, p: AcquireParams): void {
   };
 
   slot.observer = new ResizeObserver(() => {
-    if (slot.parked) return;
+    if (slot.parked || isWindowPresentationBlocked()) return;
     if (slot.fitTimer) clearTimeout(slot.fitTimer);
     slot.fitTimer = setTimeout(() => {
       slot.fitTimer = null;
-      if (slot.currentLeafId !== p.leafId || slot.parked) return;
+      if (
+        slot.currentLeafId !== p.leafId ||
+        slot.parked ||
+        !canFitTerminal(container)
+      )
+        return;
       const w = container.clientWidth;
       const h = container.clientHeight;
       if (w === slot.lastW && h === slot.lastH) return;
@@ -881,8 +932,14 @@ export function applyWebglPreference(enabled: boolean): void {
 // Parked and retained slots can't be measured (display:none); poison lastW
 // so the refit happens on unpark/rebind instead.
 function refitSlot(slot: Slot): void {
-  if (slot.parked || slot.currentLeafId === null) {
+  if (
+    slot.parked ||
+    slot.currentLeafId === null ||
+    !slot.host.parentElement ||
+    !canFitTerminal(slot.host.parentElement)
+  ) {
     slot.lastW = -1;
+    slot.lastH = -1;
     return;
   }
   slot.fitAddon.fit();
@@ -1000,10 +1057,14 @@ export function refreshLeafSlot(leafId: number): void {
   }
   // The observer skips parked slots; catch up on container resizes here.
   const container = slot.host.parentElement;
+  if (!container || !canFitTerminal(container)) {
+    slot.lastW = -1;
+    slot.lastH = -1;
+    return;
+  }
   if (
-    container &&
-    (container.clientWidth !== slot.lastW ||
-      container.clientHeight !== slot.lastH)
+    container.clientWidth !== slot.lastW ||
+    container.clientHeight !== slot.lastH
   ) {
     slot.lastW = container.clientWidth;
     slot.lastH = container.clientHeight;

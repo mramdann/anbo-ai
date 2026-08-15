@@ -56,6 +56,7 @@ import { detectIndentUnit } from "./lib/indent";
 import { type LanguageResult, resolveLanguage } from "./lib/languageResolver";
 import { FORCE_READ_LIMIT, useDocument } from "./lib/useDocument";
 import { useEditorThemeExt } from "./lib/useEditorThemeExt";
+import { useEditorWindowPresentation } from "./lib/useEditorWindowPresentation";
 import { initVimGlobals, vimHandlersExtension } from "./lib/vim";
 
 initVimGlobals();
@@ -126,6 +127,7 @@ export const EditorPane = memo(
     const adoptDiskTextRef = useRef(adoptDiskText);
     adoptDiskTextRef.current = adoptDiskText;
     const cmRef = useRef<ReactCodeMirrorRef>(null);
+    useEditorWindowPresentation(cmRef);
     const themeExt = useEditorThemeExt();
     const vimMode = usePreferencesStore((s) => s.vimMode);
     const editorWordWrap = usePreferencesStore((s) => s.editorWordWrap);

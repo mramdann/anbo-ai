@@ -44,7 +44,7 @@ function titleFromUrl(url: string): string {
   try {
     return new URL(url).host || url;
   } catch {
-    return url || "browser";
+    return url || "Browser";
   }
 }
 

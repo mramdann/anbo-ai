@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type BrowserLiveDeps,
   buildBrowserLive,
+  isClaudeTuiReady,
   resolveAutomationTarget,
+  waitForClaudeTuiReady,
 } from "./useAiLiveBridge";
 
 const browserTab = (id: number, spaceId = "A"): Tab =>
@@ -16,8 +18,34 @@ const termTab = (id: number, spaceId = "A"): Tab =>
   ({ id, kind: "terminal", spaceId, title: "t" }) as unknown as Tab;
 
 afterEach(() => {
+  vi.useRealTimers();
   clearBrowserAutomationActivity(10);
   clearBrowserAutomationActivity(99);
+});
+
+describe("Claude TUI startup", () => {
+  it("recognizes stable help text and the Claude prompt", () => {
+    expect(isClaudeTuiReady("Press ? for shortcuts")).toBe(true);
+    expect(isClaudeTuiReady("Claude Code\n\n❯ ")).toBe(true);
+    expect(isClaudeTuiReady("PowerShell\nPS C:\\workspace>")).toBe(false);
+  });
+
+  it("waits while the terminal handle is not mounted yet", async () => {
+    vi.useFakeTimers();
+    let reads = 0;
+    const result = waitForClaudeTuiReady(
+      () => {
+        reads += 1;
+        return reads < 3 ? null : "? for shortcuts";
+      },
+      1_000,
+      10,
+    );
+
+    await vi.advanceTimersByTimeAsync(30);
+
+    await expect(result).resolves.toBe("ready");
+  });
 });
 
 function makeDeps(

@@ -1,5 +1,10 @@
 import { USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
 import { cn } from "@/lib/utils";
+import { browserEmbedSuspendAllPresentations } from "@/modules/browser/native";
+import {
+  resumeWindowPresentation,
+  suspendWindowPresentation,
+} from "@/lib/windowPresentation";
 import {
   Cancel01Icon,
   Copy01Icon,
@@ -41,7 +46,16 @@ export function WindowControls({ closeOnly = false }: Props) {
     <div className="flex h-full shrink-0 items-center gap-0.5 pr-1">
       {!closeOnly && (
         <>
-          <CtlButton ariaLabel="Minimize" onClick={() => void w.minimize()}>
+          <CtlButton
+            ariaLabel="Minimize"
+            onClick={() => {
+              suspendWindowPresentation();
+              void browserEmbedSuspendAllPresentations()
+                .catch(() => {})
+                .then(() => w.minimize())
+                .catch(() => resumeWindowPresentation());
+            }}
+          >
             <HugeiconsIcon icon={MinusSignIcon} size={12} strokeWidth={2} />
           </CtlButton>
           <CtlButton

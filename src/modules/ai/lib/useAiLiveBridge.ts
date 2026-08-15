@@ -7,7 +7,7 @@ import type { Tab } from "@/modules/tabs";
 import {
   findLeafCwd,
   type TerminalPaneHandle,
-  whenSessionReady,
+  writeToReadySession,
   writeToSession,
 } from "@/modules/terminal";
 import { invoke } from "@tauri-apps/api/core";
@@ -15,18 +15,27 @@ import { type RefObject, useEffect, useRef } from "react";
 import type { Live } from "../store/chatStore";
 import { redactSensitive } from "./redact";
 
-type TuiWaitResult = "ready" | "gone" | "timeout";
+type TuiWaitResult = "ready" | "timeout";
 
-async function waitForClaudeTuiReady(
+export function isClaudeTuiReady(buffer: string | null): boolean {
+  if (!buffer) return false;
+  return (
+    buffer.includes("shortcuts") ||
+    buffer.includes("? for") ||
+    (buffer.includes("Claude Code") && /(?:^|\n)\s*❯\s/u.test(buffer))
+  );
+}
+
+export async function waitForClaudeTuiReady(
   readBuf: () => string | null,
-  timeoutMs = 8000,
+  timeoutMs = 30_000,
+  pollMs = 120,
 ): Promise<TuiWaitResult> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const buf = readBuf();
-    if (buf === null) return "gone";
-    if (buf.includes("shortcuts") || buf.includes("? for")) return "ready";
-    await new Promise((r) => setTimeout(r, 120));
+    if (isClaudeTuiReady(buf)) return "ready";
+    await new Promise((r) => setTimeout(r, pollMs));
   }
   return "timeout";
 }
@@ -231,13 +240,12 @@ export function useAiLiveBridge(params: Params) {
         useManagedAgentsStore
           .getState()
           .register({ leafId, tabId, sessionId, task: oneLine, cwd });
-        const hooksReady = invoke("agent_enable_hooks", {
+        void invoke("agent_enable_hooks", {
           agent: "claude",
         }).catch(() => {});
         void (async () => {
-          await Promise.all([whenSessionReady(leafId), hooksReady]);
-          if (!writeToSession(leafId, "claude\r")) {
-            useManagedAgentsStore.getState().remove(leafId);
+          if (!(await writeToReadySession(leafId, "claude\r", 15_000))) {
+            useManagedAgentsStore.getState().setPhase(leafId, "attention");
             return;
           }
           const readBuf = () => {
@@ -246,16 +254,14 @@ export function useAiLiveBridge(params: Params) {
           };
           const result = await waitForClaudeTuiReady(readBuf);
           if (result !== "ready") {
-            if (result === "timeout") {
-              console.warn(
-                "[anbo] Claude TUI did not appear in time; aborting prompt send",
-              );
-            }
-            useManagedAgentsStore.getState().remove(leafId);
+            console.warn(
+              "[anbo] Claude TUI did not become ready; prompt is still pending",
+            );
+            useManagedAgentsStore.getState().setPhase(leafId, "attention");
             return;
           }
           if (!writeToSession(leafId, `\x1b[200~${trimmed}\x1b[201~`)) {
-            useManagedAgentsStore.getState().remove(leafId);
+            useManagedAgentsStore.getState().setPhase(leafId, "attention");
             return;
           }
           setTimeout(() => writeToSession(leafId, "\r"), 120);

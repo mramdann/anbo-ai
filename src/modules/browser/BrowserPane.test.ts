@@ -94,11 +94,18 @@ describe("BrowserPane native layering", () => {
     expect(src).not.toContain("requestAnimationFrame(tick)");
   });
 
+  it("keeps native browser children hidden until the restore cover is removed", () => {
+    expect(src).toContain("isWindowPresentationCovered()");
+    expect(src).toContain("subscribeWindowPresentation(syncBounds)");
+  });
+
   it("demotes hidden browsers immediately and preserves their visible bounds across hosts", () => {
     expect(src).toContain("const lastVisibleBrowserBounds = new Map");
     expect(src).toContain("lastVisibleBrowserBounds.get(id) ?? null");
     expect(src).toContain("lastVisibleBrowserBounds.set(id, bounds)");
-    expect(src).toMatch(/useLayoutEffect\(\(\) => \{[\s\S]*?syncBounds\(\);[\s\S]*?if \(!visible\)/);
+    expect(src).toMatch(
+      /useLayoutEffect\(\(\) => \{[\s\S]*?syncBounds\(\);[\s\S]*?if \(!visible\)/,
+    );
     expect(src).not.toContain("scheduleNativeBrowserPresentationSync");
   });
 });

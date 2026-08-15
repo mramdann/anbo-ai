@@ -102,7 +102,7 @@ describe("serializeTabs", () => {
     expect(JSON.stringify(serialized)).not.toContain("resumeOnStart");
   });
 
-  it("does not persist resume metadata before the launch command is sent", () => {
+  it("does not persist resume metadata before a real session id is discovered", () => {
     const [serialized] = serializeTabs([
       term({
         paneTree: {
@@ -281,6 +281,15 @@ describe("hydrateTabs", () => {
       "localhost:5173",
       "README.md",
     ]);
+  });
+
+  it("hydrates a blank browser tab with a capitalized default title", () => {
+    const [restored] = hydrateTabs(
+      [{ kind: "browser", url: "" }],
+      "s1",
+      counter(),
+    );
+    expect(restored?.title).toBe("Browser");
   });
 
   it("migrates legacy kind \"preview\" tabs to browser", () => {

@@ -192,6 +192,26 @@ html[data-chrome="borderless"] #settings-root {
   background: var(--background);
 }
 
+/* Windows can expose several intermediate layouts while minimizing/restoring
+ * a borderless window. Freeze the React layout at its last stable geometry so
+ * responsive panels never collapse against the transient thumbnail-sized
+ * viewport, and keep every transition frame behind an app-colored cover. */
+html[data-window-presentation] #root {
+  width: var(--anbo-stable-viewport-width, 100%);
+  min-width: var(--anbo-stable-viewport-width, 100%);
+  height: var(--anbo-stable-viewport-height, 100%);
+  min-height: var(--anbo-stable-viewport-height, 100%);
+}
+
+html[data-window-presentation] #root::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  pointer-events: none;
+  background: var(--background);
+}
+
 html[data-native-browser-live="true"] #root,
 html[data-native-browser-live="true"] .anbo-app-shell,
 html[data-native-browser-live="true"] .anbo-workspace-dockview,

@@ -2,6 +2,7 @@ import { cn } from "@/lib/utils";
 import type { BrowserTab, Tab } from "@/modules/tabs";
 import { useEffect, useRef } from "react";
 import { BrowserPane, type BrowserPaneHandle } from "./BrowserPane";
+import type { BrowserWorkspaceContext } from "./native";
 
 type Props = {
   tabs: Tab[];
@@ -9,6 +10,7 @@ type Props = {
   onUrlChange: (id: number, url: string) => void;
   onTitleChange: (id: number, title: string) => void;
   onLoadingChange: (id: number, loading: boolean) => void;
+  getWorkspaceContext: (spaceId: string) => BrowserWorkspaceContext;
   registerHandle: (
     id: number,
     handle: BrowserPaneHandle | null,
@@ -36,6 +38,7 @@ export function BrowserStack({
   onUrlChange,
   onTitleChange,
   onLoadingChange,
+  getWorkspaceContext,
   registerHandle,
 }: Props) {
   const browserTabs = tabs.filter(
@@ -127,6 +130,7 @@ export function BrowserStack({
     <div className="relative h-full w-full">
       {browserTabs.map((t) => {
         const visible = t.id === activeId;
+        const context = getWorkspaceContext(t.spaceId);
         return (
           <div
             key={t.id}
@@ -141,6 +145,8 @@ export function BrowserStack({
               id={t.id}
               url={t.url}
               visible={visible}
+              workspaceRoot={context.root}
+              workspace={context.workspace}
               initialLoading={browserPaneInitialLoading(t)}
               onUrlChange={getUrlCallback(t.id)}
               onTitleChange={getTitleCallback(t.id)}

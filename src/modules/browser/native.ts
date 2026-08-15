@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { WorkspaceEnv } from "@/modules/workspace";
 
 export const BROWSER_NAV_EVENT = "anbo:browser-nav";
 
@@ -18,6 +19,17 @@ export type EmbedBounds = {
 };
 
 export type BrowserAction = "back" | "forward" | "reload" | "stop";
+
+export type BrowserWorkspaceContext = {
+  root: string | null;
+  workspace: WorkspaceEnv;
+};
+
+export type BrowserDataUsage = {
+  bytes: number;
+  files: number;
+  complete: boolean;
+};
 
 const BROWSER_INSTANCE_ID = crypto.randomUUID();
 const browserOwnerIds = new Map<number, string>();
@@ -120,7 +132,11 @@ export function browserPresentationBounds(
 export function isSupportedBrowserUrl(value: string): boolean {
   try {
     const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
+    return (
+      url.protocol === "http:" ||
+      url.protocol === "https:" ||
+      url.protocol === "file:"
+    );
   } catch {
     return false;
   }
@@ -145,12 +161,23 @@ export function browserUrlError(
 ): string | null {
   if (!value) return null;
   if (!isSupportedBrowserUrl(value)) {
-    return "Only HTTP(S) URLs can load in the browser.";
+    return "Only HTTP(S) URLs and files from the active workspace can load in the browser.";
   }
   if (isSelfReferenceUrl(value, appUrl)) {
     return "Anbo cannot be opened inside its own browser pane.";
   }
   return null;
+}
+
+export function isReportableBrowserNavUrl(
+  value: string,
+  appUrl = window.location.href,
+): boolean {
+  return (
+    value.length > 0 &&
+    isSupportedBrowserUrl(value) &&
+    !isSelfReferenceUrl(value, appUrl)
+  );
 }
 
 export async function browserEmbedUpdate(
@@ -159,6 +186,7 @@ export async function browserEmbedUpdate(
   url: string,
   bounds: EmbedBounds,
   visible: boolean,
+  context: BrowserWorkspaceContext,
 ): Promise<void> {
   await ensureBrowserSession();
   await invoke("browser_embed_update", {
@@ -166,6 +194,8 @@ export async function browserEmbedUpdate(
     instanceId: BROWSER_INSTANCE_ID,
     ownerId,
     url,
+    workspaceRoot: context.root,
+    workspace: context.workspace,
     bounds,
     visible,
   });
@@ -175,6 +205,7 @@ export async function browserEmbedNavigate(
   tabId: number,
   ownerId: string,
   url: string,
+  context: BrowserWorkspaceContext,
 ): Promise<void> {
   await ensureBrowserSession();
   await invoke("browser_embed_navigate", {
@@ -182,7 +213,17 @@ export async function browserEmbedNavigate(
     instanceId: BROWSER_INSTANCE_ID,
     ownerId,
     url,
+    workspaceRoot: context.root,
+    workspace: context.workspace,
   });
+}
+
+export function browserDataUsage(): Promise<BrowserDataUsage> {
+  return invoke<BrowserDataUsage>("browser_data_usage");
+}
+
+export function browserClearData(): Promise<void> {
+  return invoke<void>("browser_clear_data");
 }
 
 export async function browserEmbedDispatch(
@@ -285,6 +326,11 @@ export async function browserEmbedSuspend(
     instanceId: BROWSER_INSTANCE_ID,
     ownerId,
   });
+}
+
+export async function browserEmbedSuspendAllPresentations(): Promise<void> {
+  await ensureBrowserSession();
+  await invoke("browser_embed_suspend_all_presentations");
 }
 
 export async function browserEmbedRelease(

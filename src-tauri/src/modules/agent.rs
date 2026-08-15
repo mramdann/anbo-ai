@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use std::io::{Read, Write};
 
 // How a given agent's hook delivers our OSC 777 marker into the terminal.
 #[derive(Clone, Copy)]
@@ -61,26 +62,34 @@ const AGENTS: &[AgentSpec] = &[
 
 const PI_EXTENSION_DIR: &str = ".pi/agent/extensions";
 const PI_EXTENSION_FILE: &str = "anbo-notifications.ts";
-const PI_EXTENSION_MARKER: &str = "anbo-pi-notifications-v1";
-const PI_STATUS_NEEDLES: [&str; 6] = [
+const PI_EXTENSION_MARKER: &str = "anbo-pi-notifications-v2";
+const PI_STATUS_NEEDLES: [&str; 8] = [
     PI_EXTENSION_MARKER,
     "agent_start",
     "agent_settled",
     "notify;Anbo;pi;${event}",
+    "ctx.sessionManager.getSessionId()",
+    "session;${sessionId}",
     "emit(\"working\")",
     "emit(\"finished\")",
 ];
-const PI_EXTENSION: &str = r#"// anbo-pi-notifications-v1
+const PI_EXTENSION: &str = r#"// anbo-pi-notifications-v2
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
-  const emit = (event: "working" | "finished") => {
+  const emit = (event: string) => {
     if (process.env.ANBO_TERMINAL) {
       process.stdout.write(`\u001b]777;notify;Anbo;pi;${event}\u0007`);
     }
   };
 
-  pi.on("agent_start", () => emit("working"));
+  pi.on("agent_start", (_event, ctx) => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) {
+      emit(`session;${sessionId}`);
+    }
+    emit("working");
+  });
   pi.on("agent_settled", () => emit("finished"));
 }
 "#;
@@ -102,7 +111,12 @@ export const AnboNotifications = async () => ({
 // emitted (legacy /dev/tty Claude, current TerminalSequence, Osc, Windows
 // helper). Used to prune our own groups before reinserting so installs are
 // idempotent and migrate older markers.
-const OWNED_MARKERS: [&str; 3] = ["notify;Anbo;", "anbo;notify", "__anbo_notify"];
+const OWNED_MARKERS: [&str; 4] = [
+    "notify;Anbo;",
+    "anbo;notify",
+    "__anbo_notify",
+    "__anbo_hook",
+];
 
 fn find(agent: &str) -> Result<&'static AgentSpec, String> {
     AGENTS
@@ -112,46 +126,30 @@ fn find(agent: &str) -> Result<&'static AgentSpec, String> {
 }
 
 fn hook_command(spec: &AgentSpec, event: &str) -> String {
-    match spec.delivery {
-        Delivery::TerminalSequence => format!(
-            r#"[ -n "$ANBO_TERMINAL" ] && printf '{{"terminalSequence":"\\u001b]777;notify;Anbo;{event}\\u0007"}}' || true"#
-        ),
-        Delivery::Osc => osc_command(spec.agent, event),
-    }
+    hook_helper_command(spec.agent, event)
 }
 
-// Marker to the tty, then `{}` on stdout: Codex/Gemini require a JSON no-op.
 #[cfg(unix)]
-fn osc_command(agent: &str, event: &str) -> String {
-    format!(
-        r#"[ -n "$ANBO_TERMINAL" ] && printf '\033]777;notify;Anbo;{agent};{event}\007' > /dev/tty; printf '{{}}'"#
-    )
+fn quote_executable(path: &str) -> String {
+    format!("'{}'", path.replace('\'', "'\"'\"'"))
 }
 
 #[cfg(windows)]
-fn osc_command(agent: &str, event: &str) -> String {
+fn quote_executable(path: &str) -> String {
+    format!(r#""{path}""#)
+}
+
+fn hook_helper_command(agent: &str, event: &str) -> String {
     let exe = std::env::current_exe()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "anbo.exe".to_string());
-    format!(r#""{exe}" __anbo_notify {agent} {event}"#)
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "anbo".to_string());
+    format!("{} __anbo_hook {agent} {event}", quote_executable(&exe))
 }
 
 // The stable substring that proves a given (agent, event) hook is installed.
 // Kept in sync with hook_command so status reflects what enable writes.
 fn status_needle(spec: &AgentSpec, event: &str) -> String {
-    match spec.delivery {
-        Delivery::TerminalSequence => format!("notify;Anbo;{event}"),
-        Delivery::Osc => {
-            #[cfg(unix)]
-            {
-                format!("notify;Anbo;{};{event}", spec.agent)
-            }
-            #[cfg(windows)]
-            {
-                format!("__anbo_notify {} {event}", spec.agent)
-            }
-        }
-    }
+    format!("__anbo_hook {} {event}", spec.agent)
 }
 
 fn is_ours(group: &Value) -> bool {
@@ -333,24 +331,66 @@ pub fn agent_enable_hooks(agent: String) -> Result<(), String> {
     write_atomic(&path, &out)
 }
 
-// The raw OSC 777 bytes the detector parses. Kept in one place so the Windows
-// CONOUT$ path can't drift from what the Unix /dev/tty hook emits.
-#[cfg(any(windows, test))]
-fn conout_marker(agent: &str, event: &str) -> String {
+const HOOK_INPUT_MAX_BYTES: u64 = 64 * 1024;
+
+fn terminal_marker(agent: &str, event: &str) -> String {
     format!("\x1b]777;notify;Anbo;{agent};{event}\x07")
 }
 
-// Windows has no /dev/tty: the hook calls `anbo.exe __anbo_notify ...` and we
-// write the marker into the ConPTY console. GUI-subsystem release inherits no
-// console, so attach to the hook runner's first.
+fn valid_exact_session_id(agent: &str, session_id: &str) -> bool {
+    if agent == "opencode" {
+        return session_id.strip_prefix("ses_").is_some_and(|tail| {
+            !tail.is_empty() && tail.chars().all(|c| c.is_ascii_alphanumeric())
+        });
+    }
+    if session_id.len() != 36 {
+        return false;
+    }
+    session_id
+        .bytes()
+        .enumerate()
+        .all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            14 => matches!(byte, b'1'..=b'5'),
+            19 => matches!(byte.to_ascii_lowercase(), b'8' | b'9' | b'a' | b'b'),
+            _ => byte.is_ascii_hexdigit(),
+        })
+}
+
+fn hook_session_id_from_reader(reader: impl Read, agent: &str) -> Option<String> {
+    let mut input = Vec::new();
+    reader
+        .take(HOOK_INPUT_MAX_BYTES + 1)
+        .read_to_end(&mut input)
+        .ok()?;
+    if input.len() as u64 > HOOK_INPUT_MAX_BYTES {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(&input).ok()?;
+    let session_id = value.get("session_id")?.as_str()?;
+    valid_exact_session_id(agent, session_id).then(|| session_id.to_string())
+}
+
+fn hook_terminal_sequence(agent: &str, event: &str, session_id: Option<&str>) -> String {
+    let mut sequence = String::new();
+    if let Some(session_id) = session_id {
+        sequence.push_str(&terminal_marker(agent, &format!("session;{session_id}")));
+    }
+    sequence.push_str(&terminal_marker(agent, event));
+    sequence
+}
+
+#[cfg(unix)]
+fn emit_tty_sequence(sequence: &str) {
+    if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+        let _ = tty.write_all(sequence.as_bytes());
+    }
+}
+
 #[cfg(windows)]
-pub fn emit_conout_marker(agent: &str, event: &str) {
-    use std::io::Write;
+fn emit_tty_sequence(sequence: &str) {
     use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 
-    if std::env::var_os("ANBO_TERMINAL").is_none() {
-        return;
-    }
     unsafe {
         AttachConsole(ATTACH_PARENT_PROCESS);
     }
@@ -359,7 +399,41 @@ pub fn emit_conout_marker(agent: &str, event: &str) {
         .write(true)
         .open("CONOUT$")
     {
-        let _ = f.write_all(conout_marker(agent, event).as_bytes());
+        let _ = f.write_all(sequence.as_bytes());
+    }
+}
+
+pub fn run_hook_helper(agent: &str, event: &str) {
+    let spec = find(agent).ok();
+    let valid_event = spec.is_some_and(|candidate| {
+        candidate
+            .events
+            .iter()
+            .any(|(_, emitted)| *emitted == event)
+    });
+    let output = if std::env::var_os("ANBO_TERMINAL").is_none() || !valid_event {
+        "{}".to_string()
+    } else {
+        let session_id = hook_session_id_from_reader(std::io::stdin().lock(), agent);
+        let sequence = hook_terminal_sequence(agent, event, session_id.as_deref());
+        match spec.map(|candidate| candidate.delivery) {
+            Some(Delivery::TerminalSequence) => json!({ "terminalSequence": sequence }).to_string(),
+            Some(Delivery::Osc) => {
+                emit_tty_sequence(&sequence);
+                "{}".to_string()
+            }
+            None => "{}".to_string(),
+        }
+    };
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(output.as_bytes());
+    let _ = stdout.flush();
+}
+
+#[cfg(windows)]
+pub fn emit_conout_marker(agent: &str, event: &str) {
+    if std::env::var_os("ANBO_TERMINAL").is_some() {
+        emit_tty_sequence(&terminal_marker(agent, event));
     }
 }
 
@@ -420,10 +494,9 @@ mod tests {
         assert_eq!(hook_count(&out, "UserPromptSubmit"), 1);
         assert_eq!(hook_count(&out, "Notification"), 1);
         assert_eq!(hook_count(&out, "Stop"), 1);
-        assert!(command(&out, "Notification", 0).contains("notify;Anbo;attention"));
-        assert!(command(&out, "Stop", 0).contains("notify;Anbo;finished"));
-        assert!(command(&out, "UserPromptSubmit", 0).contains("notify;Anbo;working"));
-        assert!(command(&out, "Stop", 0).contains("terminalSequence"));
+        assert!(command(&out, "Notification", 0).contains("__anbo_hook claude attention"));
+        assert!(command(&out, "Stop", 0).contains("__anbo_hook claude finished"));
+        assert!(command(&out, "UserPromptSubmit", 0).contains("__anbo_hook claude working"));
         assert!(!command(&out, "Stop", 0).contains("/dev/tty"));
     }
 
@@ -438,36 +511,57 @@ mod tests {
     }
 
     #[test]
-    fn conout_marker_matches_detector_format() {
+    fn terminal_marker_matches_detector_format() {
         // Exactly the bytes pty/agent_detect parses (ESC ] 777 ; ... BEL).
         assert_eq!(
-            conout_marker("gemini", "attention"),
+            terminal_marker("gemini", "attention"),
             "\u{1b}]777;notify;Anbo;gemini;attention\u{7}"
         );
     }
 
-    #[cfg(unix)]
     #[test]
-    fn codex_emits_four_field_dev_tty_marker() {
+    fn hook_helper_commands_are_agent_and_event_scoped() {
         let out = merge_hooks(json!({}), spec("codex"));
         assert_eq!(hook_count(&out, "UserPromptSubmit"), 1);
         assert_eq!(hook_count(&out, "PermissionRequest"), 1);
         assert_eq!(hook_count(&out, "Stop"), 1);
         let stop = command(&out, "Stop", 0);
-        assert!(stop.contains("notify;Anbo;codex;finished"));
-        assert!(stop.contains("> /dev/tty"));
-        // Codex Stop rejects empty/non-JSON stdout; the hook must emit a no-op.
-        assert!(stop.contains("printf '{}'"));
-        assert!(!stop.contains("terminalSequence"));
+        assert!(stop.contains("__anbo_hook codex finished"));
     }
 
-    #[cfg(unix)]
     #[test]
-    fn gemini_uses_matcher_and_named_marker() {
+    fn gemini_uses_matcher_and_hook_helper() {
         let out = merge_hooks(json!({}), spec("gemini"));
         assert_eq!(out["hooks"]["BeforeAgent"][0]["matcher"], "*");
-        assert!(command(&out, "AfterAgent", 0).contains("notify;Anbo;gemini;finished"));
-        assert!(command(&out, "Notification", 0).contains("notify;Anbo;gemini;attention"));
+        assert!(command(&out, "AfterAgent", 0).contains("__anbo_hook gemini finished"));
+        assert!(command(&out, "Notification", 0).contains("__anbo_hook gemini attention"));
+    }
+
+    #[test]
+    fn hook_input_yields_only_valid_real_session_ids() {
+        let id = "00000000-0000-4000-8000-000000000001";
+        let input = format!(r#"{{"session_id":"{id}"}}"#);
+        assert_eq!(
+            hook_session_id_from_reader(input.as_bytes(), "claude").as_deref(),
+            Some(id)
+        );
+        assert!(
+            hook_session_id_from_reader(br#"{"session_id":"../../bad"}"#.as_slice(), "claude")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn hook_sequence_reports_session_before_activity() {
+        let id = "00000000-0000-4000-8000-000000000001";
+        assert_eq!(
+            hook_terminal_sequence("claude", "working", Some(id)),
+            format!(
+                "{}{}",
+                terminal_marker("claude", &format!("session;{id}")),
+                terminal_marker("claude", "working")
+            )
+        );
     }
 
     #[test]
@@ -568,7 +662,7 @@ mod tests {
         });
         let out = merge_hooks(legacy, spec("claude"));
         assert_eq!(hook_count(&out, "Notification"), 1);
-        assert!(command(&out, "Notification", 0).contains("terminalSequence"));
+        assert!(command(&out, "Notification", 0).contains("__anbo_hook claude attention"));
         assert!(!command(&out, "Notification", 0).contains("/dev/tty"));
     }
 
@@ -606,7 +700,7 @@ mod tests {
         });
         let out = merge_hooks(input, spec("claude"));
         assert_eq!(hook_count(&out, "Notification"), 1);
-        assert!(command(&out, "Notification", 0).contains("notify;Anbo;attention"));
+        assert!(command(&out, "Notification", 0).contains("__anbo_hook claude attention"));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+import { subscribeWindowPresentation } from "@/lib/windowPresentation";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   type RefObject,
@@ -184,27 +185,35 @@ export function useSidebarPanel(
     [],
   );
 
+  const restoreSidebarNow = useCallback(() => {
+    if (sidebarRestoreTimerRef.current) {
+      window.clearTimeout(sidebarRestoreTimerRef.current);
+      sidebarRestoreTimerRef.current = 0;
+    }
+    const panel = sidebarRef.current;
+    if (
+      !panel ||
+      !shouldRestoreSidebar(
+        collapsedRef.current,
+        panel.isCollapsed(),
+        document.visibilityState === "visible",
+        window.innerWidth,
+      )
+    ) {
+      return;
+    }
+    expandSidebar(panel, sidebarWidthRef.current);
+  }, []);
+
   const scheduleSidebarRestore = useCallback(() => {
     if (sidebarRestoreTimerRef.current) {
       window.clearTimeout(sidebarRestoreTimerRef.current);
     }
     sidebarRestoreTimerRef.current = window.setTimeout(() => {
       sidebarRestoreTimerRef.current = 0;
-      const panel = sidebarRef.current;
-      if (
-        !panel ||
-        !shouldRestoreSidebar(
-          collapsedRef.current,
-          panel.isCollapsed(),
-          document.visibilityState === "visible",
-          window.innerWidth,
-        )
-      ) {
-        return;
-      }
-      expandSidebar(panel, sidebarWidthRef.current);
+      restoreSidebarNow();
     }, 120);
-  }, []);
+  }, [restoreSidebarNow]);
 
   useEffect(() => {
     let disposed = false;
@@ -216,6 +225,9 @@ export function useSidebarPanel(
       if (document.visibilityState === "visible") scheduleSidebarRestore();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
+    const unsubscribePresentation = subscribeWindowPresentation((next) => {
+      if (next === "ready") restoreSidebarNow();
+    });
     void getCurrentWindow()
       .onResized(scheduleSidebarRestore)
       .then((unlisten) => {
@@ -225,10 +237,11 @@ export function useSidebarPanel(
     return () => {
       disposed = true;
       unlistenResize?.();
+      unsubscribePresentation();
       window.removeEventListener("resize", scheduleSidebarRestore);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [scheduleSidebarRestore]);
+  }, [restoreSidebarNow, scheduleSidebarRestore]);
 
   useEffect(() => {
     return () => {

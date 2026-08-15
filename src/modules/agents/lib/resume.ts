@@ -69,7 +69,6 @@ export function createAgentResumeStates(
   agent: AgentLauncherId,
   command: string,
   instances: AgentInstanceCount,
-  allocateSessionId: () => string = () => crypto.randomUUID(),
 ): Array<AgentResumeState | undefined> {
   if (!isResumableAgentId(agent) || !canAttachSession(agent, command)) {
     return Array.from({ length: instances }, () => undefined);
@@ -85,7 +84,6 @@ export function createAgentResumeStates(
     agent,
     armed: false,
     command,
-    sessionId: allocateSessionId(),
   }));
 }
 
@@ -117,11 +115,10 @@ export function normalizePersistedAgentResume(
 }
 
 export function buildAgentLaunchCommand(
-  resume: PersistedAgentResume | undefined,
+  _resume: PersistedAgentResume | undefined,
   fallbackCommand: string,
 ): string {
-  if (!resume?.sessionId) return fallbackCommand;
-  return `${resume.command} --session-id ${resume.sessionId}`;
+  return fallbackCommand;
 }
 
 export function buildAgentResumeCommand(

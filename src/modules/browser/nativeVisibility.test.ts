@@ -38,6 +38,7 @@ describe("native browser layout signals", () => {
     expect(source).toContain('window.addEventListener("scroll"');
     expect(source).toContain('document.addEventListener("pointermove"');
     expect(source).toContain('document.addEventListener("visibilitychange"');
+    expect(source).toContain("subscribeWindowPresentation");
     expect(source).toContain("const LAYOUT_FALLBACK_MS = 1_500");
   });
 

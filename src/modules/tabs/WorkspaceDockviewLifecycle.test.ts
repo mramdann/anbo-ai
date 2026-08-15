@@ -21,4 +21,11 @@ describe("WorkspaceDockview visual handoff", () => {
       /useLayoutEffect\(\(\) => \{\s*if \(!api\) return;\s*const panel = api\.getPanel\(workspaceDockviewPanelId\(props\.activeId\)\)/,
     );
   });
+
+  it("ignores minimized geometry and forces one stable layout on restore", () => {
+    expect(source).toContain("disableAutoResizing");
+    expect(source).toContain("isWindowPresentationBlocked()");
+    expect(source).toContain("api.layout(width, height, true)");
+    expect(source).toContain("subscribeWindowPresentation");
+  });
 });

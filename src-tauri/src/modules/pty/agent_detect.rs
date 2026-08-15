@@ -11,6 +11,26 @@ const DEFAULT_AGENTS: &[&str] = &["claude", "codex", "gemini", "pi", "opencode",
 // (Claude) or 4-field `notify;Anbo;<agent>;<event>` (Codex/Gemini/Pi).
 const ANBO_MARKER: &[u8] = b"notify;Anbo;";
 
+fn valid_session_id(agent: &str, session_id: &str) -> bool {
+    if agent == "opencode" {
+        return session_id.strip_prefix("ses_").is_some_and(|tail| {
+            !tail.is_empty() && tail.chars().all(|c| c.is_ascii_alphanumeric())
+        });
+    }
+    if session_id.len() != 36 {
+        return false;
+    }
+    session_id
+        .bytes()
+        .enumerate()
+        .all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            14 => matches!(byte, b'1'..=b'5'),
+            19 => matches!(byte.to_ascii_lowercase(), b'8' | b'9' | b'a' | b'b'),
+            _ => byte.is_ascii_hexdigit(),
+        })
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
     Ground,
@@ -208,22 +228,18 @@ impl AgentDetector {
                 None => ("claude", tail),
             };
             // Self-arms when no shell preexec fired (bash, Windows, tmux).
-            if agent == "opencode" {
-                if let Some(session_id) = event.strip_prefix(b"session;") {
-                    let Ok(session_id) = std::str::from_utf8(session_id) else {
-                        return;
-                    };
-                    if session_id.strip_prefix("ses_").is_some_and(|suffix| {
-                        !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_alphanumeric())
-                    }) {
-                        self.ensure_armed(agent, emit);
-                        emit(Transition::Session {
-                            agent: agent.to_string(),
-                            session_id: session_id.to_string(),
-                        });
-                    }
+            if let Some(session_id) = event.strip_prefix(b"session;") {
+                let Ok(session_id) = std::str::from_utf8(session_id) else {
                     return;
+                };
+                if valid_session_id(agent, session_id) {
+                    self.ensure_armed(agent, emit);
+                    emit(Transition::Session {
+                        agent: agent.to_string(),
+                        session_id: session_id.to_string(),
+                    });
                 }
+                return;
             }
             match event {
                 b"working" => {
@@ -460,6 +476,34 @@ mod tests {
         assert!(run(
             &mut detector,
             &osc("777;notify;Anbo;opencode;session;../../bad")
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn uuid_session_marker_supports_hook_backed_agents() {
+        let id = "00000000-0000-4000-8000-000000000001";
+        for agent in ["claude", "gemini", "pi"] {
+            let mut detector = AgentDetector::new();
+            assert_eq!(
+                run(
+                    &mut detector,
+                    &osc(&format!("777;notify;Anbo;{agent};session;{id}")),
+                ),
+                vec![
+                    started(agent),
+                    Transition::Session {
+                        agent: agent.into(),
+                        session_id: id.into(),
+                    },
+                ]
+            );
+        }
+
+        let mut detector = AgentDetector::new();
+        assert!(run(
+            &mut detector,
+            &osc("777;notify;Anbo;claude;session;../../bad")
         )
         .is_empty());
     }

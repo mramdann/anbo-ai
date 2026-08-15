@@ -1,17 +1,17 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use std::sync::{Mutex, OnceLock};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tauri::webview::{Color, NewWindowResponse, PageLoadEvent, WebviewBuilder};
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, Rect, WebviewUrl};
 use url::Url;
 
 use crate::modules::browser_automation::registry::{get_tab_lock, remove_tab_lock};
+use crate::modules::workspace::{authorize_existing_path, WorkspaceEnv, WorkspaceRegistry};
 
 #[cfg(windows)]
 use base64::Engine;
-#[cfg(windows)]
-use std::sync::Arc;
 #[cfg(windows)]
 use webview2_com::{
     CapturePreviewCompletedHandler,
@@ -25,8 +25,9 @@ use windows::Win32::{
         IStream, StructuredStorage::CreateStreamOnHGlobal, STREAM_SEEK_END, STREAM_SEEK_SET,
     },
     UI::WindowsAndMessaging::{
-        GetClientRect, SetWindowPos, HWND_BOTTOM, HWND_TOP, SET_WINDOW_POS_FLAGS,
-        SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
+        GetClientRect, SetWindowPos, ShowWindow, HWND_BOTTOM, HWND_TOP, SET_WINDOW_POS_FLAGS,
+        SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SW_HIDE,
+        SW_SHOWNOACTIVATE,
     },
 };
 
@@ -70,10 +71,11 @@ pub struct PunchHole {
 
 type EmbedKey = (i64, String);
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 struct ActiveEmbed {
     instance_id: String,
     owner_id: String,
+    local_root: Arc<Mutex<Option<PathBuf>>>,
 }
 
 static CLOSED_EMBEDS: OnceLock<Mutex<HashSet<EmbedKey>>> = OnceLock::new();
@@ -169,25 +171,66 @@ fn ensure_current_instance(instance_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn parse_pane_url(value: &str) -> Result<Url, String> {
-    let target = Url::parse(value).map_err(|error| format!("invalid URL: {error}"))?;
-    if !matches!(target.scheme(), "http" | "https") {
-        return Err("only HTTP(S) URLs can load in the browser".into());
+fn resolve_local_root(
+    registry: &WorkspaceRegistry,
+    workspace_root: Option<&str>,
+    workspace: &WorkspaceEnv,
+) -> Result<Option<PathBuf>, String> {
+    let Some(root) = workspace_root
+        .map(str::trim)
+        .filter(|root| !root.is_empty())
+    else {
+        return Ok(None);
+    };
+    let canonical = authorize_existing_path(registry, root, workspace)?;
+    if !canonical.is_dir() {
+        return Err("browser workspace root is not a directory".into());
     }
-    Ok(target)
+    Ok(Some(canonical))
 }
 
-fn navigation_allowed(target: &Url, app_url: Option<&Url>) -> bool {
+fn parse_pane_url(value: &str, local_root: Option<&Path>) -> Result<Url, String> {
+    let target = Url::parse(value).map_err(|error| format!("invalid URL: {error}"))?;
+    if matches!(target.scheme(), "http" | "https") {
+        return Ok(target);
+    }
+    if target.scheme() != "file" {
+        return Err("only HTTP(S) URLs and workspace files can load in the browser".into());
+    }
+    let root = local_root.ok_or_else(|| "local files require an active workspace".to_string())?;
+    let requested = target
+        .to_file_path()
+        .map_err(|_| "invalid local file URL".to_string())?;
+    let canonical = std::fs::canonicalize(&requested)
+        .map_err(|error| format!("local file is not accessible: {error}"))?;
+    if !canonical.is_file() {
+        return Err("local browser target is not a file".into());
+    }
+    if !canonical.starts_with(root) {
+        return Err("local file is outside the active workspace".into());
+    }
+    Url::from_file_path(&canonical).map_err(|_| "could not create local file URL".into())
+}
+
+fn navigation_allowed(target: &Url, app_url: Option<&Url>, local_root: Option<&Path>) -> bool {
+    if target.scheme() == "file" {
+        let Some(root) = local_root else {
+            return false;
+        };
+        let Ok(requested) = target.to_file_path() else {
+            return false;
+        };
+        let Ok(canonical) = std::fs::canonicalize(requested) else {
+            return false;
+        };
+        return canonical.is_file() && canonical.starts_with(root);
+    }
     if !matches!(target.scheme(), "http" | "https") {
         return false;
     }
     !app_url.is_some_and(|app| {
         matches!(app.scheme(), "http" | "https") && target.origin() == app.origin()
     })
-}
-
-fn popup_allowed(target: &Url, app_url: Option<&Url>) -> bool {
-    target.as_str() == "about:blank" || navigation_allowed(target, app_url)
 }
 
 fn is_active(tab_id: i64, instance_id: &str, owner_id: Option<&str>) -> bool {
@@ -263,16 +306,27 @@ fn spawn_browser_child(
     position: PhysicalPosition<i32>,
     size: PhysicalSize<i32>,
     visible: bool,
+    local_root: Arc<Mutex<Option<PathBuf>>>,
 ) -> Result<(), String> {
     let app = window.app_handle();
     let app_url = app
         .get_webview(window.label())
         .and_then(|webview| webview.url().ok());
     let navigation_app_url = app_url.clone();
-    let popup_app_url = app_url;
+    let popup_app_url = app_url.clone();
+    let event_app_url = app_url.clone();
+    let title_app_url = app_url;
     let navigation_app = app.clone();
+    let popup_app = app.clone();
+    let popup_label = embed_label(tab_id);
     let title_app = app.clone();
+    let browser_data_dir = super::data::profile_dir(app)?;
+    let navigation_local_root = local_root.clone();
+    let popup_local_root = local_root.clone();
+    let event_local_root = local_root.clone();
+    let title_local_root = local_root;
     let builder = WebviewBuilder::new(embed_label(tab_id), WebviewUrl::External(target))
+        .data_directory(browser_data_dir)
         // Opaque background so a not-yet-painted webview (new tab, mid-load) shows
         // a solid color instead of a transparent hole through to the desktop.
         .background_color(Color(255, 255, 255, 255))
@@ -310,15 +364,38 @@ fn spawn_browser_child(
     #[cfg(not(target_os = "macos"))]
     let builder = builder.transparent(true);
     let builder = builder
-        .on_navigation(move |target| navigation_allowed(target, navigation_app_url.as_ref()))
+        .on_navigation(move |target| {
+            let root = navigation_local_root.lock().ok();
+            navigation_allowed(
+                target,
+                navigation_app_url.as_ref(),
+                root.as_deref().and_then(Option::as_deref),
+            )
+        })
         .on_new_window(move |target, _features| {
-            if popup_allowed(&target, popup_app_url.as_ref()) {
-                NewWindowResponse::Allow
-            } else {
-                NewWindowResponse::Deny
+            let root = popup_local_root.lock().ok();
+            if navigation_allowed(
+                &target,
+                popup_app_url.as_ref(),
+                root.as_deref().and_then(Option::as_deref),
+            ) {
+                if let Some(webview) = popup_app.get_webview(&popup_label) {
+                    let _ = webview.navigate(target);
+                }
             }
+            // Native popup windows have no Anbo tab owner. Keep the request in
+            // the registered tab instead of creating an unmanaged webview.
+            NewWindowResponse::Deny
         })
         .on_page_load(move |_webview, payload| {
+            let root = event_local_root.lock().ok();
+            if !navigation_allowed(
+                payload.url(),
+                event_app_url.as_ref(),
+                root.as_deref().and_then(Option::as_deref),
+            ) {
+                return;
+            }
             let Some(owner_id) = active_owner(tab_id) else {
                 return;
             };
@@ -341,14 +418,24 @@ fn spawn_browser_child(
             let Some(owner_id) = active_owner(tab_id) else {
                 return;
             };
-            let url = webview.url().map(|url| url.to_string()).unwrap_or_default();
+            let Ok(url) = webview.url() else {
+                return;
+            };
+            let root = title_local_root.lock().ok();
+            if !navigation_allowed(
+                &url,
+                title_app_url.as_ref(),
+                root.as_deref().and_then(Option::as_deref),
+            ) {
+                return;
+            }
             let _ = title_app.emit(
                 BROWSER_NAV_EVENT,
                 BrowserNavEvent {
                     tab_id,
                     owner_id,
                     kind: "title",
-                    url,
+                    url: url.to_string(),
                     title: Some(title),
                 },
             );
@@ -549,6 +636,11 @@ fn embed_window_pos_flags() -> SET_WINDOW_POS_FLAGS {
 }
 
 #[cfg(windows)]
+fn embed_should_clip(visible: bool) -> bool {
+    !visible
+}
+
+#[cfg(windows)]
 fn set_embed_z_order(webview: &tauri::Webview, visible: bool) -> Result<(), String> {
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     webview
@@ -557,6 +649,25 @@ fn set_embed_z_order(webview: &tauri::Webview, visible: bool) -> Result<(), Stri
                 let controller = platform.controller();
                 let mut hwnd = windows::Win32::Foundation::HWND::default();
                 unsafe { controller.ParentWindow(&mut hwnd) }.map_err(|error| error.to_string())?;
+                if embed_should_clip(visible) {
+                    // Windows can discard a child window region while restoring
+                    // its transparent parent. Clear WS_VISIBLE on the host HWND
+                    // as the durable guard; the WebView2 controller itself stays
+                    // alive because we do not call controller.put_IsVisible(false).
+                    let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
+                }
+                let region = if embed_should_clip(visible) {
+                    Some(unsafe { CreateRectRgn(0, 0, 0, 0) })
+                } else {
+                    None
+                };
+                let clipped = unsafe { SetWindowRgn(hwnd, region, true) };
+                if clipped == 0 {
+                    if let Some(region) = region {
+                        let _ = unsafe { DeleteObject(region.into()) };
+                    }
+                    return Err("failed to update browser presentation region".to_string());
+                }
                 unsafe {
                     SetWindowPos(
                         hwnd,
@@ -568,7 +679,11 @@ fn set_embed_z_order(webview: &tauri::Webview, visible: bool) -> Result<(), Stri
                         embed_window_pos_flags(),
                     )
                 }
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string())?;
+                if visible {
+                    let _ = unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+                }
+                Ok(())
             })();
             let _ = sender.send(result);
         })
@@ -580,6 +695,12 @@ fn set_embed_z_order(webview: &tauri::Webview, visible: bool) -> Result<(), Stri
 
 #[cfg(windows)]
 fn set_embed_presentation(webview: &tauri::Webview, visible: bool) -> Result<(), String> {
+    // Keep WebView2's controller visible so background pages, audio, and CDP
+    // automation continue running. Merely sinking the child HWND to the bottom
+    // leaks its pixels during Windows' restore animation, before the main
+    // transparent webview has composed. The host HWND stays natively hidden
+    // (while its WebView2 controller keeps running) until the frontend reports
+    // its settled visible bounds; the empty region is a second paint guard.
     webview.show().map_err(|error| error.to_string())?;
     set_embed_z_order(webview, visible)
 }
@@ -769,10 +890,13 @@ pub async fn browser_embed_set_zoom(
 pub async fn browser_embed_update(
     app: tauri::AppHandle,
     window: tauri::Window,
+    registry: tauri::State<'_, WorkspaceRegistry>,
     tab_id: i64,
     instance_id: String,
     owner_id: String,
     url: String,
+    workspace_root: Option<String>,
+    workspace: Option<WorkspaceEnv>,
     bounds: EmbedBounds,
     visible: bool,
 ) -> Result<(), String> {
@@ -808,11 +932,8 @@ pub async fn browser_embed_update(
         return Ok(());
     }
 
-    let target = if url.is_empty() {
-        None
-    } else {
-        Some(parse_pane_url(&url)?)
-    };
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let resolved_local_root = resolve_local_root(&registry, workspace_root.as_deref(), &workspace)?;
 
     let mut active = active_embeds()
         .lock()
@@ -820,14 +941,32 @@ pub async fn browser_embed_update(
     if !active.contains_key(&tab_id) && active.len() >= MAX_ACTIVE_EMBEDS {
         return Err("browser embed limit reached".to_string());
     }
+    let local_root = active
+        .get(&tab_id)
+        .filter(|entry| entry.instance_id == instance_id && entry.owner_id == owner_id)
+        .map(|entry| entry.local_root.clone())
+        .unwrap_or_else(|| Arc::new(Mutex::new(None)));
+    *local_root
+        .lock()
+        .map_err(|_| "browser local-file policy is unavailable".to_string())? = resolved_local_root;
     active.insert(
         tab_id,
         ActiveEmbed {
             instance_id: instance_id.clone(),
             owner_id: owner_id.clone(),
+            local_root: local_root.clone(),
         },
     );
     drop(active);
+
+    let target = if url.is_empty() {
+        None
+    } else {
+        let root = local_root
+            .lock()
+            .map_err(|_| "browser local-file policy is unavailable".to_string())?;
+        Some(parse_pane_url(&url, root.as_deref())?)
+    };
 
     let (position, size) = physical_rect(&bounds)?;
     if let Some(webview) = app.get_webview(&label) {
@@ -852,17 +991,21 @@ pub async fn browser_embed_update(
     let Some(target) = target else {
         return Ok(());
     };
-    spawn_browser_child(&window, tab_id, target, position, size, visible)
+    spawn_browser_child(&window, tab_id, target, position, size, visible, local_root)
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri exposes these as named invoke arguments.
 pub async fn browser_embed_navigate(
     app: tauri::AppHandle,
     window: tauri::Window,
+    registry: tauri::State<'_, WorkspaceRegistry>,
     tab_id: i64,
     instance_id: String,
     owner_id: String,
     url: String,
+    workspace_root: Option<String>,
+    workspace: Option<WorkspaceEnv>,
 ) -> Result<(), String> {
     ensure_main_window(&window)?;
     validate_tab_id(tab_id)?;
@@ -870,15 +1013,32 @@ pub async fn browser_embed_navigate(
     validate_token(&owner_id)?;
     let tab_lock = get_tab_lock(tab_id);
     let _tab_lock = tab_lock.lock().await;
-    let webview = {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let resolved_local_root = resolve_local_root(&registry, workspace_root.as_deref(), &workspace)?;
+    let (webview, local_root) = {
         let _lifecycle = LIFECYCLE_LOCK.lock().await;
         ensure_current_instance(&instance_id)?;
         if !is_active(tab_id, &instance_id, Some(&owner_id)) {
             return Ok(());
         }
-        app.get_webview(&embed_label(tab_id))
+        let local_root = active_embeds()
+            .lock()
+            .map_err(|_| "browser lifecycle state is unavailable".to_string())?
+            .get(&tab_id)
+            .map(|entry| entry.local_root.clone())
+            .ok_or_else(|| "browser lifecycle state is unavailable".to_string())?;
+        *local_root
+            .lock()
+            .map_err(|_| "browser local-file policy is unavailable".to_string())? =
+            resolved_local_root;
+        (app.get_webview(&embed_label(tab_id)), local_root)
     };
-    let target = parse_pane_url(&url)?;
+    let target = {
+        let root = local_root
+            .lock()
+            .map_err(|_| "browser local-file policy is unavailable".to_string())?;
+        parse_pane_url(&url, root.as_deref())?
+    };
     if let Some(webview) = webview {
         webview
             .navigate(target)
@@ -998,6 +1158,30 @@ pub async fn browser_embed_suspend(
     if is_active(tab_id, &instance_id, Some(&owner_id)) {
         if let Some(webview) = app.get_webview(&embed_label(tab_id)) {
             let _ = webview.hide();
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn browser_embed_suspend_all_presentations(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+) -> Result<(), String> {
+    ensure_main_window(&window)?;
+    let _lifecycle = LIFECYCLE_LOCK.lock().await;
+    let tab_ids = active_embeds()
+        .lock()
+        .map_err(|_| "browser lifecycle state is unavailable".to_string())?
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+    for tab_id in tab_ids {
+        if let Some(webview) = app.get_webview(&embed_label(tab_id)) {
+            if let Err(error) = set_embed_presentation(&webview, false) {
+                log::error!("failed to suspend browser presentation {tab_id}: {error}");
+                return Err(error);
+            }
         }
     }
     Ok(())
@@ -1129,16 +1313,16 @@ pub async fn browser_embed_close(
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_insert, navigation_allowed, parse_pane_url, physical_rect, popup_allowed,
-        should_process_update, EmbedBounds,
+        bounded_insert, navigation_allowed, parse_pane_url, physical_rect, should_process_update,
+        EmbedBounds,
     };
     use std::collections::HashSet;
     use url::Url;
 
     #[test]
     fn accepts_http_and_https_urls() {
-        assert!(parse_pane_url("http://localhost:3000").is_ok());
-        assert!(parse_pane_url("https://example.com/path").is_ok());
+        assert!(parse_pane_url("http://localhost:3000", None).is_ok());
+        assert!(parse_pane_url("https://example.com/path", None).is_ok());
     }
 
     #[test]
@@ -1180,19 +1364,43 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn background_embed_stays_rendered_behind_the_ui() {
+    fn suppressed_embed_keeps_controller_alive_but_has_no_host_paint() {
         use windows::Win32::UI::WindowsAndMessaging::{HWND_BOTTOM, HWND_TOP, SWP_ASYNCWINDOWPOS};
 
         assert_eq!(super::embed_insert_after(false), HWND_BOTTOM);
         assert_eq!(super::embed_insert_after(true), HWND_TOP);
         assert_eq!(super::embed_window_pos_flags().0 & SWP_ASYNCWINDOWPOS.0, 0);
+        assert!(super::embed_should_clip(false));
+        assert!(!super::embed_should_clip(true));
     }
 
     #[test]
-    fn rejects_active_and_local_content_schemes() {
-        assert!(parse_pane_url("javascript:alert(1)").is_err());
-        assert!(parse_pane_url("data:text/html,hello").is_err());
-        assert!(parse_pane_url("file:///tmp/report.html").is_err());
+    fn rejects_active_content_schemes_and_unscoped_files() {
+        assert!(parse_pane_url("javascript:alert(1)", None).is_err());
+        assert!(parse_pane_url("data:text/html,hello", None).is_err());
+        assert!(parse_pane_url("file:///tmp/report.html", None).is_err());
+    }
+
+    #[test]
+    fn local_files_are_limited_to_the_workspace_root() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let outside = tempfile::tempdir().expect("outside root");
+        let inside_file = root.path().join("index.html");
+        let outside_file = outside.path().join("secret.html");
+        std::fs::write(&inside_file, "<h1>inside</h1>").expect("inside fixture");
+        std::fs::write(&outside_file, "<h1>outside</h1>").expect("outside fixture");
+        let canonical_root = std::fs::canonicalize(root.path()).expect("canonical root");
+        let inside_url = Url::from_file_path(&inside_file).expect("inside URL");
+        let outside_url = Url::from_file_path(&outside_file).expect("outside URL");
+
+        assert!(parse_pane_url(inside_url.as_str(), Some(&canonical_root)).is_ok());
+        assert!(parse_pane_url(outside_url.as_str(), Some(&canonical_root)).is_err());
+        assert!(navigation_allowed(&inside_url, None, Some(&canonical_root)));
+        assert!(!navigation_allowed(
+            &outside_url,
+            None,
+            Some(&canonical_root)
+        ));
     }
 
     #[test]
@@ -1200,24 +1408,32 @@ mod tests {
         let app = Url::parse("http://localhost:1420/app").unwrap();
         assert!(!navigation_allowed(
             &Url::parse("javascript:alert(1)").unwrap(),
-            Some(&app)
+            Some(&app),
+            None,
         ));
         assert!(!navigation_allowed(
             &Url::parse("http://localhost:1420/recursive").unwrap(),
-            Some(&app)
+            Some(&app),
+            None,
         ));
         assert!(navigation_allowed(
             &Url::parse("https://example.com").unwrap(),
-            Some(&app)
+            Some(&app),
+            None,
         ));
     }
 
     #[test]
-    fn popup_allows_blank_bootstrap_but_not_other_internal_schemes() {
-        assert!(popup_allowed(&Url::parse("about:blank").unwrap(), None));
-        assert!(!popup_allowed(
-            &Url::parse("data:text/html,hello").unwrap(),
-            None
+    fn popup_routing_rejects_blank_bootstrap_and_accepts_web_targets() {
+        assert!(!navigation_allowed(
+            &Url::parse("about:blank").unwrap(),
+            None,
+            None,
+        ));
+        assert!(navigation_allowed(
+            &Url::parse("https://www.youtube.com/").unwrap(),
+            None,
+            None,
         ));
     }
 

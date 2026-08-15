@@ -3,6 +3,7 @@ import {
   faviconUrlForPage,
   googleFaviconUrlForPage,
   resolveBrowserInput,
+  windowsPathToFileUrl,
 } from "./browserInput";
 
 describe("resolveBrowserInput", () => {
@@ -36,6 +37,21 @@ describe("resolveBrowserInput", () => {
 
   it("returns null for empty input", () => {
     expect(resolveBrowserInput("   ")).toBeNull();
+  });
+
+  it("converts Windows files into encoded file URLs", () => {
+    expect(
+      resolveBrowserInput("C:/Users/Admin/Documents/notaris-surat/index.html"),
+    ).toBe("file:///C:/Users/Admin/Documents/notaris-surat/index.html");
+    expect(windowsPathToFileUrl("C:\\work\\landing page#1.html")).toBe(
+      "file:///C:/work/landing%20page%231.html",
+    );
+  });
+
+  it("keeps explicit file URLs", () => {
+    expect(resolveBrowserInput("file:///C:/work/index.html")).toBe(
+      "file:///C:/work/index.html",
+    );
   });
 });
 

@@ -1,3 +1,4 @@
+import { subscribeWindowPresentation } from "@/lib/windowPresentation";
 import { type RefObject, useCallback, useSyncExternalStore } from "react";
 
 const OVERLAY_SELECTOR =
@@ -59,6 +60,7 @@ const LAYOUT_FALLBACK_MS = 1_500;
 const layoutListeners = new Set<() => void>();
 let layoutRaf = 0;
 let layoutFallback: ReturnType<typeof setInterval> | null = null;
+let presentationDispose: (() => void) | null = null;
 let pointerTracking = false;
 
 function emitLayoutChange(): void {
@@ -92,6 +94,11 @@ function onPointerEnd(): void {
 }
 
 function startLayoutEvents(): void {
+  presentationDispose = subscribeWindowPresentation(() => {
+    // A minimized window may stop animation frames immediately, so browser
+    // children must consume the suspended state synchronously.
+    emitLayoutChange();
+  });
   window.addEventListener("resize", notifyNativeBrowserLayout);
   window.addEventListener("scroll", notifyNativeBrowserLayout, true);
   window.visualViewport?.addEventListener("resize", notifyNativeBrowserLayout);
@@ -112,6 +119,8 @@ function startLayoutEvents(): void {
 }
 
 function stopLayoutEvents(): void {
+  presentationDispose?.();
+  presentationDispose = null;
   window.removeEventListener("resize", notifyNativeBrowserLayout);
   window.removeEventListener("scroll", notifyNativeBrowserLayout, true);
   window.visualViewport?.removeEventListener(

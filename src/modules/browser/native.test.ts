@@ -5,6 +5,7 @@ import {
   canMeasureBrowserPane,
   createBrowserOwnerId,
   forgetBrowserOwnerId,
+  isReportableBrowserNavUrl,
   isSelfReferenceUrl,
   isSupportedBrowserUrl,
   shouldShowBrowserPane,
@@ -12,12 +13,12 @@ import {
 } from "./native";
 
 describe("native browser URL policy", () => {
-  it("allows HTTP(S) and rejects active or local content schemes", () => {
+  it("allows HTTP(S) and local files while rejecting active content schemes", () => {
     expect(isSupportedBrowserUrl("http://localhost:3000")).toBe(true);
     expect(isSupportedBrowserUrl("https://example.com/path")).toBe(true);
     expect(isSupportedBrowserUrl("javascript:alert(1)")).toBe(false);
     expect(isSupportedBrowserUrl("data:text/html,hello")).toBe(false);
-    expect(isSupportedBrowserUrl("file:///tmp/report.html")).toBe(false);
+    expect(isSupportedBrowserUrl("file:///tmp/report.html")).toBe(true);
   });
 
   it("blocks the app from loading its own development origin", () => {
@@ -38,12 +39,30 @@ describe("native browser URL policy", () => {
     expect(
       browserUrlError("https://www.youtube.com/watch?v=1", appUrl),
     ).toBeNull();
+    expect(
+      browserUrlError("file:///C:/workspace/index.html", appUrl),
+    ).toBeNull();
     expect(browserUrlError("about:blank", appUrl)).toBe(
-      "Only HTTP(S) URLs can load in the browser.",
+      "Only HTTP(S) URLs and files from the active workspace can load in the browser.",
     );
     expect(browserUrlError("http://localhost:1420/inside", appUrl)).toBe(
       "Anbo cannot be opened inside its own browser pane.",
     );
+  });
+
+  it("ignores internal transition URLs reported by the native webview", () => {
+    const appUrl = "http://localhost:1420/app";
+    expect(isReportableBrowserNavUrl("https://www.youtube.com/", appUrl)).toBe(
+      true,
+    );
+    expect(isReportableBrowserNavUrl("about:blank", appUrl)).toBe(false);
+    expect(
+      isReportableBrowserNavUrl("file:///C:/workspace/index.html", appUrl),
+    ).toBe(true);
+    expect(isReportableBrowserNavUrl("", appUrl)).toBe(false);
+    expect(
+      isReportableBrowserNavUrl("http://localhost:1420/inside", appUrl),
+    ).toBe(false);
   });
 });
 

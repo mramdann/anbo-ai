@@ -235,6 +235,29 @@
   }
 }
 
+@keyframes anbo-browser-automation-robot-hop {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+
+  18% {
+    transform: translateY(-3px) rotate(-5deg) scale(1.03);
+  }
+
+  34% {
+    transform: translateY(0) scale(1.08, 0.92);
+  }
+
+  52% {
+    transform: translateY(-2px) rotate(4deg) scale(1.02);
+  }
+
+  68% {
+    transform: translateY(0) scale(1.05, 0.95);
+  }
+}
+
 .anbo-browser-automation-indicator {
   position: relative;
   isolation: isolate;
@@ -261,6 +284,12 @@
   animation: anbo-browser-automation-pulse 1.35s ease-out infinite;
   content: "";
   pointer-events: none;
+}
+
+.anbo-browser-automation-robot {
+  transform-origin: center bottom;
+  animation: anbo-browser-automation-robot-hop 1.15s
+    cubic-bezier(0.33, 1, 0.68, 1) infinite;
 }
 
 .anbo-workspace-dockview-dirty {
@@ -349,6 +378,11 @@
   .anbo-browser-automation-indicator::before {
     animation: none;
     opacity: 0.45;
+    transform: none;
+  }
+
+  .anbo-browser-automation-robot {
+    animation: none;
     transform: none;
   }
 }

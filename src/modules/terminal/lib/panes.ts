@@ -70,22 +70,6 @@ export function setLeafCwd(
   return changed ? { ...n, children: next } : n;
 }
 
-export function armLeafAgentResume(n: PaneNode, id: PaneId): PaneNode {
-  if (isLeaf(n)) {
-    if (n.id !== id || !n.agentResume || n.agentResume.armed !== false) {
-      return n;
-    }
-    return { ...n, agentResume: { ...n.agentResume, armed: true } };
-  }
-  let changed = false;
-  const children = n.children.map((child) => {
-    const next = armLeafAgentResume(child, id);
-    if (next !== child) changed = true;
-    return next;
-  });
-  return changed ? { ...n, children } : n;
-}
-
 export function pinLeafAgentResumeSession(
   n: PaneNode,
   id: PaneId,

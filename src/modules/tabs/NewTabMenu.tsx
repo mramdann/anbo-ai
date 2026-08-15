@@ -84,7 +84,7 @@ export function NewTabMenu({
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="start"
-              className="min-w-44"
+              className="min-w-44 [zoom:var(--app-zoom)]"
               onCloseAutoFocus={(event) => {
                 event.preventDefault();
                 if (!openLauncherAfterMenuClose.current) return;
@@ -184,7 +184,7 @@ export function NewTabMenu({
           openMenuAfterLauncherClose.current = false;
           requestAnimationFrame(() => setMenuOpen(true));
         }}
-        className="w-[340px] gap-0 overflow-hidden rounded-2xl p-1.5"
+        className="w-[340px] gap-0 overflow-hidden rounded-2xl p-1.5 [zoom:var(--app-zoom)]"
       >
         <AgentLauncherPanel
           onBack={backToMenu}
