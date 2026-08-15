@@ -8,16 +8,16 @@ import {
 
 describe("agent resume commands", () => {
   it.each([
-    ["claude", "claude --resume"],
-    ["gemini", "gemini --resume"],
-    ["pi", "pi --session"],
+    ["claude", "claude", "claude --resume"],
+    ["antigravity", "agy", "agy --conversation"],
+    ["pi", "pi", "pi --session"],
   ] as const)(
     "launches %s unchanged and resumes only after its real session id is known",
-    (agent, resume) => {
-      const [state] = createAgentResumeStates(agent, agent, 1);
+    (agent, command, resume) => {
+      const [state] = createAgentResumeStates(agent, command, 1);
       expect(state?.sessionId).toBeUndefined();
       expect(state?.armed).toBe(false);
-      expect(buildAgentLaunchCommand(state, agent)).toBe(agent);
+      expect(buildAgentLaunchCommand(state, command)).toBe(command);
       if (!state) throw new Error("missing resume descriptor");
       expect(
         buildAgentResumeCommand({
@@ -77,9 +77,9 @@ describe("agent resume commands", () => {
     expect(createAgentResumeStates("claude", "claude --continue", 1)).toEqual([
       undefined,
     ]);
-    expect(createAgentResumeStates("gemini", "prepare && gemini", 1)).toEqual([
-      undefined,
-    ]);
+    expect(
+      createAgentResumeStates("antigravity", "prepare && agy", 1),
+    ).toEqual([undefined]);
     expect(createAgentResumeStates("pi", "pi | tee log.txt", 1)).toEqual([
       undefined,
     ]);
@@ -87,18 +87,35 @@ describe("agent resume commands", () => {
       undefined,
     ]);
     expect(
-      createAgentResumeStates("gemini", "gemini --session-file old.json", 1),
+      createAgentResumeStates(
+        "antigravity",
+        "agy --conversation old-id",
+        1,
+      ),
     ).toEqual([undefined]);
     expect(
       createAgentResumeStates("opencode", "opencode --continue", 1),
     ).toEqual([undefined]);
   });
 
-  it("keeps Gemini's sandbox short flag resumable", () => {
-    const [state] = createAgentResumeStates("gemini", "gemini -s", 1);
-    expect(buildAgentLaunchCommand(state, "gemini -s")).toBe(
-      "gemini -s",
+  it("keeps ordinary Antigravity options resumable", () => {
+    const [state] = createAgentResumeStates(
+      "antigravity",
+      "agy --model gemini-3.1-pro",
+      1,
     );
+    expect(buildAgentLaunchCommand(state, "agy --model gemini-3.1-pro")).toBe(
+      "agy --model gemini-3.1-pro",
+    );
+  });
+
+  it("does not override Antigravity's own resume or headless modes", () => {
+    expect(createAgentResumeStates("antigravity", "agy -c", 1)).toEqual([
+      undefined,
+    ]);
+    expect(
+      createAgentResumeStates("antigravity", "agy --print hello", 1),
+    ).toEqual([undefined]);
   });
 
   it("rejects non-interactive commands during creation and hydration", () => {

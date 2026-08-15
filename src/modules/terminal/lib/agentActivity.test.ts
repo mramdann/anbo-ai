@@ -78,7 +78,7 @@ describe("useAgentActivityStore", () => {
   it("drops a pty's phase and agent on clear", () => {
     const { setPhase, setAgent, clear } = useAgentActivityStore.getState();
     setPhase(1, "attention");
-    setAgent(1, "gemini");
+    setAgent(1, "antigravity");
     clear(1);
     const state = useAgentActivityStore.getState();
     expect(1 in state.phases).toBe(false);
@@ -89,7 +89,7 @@ describe("useAgentActivityStore", () => {
     const { setPhase, setAgent, acknowledgeAttention } =
       useAgentActivityStore.getState();
     setPhase(1, "attention");
-    setAgent(1, "gemini");
+    setAgent(1, "antigravity");
     setPhase(2, "working");
     const agents = useAgentActivityStore.getState().agents;
 

@@ -15,10 +15,17 @@ describe("startup surface", () => {
     expect(html).toContain('window.addEventListener("error"');
     expect(html).toContain('window.addEventListener("unhandledrejection"');
     expect(html).toContain('window.addEventListener("anbo:startup-error"');
+    expect(html).toContain('window.addEventListener("anbo:startup-progress"');
+    expect(html).toContain('window.addEventListener("anbo:startup-ready"');
+    expect(html).toContain("Startup stopped while");
+    expect(html).toContain("application module did not finish loading");
   });
 
   it("keeps React render failures visible instead of leaving a blank window", () => {
     expect(entry).toContain("class RootErrorBoundary");
+    expect(entry).toContain("function reportStartupProgress");
+    expect(entry).toContain("function StartupReady");
+    expect(entry).toContain('new CustomEvent("anbo:startup-ready")');
     expect(entry).toContain("Anbo could not open this workspace");
     expect(entry).toContain('data-testid="root-error-detail"');
   });

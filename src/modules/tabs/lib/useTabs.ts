@@ -1,8 +1,10 @@
 import { isMarkdownPath } from "@/lib/utils";
 import {
-  type AgentInstanceCount,
-  createAgentPanePlan,
-} from "@/modules/agents/lib/launcher";
+  allocateAgentTabNames,
+  type AgentTabIdentity,
+  type AgentTabNameRequest,
+} from "@/modules/agents/lib/agentTabName";
+import type { AgentInstanceCount } from "@/modules/agents/lib/launcher";
 import type { PersistedAgentResume } from "@/modules/agents/lib/resume";
 import {
   findLeafCwd,
@@ -45,6 +47,8 @@ export type TerminalTab = TabBase & {
   private?: boolean;
   /** User-set label that overrides the cwd-derived name. Survives cd. */
   customTitle?: string;
+  /** Stable CLI identity and automatically allocated workspace callsign. */
+  agent?: AgentTabIdentity;
 };
 
 export type EditorTab = TabBase & {
@@ -168,6 +172,97 @@ function titleFromUrl(url: string): string {
   } catch {
     return url || "Browser";
   }
+}
+
+function occupiedNamesInSpace(
+  tabs: readonly Tab[],
+  spaceId: string,
+  excludeTabId?: number,
+): string[] {
+  const names: string[] = [];
+  for (const tab of tabs) {
+    if (tab.spaceId !== spaceId || tab.id === excludeTabId) continue;
+    if (tab.kind !== "terminal" || !tab.agent) continue;
+    names.push(tab.customTitle ?? tab.agent.name, tab.agent.name);
+  }
+  return names;
+}
+
+export function moveTabIntoSpace(
+  tab: Tab,
+  tabs: readonly Tab[],
+  targetSpaceId: string,
+): Tab {
+  if (tab.kind !== "terminal" || !tab.agent) {
+    return { ...tab, spaceId: targetSpaceId } as Tab;
+  }
+  const occupied = occupiedNamesInSpace(tabs, targetSpaceId, tab.id);
+  const visibleName = tab.customTitle ?? tab.agent.name;
+  const foldedOccupied = new Set(
+    occupied.map((candidate) => candidate.toLocaleLowerCase()),
+  );
+  const visibleCollision = foldedOccupied.has(visibleName.toLocaleLowerCase());
+  const identityCollision = foldedOccupied.has(
+    tab.agent.name.toLocaleLowerCase(),
+  );
+  if (!visibleCollision && !identityCollision) {
+    return { ...tab, spaceId: targetSpaceId };
+  }
+  const [name] = allocateAgentTabNames(tab.agent, 1, occupied);
+  return {
+    ...tab,
+    spaceId: targetSpaceId,
+    title: visibleCollision ? name : visibleName,
+    customTitle: visibleCollision ? undefined : tab.customTitle,
+    agent: { ...tab.agent, name },
+  };
+}
+
+export function createAgentTerminalTabs({
+  spaceId,
+  cwd,
+  agent,
+  tabIds,
+  agentLeafIds,
+  agentResumes = [],
+  occupiedNames = [],
+}: {
+  spaceId: string;
+  cwd: string | undefined;
+  agent: AgentTabNameRequest;
+  tabIds: readonly number[];
+  agentLeafIds: readonly number[];
+  agentResumes?: ReadonlyArray<PersistedAgentResume | undefined>;
+  occupiedNames?: readonly string[];
+}): TerminalTab[] {
+  if (
+    tabIds.length < 1 ||
+    tabIds.length > 4 ||
+    tabIds.length !== agentLeafIds.length
+  ) {
+    throw new RangeError("Agent launch requires one to four tab and leaf IDs.");
+  }
+  const names = allocateAgentTabNames(agent, tabIds.length, occupiedNames);
+  return tabIds.map(
+    (tabId, index) =>
+      ({
+        id: tabId,
+        kind: "terminal",
+        spaceId,
+        title: names[index],
+        agent: { ...agent, name: names[index] },
+        cwd,
+        paneTree: {
+          kind: "leaf",
+          id: agentLeafIds[index],
+          cwd,
+          ...(agentResumes[index] && {
+            agentResume: agentResumes[index],
+          }),
+        },
+        activeLeafId: agentLeafIds[index],
+      }) satisfies TerminalTab,
+  );
 }
 
 export const DEFAULT_SPACE_ID = "default";
@@ -473,7 +568,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       if (!tab || tab.spaceId === targetSpaceId) return false;
       setTabs((prev) =>
         prev.map((t) =>
-          t.id === tabId ? ({ ...t, spaceId: targetSpaceId } as Tab) : t,
+          t.id === tabId ? moveTabIntoSpace(t, prev, targetSpaceId) : t,
         ),
       );
       if (activeIdRef.current !== tabId) return false;
@@ -504,7 +599,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
         if (idx < 0) return prev;
         if (edge === "bottom") idx += 1;
         const next: Tab = crossSpace
-          ? ({ ...moved, spaceId: target.spaceId } as Tab)
+          ? moveTabIntoSpace(moved, prev, target.spaceId)
           : moved;
         without.splice(idx, 0, next);
         return without;
@@ -588,45 +683,55 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     ).__anboNewBlockTab = newBlockTab;
   }, [newBlockTab]);
 
-  const newAgentGroupTab = useCallback(
+  const newAgentTabs = useCallback(
     (
       cwd: string | undefined,
-      title: string,
+      agent: AgentTabNameRequest,
       instances: AgentInstanceCount,
       agentResumes: Array<PersistedAgentResume | undefined> = [],
     ) => {
-      const tabId = nextIdRef.current++;
-      const { paneTree, leafIds: agentLeafIds } = createAgentPanePlan(
-        instances,
+      if (!Number.isInteger(instances) || instances < 1 || instances > 4) {
+        throw new RangeError("Agent instance count must be between 1 and 4.");
+      }
+      const spaceId = activeSpaceIdRef.current;
+      const tabIds = Array.from(
+        { length: instances },
         () => nextIdRef.current++,
-        cwd,
-        agentResumes,
       );
-      setTabs((t) => [
-        ...t,
-        {
-          id: tabId,
-          kind: "terminal",
-          spaceId: activeSpaceIdRef.current,
-          title,
-          customTitle: title,
+      const agentLeafIds = Array.from(
+        { length: instances },
+        () => nextIdRef.current++,
+      );
+      setTabs((current) => {
+        const created = createAgentTerminalTabs({
+          spaceId,
           cwd,
-          paneTree,
-          activeLeafId: agentLeafIds[0],
-        },
-      ]);
-      setActiveId(tabId);
-      return { tabId, leafIds: agentLeafIds };
+          agent,
+          tabIds,
+          agentLeafIds,
+          agentResumes,
+          occupiedNames: occupiedNamesInSpace(current, spaceId),
+        });
+        return [...current, ...created];
+      });
+      setActiveId(tabIds[0]);
+      return { tabIds, leafIds: agentLeafIds };
     },
     [],
   );
 
   const newAgentTab = useCallback(
-    (cwd: string | undefined, title: string) => {
-      const { tabId, leafIds: agentLeafIds } = newAgentGroupTab(cwd, title, 1);
-      return { tabId, leafId: agentLeafIds[0] };
+    (
+      cwd: string | undefined,
+      agent: AgentTabNameRequest,
+      agentResume?: PersistedAgentResume,
+    ) => {
+      const { tabIds, leafIds: agentLeafIds } = newAgentTabs(cwd, agent, 1, [
+        agentResume,
+      ]);
+      return { tabId: tabIds[0], leafId: agentLeafIds[0] };
     },
-    [newAgentGroupTab],
+    [newAgentTabs],
   );
 
   const pinAgentResumeSession = useCallback(
@@ -1450,7 +1555,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     newTab,
     newBlockTab,
     newAgentTab,
-    newAgentGroupTab,
+    newAgentTabs,
     pinAgentResumeSession,
     newPrivateTab,
     openFileTab,

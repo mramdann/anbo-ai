@@ -1,7 +1,7 @@
 const LABELS: Record<string, string> = {
   claude: "Claude Code",
   codex: "Codex",
-  gemini: "Gemini",
+  antigravity: "Antigravity",
   pi: "Pi",
   opencode: "OpenCode",
   grok: "Grok",

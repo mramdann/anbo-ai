@@ -7,7 +7,7 @@ enum Delivery {
     // Claude returns the sequence via a `terminalSequence` JSON field (it lost
     // /dev/tty access in v2.1.139) and emits it in-band. Cross-platform.
     TerminalSequence,
-    // Codex/Gemini hooks can't write to the terminal, so the hook command emits
+    // Codex/Antigravity hooks can't write to the terminal, so the hook command emits
     // the marker itself: to /dev/tty on Unix, via a CONOUT$ helper on Windows.
     Osc,
 }
@@ -47,15 +47,11 @@ const AGENTS: &[AgentSpec] = &[
         delivery: Delivery::Osc,
     },
     AgentSpec {
-        agent: "gemini",
-        dir: ".gemini",
-        file: "settings.json",
-        events: &[
-            ("BeforeAgent", "working"),
-            ("Notification", "attention"),
-            ("AfterAgent", "finished"),
-        ],
-        matcher: true,
+        agent: "antigravity",
+        dir: ".gemini/config",
+        file: "hooks.json",
+        events: &[("PreInvocation", "working"), ("Stop", "finished")],
+        matcher: false,
         delivery: Delivery::Osc,
     },
 ];
@@ -175,6 +171,26 @@ fn is_empty_group(group: &Value) -> bool {
 }
 
 fn merge_hooks(mut root: Value, spec: &AgentSpec) -> Value {
+    if spec.agent == "antigravity" {
+        if !root.is_object() {
+            root = json!({});
+        }
+        let definition = spec.events.iter().fold(
+            serde_json::Map::from_iter([("enabled".into(), json!(true))]),
+            |mut value, (event, marker)| {
+                value.insert(
+                    (*event).into(),
+                    json!([{ "type": "command", "command": hook_command(spec, marker) }]),
+                );
+                value
+            },
+        );
+        root.as_object_mut().unwrap().insert(
+            "anbo-desktop-agent-alerts".into(),
+            Value::Object(definition),
+        );
+        return root;
+    }
     if !root.is_object() {
         root = json!({});
     }
@@ -357,7 +373,7 @@ fn valid_exact_session_id(agent: &str, session_id: &str) -> bool {
         })
 }
 
-fn hook_session_id_from_reader(reader: impl Read, agent: &str) -> Option<String> {
+fn hook_payload_from_reader(reader: impl Read) -> Option<Value> {
     let mut input = Vec::new();
     reader
         .take(HOOK_INPUT_MAX_BYTES + 1)
@@ -366,9 +382,34 @@ fn hook_session_id_from_reader(reader: impl Read, agent: &str) -> Option<String>
     if input.len() as u64 > HOOK_INPUT_MAX_BYTES {
         return None;
     }
-    let value: Value = serde_json::from_slice(&input).ok()?;
-    let session_id = value.get("session_id")?.as_str()?;
+    serde_json::from_slice(&input).ok()
+}
+
+fn hook_session_id_from_payload(value: &Value, agent: &str) -> Option<String> {
+    let key = if agent == "antigravity" {
+        "conversationId"
+    } else {
+        "session_id"
+    };
+    let session_id = value.get(key)?.as_str()?;
     valid_exact_session_id(agent, session_id).then(|| session_id.to_string())
+}
+
+fn should_emit_hook_event(value: Option<&Value>, agent: &str, event: &str) -> bool {
+    agent != "antigravity"
+        || event != "finished"
+        || value
+            .and_then(|payload| payload.get("fullyIdle"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+}
+
+fn hook_noop_output(agent: &str, event: &str) -> String {
+    if agent == "antigravity" && event == "finished" {
+        json!({ "decision": "" }).to_string()
+    } else {
+        "{}".to_string()
+    }
 }
 
 fn hook_terminal_sequence(agent: &str, event: &str, session_id: Option<&str>) -> String {
@@ -412,15 +453,22 @@ pub fn run_hook_helper(agent: &str, event: &str) {
             .any(|(_, emitted)| *emitted == event)
     });
     let output = if std::env::var_os("ANBO_TERMINAL").is_none() || !valid_event {
-        "{}".to_string()
+        hook_noop_output(agent, event)
     } else {
-        let session_id = hook_session_id_from_reader(std::io::stdin().lock(), agent);
-        let sequence = hook_terminal_sequence(agent, event, session_id.as_deref());
+        let payload = hook_payload_from_reader(std::io::stdin().lock());
+        let session_id = payload
+            .as_ref()
+            .and_then(|value| hook_session_id_from_payload(value, agent));
+        let sequence = if should_emit_hook_event(payload.as_ref(), agent, event) {
+            hook_terminal_sequence(agent, event, session_id.as_deref())
+        } else {
+            String::new()
+        };
         match spec.map(|candidate| candidate.delivery) {
             Some(Delivery::TerminalSequence) => json!({ "terminalSequence": sequence }).to_string(),
             Some(Delivery::Osc) => {
                 emit_tty_sequence(&sequence);
-                "{}".to_string()
+                hook_noop_output(agent, event)
             }
             None => "{}".to_string(),
         }
@@ -502,7 +550,7 @@ mod tests {
 
     #[test]
     fn is_idempotent_per_agent() {
-        for agent in ["claude", "codex", "gemini"] {
+        for agent in ["claude", "codex", "antigravity"] {
             let s = spec(agent);
             let once = merge_hooks(json!({}), s);
             let twice = merge_hooks(once.clone(), s);
@@ -514,8 +562,8 @@ mod tests {
     fn terminal_marker_matches_detector_format() {
         // Exactly the bytes pty/agent_detect parses (ESC ] 777 ; ... BEL).
         assert_eq!(
-            terminal_marker("gemini", "attention"),
-            "\u{1b}]777;notify;Anbo;gemini;attention\u{7}"
+            terminal_marker("antigravity", "attention"),
+            "\u{1b}]777;notify;Anbo;antigravity;attention\u{7}"
         );
     }
 
@@ -530,25 +578,59 @@ mod tests {
     }
 
     #[test]
-    fn gemini_uses_matcher_and_hook_helper() {
-        let out = merge_hooks(json!({}), spec("gemini"));
-        assert_eq!(out["hooks"]["BeforeAgent"][0]["matcher"], "*");
-        assert!(command(&out, "AfterAgent", 0).contains("__anbo_hook gemini finished"));
-        assert!(command(&out, "Notification", 0).contains("__anbo_hook gemini attention"));
+    fn antigravity_uses_named_hook_definition_and_camel_case_conversation_id() {
+        let out = merge_hooks(json!({ "mine": { "enabled": true } }), spec("antigravity"));
+        let definition = &out["anbo-desktop-agent-alerts"];
+        assert_eq!(definition["enabled"], true);
+        assert!(definition["PreInvocation"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("__anbo_hook antigravity working"));
+        assert!(definition["Stop"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("__anbo_hook antigravity finished"));
+        assert_eq!(out["mine"]["enabled"], true);
+
+        let id = "00000000-0000-4000-8000-000000000001";
+        let payload = json!({ "conversationId": id });
+        assert_eq!(
+            hook_session_id_from_payload(&payload, "antigravity").as_deref(),
+            Some(id)
+        );
     }
 
     #[test]
     fn hook_input_yields_only_valid_real_session_ids() {
         let id = "00000000-0000-4000-8000-000000000001";
         let input = format!(r#"{{"session_id":"{id}"}}"#);
+        let payload = hook_payload_from_reader(input.as_bytes()).unwrap();
         assert_eq!(
-            hook_session_id_from_reader(input.as_bytes(), "claude").as_deref(),
+            hook_session_id_from_payload(&payload, "claude").as_deref(),
             Some(id)
         );
-        assert!(
-            hook_session_id_from_reader(br#"{"session_id":"../../bad"}"#.as_slice(), "claude")
-                .is_none()
+        let invalid =
+            hook_payload_from_reader(br#"{"session_id":"../../bad"}"#.as_slice()).unwrap();
+        assert!(hook_session_id_from_payload(&invalid, "claude").is_none());
+    }
+
+    #[test]
+    fn antigravity_stop_waits_for_background_work_to_be_idle() {
+        assert!(!should_emit_hook_event(
+            Some(&json!({ "fullyIdle": false })),
+            "antigravity",
+            "finished"
+        ));
+        assert!(should_emit_hook_event(
+            Some(&json!({ "fullyIdle": true })),
+            "antigravity",
+            "finished"
+        ));
+        assert_eq!(
+            hook_noop_output("antigravity", "finished"),
+            r#"{"decision":""}"#
         );
+        assert_eq!(hook_noop_output("antigravity", "working"), "{}");
     }
 
     #[test]

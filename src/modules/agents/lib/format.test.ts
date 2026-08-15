@@ -10,7 +10,7 @@ describe("displayAgent", () => {
 
   it("looks the label up case-insensitively", () => {
     expect(displayAgent("CLAUDE")).toBe("Claude Code");
-    expect(displayAgent("gEmInI")).toBe("Gemini");
+    expect(displayAgent("AnTiGrAvItY")).toBe("Antigravity");
   });
 
   it("capitalizes an unknown agent id", () => {

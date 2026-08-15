@@ -1,76 +1,86 @@
-import {
-  AiBrowserIcon,
-  BotIcon,
-  ChatGptIcon,
-  ClaudeIcon,
-  CodeIcon,
-  GoogleGeminiIcon,
-  Grok02Icon,
-} from "@hugeicons/core-free-icons";
+import { resolveAgentBrandAsset } from "@/modules/agents/lib/agentIconAssets";
+import { AiBrowserIcon, BotIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 
-// Pi mark, from github.com/earendil-works pi-website logo.svg (MIT).
-function PiIcon({ size, className }: { size: number; className?: string }) {
+function AgentBrandImage({
+  lightSrc,
+  darkSrc,
+  invertOnDark,
+  size,
+  className,
+}: {
+  lightSrc: string;
+  darkSrc?: string;
+  invertOnDark?: boolean;
+  size: number;
+  className?: string;
+}) {
+  const sharedClassName = "block size-full object-contain";
   return (
-    <svg
-      viewBox="0 0 800 800"
-      width={size}
-      height={size}
-      className={className}
+    <span
+      className={`relative inline-flex shrink-0 ${className ?? ""}`}
+      style={{ width: size, height: size }}
       aria-hidden="true"
     >
-      <path
-        fill="currentColor"
-        fillRule="evenodd"
-        d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"
+      <img
+        src={lightSrc}
+        alt=""
+        draggable={false}
+        className={`${sharedClassName} ${darkSrc ? "dark:hidden" : ""} ${invertOnDark ? "dark:invert" : ""}`}
       />
-      <path fill="currentColor" d="M517.36 400H634.72V634.72H517.36Z" />
-    </svg>
+      {darkSrc ? (
+        <img
+          src={darkSrc}
+          alt=""
+          draggable={false}
+          className={`${sharedClassName} hidden dark:block`}
+        />
+      ) : null}
+    </span>
   );
 }
 
 function iconFor(agent: string): IconSvgElement {
-  const a = agent.toLowerCase();
-  if (a === "robot") return BotIcon;
-  if (a.includes("claude")) return ClaudeIcon;
-  if (a.includes("gemini")) return GoogleGeminiIcon;
-  if (a.includes("opencode")) return CodeIcon;
-  if (a.includes("grok")) return Grok02Icon;
-  if (a.includes("codex") || a.includes("gpt") || a.includes("openai"))
-    return ChatGptIcon;
-  return AiBrowserIcon;
+  return agent.toLowerCase() === "robot" ? BotIcon : AiBrowserIcon;
 }
 
 export function AgentIcon({
   agent,
   size = 15,
   className,
+  tone = "current",
 }: {
   agent: string;
   size?: number;
   className?: string;
+  tone?: "current" | "brand";
 }) {
-  if (agent.toLowerCase() === "pi") {
-    return <PiIcon size={size} className={className} />;
-  }
-  if (agent.toLowerCase().includes("anbo")) {
+  const asset = resolveAgentBrandAsset(agent);
+  if (asset) {
     return (
-      <img
-        src="/logo.svg"
-        alt=""
-        width={size}
-        height={size}
+      <AgentBrandImage
+        lightSrc={asset.light}
+        darkSrc={asset.dark}
+        invertOnDark={asset.invertOnDark}
+        size={size}
         className={className}
-        style={{ width: size, height: size }}
       />
     );
   }
+  if (agent.toLowerCase().includes("anbo")) {
+    return (
+      <AgentBrandImage lightSrc="/logo.svg" size={size} className={className} />
+    );
+  }
+  const style = tone === "brand" ? { color: "var(--primary)" } : undefined;
   return (
-    <HugeiconsIcon
-      icon={iconFor(agent)}
-      size={size}
-      strokeWidth={1.75}
-      className={className}
-    />
+    <span style={style} className="inline-flex shrink-0">
+      <HugeiconsIcon
+        icon={iconFor(agent)}
+        size={size}
+        strokeWidth={1.75}
+        className={className}
+      />
+    </span>
   );
 }

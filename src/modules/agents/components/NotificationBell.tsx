@@ -79,7 +79,7 @@ const NOTIF_LABEL: Record<AgentNotification["kind"], string> = {
   error: "failed",
 };
 
-const HOOK_AGENTS = ["claude", "codex", "gemini", "pi"] as const;
+const HOOK_AGENTS = ["claude", "codex", "antigravity", "pi"] as const;
 
 function HookAgentRow({
   id,

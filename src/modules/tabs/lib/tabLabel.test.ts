@@ -27,8 +27,29 @@ describe("labelFor (terminal tabs)", () => {
 
   it("prefers a custom title over the cwd-derived name", () => {
     expect(
-      labelFor(terminalTab({ cwd: "/Users/me/projects/anbo-ai", customTitle: "Server" })),
+      labelFor(
+        terminalTab({
+          cwd: "/Users/me/projects/anbo-ai",
+          customTitle: "Server",
+        }),
+      ),
     ).toBe("Server");
+  });
+
+  it("prefers an agent callsign over the cwd-derived name", () => {
+    expect(
+      labelFor(
+        terminalTab({
+          cwd: "/Users/me/projects/anbo-ai",
+          agent: {
+            launcherId: "claude",
+            icon: "claude",
+            label: "Claude",
+            name: "Atlas",
+          },
+        }),
+      ),
+    ).toBe("Atlas");
   });
 
   it("keeps the custom title after the cwd changes (survives cd)", () => {

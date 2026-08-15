@@ -3,7 +3,12 @@ import "./styles/globals.css";
 
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Component, type ErrorInfo, type ReactNode } from "react";
+import {
+  Component,
+  type ErrorInfo,
+  type ReactNode,
+  useLayoutEffect,
+} from "react";
 import ReactDOM from "react-dom/client";
 import App from "./app/App";
 import { initLaunchDir } from "./lib/launchDir";
@@ -24,6 +29,20 @@ if (import.meta.env.DEV && import.meta.env.VITE_REACT_SCAN === "true") {
 }
 
 const STARTUP_STEP_TIMEOUT_MS = 8_000;
+
+function reportStartupProgress(phase: string): void {
+  window.dispatchEvent(
+    new CustomEvent("anbo:startup-progress", { detail: phase }),
+  );
+}
+
+function StartupReady({ children }: { children: ReactNode }) {
+  useLayoutEffect(() => {
+    document.documentElement.dataset.anboBundleReady = "true";
+    window.dispatchEvent(new CustomEvent("anbo:startup-ready"));
+  }, []);
+  return children;
+}
 
 type RootErrorBoundaryState = { error: Error | null };
 
@@ -97,33 +116,36 @@ async function bootstrap(): Promise<void> {
     const { default: EditorProductionSmoke } = await import(
       "./app/EditorProductionSmoke"
     );
+    reportStartupProgress("rendering the production editor smoke test");
     ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <RootErrorBoundary>
-        <EditorProductionSmoke />
+        <StartupReady>
+          <EditorProductionSmoke />
+        </StartupReady>
       </RootErrorBoundary>,
     );
-    document.documentElement.dataset.anboBundleReady = "true";
     return;
   }
 
   // Reap PTY sessions orphaned by a prior webview load before any tab spawns.
+  reportStartupProgress("closing orphaned terminals");
   await withStartupTimeout(
     "Closing orphaned terminals",
     invoke("pty_close_all").catch(() => {}),
   );
 
   // Seed before first paint so default tab mounts at target cwd (no flicker).
+  reportStartupProgress("resolving the launch workspace");
   await withStartupTimeout("Resolving launch workspace", initLaunchDir());
 
+  reportStartupProgress("rendering the workspace");
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <RootErrorBoundary>
-      <App />
+      <StartupReady>
+        <App />
+      </StartupReady>
     </RootErrorBoundary>,
   );
-  // Production smoke tests assert this marker after executing the real bundle.
-  // It is intentionally set only after the complete eager module graph and
-  // bootstrap steps have evaluated successfully.
-  document.documentElement.dataset.anboBundleReady = "true";
 }
 
 void bootstrap().catch((error) => {

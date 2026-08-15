@@ -1,7 +1,11 @@
 import type { PaneNode } from "@/modules/terminal/lib/panes";
 import type { AgentInstanceCount, AgentLauncherId } from "./launcher";
 
-export type ResumableAgentId = "claude" | "gemini" | "pi" | "opencode";
+export type ResumableAgentId =
+  | "claude"
+  | "antigravity"
+  | "pi"
+  | "opencode";
 
 export type PersistedAgentResume = {
   agent: ResumableAgentId;
@@ -22,7 +26,7 @@ export type AgentResumeLeaf = {
 
 const EXACT_SESSION_AGENTS = new Set<ResumableAgentId>([
   "claude",
-  "gemini",
+  "antigravity",
   "pi",
 ]);
 const OPENCODE_SESSION_ID = /^ses_[A-Za-z0-9]+$/;
@@ -30,7 +34,7 @@ const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 const LONG_SESSION_SELECTOR =
-  /(?:^|\s)(?:--continue|--resume|--session|--session-file|--session-id)(?:\s|=|$)/i;
+  /(?:^|\s)(?:--continue|--conversation|--resume|--session|--session-file|--session-id)(?:\s|=|$)/i;
 const SHELL_OPERATOR = /&&|\|\||[;&|><`]/;
 
 function isResumableAgentId(value: unknown): value is ResumableAgentId {
@@ -48,8 +52,8 @@ function canAttachSession(agent: ResumableAgentId, command: string): boolean {
   const shortSelector =
     agent === "opencode"
       ? /(?:^|\s)-[cs](?:\s|$)/i
-      : agent === "gemini"
-        ? /(?:^|\s)-r(?:\s|$)/i
+      : agent === "antigravity"
+        ? /(?:^|\s)-c(?:\s|$)/i
         : agent === "pi"
           ? /(?:^|\s)-[crs](?:\s|$)/i
           : /(?:^|\s)-[cr](?:\s|$)/i;
@@ -57,8 +61,8 @@ function canAttachSession(agent: ResumableAgentId, command: string): boolean {
   const nonInteractive =
     agent === "claude"
       ? /(?:^|\s)(?:-p|--print|--no-session-persistence|--from-pr|--bg|--background)(?:\s|=|$)/i
-      : agent === "gemini"
-        ? /(?:^|\s)(?:-p|--prompt)(?:\s|=|$)/i
+      : agent === "antigravity"
+        ? /(?:^|\s)(?:-p|--print|--prompt)(?:\s|=|$)/i
         : agent === "pi"
           ? /(?:^|\s)(?:-p|--print|--no-session|--fork)(?:\s|=|$)/i
           : /(?:^|\s)(?:run|attach|serve|web)(?:\s|$)/i;
@@ -126,9 +130,12 @@ export function buildAgentResumeCommand(
 ): string | null {
   switch (resume.agent) {
     case "claude":
-    case "gemini":
       return resume.sessionId
         ? `${resume.command} --resume ${resume.sessionId}`
+        : null;
+    case "antigravity":
+      return resume.sessionId
+        ? `${resume.command} --conversation ${resume.sessionId}`
         : null;
     case "pi":
       return resume.sessionId

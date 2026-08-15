@@ -84,7 +84,7 @@ export function phaseForSignal(
   }
 }
 
-// The Rust detector arms via the Claude Code / Codex / Gemini OSC 777 marker and
+// The Rust detector arms via the Claude Code / Codex / Antigravity OSC 777 marker and
 // reports per-pty lifecycle: started, working, attention, finished, exited.
 export function ensureAgentActivityListener(
   exited: (ptyId: number) => void,

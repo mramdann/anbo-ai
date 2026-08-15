@@ -5,10 +5,10 @@ const ST_FINAL: u8 = b'\\';
 
 const OSC_MAX: usize = 2048;
 
-const DEFAULT_AGENTS: &[&str] = &["claude", "codex", "gemini", "pi", "opencode", "grok"];
+const DEFAULT_AGENTS: &[&str] = &["claude", "codex", "antigravity", "pi", "opencode", "grok"];
 
 // OSC 777 marker our agent hooks emit. Legacy 3-field `notify;Anbo;<event>`
-// (Claude) or 4-field `notify;Anbo;<agent>;<event>` (Codex/Gemini/Pi).
+// (Claude) or 4-field `notify;Anbo;<agent>;<event>` (Codex/Antigravity/Pi).
 const ANBO_MARKER: &[u8] = b"notify;Anbo;";
 
 fn valid_session_id(agent: &str, session_id: &str) -> bool {
@@ -316,7 +316,12 @@ impl AgentDetector {
             }
             let base = token.rsplit(['/', '\\']).next().unwrap_or(token);
             if let Some(agent) = self.agents.iter().find(|a| {
-                base.strip_prefix(a.as_str())
+                let executable = if a.as_str() == "antigravity" {
+                    "agy"
+                } else {
+                    a.as_str()
+                };
+                base.strip_prefix(executable)
                     .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
             }) {
                 return Some(agent.clone());
@@ -362,6 +367,15 @@ mod tests {
     fn arms_on_pi_command() {
         let mut d = AgentDetector::new();
         assert_eq!(run(&mut d, &osc("133;C;pi")), vec![started("pi")]);
+    }
+
+    #[test]
+    fn arms_antigravity_on_agy_command() {
+        let mut detector = AgentDetector::new();
+        assert_eq!(
+            run(&mut detector, &osc("133;C;agy")),
+            vec![started("antigravity")]
+        );
     }
 
     #[test]
@@ -452,8 +466,8 @@ mod tests {
         );
         let mut g = AgentDetector::new();
         assert_eq!(
-            run(&mut g, &osc("777;notify;Anbo;gemini;finished")),
-            vec![started("gemini"), Transition::Finished]
+            run(&mut g, &osc("777;notify;Anbo;antigravity;finished")),
+            vec![started("antigravity"), Transition::Finished]
         );
     }
 
@@ -483,7 +497,7 @@ mod tests {
     #[test]
     fn uuid_session_marker_supports_hook_backed_agents() {
         let id = "00000000-0000-4000-8000-000000000001";
-        for agent in ["claude", "gemini", "pi"] {
+        for agent in ["claude", "antigravity", "pi"] {
             let mut detector = AgentDetector::new();
             assert_eq!(
                 run(
@@ -535,17 +549,17 @@ mod tests {
     #[test]
     fn four_field_marker_drives_status_after_preexec() {
         let mut d = AgentDetector::new();
-        run(&mut d, &osc("133;C;gemini"));
+        run(&mut d, &osc("133;C;agy"));
         assert_eq!(
-            run(&mut d, &osc("777;notify;Anbo;gemini;attention")),
+            run(&mut d, &osc("777;notify;Anbo;antigravity;attention")),
             vec![Transition::Attention]
         );
         assert_eq!(
-            run(&mut d, &osc("777;notify;Anbo;gemini;working")),
+            run(&mut d, &osc("777;notify;Anbo;antigravity;working")),
             vec![Transition::Working]
         );
         assert_eq!(
-            run(&mut d, &osc("777;notify;Anbo;gemini;finished")),
+            run(&mut d, &osc("777;notify;Anbo;antigravity;finished")),
             vec![Transition::Finished]
         );
     }

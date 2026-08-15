@@ -1,10 +1,7 @@
-import { leafIds } from "@/modules/terminal";
 import { describe, expect, it } from "vitest";
 import {
   AGENT_LAUNCHERS,
-  type AgentInstanceCount,
   canLaunchAgentRequest,
-  createAgentPanePlan,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
   findAgentLauncher,
   getAgentLaunchers,
@@ -13,11 +10,6 @@ import {
   validateAgentLaunchCommand,
   validateCustomCliAgentName,
 } from "./launcher";
-
-function allocator(start = 1) {
-  let id = start;
-  return () => id++;
-}
 
 describe("agent launch commands", () => {
   it("defines a non-empty default for every launcher", () => {
@@ -50,14 +42,14 @@ describe("agent launch commands", () => {
       normalizeAgentLaunchCommands({
         claude: "cc",
         codex: "",
-        gemini: 42,
+        antigravity: 42,
         pi: "pi --provider local",
         unknown: "ignored",
       }),
     ).toEqual({
       claude: "cc",
       codex: "codex",
-      gemini: "gemini",
+      antigravity: "agy",
       pi: "pi --provider local",
       opencode: "opencode",
       grok: "grok",
@@ -134,7 +126,7 @@ describe("custom CLI agents", () => {
     const custom = [
       {
         id: "custom:aider" as const,
-        icon: "gemini" as const,
+        icon: "antigravity" as const,
         name: "Aider",
         command: "aider",
       },
@@ -143,7 +135,7 @@ describe("custom CLI agents", () => {
 
     expect(launchers[launchers.length - 1]).toEqual({
       id: "custom:aider",
-      icon: "gemini",
+      icon: "antigravity",
       label: "Aider",
       defaultCommand: "aider",
       supportsHooks: false,
@@ -152,78 +144,17 @@ describe("custom CLI agents", () => {
     expect(findAgentLauncher("custom:aider", custom)?.label).toBe("Aider");
     expect(findAgentLauncher("custom:missing", custom)).toBeUndefined();
   });
-});
 
-describe("createAgentPanePlan", () => {
-  it.each([1, 2, 3, 4] as AgentInstanceCount[])(
-    "creates %i unique leaves with the requested cwd",
-    (instances) => {
-      const plan = createAgentPanePlan(instances, allocator(), "/workspace");
-      const ids = leafIds(plan.paneTree);
-      expect(ids).toEqual(plan.leafIds);
-      expect(new Set(ids).size).toBe(instances);
-
-      const visit = (node: typeof plan.paneTree) => {
-        if (node.kind === "leaf") {
-          expect(node.cwd).toBe("/workspace");
-          return;
-        }
-        node.children.forEach(visit);
-      };
-      visit(plan.paneTree);
-    },
-  );
-
-  it("balances four agents into a two by two grid", () => {
-    const { paneTree } = createAgentPanePlan(4, allocator());
-    expect(paneTree.kind).toBe("split");
-    if (paneTree.kind !== "split") return;
-    expect(paneTree.dir).toBe("row");
-    expect(paneTree.children).toHaveLength(2);
+  it("migrates the retired Gemini icon on persisted custom agents", () => {
     expect(
-      paneTree.children.every(
-        (child) =>
-          child.kind === "split" &&
-          child.dir === "col" &&
-          child.children.length === 2,
-      ),
-    ).toBe(true);
-  });
-
-  it("attaches distinct resume metadata to each agent leaf", () => {
-    const resumes = [
-      {
-        agent: "claude" as const,
-        command: "claude",
-        sessionId: "00000000-0000-4000-8000-000000000001",
-      },
-      {
-        agent: "claude" as const,
-        command: "claude",
-        sessionId: "00000000-0000-4000-8000-000000000002",
-      },
-    ];
-    const { paneTree } = createAgentPanePlan(
-      2,
-      allocator(),
-      "/workspace",
-      resumes,
-    );
-    expect(paneTree.kind).toBe("split");
-    if (paneTree.kind !== "split") return;
-    expect(
-      paneTree.children.map((node) =>
-        node.kind === "leaf" ? node.agentResume : undefined,
-      ),
-    ).toEqual(resumes);
-  });
-
-  it("rejects counts outside the renderer pool limit", () => {
-    expect(() =>
-      createAgentPanePlan(0 as AgentInstanceCount, allocator()),
-    ).toThrow(RangeError);
-    expect(() =>
-      createAgentPanePlan(5 as AgentInstanceCount, allocator()),
-    ).toThrow(RangeError);
+      normalizeCustomCliAgents([
+        {
+          id: "custom:aider",
+          icon: "gemini",
+          name: "Aider",
+          command: "aider",
+        },
+      ])[0]?.icon,
+    ).toBe("antigravity");
   });
 });

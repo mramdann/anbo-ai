@@ -98,6 +98,15 @@ export function TabIcon({
   if (tab.kind === "git-history") {
     return <TabGlyph icon={Clock01Icon} pixels={pixels} />;
   }
+  if (tab.kind === "terminal" && tab.agent) {
+    return (
+      <AgentTabIcon
+        agent={tab.agent.icon}
+        state={agentStatus.state}
+        pixels={pixels}
+      />
+    );
+  }
   if (agentStatus.state === "attention") {
     return <TabGlyph icon={Message02Icon} pixels={pixels} />;
   }
@@ -147,6 +156,39 @@ function PreviewIcon({
       className={`${className} shrink-0 rounded-[2px] object-contain`}
       onError={() => setIndex((idx) => idx + 1)}
     />
+  );
+}
+
+function AgentTabIcon({
+  agent,
+  state,
+  pixels,
+}: {
+  agent: string;
+  state: "working" | "attention" | "finished" | null;
+  pixels: number;
+}) {
+  const badgeClass =
+    state === "working"
+      ? "animate-pulse bg-primary"
+      : state === "attention"
+        ? "bg-amber-500"
+        : state === "finished"
+          ? "bg-emerald-500"
+          : null;
+  return (
+    <span
+      className="relative inline-flex shrink-0"
+      role="img"
+      aria-label={state ? `Agent ${state}` : "Agent"}
+    >
+      <AgentIcon agent={agent} size={pixels} tone="brand" />
+      {badgeClass ? (
+        <span
+          className={`absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full ring-1 ring-background ${badgeClass}`}
+        />
+      ) : null}
+    </span>
   );
 }
 

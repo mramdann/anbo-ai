@@ -32,6 +32,7 @@ type Props = {
 };
 
 const INSTANCE_COUNTS: AgentInstanceCount[] = [1, 2, 3, 4];
+const TAB_LAYERS = [0, 1, 2, 3] as const;
 
 export function AgentLauncherPanel({
   onBack,
@@ -42,7 +43,7 @@ export function AgentLauncherPanel({
   const customCliAgents = usePreferencesStore((s) => s.customCliAgents);
   const hydrated = usePreferencesStore((s) => s.hydrated);
   const [agentId, setAgentId] = useState<AgentLauncherId>("claude");
-  const [instances, setInstances] = useState<AgentInstanceCount>(2);
+  const [instances, setInstances] = useState<AgentInstanceCount>(1);
   const [drafts, setDrafts] = useState<AgentLaunchCommands>(storedCommands);
   const hydratedRef = useRef(hydrated);
   const persistedRef = useRef(storedCommands);
@@ -154,7 +155,7 @@ export function AgentLauncherPanel({
             {variant === "embedded" ? "Agents" : "Launch agents"}
           </div>
           <div className="text-[10px] text-muted-foreground">
-            One workspace, up to four panes
+            Up to four independent tabs
           </div>
         </div>
       </div>
@@ -212,7 +213,7 @@ export function AgentLauncherPanel({
                   : "border-border/60 bg-background/30 text-muted-foreground hover:bg-accent hover:text-foreground",
               )}
             >
-              <PaneGlyph count={count} />
+              <TabCountGlyph count={count} />
               {count}
             </button>
           ))}
@@ -300,38 +301,16 @@ export function AgentLauncherPanel({
   );
 }
 
-function PaneGlyph({ count }: { count: AgentInstanceCount }) {
-  const cell = "rounded-[1px] bg-current opacity-75";
-  if (count === 1) {
-    return (
-      <span className="grid size-3 grid-cols-1 gap-px rounded-[2px] border border-current/50 p-px">
-        <span className={cell} />
-      </span>
-    );
-  }
-  if (count === 2) {
-    return (
-      <span className="grid size-3 grid-cols-2 gap-px rounded-[2px] border border-current/50 p-px">
-        <span className={cell} />
-        <span className={cell} />
-      </span>
-    );
-  }
-  if (count === 3) {
-    return (
-      <span className="grid size-3 grid-cols-2 grid-rows-2 gap-px rounded-[2px] border border-current/50 p-px">
-        <span className={cn(cell, "row-span-2")} />
-        <span className={cell} />
-        <span className={cell} />
-      </span>
-    );
-  }
+function TabCountGlyph({ count }: { count: AgentInstanceCount }) {
   return (
-    <span className="grid size-3 grid-cols-2 grid-rows-2 gap-px rounded-[2px] border border-current/50 p-px">
-      <span className={cell} />
-      <span className={cell} />
-      <span className={cell} />
-      <span className={cell} />
+    <span className="relative block h-3 w-3.5" aria-hidden="true">
+      {TAB_LAYERS.slice(0, count).map((layer) => (
+        <span
+          key={`tab-layer-${layer}`}
+          className="absolute h-2.5 w-2 rounded-[2px] border border-current/60 bg-background"
+          style={{ left: layer, top: count - layer - 1 }}
+        />
+      ))}
     </span>
   );
 }

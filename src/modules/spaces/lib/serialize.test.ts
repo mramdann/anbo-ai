@@ -102,6 +102,80 @@ describe("serializeTabs", () => {
     expect(JSON.stringify(serialized)).not.toContain("resumeOnStart");
   });
 
+  it("round-trips stable agent callsign metadata", () => {
+    const [serialized] = serializeTabs([
+      term({
+        title: "Atlas",
+        agent: {
+          launcherId: "claude",
+          icon: "claude",
+          label: "Claude",
+          name: "Atlas",
+        },
+      }),
+    ]);
+    expect(serialized).toMatchObject({
+      kind: "terminal",
+      agent: {
+        launcherId: "claude",
+        icon: "claude",
+        label: "Claude",
+        name: "Atlas",
+      },
+    });
+
+    const [hydrated] = hydrateTabs([serialized], "s1", counter());
+    expect(hydrated).toMatchObject({
+      kind: "terminal",
+      title: "Atlas",
+      agent: {
+        launcherId: "claude",
+        icon: "claude",
+        label: "Claude",
+        name: "Atlas",
+      },
+    });
+  });
+
+  it("ignores malformed persisted agent identity metadata", () => {
+    const serialized = {
+      kind: "terminal",
+      tree: { kind: "leaf", cwd: "/a" },
+      agent: {
+        launcherId: "claude",
+        icon: "claude",
+        label: "Claude",
+        name: "Not a callsign",
+      },
+    } as unknown as SerializedTab;
+    const [hydrated] = hydrateTabs([serialized], "s1", counter());
+    expect(hydrated).not.toHaveProperty("agent");
+    expect(hydrated).toMatchObject({ title: "a" });
+  });
+
+  it("repairs duplicate persisted callsigns within one workspace", () => {
+    const identity = {
+      launcherId: "claude" as const,
+      icon: "claude" as const,
+      label: "Claude",
+      name: "Claude",
+    };
+    const restored = hydrateTabs(
+      [
+        { kind: "terminal", tree: { kind: "leaf" }, agent: identity },
+        { kind: "terminal", tree: { kind: "leaf" }, agent: identity },
+      ],
+      "s1",
+      counter(),
+    );
+    const names = restored.map((tab) =>
+      tab.kind === "terminal" ? tab.agent?.name : undefined,
+    );
+    expect(names[0]).toBe("Claude");
+    expect(names[1]).not.toBe("Claude");
+    expect(names[1]).toMatch(/^[A-Za-z][A-Za-z0-9]{0,6}$/);
+  });
+
   it("does not persist resume metadata before a real session id is discovered", () => {
     const [serialized] = serializeTabs([
       term({
@@ -292,7 +366,7 @@ describe("hydrateTabs", () => {
     expect(restored?.title).toBe("Browser");
   });
 
-  it("migrates legacy kind \"preview\" tabs to browser", () => {
+  it('migrates legacy kind "preview" tabs to browser', () => {
     const serialized = [
       { kind: "preview", url: "http://localhost:3000" },
     ] as unknown as SerializedTab[];

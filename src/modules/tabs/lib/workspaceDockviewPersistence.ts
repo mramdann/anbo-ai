@@ -37,6 +37,7 @@ function tabLayoutIdentityBase(tab: Tab): string {
         tab.customTitle ?? null,
         Boolean(tab.private),
         terminalPaneIdentity(tab.paneTree, tab.activeLeafId),
+        ...(tab.agent ? [["agent", tab.agent.launcherId, tab.agent.name]] : []),
       ]);
     case "editor":
     case "markdown":

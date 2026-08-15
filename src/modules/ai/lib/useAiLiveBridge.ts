@@ -1,5 +1,9 @@
 import { useManagedAgentsStore } from "@/modules/agents/store/managedAgentsStore";
 import {
+  canonicalAgentTabIdentity,
+  type AgentTabNameRequest,
+} from "@/modules/agents/lib/agentTabName";
+import {
   type BrowserPaneHandle,
   markBrowserAutomationActivity,
 } from "@/modules/browser";
@@ -55,7 +59,7 @@ type Params = {
   browserRefs: RefObject<Map<number, BrowserPaneHandle>>;
   newAgentTab: (
     cwd: string | undefined,
-    title: string,
+    agent: AgentTabNameRequest,
   ) => { tabId: number; leafId: number };
   terminalRefs: RefObject<Map<number, TerminalPaneHandle>>;
 };
@@ -231,11 +235,9 @@ export function useAiLiveBridge(params: Params) {
         if (!trimmed) return null;
         const oneLine = trimmed.replace(/\s*\r?\n\s*/g, " ");
         const cwd = findCwd();
-        const short =
-          oneLine.length > 32 ? `${oneLine.slice(0, 32)}…` : oneLine;
         const { tabId, leafId } = ref.current.newAgentTab(
           cwd ?? undefined,
-          `claude · ${short}`,
+          canonicalAgentTabIdentity("claude"),
         );
         useManagedAgentsStore
           .getState()

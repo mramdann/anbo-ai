@@ -190,6 +190,9 @@
       // surface. Keep the failure visible instead of spinning forever.
       (function () {
         var settled = false;
+        var watchdog = 0;
+        var moduleTimeoutMs = 60000;
+        var stalledPhaseTimeoutMs = 30000;
         function messageOf(value) {
           var text = "";
           try {
@@ -203,12 +206,21 @@
           var startup = document.getElementById("anbo-startup");
           if (!startup) return;
           settled = true;
+          window.clearTimeout(watchdog);
           startup.dataset.error = "true";
           startup.setAttribute("role", "alert");
           var status = document.getElementById("anbo-startup-status");
           var detail = document.getElementById("anbo-startup-error");
           if (status) status.textContent = "Anbo could not start";
           if (detail) detail.textContent = messageOf(value);
+        }
+        function armWatchdog(message, timeoutMs) {
+          window.clearTimeout(watchdog);
+          watchdog = window.setTimeout(function () {
+            if (!settled && document.getElementById("anbo-startup")) {
+              showStartupError(message);
+            }
+          }, timeoutMs);
         }
         window.addEventListener("error", function (event) {
           showStartupError(event.error || event.message);
@@ -219,11 +231,23 @@
         window.addEventListener("anbo:startup-error", function (event) {
           showStartupError(event.detail);
         });
-        window.setTimeout(function () {
-          if (!settled && document.getElementById("anbo-startup")) {
-            showStartupError("Startup timed out. Restart Anbo and check the application log.");
-          }
-        }, 15000);
+        window.addEventListener("anbo:startup-progress", function (event) {
+          var phase = messageOf(event.detail);
+          var status = document.getElementById("anbo-startup-status");
+          if (status) status.textContent = phase;
+          armWatchdog(
+            "Startup stopped while " + phase + ". Check the application log.",
+            stalledPhaseTimeoutMs
+          );
+        });
+        window.addEventListener("anbo:startup-ready", function () {
+          settled = true;
+          window.clearTimeout(watchdog);
+        });
+        armWatchdog(
+          "The application module did not finish loading. Check the application log.",
+          moduleTimeoutMs
+        );
       })();
 
       // Window controls for the pre-React "Preparing your workspace" surface.

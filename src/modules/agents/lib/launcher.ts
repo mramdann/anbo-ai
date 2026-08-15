@@ -1,6 +1,3 @@
-import type { PaneNode } from "@/modules/terminal";
-import type { PersistedAgentResume } from "./resume";
-
 export const AGENT_LAUNCHERS = [
   {
     id: "claude",
@@ -19,10 +16,10 @@ export const AGENT_LAUNCHERS = [
     custom: false,
   },
   {
-    id: "gemini",
-    icon: "gemini",
-    label: "Gemini",
-    defaultCommand: "gemini",
+    id: "antigravity",
+    icon: "antigravity",
+    label: "Antigravity",
+    defaultCommand: "agy",
     supportsHooks: true,
     custom: false,
   },
@@ -57,7 +54,7 @@ export const CUSTOM_CLI_AGENT_ICONS = [
   "robot",
   "claude",
   "codex",
-  "gemini",
+  "antigravity",
   "pi",
   "opencode",
   "grok",
@@ -100,9 +97,7 @@ export function canLaunchAgentRequest(
   const runningOpenCode = runningAgents.filter(
     (agent) => agent === "opencode",
   ).length;
-  return (
-    runningOpenCode + request.instances <= MAX_PARALLEL_OPENCODE_AGENTS
-  );
+  return runningOpenCode + request.instances <= MAX_PARALLEL_OPENCODE_AGENTS;
 }
 
 export const DEFAULT_AGENT_LAUNCH_COMMANDS: AgentLaunchCommands =
@@ -116,11 +111,16 @@ const MAX_CUSTOM_CLI_AGENTS = 32;
 const CUSTOM_AGENT_ID = /^custom:[a-z0-9][a-z0-9-]{0,63}$/;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 
-function isCustomCliAgentIcon(value: unknown): value is CustomCliAgentIcon {
+function normalizeCustomCliAgentIcon(
+  value: unknown,
+): CustomCliAgentIcon | undefined {
+  if (value === "gemini") return "antigravity";
   return (
     typeof value === "string" &&
     (CUSTOM_CLI_AGENT_ICONS as readonly string[]).includes(value)
-  );
+  )
+    ? (value as CustomCliAgentIcon)
+    : undefined;
 }
 
 export type AgentCommandValidation =
@@ -232,9 +232,10 @@ export function normalizeCustomCliAgents(value: unknown): CustomCliAgent[] {
     const command = validateAgentLaunchCommand(stored.command);
     if (!name.ok || !command.ok) continue;
     ids.add(stored.id);
+    const icon = normalizeCustomCliAgentIcon(stored.icon);
     result.push({
       id: stored.id as CustomCliAgentId,
-      icon: isCustomCliAgentIcon(stored.icon) ? stored.icon : "robot",
+      icon: icon ?? "robot",
       name: name.name,
       command: command.command,
     });
@@ -269,59 +270,4 @@ export function findAgentLauncher(
   customAgents: readonly CustomCliAgent[] = [],
 ): AgentLauncher | undefined {
   return getAgentLaunchers(customAgents).find((agent) => agent.id === id);
-}
-
-export type AgentPanePlan = {
-  paneTree: PaneNode;
-  leafIds: number[];
-};
-
-export function createAgentPanePlan(
-  instances: AgentInstanceCount,
-  allocateId: () => number,
-  cwd?: string,
-  agentResumes: Array<PersistedAgentResume | undefined> = [],
-): AgentPanePlan {
-  if (!Number.isInteger(instances) || instances < 1 || instances > 4) {
-    throw new RangeError("Agent instance count must be between 1 and 4.");
-  }
-
-  const leaves = Array.from({ length: instances }, (_, index) => ({
-    kind: "leaf" as const,
-    id: allocateId(),
-    cwd,
-    ...(agentResumes[index] && { agentResume: agentResumes[index] }),
-  }));
-  const split = (dir: "row" | "col", children: PaneNode[]): PaneNode => ({
-    kind: "split",
-    id: allocateId(),
-    dir,
-    children,
-  });
-
-  switch (instances) {
-    case 1:
-      return { paneTree: leaves[0], leafIds: leaves.map((leaf) => leaf.id) };
-    case 2:
-      return {
-        paneTree: split("row", leaves),
-        leafIds: leaves.map((leaf) => leaf.id),
-      };
-    case 3:
-      return {
-        paneTree: split("row", [
-          leaves[0],
-          split("col", [leaves[1], leaves[2]]),
-        ]),
-        leafIds: leaves.map((leaf) => leaf.id),
-      };
-    case 4:
-      return {
-        paneTree: split("row", [
-          split("col", [leaves[0], leaves[1]]),
-          split("col", [leaves[2], leaves[3]]),
-        ]),
-        leafIds: leaves.map((leaf) => leaf.id),
-      };
-  }
 }

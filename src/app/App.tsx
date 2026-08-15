@@ -171,7 +171,7 @@ export default function App() {
     newTab,
     newBlockTab,
     newAgentTab,
-    newAgentGroupTab,
+    newAgentTabs,
     pinAgentResumeSession,
     newPrivateTab,
     openFileTab,
@@ -703,7 +703,7 @@ export default function App() {
     (leafId: number, agent: string, sessionId: string) => {
       switch (agent) {
         case "claude":
-        case "gemini":
+        case "antigravity":
         case "pi":
         case "opencode":
           pinAgentResumeSession(leafId, sessionId);
@@ -760,10 +760,6 @@ export default function App() {
         });
         return;
       }
-      const title =
-        request.instances === 1
-          ? launcher.label
-          : `${launcher.label} × ${request.instances}`;
       const agentCwd = inheritedCwdForNewTab();
       const agentResumes =
         request.agent === "opencode" && workspaceEnv.kind !== "local"
@@ -773,9 +769,13 @@ export default function App() {
               command.command,
               request.instances,
             );
-      const { leafIds: agentLeafIds } = newAgentGroupTab(
+      const { leafIds: agentLeafIds } = newAgentTabs(
         agentCwd,
-        title,
+        {
+          launcherId: launcher.id,
+          icon: launcher.icon,
+          label: launcher.label,
+        },
         request.instances,
         agentResumes,
       );
@@ -810,12 +810,7 @@ export default function App() {
       };
       void launch();
     },
-    [
-      customCliAgents,
-      inheritedCwdForNewTab,
-      newAgentGroupTab,
-      workspaceEnv.kind,
-    ],
+    [customCliAgents, inheritedCwdForNewTab, newAgentTabs, workspaceEnv.kind],
   );
 
   const sendCd = useCallback(

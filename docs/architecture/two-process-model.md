@@ -110,7 +110,7 @@ Three distinct surfaces:
 
 ### Agent hooks (`src-tauri/src/modules/agent.rs`)
 
-- `agent_enable_hooks` / `agent_hooks_status` - install/status terminal coding-agent hooks (Claude Code, Codex, Gemini CLI)
+- `agent_enable_hooks` / `agent_hooks_status` - install/status terminal coding-agent hooks (Claude Code, Codex, Antigravity CLI, Pi, OpenCode)
 
 ### History (`src-tauri/src/modules/history/`)
 

@@ -2,6 +2,11 @@ import {
   normalizePersistedAgentResume,
   type PersistedAgentResume,
 } from "@/modules/agents/lib/resume";
+import {
+  allocateAgentTabNames,
+  normalizeAgentTabIdentity,
+  type AgentTabIdentity,
+} from "@/modules/agents/lib/agentTabName";
 import type {
   EditorTab,
   MarkdownTab,
@@ -30,6 +35,7 @@ export type SerializedTab =
       tree: SerializedNode;
       blocks?: boolean;
       customTitle?: string;
+      agent?: AgentTabIdentity;
     }
   | { kind: "editor"; path: string }
   | { kind: "browser"; url: string }
@@ -90,6 +96,7 @@ function serializeTab(tab: Tab): SerializedTab | null {
         tree: serializeNode(tab.paneTree, tab.activeLeafId),
         ...(tab.blocks && { blocks: true }),
         ...(tab.customTitle !== undefined && { customTitle: tab.customTitle }),
+        ...(tab.agent && { agent: tab.agent }),
       };
     case "editor":
       return { kind: "editor", path: tab.path };
@@ -171,8 +178,10 @@ function hydrateTab(
   switch (s.kind) {
     case "terminal": {
       const { tree, activeLeafId, firstLeafCwd } = hydrateTree(s.tree, allocId);
+      const agent = normalizeAgentTabIdentity(s.agent);
       const title =
         s.customTitle ??
+        agent?.name ??
         (firstLeafCwd ? basename(firstLeafCwd) : s.blocks ? "blocks" : "shell");
       return {
         id: allocId(),
@@ -185,6 +194,7 @@ function hydrateTab(
         activeLeafId,
         ...(s.blocks && { blocks: true }),
         ...(s.customTitle !== undefined && { customTitle: s.customTitle }),
+        ...(agent && { agent }),
       } satisfies TerminalTab;
     }
     case "editor":
@@ -246,9 +256,25 @@ export function hydrateTabs(
 ): Tab[] {
   if (!Array.isArray(serialized)) return [];
   const out: Tab[] = [];
+  const agentNames = new Set<string>();
   for (const s of serialized) {
     try {
-      const tab = hydrateTab(s, spaceId, allocId);
+      let tab = hydrateTab(s, spaceId, allocId);
+      if (tab?.kind === "terminal" && tab.agent) {
+        const agent = tab.agent;
+        const key = agent.name.toLocaleLowerCase();
+        let finalName = agent.name;
+        if (agentNames.has(key)) {
+          const [name] = allocateAgentTabNames(agent, 1, agentNames);
+          finalName = name;
+          tab = {
+            ...tab,
+            title: tab.customTitle ?? name,
+            agent: { ...agent, name },
+          };
+        }
+        agentNames.add(finalName.toLocaleLowerCase());
+      }
       if (tab) out.push(tab);
     } catch {
       // Skip corrupted entries rather than failing the whole restore.
