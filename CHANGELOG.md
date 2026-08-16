@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.1](https://github.com/mramdann/anbo-ai/compare/v0.15.0...v0.15.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* **notifications:** bundle Sonner's official stylesheet with the main application CSS so agent `needs_input` alerts remain compact, theme-aware floating toasts instead of rendering as unstyled full-width content below the workspace in production WebView2 builds
+
+
 ## [0.15.0](https://github.com/mramdann/anbo-ai/compare/v0.14.7...v0.15.0) (2026-08-16)
 
 
