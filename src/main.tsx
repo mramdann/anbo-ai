@@ -1,4 +1,5 @@
 import "@xterm/xterm/css/xterm.css";
+import "sonner/dist/styles.css";
 import "./styles/globals.css";
 
 import { invoke } from "@tauri-apps/api/core";
