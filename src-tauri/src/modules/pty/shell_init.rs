@@ -369,18 +369,14 @@ mod unix {
                 cmd.arg("-i");
             }
             Shell::Fish => {
-                // fish 4.0+ writes its own OSC 133 A/B; ours would double it.
-                cmd.env("fish_features", "no-mark-prompt");
-                cmd.arg("-i");
-                match prepare_fish_init() {
-                    Ok(init) => {
-                        // -C runs after config.fish. Load the private Anbo copy
-                        // there so no global Fish configuration is modified.
-                        cmd.arg("-C");
-                        cmd.arg(super::fish_init_command(&init.to_string_lossy()));
+                let init = match prepare_fish_init() {
+                    Ok(init) => Some(init),
+                    Err(e) => {
+                        log::warn!("fish shell integration disabled: {e}");
+                        None
                     }
-                    Err(e) => log::warn!("fish shell integration disabled: {e}"),
-                }
+                };
+                apply_fish_init(cmd, init.as_deref());
             }
             Shell::Other => {
                 log::info!(
@@ -388,6 +384,18 @@ mod unix {
                     shell_path
                 );
             }
+        }
+    }
+
+    fn apply_fish_init(cmd: &mut CommandBuilder, init: Option<&Path>) {
+        // fish 4.0+ writes its own OSC 133 A/B; ours would double it.
+        cmd.env("fish_features", "no-mark-prompt");
+        cmd.arg("-i");
+        if let Some(init) = init {
+            // -C runs after config.fish. Load the private Anbo copy there so no
+            // global Fish configuration is modified.
+            cmd.arg("-C");
+            cmd.arg(super::fish_init_command(&init.to_string_lossy()));
         }
     }
 
@@ -483,7 +491,8 @@ mod unix {
         #[test]
         fn builds_unix_fish_launch_with_post_config_rewrap() {
             let mut cmd = CommandBuilder::new("/usr/bin/fish");
-            apply_shell_init(&mut cmd, &Shell::Fish, "/usr/bin/fish");
+            let init = Path::new("/tmp/anbo/runtime/shell-integration/fish/init.fish");
+            apply_fish_init(&mut cmd, Some(init));
             let argv: Vec<_> = cmd
                 .get_argv()
                 .iter()
@@ -495,9 +504,7 @@ mod unix {
                     "/usr/bin/fish".to_string(),
                     "-i".to_string(),
                     "-C".to_string(),
-                    super::super::fish_init_command(
-                        &prepare_fish_init().unwrap().to_string_lossy(),
-                    ),
+                    super::super::fish_init_command(&init.to_string_lossy()),
                 ]
             );
         }
