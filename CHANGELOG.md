@@ -41,6 +41,7 @@
 * coordinate browser, Dockview, editor, terminal renderer, and sidebar recovery through one stable window-presentation lifecycle
 * perform a final Codex discovery scan at the timeout boundary and retry only the explicitly pending leaf
 * preserve workspace roots independently from a terminal's changing current directory
+* validate Fish launch arguments without depending on application data initialization during Unix CI
 * add regression coverage for browser history and local files, background automation routing, WebView2 ownership, minimize and restore behavior, agent callsigns, cross-space moves, project integrations, exact-session resume, notifications, startup failures, and custom subagent models
 
 
