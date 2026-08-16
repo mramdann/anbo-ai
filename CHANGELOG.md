@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.15.0](https://github.com/mramdann/anbo-ai/compare/v0.14.7...v0.15.0) (2026-08-16)
+
+
+### Features
+
+* **browser:** add a useful new-tab surface with a bounded 100-entry browsing history, per-entry removal, isolated-profile size reporting, and clear browsing data controls
+* **browser:** support local HTML files through workspace-authorized `file:` navigation while preserving relative assets and same-workspace links
+* **browser:** keep native browser tabs, media, and automation alive across background workspaces without activating or stealing focus from the user's workspace
+* **agents:** replace the retired Gemini launcher with Antigravity CLI and centralize the official Claude, Codex, Antigravity, Pi, OpenCode, and Grok brand assets
+* **agents:** assign stable workspace-scoped callsigns to agent tabs, keeping the canonical CLI name for the first instance and choosing collision-safe random aliases for later instances
+* **agents:** launch every requested agent instance in its own independent tab and preserve its identity when layouts are restored or tabs move between workspaces
+* **agents:** scope Claude, Codex, Antigravity, Pi, and OpenCode integrations to the authorized project instead of modifying global CLI configuration
+
+
+### Bug Fixes
+
+* **browser:** treat domains, localhost addresses, Windows paths, and explicit `file:` URLs correctly instead of sending valid destinations to Google or leaving the native view on `about:blank`
+* **browser:** harden native WebView2 ownership, z-order, overlay, visibility, and geometry handoffs so rapid tab and workspace switches do not expose stale pages or transparent desktop frames
+* **browser:** keep automation targets isolated per workspace, reject cross-workspace tab reuse, and close only browser tabs owned by the requesting workspace
+* **window:** prevent minimize and restore transitions from collapsing the sidebar, fitting terminals to thumbnail geometry, displacing editor content, or flashing browser surfaces
+* **startup:** replace indefinite splash-screen failures with phase-aware progress, actionable module and React render errors, and a readiness signal emitted only after the application root commits
+* **agents:** use each tab's callsign in status rows, retained alerts, in-app toasts, and OS notifications while avoiding duplicated needs-input history
+* **agents:** preserve exact Claude, Codex, OpenCode, Antigravity, and Pi sessions without injecting a fabricated session ID into a fresh CLI launch
+* **agents:** discover concurrent Codex rollout sessions with workspace, launch-time, claimed-session, and UUID v7 filtering so restored tabs cannot resume one another's conversation
+* **agents:** keep slow Claude startup, trust, login, and interactive prompts visible with the original managed task still pending instead of creating an inactive or late zombie command
+* **ai:** resolve subagents through the same runtime model configuration as the AI panel, including custom OpenAI-compatible endpoints and endpoint-scoped keys
+* **shell:** load Fish integration from Anbo's private runtime path and preserve user shell configuration across supported platforms
+
+
+### Security and Privacy
+
+* authorize agent integration writes against an exact registered workspace root, reject symlink escapes, preserve foreign hooks and plugins, and remove only historical Anbo-owned global entries
+* isolate native browser data from the main Anbo webview and limit local-file navigation to the browser tab's authorized workspace root
+* gate project agent signals on the Anbo terminal environment so ordinary CLI sessions outside Anbo remain unaffected
+
+
+### Reliability
+
+* coordinate browser, Dockview, editor, terminal renderer, and sidebar recovery through one stable window-presentation lifecycle
+* perform a final Codex discovery scan at the timeout boundary and retry only the explicitly pending leaf
+* preserve workspace roots independently from a terminal's changing current directory
+* add regression coverage for browser history and local files, background automation routing, WebView2 ownership, minimize and restore behavior, agent callsigns, cross-space moves, project integrations, exact-session resume, notifications, startup failures, and custom subagent models
+
+
+### Documentation
+
+* update the architecture, contributor, security, Nix, and project documentation from the historical Terax identity to Anbo
+* document project-scoped integrations, stable agent identity, exact-session resume, isolated browser data, and the window-presentation lifecycle
+
 ## [0.14.7](https://github.com/mramdann/anbo-ai/compare/v0.14.6...v0.14.7) (2026-08-14)
 
 
