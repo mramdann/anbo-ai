@@ -17,6 +17,42 @@ const ZSHRC_SCRIPT: &str = include_str!("scripts/zshrc.zsh");
 #[cfg(windows)]
 const FISH_INIT_SCRIPT: &str = include_str!("scripts/init.fish");
 const FISH_REINSTALL_PROMPT: &str = "functions -q __anbo_install_prompt; and __anbo_install_prompt";
+const OWNED_FISH_MARKER: &str = "shell-integration (fish)";
+
+fn fish_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn fish_init_command(path: &str) -> String {
+    format!("source {}; {FISH_REINSTALL_PROMPT}", fish_quote(path))
+}
+
+fn remove_owned_fish_file(path: &std::path::Path) -> Result<bool, String> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
+    };
+    if !contents.contains(OWNED_FISH_MARKER) {
+        return Ok(false);
+    }
+    std::fs::remove_file(path).map_err(|error| format!("remove {}: {error}", path.display()))?;
+    Ok(true)
+}
+
+pub fn cleanup_legacy_global_integration() -> Result<bool, String> {
+    #[cfg(unix)]
+    {
+        let path = dirs::home_dir()
+            .ok_or_else(|| "could not resolve home dir".to_string())?
+            .join(".config/fish/conf.d/anbo.fish");
+        remove_owned_fish_file(&path)
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(false)
+    }
+}
 
 #[cfg(windows)]
 fn bashrc_script() -> &'static str {
@@ -144,6 +180,10 @@ fn apply_common(cmd: &mut CommandBuilder, cwd: Option<String>, blocks: bool) {
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("ANBO_TERMINAL", "1");
+    #[cfg(windows)]
+    if let Ok(executable) = std::env::current_exe() {
+        cmd.env("ANBO_HOOK_EXE", hook_executable_env_value(&executable));
+    }
     if blocks {
         cmd.env("ANBO_BLOCKS", "1");
     }
@@ -172,6 +212,11 @@ fn apply_common(cmd: &mut CommandBuilder, cwd: Option<String>, blocks: bool) {
     } else {
         log::warn!("pty cwd: no usable directory, inheriting from process");
     }
+}
+
+#[cfg(windows)]
+fn hook_executable_env_value(path: &std::path::Path) -> String {
+    format!(r#""{}""#, path.display())
 }
 
 #[cfg(unix)]
@@ -324,17 +369,18 @@ mod unix {
                 cmd.arg("-i");
             }
             Shell::Fish => {
-                if let Err(e) = prepare_fish_conf_d() {
-                    log::warn!("fish shell integration disabled: {e}");
-                }
                 // fish 4.0+ writes its own OSC 133 A/B; ours would double it.
                 cmd.env("fish_features", "no-mark-prompt");
                 cmd.arg("-i");
-                // Re-assert our prompt after config.fish (-C runs last), so a
-                // framework prompt (starship etc.) loaded there can't override
-                // the markers and break cwd tracking.
-                cmd.arg("-C");
-                cmd.arg(super::FISH_REINSTALL_PROMPT);
+                match prepare_fish_init() {
+                    Ok(init) => {
+                        // -C runs after config.fish. Load the private Anbo copy
+                        // there so no global Fish configuration is modified.
+                        cmd.arg("-C");
+                        cmd.arg(super::fish_init_command(&init.to_string_lossy()));
+                    }
+                    Err(e) => log::warn!("fish shell integration disabled: {e}"),
+                }
             }
             Shell::Other => {
                 log::info!(
@@ -371,12 +417,12 @@ mod unix {
         Ok(rc)
     }
 
-    fn prepare_fish_conf_d() -> Result<(), String> {
-        let home = dirs::home_dir().ok_or_else(|| "could not resolve home dir".to_string())?;
-        let dir = home.join(".config").join("fish").join("conf.d");
+    fn prepare_fish_init() -> Result<PathBuf, String> {
+        let dir = integration_root()?.join("fish");
         fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-        write_if_changed(&dir.join("anbo.fish"), FISH_INIT)?;
-        Ok(())
+        let init = dir.join("init.fish");
+        write_if_changed(&init, FISH_INIT)?;
+        Ok(init)
     }
 
     fn write_if_changed(path: &Path, content: &str) -> Result<(), String> {
@@ -449,7 +495,9 @@ mod unix {
                     "/usr/bin/fish".to_string(),
                     "-i".to_string(),
                     "-C".to_string(),
-                    super::super::FISH_REINSTALL_PROMPT.to_string(),
+                    super::super::fish_init_command(
+                        &prepare_fish_init().unwrap().to_string_lossy(),
+                    ),
                 ]
             );
         }
@@ -495,7 +543,9 @@ mod windows {
         Bash {
             rcfile: String,
         },
-        Fish,
+        Fish {
+            init_file: String,
+        },
         None,
     }
 
@@ -601,8 +651,8 @@ mod windows {
                     WslShellIntegration::None
                 }
             },
-            ShellKind::Fish => match prepare_wsl_fish_conf_d(&distro) {
-                Ok(()) => WslShellIntegration::Fish,
+            ShellKind::Fish => match prepare_wsl_fish_init(&distro) {
+                Ok(init_file) => WslShellIntegration::Fish { init_file },
                 Err(e) => {
                     log::warn!("WSL fish shell integration disabled for {distro}: {e}");
                     WslShellIntegration::None
@@ -671,13 +721,13 @@ mod windows {
                 args.push(rcfile);
                 args.push("-i".to_string());
             }
-            (ShellKind::Fish, WslShellIntegration::Fish) => {
+            (ShellKind::Fish, WslShellIntegration::Fish { init_file }) => {
                 args.push("env".to_string());
                 args.push("fish_features=no-mark-prompt".to_string());
                 args.push(shell_path.to_string());
                 args.push("-i".to_string());
                 args.push("-C".to_string());
-                args.push(super::FISH_REINSTALL_PROMPT.to_string());
+                args.push(super::fish_init_command(&init_file));
             }
             (ShellKind::Zsh, WslShellIntegration::None) => {
                 args.push(shell_path.to_string());
@@ -750,15 +800,21 @@ mod windows {
         Ok(linux_rc)
     }
 
-    fn prepare_wsl_fish_conf_d(distro: &str) -> Result<(), String> {
+    fn prepare_wsl_fish_init(distro: &str) -> Result<String, String> {
         let home = crate::modules::workspace::wsl_home(distro.to_string())?;
-        let linux_dir = format!("{}/.config/fish/conf.d", home.trim_end_matches('/'));
-        let unc_dir = crate::modules::workspace::wsl_path_to_unc(distro, &linux_dir);
-        fs::create_dir_all(&unc_dir).map_err(|e| format!("create {}: {e}", unc_dir.display()))?;
-        let unc_file = unc_dir.join("anbo.fish");
+        let legacy_linux = format!(
+            "{}/.config/fish/conf.d/anbo.fish",
+            home.trim_end_matches('/')
+        );
+        let legacy_unc = crate::modules::workspace::wsl_path_to_unc(distro, &legacy_linux);
+        let _ = super::remove_owned_fish_file(&legacy_unc)?;
+
+        let (linux_dir, unc_dir) = prepare_wsl_integration_dir(distro, "fish")?;
+        let linux_file = format!("{linux_dir}/init.fish");
+        let unc_file = unc_dir.join("init.fish");
         let content = normalize_script(super::fish_init_script());
         write_if_changed(&unc_file, &content)?;
-        Ok(())
+        Ok(linux_file)
     }
 
     fn integration_root() -> Result<PathBuf, String> {
@@ -975,13 +1031,16 @@ mod windows {
         }
 
         #[test]
-        fn builds_wsl_fish_launch_spec_without_init_command() {
+        fn builds_wsl_fish_launch_spec_with_private_init_command() {
             let spec = build_wsl_launch_spec(
                 Some("/home/vinicios/repo"),
                 "Ubuntu",
                 "/usr/bin/fish",
                 ShellKind::Fish,
-                WslShellIntegration::Fish,
+                WslShellIntegration::Fish {
+                    init_file: "/home/vinicios/.cache/anbo/shell-integration/fish/init.fish"
+                        .to_string(),
+                },
             );
             assert_eq!(
                 spec.args,
@@ -996,7 +1055,9 @@ mod windows {
                     "/usr/bin/fish".to_string(),
                     "-i".to_string(),
                     "-C".to_string(),
-                    super::super::FISH_REINSTALL_PROMPT.to_string(),
+                    super::super::fish_init_command(
+                        "/home/vinicios/.cache/anbo/shell-integration/fish/init.fish",
+                    ),
                 ]
             );
         }
@@ -1067,7 +1128,10 @@ fn which_in_path(name: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_shell_override;
+    use super::{fish_init_command, remove_owned_fish_file, sanitize_shell_override};
+
+    #[cfg(windows)]
+    use super::hook_executable_env_value;
 
     #[test]
     fn rejects_non_enumerated_override() {
@@ -1082,5 +1146,55 @@ mod tests {
     fn empty_or_missing_override_is_none() {
         assert_eq!(sanitize_shell_override(Some("   ".into())), None);
         assert_eq!(sanitize_shell_override(None), None);
+    }
+
+    #[test]
+    fn fish_init_command_quotes_project_paths() {
+        assert_eq!(
+            fish_init_command("/home/o'neil/anbo init.fish"),
+            "source '/home/o'\\''neil/anbo init.fish'; functions -q __anbo_install_prompt; and __anbo_install_prompt"
+        );
+    }
+
+    #[test]
+    fn legacy_fish_cleanup_removes_only_owned_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("anbo.fish");
+        std::fs::write(&path, "function mine; end\n").unwrap();
+        assert!(!remove_owned_fish_file(&path).unwrap());
+        assert!(path.exists());
+
+        std::fs::write(&path, "# legacy-shell-integration (fish)\n").unwrap();
+        assert!(remove_owned_fish_file(&path).unwrap());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn bundled_shell_scripts_use_the_anbo_runtime_namespace() {
+        let scripts = [
+            include_str!("scripts/bashrc.bash"),
+            include_str!("scripts/zshenv.zsh"),
+            include_str!("scripts/zprofile.zsh"),
+            include_str!("scripts/zlogin.zsh"),
+            include_str!("scripts/zshrc.zsh"),
+            include_str!("scripts/init.fish"),
+            include_str!("scripts/profile.ps1"),
+        ];
+        let legacy_name = ["te", "rax"].concat();
+
+        for script in scripts {
+            assert!(script.to_ascii_lowercase().contains("anbo"));
+            assert!(!script.to_ascii_lowercase().contains(&legacy_name));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hook_executable_env_value_quotes_paths_with_spaces() {
+        let path = std::path::Path::new(r"C:\Users\Agent User\Anbo\anbo.exe");
+        assert_eq!(
+            hook_executable_env_value(path),
+            r#""C:\Users\Agent User\Anbo\anbo.exe""#
+        );
     }
 }

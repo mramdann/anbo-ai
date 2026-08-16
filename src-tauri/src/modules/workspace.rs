@@ -36,6 +36,14 @@ impl WorkspaceRegistry {
         set.iter().any(|root| target.starts_with(root))
     }
 
+    /// Project-scoped integrations may create executable hook files. Require
+    /// the caller to name a root that was explicitly registered, rather than
+    /// accepting any descendant of the bootstrapped home directory.
+    pub fn is_authorized_root(&self, target: &Path) -> bool {
+        let set = self.roots.lock().expect("workspace registry poisoned");
+        set.contains(target)
+    }
+
     pub fn canonicalize_cached<P: AsRef<Path>>(&self, path: P) -> std::io::Result<PathBuf> {
         let key = path.as_ref().to_path_buf();
         {

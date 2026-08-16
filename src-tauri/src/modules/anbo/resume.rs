@@ -10,6 +10,13 @@
 //! + integrasi ke pty/session.rs spawn menyusul.
 
 use std::collections::HashSet;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+
+use crate::modules::workspace::{authorize_existing_path, WorkspaceEnv, WorkspaceRegistry};
+
+const CODEX_SESSION_META_MAX_BYTES: u64 = 256 * 1024;
+const CODEX_SESSION_SCAN_LIMIT: usize = 20_000;
 
 /// Dir projects claude (port claudeProjectsDir). Override via env utk test.
 /// Default: ~/.claude/projects.
@@ -26,6 +33,18 @@ pub fn claude_projects_dir() -> std::path::PathBuf {
     dirs::home_dir()
         .map(|h| h.join(".claude").join("projects"))
         .unwrap_or_else(|| std::path::PathBuf::from(".claude/projects"))
+}
+
+fn codex_sessions_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("ANBO_CODEX_SESSIONS") {
+        return PathBuf::from(path);
+    }
+    if let Ok(home) = std::env::var("CODEX_HOME") {
+        return PathBuf::from(home).join("sessions");
+    }
+    dirs::home_dir()
+        .map(|home| home.join(".codex").join("sessions"))
+        .unwrap_or_else(|| PathBuf::from(".codex/sessions"))
 }
 
 /// Encode cwd claude → nama folder (port encodeClaudeCwd opencode-discover.ts:64).
@@ -134,6 +153,134 @@ pub fn anbo_find_claude_session(
 ) -> Option<String> {
     let claimed: HashSet<String> = claimed.into_iter().collect();
     find_claude_session(&cwd, since_ts, &claimed)
+}
+
+fn normalized_cwd(path: &str) -> String {
+    let value = std::fs::canonicalize(path)
+        .unwrap_or_else(|_| PathBuf::from(path))
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_string();
+    if cfg!(windows) {
+        value.to_ascii_lowercase()
+    } else {
+        value
+    }
+}
+
+fn session_created_ms(path: &Path) -> Option<u64> {
+    let metadata = path.metadata().ok()?;
+    metadata
+        .created()
+        .ok()
+        .or_else(|| metadata.modified().ok())?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis() as u64)
+}
+
+fn codex_session_meta(path: &Path) -> Option<(String, String)> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut input = String::new();
+    file.take(CODEX_SESSION_META_MAX_BYTES)
+        .read_to_string(&mut input)
+        .ok()?;
+    let first_line = input.lines().next()?;
+    let value: serde_json::Value = serde_json::from_str(first_line).ok()?;
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("session_meta") {
+        return None;
+    }
+    let payload = value.get("payload")?;
+    let id = payload.get("id")?.as_str()?;
+    let cwd = payload.get("cwd")?.as_str()?;
+    is_uuid(id).then(|| (id.to_string(), cwd.to_string()))
+}
+
+fn codex_session_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    let mut inspected = 0usize;
+
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            inspected += 1;
+            if inspected > CODEX_SESSION_SCAN_LIMIT {
+                return files;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file()
+                && entry.path().extension().is_some_and(|ext| ext == "jsonl")
+            {
+                files.push(entry.path());
+            }
+        }
+    }
+    files
+}
+
+/// Find the newest unclaimed Codex session created in `cwd` after `since_ts`.
+/// Codex writes the canonical session UUID and cwd into the first `session_meta`
+/// record of each rollout, so resume identity does not depend on terminal hooks.
+pub fn find_codex_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>) -> Option<String> {
+    let expected_cwd = normalized_cwd(cwd);
+    let mut best: Option<(String, u64)> = None;
+
+    for path in codex_session_files(&codex_sessions_dir()) {
+        let Some(created_ms) = session_created_ms(&path) else {
+            continue;
+        };
+        if created_ms < since_ts {
+            continue;
+        }
+        let Some((id, session_cwd)) = codex_session_meta(&path) else {
+            continue;
+        };
+        if claimed.contains(&id) || normalized_cwd(&session_cwd) != expected_cwd {
+            continue;
+        }
+        if best
+            .as_ref()
+            .is_none_or(|(best_id, best_ts)| (created_ms, &id) > (*best_ts, best_id))
+        {
+            best = Some((id, created_ms));
+        }
+    }
+
+    best.map(|(id, _)| id).inspect(|id| {
+        log::info!("[anbo] discovered Codex session {id} (cwd={cwd})");
+    })
+}
+
+#[tauri::command]
+pub fn anbo_find_codex_session(
+    cwd: String,
+    since_ts: u64,
+    claimed: Vec<String>,
+    workspace: Option<WorkspaceEnv>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<Option<String>, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    if !matches!(workspace, WorkspaceEnv::Local) {
+        return Ok(None);
+    }
+    let cwd = authorize_existing_path(&registry, &cwd, &workspace)?;
+    let claimed = claimed.into_iter().collect();
+    Ok(find_codex_session(
+        &cwd.to_string_lossy(),
+        since_ts,
+        &claimed,
+    ))
 }
 
 #[cfg(test)]
@@ -261,9 +408,76 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
     }
 
+    #[test]
+    fn codex_discovery_matches_cwd_time_and_unclaimed_session() {
+        let tmp = std::env::temp_dir().join(format!("anbo-codex-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let sessions = tmp.join("sessions").join("2026").join("08").join("16");
+        let cwd = tmp.join("project");
+        let other_cwd = tmp.join("other-project");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(&other_cwd).unwrap();
+        std::env::set_var("ANBO_CODEX_SESSIONS", tmp.join("sessions"));
+
+        let old_id = "01a00862-cfd1-72e0-a7b4-a4a50f9e0e29";
+        let new_id = "01a00863-1111-7222-a333-444444444444";
+        let other_id = "01a00864-5555-7666-a777-888888888888";
+        write_codex_rollout(
+            &sessions.join(format!("rollout-old-{old_id}.jsonl")),
+            old_id,
+            &cwd,
+        );
+        thread::sleep(Duration::from_millis(20));
+        write_codex_rollout(
+            &sessions.join(format!("rollout-new-{new_id}.jsonl")),
+            new_id,
+            &cwd,
+        );
+        thread::sleep(Duration::from_millis(20));
+        write_codex_rollout(
+            &sessions.join(format!("rollout-other-{other_id}.jsonl")),
+            other_id,
+            &other_cwd,
+        );
+
+        assert_eq!(
+            find_codex_session(&cwd.to_string_lossy(), 0, &HashSet::new()).as_deref(),
+            Some(new_id)
+        );
+
+        let mut claimed = HashSet::new();
+        claimed.insert(new_id.to_string());
+        assert_eq!(
+            find_codex_session(&cwd.to_string_lossy(), 0, &claimed).as_deref(),
+            Some(old_id)
+        );
+        assert!(find_codex_session(
+            &cwd.to_string_lossy(),
+            now_ms() + 3_600_000,
+            &HashSet::new(),
+        )
+        .is_none());
+
+        std::env::remove_var("ANBO_CODEX_SESSIONS");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
     /// Tulis file jsonl dummy (isi tak relevan — discoverer cuma baca nama + mtime).
     fn write_jsonl(path: &std::path::Path) {
         let mut f = std::fs::File::create(path).unwrap();
         f.write_all(b"{}\n").unwrap();
+    }
+
+    fn write_codex_rollout(path: &Path, id: &str, cwd: &Path) {
+        let value = serde_json::json!({
+            "type": "session_meta",
+            "payload": {
+                "id": id,
+                "cwd": cwd,
+            }
+        });
+        let mut file = std::fs::File::create(path).unwrap();
+        writeln!(file, "{}", serde_json::to_string(&value).unwrap()).unwrap();
     }
 }

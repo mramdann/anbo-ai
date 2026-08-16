@@ -25,7 +25,7 @@ fn valid_session_id(agent: &str, session_id: &str) -> bool {
         .enumerate()
         .all(|(index, byte)| match index {
             8 | 13 | 18 | 23 => byte == b'-',
-            14 => matches!(byte, b'1'..=b'5'),
+            14 => matches!(byte, b'1'..=b'8'),
             19 => matches!(byte.to_ascii_lowercase(), b'8' | b'9' | b'a' | b'b'),
             _ => byte.is_ascii_hexdigit(),
         })
@@ -520,6 +520,22 @@ mod tests {
             &osc("777;notify;Anbo;claude;session;../../bad")
         )
         .is_empty());
+
+        let mut codex = AgentDetector::new();
+        let codex_v7 = "01a0068e-3c06-75c3-bfdd-89323e589767";
+        assert_eq!(
+            run(
+                &mut codex,
+                &osc(&format!("777;notify;Anbo;codex;session;{codex_v7}")),
+            ),
+            vec![
+                started("codex"),
+                Transition::Session {
+                    agent: "codex".into(),
+                    session_id: codex_v7.into(),
+                },
+            ]
+        );
     }
 
     #[test]

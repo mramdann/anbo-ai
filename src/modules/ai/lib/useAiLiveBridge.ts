@@ -8,6 +8,7 @@ import {
   markBrowserAutomationActivity,
 } from "@/modules/browser";
 import type { Tab } from "@/modules/tabs";
+import type { WorkspaceEnv } from "@/modules/workspace";
 import {
   findLeafCwd,
   type TerminalPaneHandle,
@@ -62,6 +63,7 @@ type Params = {
     agent: AgentTabNameRequest,
   ) => { tabId: number; leafId: number };
   terminalRefs: RefObject<Map<number, TerminalPaneHandle>>;
+  workspace: WorkspaceEnv;
 };
 
 /**
@@ -242,9 +244,15 @@ export function useAiLiveBridge(params: Params) {
         useManagedAgentsStore
           .getState()
           .register({ leafId, tabId, sessionId, task: oneLine, cwd });
-        void invoke("agent_enable_hooks", {
-          agent: "claude",
-        }).catch(() => {});
+        const workspaceRoot =
+          ref.current.explorerRoot ?? ref.current.launchCwd ?? ref.current.home;
+        if (workspaceRoot) {
+          void invoke("agent_enable_hooks", {
+            agent: "claude",
+            workspaceRoot,
+            workspace: ref.current.workspace,
+          }).catch(() => {});
+        }
         void (async () => {
           if (!(await writeToReadySession(leafId, "claude\r", 15_000))) {
             useManagedAgentsStore.getState().setPhase(leafId, "attention");

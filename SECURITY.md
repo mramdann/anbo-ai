@@ -1,10 +1,10 @@
 # Security
 
-Terax runs shells, reads/writes files, and talks to AI providers, so security bugs matter. If you find one, please tell us before posting it publicly.
+Anbo runs shells, reads/writes files, and talks to AI providers, so security bugs matter. If you find one, please tell us before posting it publicly.
 
 ## Reporting
 
-Email **security@terax.app**. Include:
+Use [GitHub private vulnerability reporting](https://github.com/mramdann/anbo-ai/security/advisories/new). If that route is unavailable, contact the [Anbo maintainer](https://github.com/mramdann) privately. Include:
 
 - What the issue is and what it lets an attacker do
 - Steps to reproduce (a small PoC is great)
@@ -16,13 +16,13 @@ Please **don't** open a public GitHub issue for security reports.
 
 ## Supported versions
 
-Until `1.0.0`, only the latest minor gets security fixes. See the current version in `package.json` or on the [Releases page](https://github.com/crynta/terax-ai/releases). 
+Until `1.0.0`, only the latest minor gets security fixes. See the current version in `package.json` or on the [Releases page](https://github.com/mramdann/anbo-ai/releases).
 
 ## What's in scope
 
 - The Rust backend in `src-tauri/` (PTY, FS, IPC, plugins)
 - The frontend in `src/` - anywhere untrusted input lands (terminal output, file content, AI tool results, credentials)
-- Release artifacts on GitHub and `terax.app`
+- Release artifacts published by the Anbo GitHub repository
 - The auto-updater
 
 ## What's not
@@ -41,6 +41,6 @@ Until `1.0.0`, only the latest minor gets security fixes. See the current versio
 
 ## What we can't promise
 
-- Terax runs whatever you (or the agent) tell it to run, with your permissions. That's kind of the point of a terminal.
+- Anbo runs whatever you (or the agent) tell it to run, with your permissions. That's kind of the point of a terminal.
 - AI providers see whatever you send them. Read their retention policies.
-- Local LLM endpoints (LM Studio, OpenAI-compatible) are trusted at the network level - only point Terax at servers you control.
+- Local LLM endpoints (LM Studio, OpenAI-compatible) are trusted at the network level - only point Anbo at servers you control.

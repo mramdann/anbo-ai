@@ -9,19 +9,26 @@ type AgentToastArgs = {
   onActivate: () => void;
 };
 
-export function showAgentToast({ agent, title, body, onActivate }: AgentToastArgs) {
+export function showAgentToast({
+  agent,
+  title,
+  body,
+  onActivate,
+}: AgentToastArgs) {
   const hint = shortcutLabel("agent.focusAttention");
   toast(title, {
-    description: hint ? (
-      <span className="flex items-center gap-1.5">
-        {body ? <span className="min-w-0 truncate">{body}</span> : null}
-        <kbd className="ml-auto shrink-0 rounded border border-border/60 bg-muted/60 px-1 py-px text-[10px] font-medium text-muted-foreground">
-          {hint}
-        </kbd>
-      </span>
-    ) : (
-      body
-    ),
+    description: body ? (
+      hint ? (
+        <span className="flex items-center gap-1.5">
+          <span className="min-w-0 truncate">{body}</span>
+          <kbd className="ml-auto shrink-0 rounded border border-border/60 bg-muted/60 px-1 py-px text-[10px] font-medium text-muted-foreground">
+            {hint}
+          </kbd>
+        </span>
+      ) : (
+        body
+      )
+    ) : undefined,
     icon: <AgentIcon agent={agent} size={18} />,
     action: { label: "Open", onClick: onActivate },
     duration: 6000,

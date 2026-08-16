@@ -3,6 +3,7 @@ import type { AgentInstanceCount, AgentLauncherId } from "./launcher";
 
 export type ResumableAgentId =
   | "claude"
+  | "codex"
   | "antigravity"
   | "pi"
   | "opencode";
@@ -15,6 +16,7 @@ export type PersistedAgentResume = {
 
 export type AgentResumeState = PersistedAgentResume & {
   armed?: boolean;
+  discoveryStartedAt?: number;
   resumeOnStart?: boolean;
 };
 
@@ -26,12 +28,13 @@ export type AgentResumeLeaf = {
 
 const EXACT_SESSION_AGENTS = new Set<ResumableAgentId>([
   "claude",
+  "codex",
   "antigravity",
   "pi",
 ]);
 const OPENCODE_SESSION_ID = /^ses_[A-Za-z0-9]+$/;
 const UUID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 const LONG_SESSION_SELECTOR =
   /(?:^|\s)(?:--continue|--conversation|--resume|--session|--session-file|--session-id)(?:\s|=|$)/i;
@@ -47,6 +50,9 @@ function isResumableAgentId(value: unknown): value is ResumableAgentId {
 
 function canAttachSession(agent: ResumableAgentId, command: string): boolean {
   if (LONG_SESSION_SELECTOR.test(command) || SHELL_OPERATOR.test(command)) {
+    return false;
+  }
+  if (agent === "codex" && /(?:^|\s)(?:resume|exec|e)(?:\s|$)/i.test(command)) {
     return false;
   }
   const shortSelector =
@@ -84,11 +90,25 @@ export function createAgentResumeStates(
       command,
     }));
   }
+  if (agent === "codex") {
+    return Array.from({ length: instances }, () => ({
+      agent,
+      armed: false,
+      command,
+      discoveryStartedAt: Date.now(),
+    }));
+  }
   return Array.from({ length: instances }, () => ({
     agent,
     armed: false,
     command,
   }));
+}
+
+export function shouldPinAgentSession(
+  agent: string,
+): agent is ResumableAgentId {
+  return isResumableAgentId(agent);
 }
 
 export function normalizePersistedAgentResume(
@@ -132,6 +152,10 @@ export function buildAgentResumeCommand(
     case "claude":
       return resume.sessionId
         ? `${resume.command} --resume ${resume.sessionId}`
+        : null;
+    case "codex":
+      return resume.sessionId
+        ? `${resume.command} resume ${resume.sessionId}`
         : null;
     case "antigravity":
       return resume.sessionId

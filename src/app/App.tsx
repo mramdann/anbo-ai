@@ -25,6 +25,8 @@ import {
   findAgentLauncher,
   MAX_PARALLEL_OPENCODE_AGENTS,
   nextAttentionTarget,
+  pollCodexSession,
+  shouldPinAgentSession,
   validateAgentLaunchCommand,
 } from "@/modules/agents";
 import {
@@ -147,6 +149,27 @@ import { WorkspaceWelcome } from "./components/WorkspaceWelcome";
 import { useAppCloseGuard } from "./hooks/useAppCloseGuard";
 import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
 import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
+
+async function discoverCodexSession({
+  cwd,
+  sinceTs,
+  claimed,
+  workspace,
+}: {
+  cwd: string;
+  sinceTs: number;
+  claimed: ReadonlySet<string>;
+  workspace: WorkspaceEnv;
+}): Promise<string | null> {
+  return pollCodexSession(() =>
+    invoke<string | null>("anbo_find_codex_session", {
+      cwd,
+      sinceTs,
+      claimed: [...claimed],
+      workspace,
+    }),
+  );
+}
 
 export default function App() {
   useEffect(() => {
@@ -699,19 +722,20 @@ export default function App() {
   }, [newBlockTab, inheritedCwdForNewTab]);
 
   const resumedAgentLeavesRef = useRef(new Set<number>());
+  const codexDiscoveryLeavesRef = useRef(new Set<number>());
+  const codexRecoveryRunningRef = useRef(false);
+  const [codexDiscoveryRetry, setCodexDiscoveryRetry] = useState(0);
   const handleAgentSession = useCallback(
     (leafId: number, agent: string, sessionId: string) => {
-      switch (agent) {
-        case "claude":
-        case "antigravity":
-        case "pi":
-        case "opencode":
-          pinAgentResumeSession(leafId, sessionId);
+      if (shouldPinAgentSession(agent)) {
+        pinAgentResumeSession(leafId, sessionId);
       }
     },
     [pinAgentResumeSession],
   );
   useEffect(() => {
+    const hookPromises = new Map<string, Promise<unknown>>();
+    const hookWorkspace = workspaceForSpace(activeSpaceId ?? DEFAULT_SPACE_ID);
     for (const tab of tabs) {
       if (
         tab.spaceId !== (activeSpaceId ?? DEFAULT_SPACE_ID) ||
@@ -732,8 +756,30 @@ export default function App() {
         }
         const resumeCommand = buildAgentResumeCommand(leaf.resume);
         if (!resumeCommand) continue;
+        const launcher = findAgentLauncher(leaf.resume.agent, customCliAgents);
+        let hooksReady = Promise.resolve<unknown>(undefined);
+        if (launcher?.supportsHooks && activeSpaceRoot) {
+          const key = `${tab.spaceId}:${leaf.resume.agent}`;
+          const existing = hookPromises.get(key);
+          if (existing) {
+            hooksReady = existing;
+          } else {
+            hooksReady = invoke("agent_enable_hooks", {
+              agent: leaf.resume.agent,
+              workspaceRoot: activeSpaceRoot,
+              workspace: hookWorkspace,
+            }).catch((error) => {
+              console.warn(
+                `[anbo] could not enable ${leaf.resume.agent} notifications before resume:`,
+                error,
+              );
+            });
+            hookPromises.set(key, hooksReady);
+          }
+        }
         resumedAgentLeavesRef.current.add(leaf.id);
         void (async () => {
+          await hooksReady;
           if (!(await writeToReadySession(leaf.id, `${resumeCommand}\r`))) {
             resumedAgentLeavesRef.current.delete(leaf.id);
             console.error(
@@ -743,7 +789,91 @@ export default function App() {
         })();
       }
     }
-  }, [tabs, activeSpaceId, workspaceEnv.kind]);
+  }, [
+    activeSpaceId,
+    activeSpaceRoot,
+    customCliAgents,
+    tabs,
+    workspaceEnv.kind,
+    workspaceForSpace,
+  ]);
+
+  useEffect(() => {
+    if (
+      workspaceEnv.kind !== "local" ||
+      !activeSpaceRoot ||
+      codexRecoveryRunningRef.current
+    ) {
+      return;
+    }
+    const spaceId = activeSpaceId ?? DEFAULT_SPACE_ID;
+    const pending = tabs
+      .flatMap((tab) =>
+        tab.spaceId === spaceId && tab.kind === "terminal" && !tab.cold
+          ? collectAgentResumeLeaves(tab.paneTree)
+          : [],
+      )
+      .filter(
+        (leaf) =>
+          leaf.resume.agent === "codex" &&
+          !leaf.resume.sessionId &&
+          leaf.resume.armed === false &&
+          !codexDiscoveryLeavesRef.current.has(leaf.id),
+      );
+    if (pending.length === 0) return;
+    const recoverable = pending.filter(
+      (leaf) =>
+        leaf.resume.discoveryStartedAt !== undefined || pending.length === 1,
+    );
+    if (recoverable.length === 0) return;
+
+    codexRecoveryRunningRef.current = true;
+    void (async () => {
+      try {
+        const claimed = new Set<string>();
+        for (const tab of tabsRef.current) {
+          if (tab.kind !== "terminal") continue;
+          for (const leaf of collectAgentResumeLeaves(tab.paneTree)) {
+            if (leaf.resume.agent === "codex" && leaf.resume.sessionId) {
+              claimed.add(leaf.resume.sessionId);
+            }
+          }
+        }
+        for (const leaf of recoverable) {
+          codexDiscoveryLeavesRef.current.add(leaf.id);
+          try {
+            const sessionId = await discoverCodexSession({
+              cwd: leaf.cwd ?? activeSpaceRoot,
+              sinceTs: leaf.resume.discoveryStartedAt ?? 0,
+              claimed,
+              workspace: workspaceForSpace(spaceId),
+            });
+            if (sessionId) {
+              claimed.add(sessionId);
+              pinAgentResumeSession(leaf.id, sessionId);
+            }
+          } catch (error) {
+            console.warn(
+              `[anbo] could not recover Codex session for terminal ${leaf.id} on attempt ${codexDiscoveryRetry + 1}:`,
+              error,
+            );
+          } finally {
+            codexDiscoveryLeavesRef.current.delete(leaf.id);
+          }
+        }
+      } finally {
+        codexRecoveryRunningRef.current = false;
+      }
+    })();
+  }, [
+    activeSpaceId,
+    activeSpaceRoot,
+    codexDiscoveryRetry,
+    pinAgentResumeSession,
+    tabs,
+    workspaceEnv.kind,
+    workspaceForSpace,
+  ]);
 
   const launchAgentGroup = useCallback(
     (request: AgentLaunchRequest) => {
@@ -779,16 +909,29 @@ export default function App() {
         request.instances,
         agentResumes,
       );
-      const hooksReady = launcher.supportsHooks
-        ? invoke("agent_enable_hooks", {
-            agent: request.agent,
-          }).catch((error) => {
-            console.warn(
-              `[anbo] could not enable ${request.agent} notifications:`,
-              error,
-            );
-          })
-        : Promise.resolve();
+      const discoversCodex =
+        request.agent === "codex" && workspaceEnv.kind === "local";
+      if (discoversCodex) {
+        for (const leafId of agentLeafIds) {
+          codexDiscoveryLeavesRef.current.add(leafId);
+        }
+      }
+      const hookWorkspace = workspaceForSpace(
+        activeSpaceId ?? DEFAULT_SPACE_ID,
+      );
+      const hooksReady =
+        launcher.supportsHooks && activeSpaceRoot
+          ? invoke("agent_enable_hooks", {
+              agent: request.agent,
+              workspaceRoot: activeSpaceRoot,
+              workspace: hookWorkspace,
+            }).catch((error) => {
+              console.warn(
+                `[anbo] could not enable ${request.agent} notifications:`,
+                error,
+              );
+            })
+          : Promise.resolve();
 
       const launch = async () => {
         await hooksReady;
@@ -804,13 +947,74 @@ export default function App() {
             );
           }
         };
+
+        const codexCwd = agentCwd ?? activeSpaceRoot ?? undefined;
+        if (discoversCodex && codexCwd) {
+          const claimed = new Set<string>();
+          for (const tab of tabsRef.current) {
+            if (tab.kind !== "terminal") continue;
+            for (const leaf of collectAgentResumeLeaves(tab.paneTree)) {
+              if (leaf.resume.agent === "codex" && leaf.resume.sessionId) {
+                claimed.add(leaf.resume.sessionId);
+              }
+            }
+          }
+
+          // Start Codex panes one at a time so each newly-created rollout can
+          // be bound to the exact leaf that launched it. The wait is only for
+          // session metadata creation, not for the agent's first response.
+          for (const [index, leafId] of agentLeafIds.entries()) {
+            const sinceTs =
+              agentResumes[index]?.discoveryStartedAt ?? Date.now() - 1_000;
+            let discovered = false;
+            try {
+              await launchOne(leafId, index);
+              const sessionId = await discoverCodexSession({
+                cwd: codexCwd,
+                sinceTs,
+                claimed,
+                workspace: hookWorkspace,
+              });
+              if (sessionId) {
+                discovered = true;
+                claimed.add(sessionId);
+                pinAgentResumeSession(leafId, sessionId);
+              } else {
+                console.warn(
+                  `[anbo] Codex session discovery timed out for terminal ${leafId}`,
+                );
+              }
+            } catch (error) {
+              console.warn(
+                `[anbo] could not discover Codex session for terminal ${leafId}:`,
+                error,
+              );
+            } finally {
+              codexDiscoveryLeavesRef.current.delete(leafId);
+              if (!discovered) {
+                setCodexDiscoveryRetry((value) => value + 1);
+              }
+            }
+          }
+          return;
+        }
+
         await Promise.all(
           agentLeafIds.map((leafId, index) => launchOne(leafId, index)),
         );
       };
       void launch();
     },
-    [customCliAgents, inheritedCwdForNewTab, newAgentTabs, workspaceEnv.kind],
+    [
+      activeSpaceId,
+      activeSpaceRoot,
+      customCliAgents,
+      inheritedCwdForNewTab,
+      newAgentTabs,
+      pinAgentResumeSession,
+      workspaceEnv.kind,
+      workspaceForSpace,
+    ],
   );
 
   const sendCd = useCallback(
@@ -1665,6 +1869,7 @@ export default function App() {
     browserRefs,
     newAgentTab,
     terminalRefs,
+    workspace: workspaceForSpace(activeSpaceId ?? DEFAULT_SPACE_ID),
   });
 
   const shell = (
@@ -1690,6 +1895,10 @@ export default function App() {
                   spaceSwitcher={spaceSwitcher}
                   searchTarget={searchTarget}
                   searchRef={searchInlineRef}
+                  workspaceRoot={activeSpaceRoot}
+                  workspace={workspaceForSpace(
+                    activeSpaceId ?? DEFAULT_SPACE_ID,
+                  )}
                 />
               )}
 

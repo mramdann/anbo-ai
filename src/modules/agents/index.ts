@@ -1,6 +1,7 @@
 export { AgentLauncherPanel } from "./components/AgentLauncherPanel";
 export { AgentNotificationsBridge } from "./components/AgentNotificationsBridge";
 export { NotificationBell } from "./components/NotificationBell";
+export { pollCodexSession } from "./lib/codexDiscovery";
 export {
   AGENT_LAUNCHERS,
   type AgentInstanceCount,
@@ -20,6 +21,7 @@ export {
   collectAgentResumeLeaves,
   createAgentResumeStates,
   normalizePersistedAgentResume,
+  shouldPinAgentSession,
   type PersistedAgentResume,
 } from "./lib/resume";
 export { nextAttentionTarget } from "./store/agentStore";

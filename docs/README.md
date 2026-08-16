@@ -1,12 +1,12 @@
-# Terax contributor documentation
+# Anbo contributor documentation
 
-This directory holds long-form contributor and maintainer guides. `TERAX.md` at the repo root is the living architecture doc and the source of truth; these guides elaborate on specific areas without duplicating it.
+This directory holds long-form contributor and maintainer guides. `ANBO.md` at the repo root is the living architecture doc and the source of truth; these guides elaborate on specific areas without duplicating it.
 
-If a guide conflicts with `TERAX.md`, `TERAX.md` wins.
+If a guide conflicts with `ANBO.md`, `ANBO.md` wins.
 
 ## Getting started
 
-- [TERAX.md](../TERAX.md) - the architecture source of truth; read this first
+- [ANBO.md](../ANBO.md) - the architecture source of truth; read this first
 - [CONTRIBUTING.md](../CONTRIBUTING.md) - how to contribute, quality bar, project layout
 
 ## Architecture guides

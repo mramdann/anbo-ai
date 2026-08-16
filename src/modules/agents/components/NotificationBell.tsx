@@ -15,15 +15,18 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { WorkspaceEnv } from "@/modules/workspace";
 import { AgentIcon } from "../lib/agentIcon";
-import { displayAgent } from "../lib/format";
+import { displayAgent, displayAgentInstance } from "../lib/format";
 import type { AgentNotification, AgentStatus } from "../lib/types";
 import { useAgentStore } from "../store/agentStore";
 
 type Props = {
   onActivate: (tabId: number, leafId: number) => void;
   onActivateLocal: () => void;
+  workspaceRoot: string | null;
+  workspace: WorkspaceEnv;
 };
 
 function relativeTime(ts: number): string {
@@ -38,10 +41,12 @@ function relativeTime(ts: number): string {
 
 function StatusRow({
   agent,
+  name,
   status,
   onClick,
 }: {
   agent: string;
+  name?: string;
   status: AgentStatus;
   onClick: () => void;
 }) {
@@ -58,7 +63,7 @@ function StatusRow({
         className="shrink-0 text-muted-foreground"
       />
       <span className="flex-1 truncate text-sm text-foreground">
-        {displayAgent(agent)}
+        {displayAgentInstance(agent, name)}
       </span>
       <span
         className={cn(
@@ -79,7 +84,13 @@ const NOTIF_LABEL: Record<AgentNotification["kind"], string> = {
   error: "failed",
 };
 
-const HOOK_AGENTS = ["claude", "codex", "antigravity", "pi"] as const;
+const HOOK_AGENTS = [
+  "claude",
+  "codex",
+  "antigravity",
+  "pi",
+  "opencode",
+] as const;
 
 function HookAgentRow({
   id,
@@ -111,7 +122,7 @@ function HookAgentRow({
             size={13}
             strokeWidth={1.75}
           />
-          enabled
+          configured
         </span>
       ) : (
         <button
@@ -166,7 +177,7 @@ function NotificationRow({
         )}
       </span>
       <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-        {displayAgent(n.agent)}{" "}
+        {displayAgentInstance(n.agent, n.name)}{" "}
         <span className="text-muted-foreground">{NOTIF_LABEL[n.kind]}</span>
       </span>
       <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
@@ -176,7 +187,12 @@ function NotificationRow({
   );
 }
 
-export function NotificationBell({ onActivate, onActivateLocal }: Props) {
+export function NotificationBell({
+  onActivate,
+  onActivateLocal,
+  workspaceRoot,
+  workspace,
+}: Props) {
   const [open, setOpen] = useState(false);
   const [hooks, setHooks] = useState<Record<string, boolean>>({});
   const [installing, setInstalling] = useState<string | null>(null);
@@ -184,6 +200,11 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
   const sessions = useAgentStore((s) => s.sessions);
   const localAgent = useAgentStore((s) => s.localAgent);
   const notifications = useAgentStore((s) => s.notifications);
+  const history = useMemo(
+    () =>
+      notifications.filter((notification) => notification.kind !== "attention"),
+    [notifications],
+  );
   const markAllRead = useAgentStore((s) => s.markAllRead);
   const clearNotifications = useAgentStore((s) => s.clearNotifications);
 
@@ -194,32 +215,47 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
     (localAgent?.status === "waiting" ? 1 : 0);
   // attention maps to an active waiting session, so only completed events add
   // to the badge to avoid double-counting.
-  const unreadDone = notifications.filter(
-    (n) => !n.read && n.kind !== "attention",
-  ).length;
+  const unreadDone = history.filter((n) => !n.read).length;
   const badge = waitingCount + unreadDone;
   const enabledCount = HOOK_AGENTS.filter((id) => hooks[id] === true).length;
 
-  const refreshHooks = () => {
+  const refreshHooks = useCallback(() => {
+    if (!workspaceRoot) {
+      setHooks({});
+      return;
+    }
     for (const id of HOOK_AGENTS) {
-      invoke<boolean>("agent_hooks_status", { agent: id })
+      invoke<boolean>("agent_hooks_status", {
+        agent: id,
+        workspaceRoot,
+        workspace,
+      })
         .then((ok) => setHooks((h) => ({ ...h, [id]: ok })))
         .catch(() => setHooks((h) => ({ ...h, [id]: false })));
     }
-  };
+  }, [workspaceRoot, workspace]);
+
+  useEffect(() => {
+    setHooks({});
+    if (open) refreshHooks();
+  }, [open, refreshHooks]);
 
   const onOpenChange = (next: boolean) => {
     setOpen(next);
     if (next) {
       markAllRead();
-      refreshHooks();
     }
   };
 
   const enableHooks = async (id: string) => {
+    if (!workspaceRoot) return;
     setInstalling(id);
     try {
-      await invoke("agent_enable_hooks", { agent: id });
+      await invoke("agent_enable_hooks", {
+        agent: id,
+        workspaceRoot,
+        workspace,
+      });
       setHooks((h) => ({ ...h, [id]: true }));
     } catch {
       setHooks((h) => ({ ...h, [id]: false }));
@@ -243,7 +279,7 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
     else activate(n.tabId, n.leafId);
   };
 
-  const empty = activeCount === 0 && notifications.length === 0;
+  const empty = activeCount === 0 && history.length === 0;
 
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
@@ -281,7 +317,7 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
                 {activeCount} active
               </span>
             ) : null}
-            {notifications.length > 0 ? (
+            {history.length > 0 ? (
               <button
                 type="button"
                 onClick={clearNotifications}
@@ -301,6 +337,11 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
           </div>
         ) : (
           <div className="max-h-80 overflow-y-auto border-t border-border/60 p-1">
+            {activeCount > 0 ? (
+              <div className="px-2 pt-1 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+                Active agents
+              </div>
+            ) : null}
             {localAgent ? (
               <StatusRow
                 agent={localAgent.agent}
@@ -312,14 +353,20 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
               <StatusRow
                 key={s.leafId}
                 agent={s.agent}
+                name={s.name}
                 status={s.status}
                 onClick={() => activate(s.tabId, s.leafId)}
               />
             ))}
-            {activeCount > 0 && notifications.length > 0 ? (
+            {activeCount > 0 && history.length > 0 ? (
               <div className="mx-2 my-1 h-px bg-border/50" />
             ) : null}
-            {notifications.map((n) => (
+            {history.length > 0 ? (
+              <div className="px-2 pt-1 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+                Recent alerts
+              </div>
+            ) : null}
+            {history.map((n) => (
               <NotificationRow
                 key={n.id}
                 n={n}
@@ -341,7 +388,7 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
               size={11}
               strokeWidth={2}
             />
-            Agent alerts
+            Workspace alerts
             <span className="ml-auto flex items-center gap-1.5 normal-case tracking-normal">
               {enabledCount > 0 ? (
                 <span className="text-[10px] text-muted-foreground/60">
@@ -367,6 +414,12 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
                 />
               ))
             : null}
+          {alertsOpen ? (
+            <p className="px-2 pt-1 pb-1.5 text-[10px] leading-relaxed text-muted-foreground/70">
+              Stored only in this workspace. Some CLIs ask you to trust project
+              hooks once before alerts become active.
+            </p>
+          ) : null}
         </div>
       </PopoverContent>
     </Popover>

@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { WindowControls } from "@/components/WindowControls";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
 import { NotificationBell } from "@/modules/agents";
+import type { WorkspaceEnv } from "@/modules/workspace";
 import {
   CommandIcon,
   Settings01Icon,
@@ -30,6 +31,8 @@ type Props = {
   spaceSwitcher: ReactNode;
   searchTarget: SearchTarget;
   searchRef: RefObject<SearchInlineHandle | null>;
+  workspaceRoot: string | null;
+  workspace: WorkspaceEnv;
 };
 
 const COMPACT_WIDTH = 720;
@@ -43,6 +46,8 @@ export function Header({
   spaceSwitcher,
   searchTarget,
   searchRef,
+  workspaceRoot,
+  workspace,
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [compact, setCompact] = useState(false);
@@ -103,6 +108,8 @@ export function Header({
           <NotificationBell
             onActivate={onActivateAgent}
             onActivateLocal={onActivateLocalAgent}
+            workspaceRoot={workspaceRoot}
+            workspace={workspace}
           />
         )}
       </div>
@@ -126,6 +133,8 @@ export function Header({
           <NotificationBell
             onActivate={onActivateAgent}
             onActivateLocal={onActivateLocalAgent}
+            workspaceRoot={workspaceRoot}
+            workspace={workspace}
           />
           {settingsButton}
         </>

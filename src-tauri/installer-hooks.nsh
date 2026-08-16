@@ -3,6 +3,7 @@
 ; NoWorkingDirectory keeps Explorer from overriding %V (System32 on Drive).
 
 !macro NSIS_HOOK_POSTINSTALL
+  ; Remove context-menu keys from pre-Anbo installations during migration.
   DeleteRegKey HKCU "Software\Classes\Directory\shell\OpenInTerax"
   DeleteRegKey HKCU "Software\Classes\Directory\Background\shell\OpenInTerax"
   DeleteRegKey HKCU "Software\Classes\Drive\shell\OpenInTerax"
@@ -30,6 +31,7 @@
   DeleteRegKey HKCU "Software\Classes\Directory\shell\OpenInAnbo"
   DeleteRegKey HKCU "Software\Classes\Directory\Background\shell\OpenInAnbo"
   DeleteRegKey HKCU "Software\Classes\Drive\shell\OpenInAnbo"
+  ; Also remove context-menu keys left by pre-Anbo installations.
   DeleteRegKey HKCU "Software\Classes\Directory\shell\OpenInTerax"
   DeleteRegKey HKCU "Software\Classes\Directory\Background\shell\OpenInTerax"
   DeleteRegKey HKCU "Software\Classes\Drive\shell\OpenInTerax"

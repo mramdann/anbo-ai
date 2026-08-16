@@ -14,13 +14,12 @@ type AgentStoreState = {
   sessions: Record<number, AgentSession>;
   localAgent: LocalAgentState;
   notifications: AgentNotification[];
-  start: (leafId: number, tabId: number, agent: string) => void;
+  start: (leafId: number, tabId: number, agent: string, name: string) => void;
+  setName: (leafId: number, name: string) => void;
   setStatus: (leafId: number, status: AgentStatus) => void;
   finish: (leafId: number) => void;
   setLocalAgent: (state: LocalAgentState) => void;
-  pushNotification: (
-    n: Omit<AgentNotification, "id" | "at" | "read">,
-  ) => void;
+  pushNotification: (n: Omit<AgentNotification, "id" | "at" | "read">) => void;
   markAllRead: () => void;
   clearNotifications: () => void;
 };
@@ -30,7 +29,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   localAgent: null,
   notifications: [],
 
-  start: (leafId, tabId, agent) =>
+  start: (leafId, tabId, agent, name) =>
     set((s) => {
       const now = Date.now();
       return {
@@ -40,11 +39,24 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
             leafId,
             tabId,
             agent,
+            name,
             status: "working",
             startedAt: now,
             lastActivityAt: now,
             attentionSince: null,
           },
+        },
+      };
+    }),
+
+  setName: (leafId, name) =>
+    set((s) => {
+      const previous = s.sessions[leafId];
+      if (!previous || previous.name === name) return s;
+      return {
+        sessions: {
+          ...s.sessions,
+          [leafId]: { ...previous, name },
         },
       };
     }),
@@ -96,7 +108,9 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   markAllRead: () =>
     set((s) => {
       if (!s.notifications.some((n) => !n.read)) return s;
-      return { notifications: s.notifications.map((n) => ({ ...n, read: true })) };
+      return {
+        notifications: s.notifications.map((n) => ({ ...n, read: true })),
+      };
     }),
 
   clearNotifications: () => set({ notifications: [] }),
@@ -104,7 +118,10 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
 
 /** The tab/leaf of the agent that most recently entered the waiting state, for
  *  the keyboard jump-to-attention shortcut. Null when none is waiting. */
-export function nextAttentionTarget(): { tabId: number; leafId: number } | null {
+export function nextAttentionTarget(): {
+  tabId: number;
+  leafId: number;
+} | null {
   const waiting = Object.values(useAgentStore.getState().sessions)
     .filter((s) => s.status === "waiting")
     .sort((a, b) => (b.attentionSince ?? 0) - (a.attentionSince ?? 0));

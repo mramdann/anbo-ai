@@ -222,6 +222,22 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|_app| {
             browser_automation::server::cleanup_stale_descriptor();
+            match agent::cleanup_legacy_global_integrations() {
+                Ok(count) if count > 0 => {
+                    log::info!("removed {count} legacy global agent integration(s)")
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    log::warn!("could not fully remove legacy global agent integrations: {error}")
+                }
+            }
+            match pty::shell_init::cleanup_legacy_global_integration() {
+                Ok(true) => log::info!("removed legacy global Fish integration"),
+                Ok(false) => {}
+                Err(error) => {
+                    log::warn!("could not remove legacy global Fish integration: {error}")
+                }
+            }
             // macOS skips parent() for the settings window, so tie its lifecycle
             // to the main window here instead. Other platforms keep parent().
             #[cfg(target_os = "macos")]
@@ -349,6 +365,7 @@ pub fn run() {
             agent::agent_enable_hooks,
             agent::agent_hooks_status,
             anbo::resume::anbo_find_claude_session,
+            anbo::resume::anbo_find_codex_session,
             secrets::secrets_get,
             secrets::secrets_set,
             secrets::secrets_delete,

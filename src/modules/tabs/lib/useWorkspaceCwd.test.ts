@@ -10,8 +10,8 @@ describe("resolveWorkspacePaths", () => {
   });
 
   it("switches immediately to the newly active space root", () => {
-    expect(resolveWorkspacePaths("C:/Documents/terax-ai").explorerRoot).toBe(
-      "C:/Documents/terax-ai",
+    expect(resolveWorkspacePaths("C:/Documents/anbo-ai").explorerRoot).toBe(
+      "C:/Documents/anbo-ai",
     );
   });
 

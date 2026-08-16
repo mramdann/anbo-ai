@@ -2,7 +2,7 @@ import type { Tab } from "@/modules/tabs";
 import { hasLeaf, leafIdForPty } from "@/modules/terminal";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
-import { displayAgent } from "../lib/format";
+import { displayAgentInstance } from "../lib/format";
 import { maybeTriggerManagedReview } from "../lib/review";
 import { routeAgentNotification } from "../lib/route";
 import type { AgentSession, AgentSignal } from "../lib/types";
@@ -23,10 +23,10 @@ type Ctx = {
 function tabInfo(
   tabs: Tab[],
   leafId: number,
-): { tabId: number; title: string } | null {
+): { tabId: number; title: string; name: string | null } | null {
   for (const t of tabs) {
     if (t.kind === "terminal" && hasLeaf(t.paneTree, leafId)) {
-      return { tabId: t.id, title: t.title };
+      return { tabId: t.id, title: t.title, name: t.agent?.name ?? null };
     }
   }
   return null;
@@ -38,16 +38,17 @@ function route(
   ctx: Ctx,
 ): void {
   const info = tabInfo(ctx.tabs, session.leafId);
-  const name = displayAgent(session.agent);
+  const name = displayAgentInstance(session.agent, info?.name ?? session.name);
   const heading =
     kind === "attention" ? `${name} needs your input` : `${name} finished`;
 
   routeAgentNotification({
     source: "terminal",
     agent: session.agent,
+    name,
     kind,
     title: heading,
-    body: info?.title,
+    body: info?.title && info.title !== name ? info.title : undefined,
     focused: ctx.focused,
     visible: ctx.activeId === session.tabId,
     // Stop fires every turn, so finished only updates the bell; attention toasts.
@@ -67,7 +68,13 @@ function handleSignal(sig: AgentSignal, ctx: Ctx): void {
     case "started": {
       const info = tabInfo(ctx.tabs, leafId);
       if (!info) return;
-      store.start(leafId, info.tabId, sig.agent ?? "agent");
+      const agent = sig.agent ?? "agent";
+      store.start(
+        leafId,
+        info.tabId,
+        agent,
+        displayAgentInstance(agent, info.name),
+      );
       return;
     }
     case "working":
@@ -118,6 +125,14 @@ export function AgentNotificationsBridge({
     onSession,
   });
   ctxRef.current = { tabs, activeId, focused, onActivate, onSession };
+
+  useEffect(() => {
+    const store = useAgentStore.getState();
+    for (const session of Object.values(store.sessions)) {
+      const info = tabInfo(tabs, session.leafId);
+      if (info?.name) store.setName(session.leafId, info.name);
+    }
+  }, [tabs]);
 
   useEffect(() => {
     let alive = true;

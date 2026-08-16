@@ -1,5 +1,8 @@
 use serde_json::{json, Value};
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+
+use crate::modules::workspace::{resolve_path, wsl_home, WorkspaceEnv, WorkspaceRegistry};
 
 // How a given agent's hook delivers our OSC 777 marker into the terminal.
 #[derive(Clone, Copy)]
@@ -14,8 +17,8 @@ enum Delivery {
 
 struct AgentSpec {
     agent: &'static str,
-    dir: &'static str,
-    file: &'static str,
+    project_file: &'static str,
+    legacy_global_file: &'static str,
     events: &'static [(&'static str, &'static str)],
     matcher: bool,
     delivery: Delivery,
@@ -24,8 +27,8 @@ struct AgentSpec {
 const AGENTS: &[AgentSpec] = &[
     AgentSpec {
         agent: "claude",
-        dir: ".claude",
-        file: "settings.json",
+        project_file: ".claude/settings.local.json",
+        legacy_global_file: ".claude/settings.json",
         events: &[
             ("UserPromptSubmit", "working"),
             ("Notification", "attention"),
@@ -36,9 +39,10 @@ const AGENTS: &[AgentSpec] = &[
     },
     AgentSpec {
         agent: "codex",
-        dir: ".codex",
-        file: "hooks.json",
+        project_file: ".codex/hooks.json",
+        legacy_global_file: ".codex/hooks.json",
         events: &[
+            ("SessionStart", "started"),
             ("UserPromptSubmit", "working"),
             ("PermissionRequest", "attention"),
             ("Stop", "finished"),
@@ -48,16 +52,16 @@ const AGENTS: &[AgentSpec] = &[
     },
     AgentSpec {
         agent: "antigravity",
-        dir: ".gemini/config",
-        file: "hooks.json",
+        project_file: ".agents/hooks.json",
+        legacy_global_file: ".gemini/config/hooks.json",
         events: &[("PreInvocation", "working"), ("Stop", "finished")],
         matcher: false,
         delivery: Delivery::Osc,
     },
 ];
 
-const PI_EXTENSION_DIR: &str = ".pi/agent/extensions";
-const PI_EXTENSION_FILE: &str = "anbo-notifications.ts";
+const PI_PROJECT_FILE: &str = ".pi/extensions/anbo-notifications.ts";
+const PI_LEGACY_GLOBAL_FILE: &str = ".pi/agent/extensions/anbo-notifications.ts";
 const PI_EXTENSION_MARKER: &str = "anbo-pi-notifications-v2";
 const PI_STATUS_NEEDLES: [&str; 8] = [
     PI_EXTENSION_MARKER,
@@ -89,8 +93,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", () => emit("finished"));
 }
 "#;
-const OPENCODE_PLUGIN_DIR: &str = ".config/opencode/plugins";
-const OPENCODE_PLUGIN_FILE: &str = "anbo-notifications.js";
+const OPENCODE_PROJECT_FILE: &str = ".opencode/plugins/anbo-notifications.js";
+const OPENCODE_LEGACY_GLOBAL_FILE: &str = ".config/opencode/plugins/anbo-notifications.js";
 const OPENCODE_PLUGIN_MARKER: &str = "anbo-opencode-notifications-v1";
 const OPENCODE_PLUGIN: &str = r#"// anbo-opencode-notifications-v1
 export const AnboNotifications = async () => ({
@@ -107,11 +111,15 @@ export const AnboNotifications = async () => ({
 // emitted (legacy /dev/tty Claude, current TerminalSequence, Osc, Windows
 // helper). Used to prune our own groups before reinserting so installs are
 // idempotent and migrate older markers.
-const OWNED_MARKERS: [&str; 4] = [
+const OWNED_MARKERS: [&str; 8] = [
     "notify;Anbo;",
     "anbo;notify",
     "__anbo_notify",
     "__anbo_hook",
+    "notify;Terax;",
+    "terax;notify",
+    "__terax_notify",
+    "__terax_hook",
 ];
 
 fn find(agent: &str) -> Result<&'static AgentSpec, String> {
@@ -136,6 +144,12 @@ fn quote_executable(path: &str) -> String {
 }
 
 fn hook_helper_command(agent: &str, event: &str) -> String {
+    #[cfg(windows)]
+    if agent == "antigravity" {
+        return format!(
+            "if defined ANBO_HOOK_EXE (%ANBO_HOOK_EXE% __anbo_hook {agent} {event}) else (echo {{}})"
+        );
+    }
     let exe = std::env::current_exe()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| "anbo".to_string());
@@ -231,23 +245,99 @@ fn existing_config(contents: Option<&str>, path: &std::path::Path) -> Result<Val
     }
 }
 
-fn home_path(dir: &str, file: &str) -> Result<std::path::PathBuf, String> {
+fn home_path(relative: &str) -> Result<PathBuf, String> {
     Ok(dirs::home_dir()
         .ok_or_else(|| "could not resolve home dir".to_string())?
-        .join(dir)
-        .join(file))
+        .join(relative))
 }
 
-fn settings_path(spec: &AgentSpec) -> Result<std::path::PathBuf, String> {
-    home_path(spec.dir, spec.file)
+fn legacy_global_path(spec: &AgentSpec) -> Result<PathBuf, String> {
+    home_path(spec.legacy_global_file)
 }
 
-fn pi_extension_path() -> Result<std::path::PathBuf, String> {
-    home_path(PI_EXTENSION_DIR, PI_EXTENSION_FILE)
+fn authorize_project_root(
+    registry: &WorkspaceRegistry,
+    workspace_root: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<PathBuf, String> {
+    let resolved = resolve_path(workspace_root, workspace);
+    let canonical = std::fs::canonicalize(&resolved)
+        .map_err(|e| format!("workspace root is not accessible: {e}"))?;
+    if !canonical.is_dir() {
+        return Err(format!(
+            "workspace root is not a directory: {}",
+            canonical.display()
+        ));
+    }
+    if !registry.is_authorized_root(&canonical) {
+        return Err(format!(
+            "workspace root is not registered: {}",
+            canonical.display()
+        ));
+    }
+    let workspace_home = match workspace {
+        WorkspaceEnv::Local => dirs::home_dir(),
+        WorkspaceEnv::Wsl { distro } => wsl_home(distro.clone())
+            .ok()
+            .map(|home| resolve_path(&home, workspace)),
+    }
+    .and_then(|home| std::fs::canonicalize(home).ok());
+    if workspace_home.as_ref() == Some(&canonical) || canonical.parent().is_none() {
+        return Err(
+            "agent integrations require a project folder; the workspace home/root would make them global"
+                .to_string(),
+        );
+    }
+    Ok(canonical)
 }
 
-fn opencode_plugin_path() -> Result<std::path::PathBuf, String> {
-    home_path(OPENCODE_PLUGIN_DIR, OPENCODE_PLUGIN_FILE)
+/// Resolve a fixed, project-relative integration path without following a
+/// symlink out of the workspace. Missing directories are created one level at
+/// a time only after every existing ancestor is verified.
+fn project_file_path(root: &Path, relative: &str, create: bool) -> Result<PathBuf, String> {
+    let relative = Path::new(relative);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("project integration path must stay inside the workspace".to_string());
+    }
+
+    let parent = relative
+        .parent()
+        .ok_or_else(|| "project integration path has no parent".to_string())?;
+    let mut cursor = root.to_path_buf();
+    for component in parent.components() {
+        cursor.push(component.as_os_str());
+        match std::fs::symlink_metadata(&cursor) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "{} is a symlink; refusing to write project integration outside the workspace",
+                    cursor.display()
+                ));
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(format!("{} is not a directory", cursor.display()));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && create => {
+                std::fs::create_dir(&cursor)
+                    .map_err(|e| format!("create {}: {e}", cursor.display()))?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("inspect {}: {e}", cursor.display())),
+        }
+    }
+
+    let path = root.join(relative);
+    if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(format!(
+            "{} is a symlink; refusing to replace it",
+            path.display()
+        ));
+    }
+    Ok(path)
 }
 
 fn pi_extension_contents(
@@ -296,10 +386,6 @@ fn enable_pi_extension_at(path: &std::path::Path) -> Result<(), String> {
     write_atomic(&pi_extension_write_path(path)?, contents)
 }
 
-fn enable_pi_extension() -> Result<(), String> {
-    enable_pi_extension_at(&pi_extension_path()?)
-}
-
 fn enable_opencode_plugin_at(path: &std::path::Path) -> Result<(), String> {
     let dir = path.parent().unwrap();
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
@@ -319,22 +405,129 @@ fn enable_opencode_plugin_at(path: &std::path::Path) -> Result<(), String> {
     write_atomic(&pi_extension_write_path(path)?, OPENCODE_PLUGIN)
 }
 
-fn enable_opencode_plugin() -> Result<(), String> {
-    enable_opencode_plugin_at(&opencode_plugin_path()?)
+fn remove_owned_hooks(mut root: Value, spec: &AgentSpec) -> (Value, bool) {
+    if spec.agent == "antigravity" {
+        let changed = root
+            .as_object_mut()
+            .and_then(|object| object.remove("anbo-desktop-agent-alerts"))
+            .is_some();
+        return (root, changed);
+    }
+
+    let Some(object) = root.as_object_mut() else {
+        return (root, false);
+    };
+    let Some(hooks) = object.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return (root, false);
+    };
+
+    let mut changed = false;
+    let events = hooks.keys().cloned().collect::<Vec<_>>();
+    for event in events {
+        let Some(groups) = hooks.get_mut(&event).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        let before = groups.len();
+        groups.retain(|group| !is_ours(group));
+        if groups.len() != before {
+            changed = true;
+            if groups.is_empty() {
+                hooks.remove(&event);
+            }
+        }
+    }
+    if changed && hooks.is_empty() {
+        object.remove("hooks");
+    }
+    (root, changed)
+}
+
+fn remove_legacy_json_at(path: &Path, spec: &AgentSpec) -> Result<bool, String> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(format!("read {}: {e}", path.display())),
+    };
+    let root = existing_config(Some(&contents), path)?;
+    let (cleaned, changed) = remove_owned_hooks(root, spec);
+    if !changed {
+        return Ok(false);
+    }
+    if cleaned.as_object().is_some_and(serde_json::Map::is_empty) {
+        std::fs::remove_file(path).map_err(|e| format!("remove {}: {e}", path.display()))?;
+    } else {
+        let output = serde_json::to_string_pretty(&cleaned).map_err(|e| e.to_string())?;
+        write_atomic(&pi_extension_write_path(path)?, &output)?;
+    }
+    Ok(true)
+}
+
+fn remove_legacy_owned_file(path: &Path, marker: &str) -> Result<bool, String> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(format!("read {}: {e}", path.display())),
+    };
+    if !contents.contains(marker) {
+        return Ok(false);
+    }
+    std::fs::remove_file(path).map_err(|e| format!("remove {}: {e}", path.display()))?;
+    Ok(true)
+}
+
+/// One-way migration from historical home-scoped integrations. Only commands
+/// and files carrying Anbo ownership markers are removed; every foreign hook,
+/// plugin, setting, and trust decision is left intact.
+pub fn cleanup_legacy_global_integrations() -> Result<usize, String> {
+    let mut removed = 0;
+    let mut errors = Vec::new();
+    for spec in AGENTS {
+        match legacy_global_path(spec).and_then(|path| remove_legacy_json_at(&path, spec)) {
+            Ok(true) => removed += 1,
+            Ok(false) => {}
+            Err(error) => errors.push(error),
+        }
+    }
+    for (relative, marker) in [
+        (PI_LEGACY_GLOBAL_FILE, PI_EXTENSION_MARKER),
+        (OPENCODE_LEGACY_GLOBAL_FILE, OPENCODE_PLUGIN_MARKER),
+    ] {
+        match home_path(relative).and_then(|path| remove_legacy_owned_file(&path, marker)) {
+            Ok(true) => removed += 1,
+            Ok(false) => {}
+            Err(error) => errors.push(error),
+        }
+    }
+    if errors.is_empty() {
+        Ok(removed)
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 #[tauri::command]
-pub fn agent_enable_hooks(agent: String) -> Result<(), String> {
+pub fn agent_enable_hooks(
+    agent: String,
+    workspace_root: String,
+    workspace: Option<WorkspaceEnv>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<(), String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let root = authorize_project_root(&registry, &workspace_root, &workspace)?;
+    enable_project_integration(&agent, &root)
+}
+
+fn enable_project_integration(agent: &str, root: &Path) -> Result<(), String> {
     if agent == "pi" {
-        return enable_pi_extension();
+        let path = project_file_path(root, PI_PROJECT_FILE, true)?;
+        return enable_pi_extension_at(&path);
     }
     if agent == "opencode" {
-        return enable_opencode_plugin();
+        let path = project_file_path(root, OPENCODE_PROJECT_FILE, true)?;
+        return enable_opencode_plugin_at(&path);
     }
-    let spec = find(&agent)?;
-    let path = settings_path(spec)?;
-    let dir = path.parent().unwrap();
-    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let spec = find(agent)?;
+    let path = project_file_path(root, spec.project_file, true)?;
 
     let existing = match std::fs::read_to_string(&path) {
         Ok(s) => existing_config(Some(&s), &path)?,
@@ -367,7 +560,7 @@ fn valid_exact_session_id(agent: &str, session_id: &str) -> bool {
         .enumerate()
         .all(|(index, byte)| match index {
             8 | 13 | 18 | 23 => byte == b'-',
-            14 => matches!(byte, b'1'..=b'5'),
+            14 => matches!(byte, b'1'..=b'8'),
             19 => matches!(byte.to_ascii_lowercase(), b'8' | b'9' | b'a' | b'b'),
             _ => byte.is_ascii_hexdigit(),
         })
@@ -486,9 +679,22 @@ pub fn emit_conout_marker(agent: &str, event: &str) {
 }
 
 #[tauri::command]
-pub fn agent_hooks_status(agent: String) -> bool {
+pub fn agent_hooks_status(
+    agent: String,
+    workspace_root: String,
+    workspace: Option<WorkspaceEnv>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> bool {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let Ok(root) = authorize_project_root(&registry, &workspace_root, &workspace) else {
+        return false;
+    };
+    project_integration_status(&agent, &root)
+}
+
+fn project_integration_status(agent: &str, root: &Path) -> bool {
     if agent == "pi" {
-        return pi_extension_path()
+        return project_file_path(root, PI_PROJECT_FILE, false)
             .ok()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .is_some_and(|content| {
@@ -498,15 +704,15 @@ pub fn agent_hooks_status(agent: String) -> bool {
             });
     }
     if agent == "opencode" {
-        return opencode_plugin_path()
+        return project_file_path(root, OPENCODE_PROJECT_FILE, false)
             .ok()
             .and_then(|path| std::fs::read_to_string(path).ok())
             .is_some_and(|content| content.contains(OPENCODE_PLUGIN_MARKER));
     }
-    let Ok(spec) = find(&agent) else {
+    let Ok(spec) = find(agent) else {
         return false;
     };
-    let Some(content) = settings_path(spec)
+    let Some(content) = project_file_path(root, spec.project_file, false)
         .ok()
         .and_then(|p| std::fs::read_to_string(p).ok())
     else {
@@ -570,9 +776,12 @@ mod tests {
     #[test]
     fn hook_helper_commands_are_agent_and_event_scoped() {
         let out = merge_hooks(json!({}), spec("codex"));
+        assert_eq!(hook_count(&out, "SessionStart"), 1);
         assert_eq!(hook_count(&out, "UserPromptSubmit"), 1);
         assert_eq!(hook_count(&out, "PermissionRequest"), 1);
         assert_eq!(hook_count(&out, "Stop"), 1);
+        let start = command(&out, "SessionStart", 0);
+        assert!(start.contains("__anbo_hook codex started"));
         let stop = command(&out, "Stop", 0);
         assert!(stop.contains("__anbo_hook codex finished"));
     }
@@ -600,6 +809,17 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn antigravity_windows_hook_avoids_literal_executable_quotes() {
+        let command = hook_helper_command("antigravity", "working");
+        assert_eq!(
+            command,
+            "if defined ANBO_HOOK_EXE (%ANBO_HOOK_EXE% __anbo_hook antigravity working) else (echo {})"
+        );
+        assert!(!command.contains('"'));
+    }
+
     #[test]
     fn hook_input_yields_only_valid_real_session_ids() {
         let id = "00000000-0000-4000-8000-000000000001";
@@ -612,6 +832,13 @@ mod tests {
         let invalid =
             hook_payload_from_reader(br#"{"session_id":"../../bad"}"#.as_slice()).unwrap();
         assert!(hook_session_id_from_payload(&invalid, "claude").is_none());
+
+        let codex_v7 = "01a0068e-3c06-75c3-bfdd-89323e589767";
+        let codex_payload = json!({ "session_id": codex_v7 });
+        assert_eq!(
+            hook_session_id_from_payload(&codex_payload, "codex").as_deref(),
+            Some(codex_v7)
+        );
     }
 
     #[test]
@@ -668,7 +895,7 @@ mod tests {
     #[test]
     fn pi_extension_install_is_atomic_idempotent_and_preserves_foreign_files() {
         let dir = std::env::temp_dir().join(format!("anbo-pi-extension-{}", std::process::id()));
-        let path = dir.join(PI_EXTENSION_FILE);
+        let path = dir.join("anbo-notifications.ts");
         let _ = std::fs::remove_dir_all(&dir);
 
         enable_pi_extension_at(&path).unwrap();
@@ -691,7 +918,7 @@ mod tests {
         assert!(OPENCODE_PLUGIN.contains("process.env.ANBO_TERMINAL"));
 
         let dir = std::env::temp_dir().join(format!("anbo-opencode-plugin-{}", std::process::id()));
-        let path = dir.join(OPENCODE_PLUGIN_FILE);
+        let path = dir.join("anbo-notifications.js");
         let _ = std::fs::remove_dir_all(&dir);
         enable_opencode_plugin_at(&path).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), OPENCODE_PLUGIN);
@@ -706,6 +933,115 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test]
+    fn legacy_cleanup_removes_only_anbo_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let original = json!({
+            "theme": "mine",
+            "hooks": {
+                "Stop": [
+                    { "hooks": [{ "type": "command", "command": "my-stop-hook" }] },
+                    { "hooks": [{ "type": "command", "command": "anbo __anbo_hook claude finished" }] }
+                ],
+                "Notification": [
+                    { "hooks": [{ "type": "command", "command": "anbo __anbo_hook claude attention" }] }
+                ]
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
+
+        assert!(remove_legacy_json_at(&path, spec("claude")).unwrap());
+        let cleaned: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(cleaned["theme"], "mine");
+        assert_eq!(hook_count(&cleaned, "Stop"), 1);
+        assert_eq!(command(&cleaned, "Stop", 0), "my-stop-hook");
+        assert!(cleaned["hooks"].get("Notification").is_none());
+    }
+
+    #[test]
+    fn legacy_cleanup_removes_pre_anbo_hooks_without_touching_foreign_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        let original = json!({
+            "hooks": {
+                "Stop": [
+                    { "hooks": [{ "type": "command", "command": "my-stop-hook" }] },
+                    { "hooks": [{ "type": "command", "command": "terax.exe __terax_notify codex finished" }] }
+                ]
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
+
+        assert!(remove_legacy_json_at(&path, spec("codex")).unwrap());
+        let cleaned: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(hook_count(&cleaned, "Stop"), 1);
+        assert_eq!(command(&cleaned, "Stop", 0), "my-stop-hook");
+    }
+
+    #[test]
+    fn legacy_cleanup_deletes_anbo_only_json_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        let installed = merge_hooks(json!({}), spec("codex"));
+        std::fs::write(&path, serde_json::to_string_pretty(&installed).unwrap()).unwrap();
+
+        assert!(remove_legacy_json_at(&path, spec("codex")).unwrap());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn project_integration_requires_an_exact_registered_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        let registry = WorkspaceRegistry::default();
+        registry.authorize(dir.path()).unwrap();
+
+        assert!(
+            authorize_project_root(&registry, child.to_str().unwrap(), &WorkspaceEnv::Local)
+                .is_err()
+        );
+        registry.authorize(&child).unwrap();
+        assert_eq!(
+            authorize_project_root(&registry, child.to_str().unwrap(), &WorkspaceEnv::Local)
+                .unwrap(),
+            std::fs::canonicalize(child).unwrap()
+        );
+    }
+
+    #[test]
+    fn project_integration_path_rejects_parent_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(project_file_path(dir.path(), "../hooks.json", true).is_err());
+        let path = project_file_path(dir.path(), ".codex/hooks.json", true).unwrap();
+        assert!(path.starts_with(dir.path()));
+        assert!(path.parent().unwrap().is_dir());
+    }
+
+    #[test]
+    fn every_supported_integration_installs_inside_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        for agent in ["claude", "codex", "antigravity", "pi", "opencode"] {
+            enable_project_integration(agent, dir.path()).unwrap();
+            assert!(
+                project_integration_status(agent, dir.path()),
+                "{agent} project integration was not detected"
+            );
+        }
+        for relative in [
+            ".claude/settings.local.json",
+            ".codex/hooks.json",
+            ".agents/hooks.json",
+            PI_PROJECT_FILE,
+            OPENCODE_PROJECT_FILE,
+        ] {
+            assert!(dir.path().join(relative).is_file(), "missing {relative}");
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn pi_extension_install_preserves_symlink() {
@@ -714,7 +1050,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("anbo-pi-extension-symlink-{}", std::process::id()));
         let target = dir.join("managed.ts");
-        let path = dir.join(PI_EXTENSION_FILE);
+        let path = dir.join("anbo-notifications.ts");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&target, format!("// {PI_EXTENSION_MARKER}\n")).unwrap();

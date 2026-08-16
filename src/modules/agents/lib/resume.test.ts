@@ -4,11 +4,25 @@ import {
   buildAgentResumeCommand,
   createAgentResumeStates,
   normalizePersistedAgentResume,
+  shouldPinAgentSession,
 } from "./resume";
 
 describe("agent resume commands", () => {
+  it.each(["claude", "codex", "antigravity", "pi", "opencode"])(
+    "pins discovered %s session ids",
+    (agent) => {
+      expect(shouldPinAgentSession(agent)).toBe(true);
+    },
+  );
+
+  it("does not pin unsupported agent session ids", () => {
+    expect(shouldPinAgentSession("grok")).toBe(false);
+    expect(shouldPinAgentSession("custom:aider")).toBe(false);
+  });
+
   it.each([
     ["claude", "claude", "claude --resume"],
+    ["codex", "codex", "codex resume"],
     ["antigravity", "agy", "agy --conversation"],
     ["pi", "pi", "pi --session"],
   ] as const)(
@@ -24,18 +38,12 @@ describe("agent resume commands", () => {
           ...state,
           sessionId: "00000000-0000-4000-8000-000000000001",
         }),
-      ).toBe(
-        `${resume} 00000000-0000-4000-8000-000000000001`,
-      );
+      ).toBe(`${resume} 00000000-0000-4000-8000-000000000001`);
     },
   );
 
   it("does not invent session ids for parallel panes", () => {
-    const states = createAgentResumeStates(
-      "claude",
-      "claude --model opus",
-      2,
-    );
+    const states = createAgentResumeStates("claude", "claude --model opus", 2);
     expect(states.map((state) => state?.sessionId)).toEqual([
       undefined,
       undefined,
@@ -43,7 +51,6 @@ describe("agent resume commands", () => {
   });
 
   it("does not claim unsupported or custom agents are resumable", () => {
-    expect(createAgentResumeStates("codex", "codex", 1)).toEqual([undefined]);
     expect(createAgentResumeStates("grok", "grok", 1)).toEqual([undefined]);
     expect(createAgentResumeStates("custom:aider", "aider", 1)).toEqual([
       undefined,
@@ -73,13 +80,25 @@ describe("agent resume commands", () => {
     ).toBe("opencode --model x/y --session ses_02f317323ffevFt1WEh49hRc0b");
   });
 
+  it("timestamps only pending Codex discovery", () => {
+    const [pending] = createAgentResumeStates("codex", "codex", 1);
+    expect(pending).toEqual(
+      expect.objectContaining({
+        agent: "codex",
+        armed: false,
+        command: "codex",
+        discoveryStartedAt: expect.any(Number),
+      }),
+    );
+  });
+
   it("does not rewrite commands that already select a session or chain a shell command", () => {
     expect(createAgentResumeStates("claude", "claude --continue", 1)).toEqual([
       undefined,
     ]);
-    expect(
-      createAgentResumeStates("antigravity", "prepare && agy", 1),
-    ).toEqual([undefined]);
+    expect(createAgentResumeStates("antigravity", "prepare && agy", 1)).toEqual(
+      [undefined],
+    );
     expect(createAgentResumeStates("pi", "pi | tee log.txt", 1)).toEqual([
       undefined,
     ]);
@@ -87,15 +106,14 @@ describe("agent resume commands", () => {
       undefined,
     ]);
     expect(
-      createAgentResumeStates(
-        "antigravity",
-        "agy --conversation old-id",
-        1,
-      ),
+      createAgentResumeStates("antigravity", "agy --conversation old-id", 1),
     ).toEqual([undefined]);
     expect(
       createAgentResumeStates("opencode", "opencode --continue", 1),
     ).toEqual([undefined]);
+    expect(createAgentResumeStates("codex", "codex resume old-id", 1)).toEqual([
+      undefined,
+    ]);
   });
 
   it("keeps ordinary Antigravity options resumable", () => {
@@ -129,6 +147,23 @@ describe("agent resume commands", () => {
         sessionId: "ses_test123",
       }),
     ).toBeUndefined();
+    expect(createAgentResumeStates("codex", "codex exec fix this", 1)).toEqual([
+      undefined,
+    ]);
+  });
+
+  it("hydrates current Codex UUID v7 sessions", () => {
+    expect(
+      normalizePersistedAgentResume({
+        agent: "codex",
+        command: "codex --model gpt-5.6-sol",
+        sessionId: "01a0068e-3c06-75c3-bfdd-89323e589767",
+      }),
+    ).toEqual({
+      agent: "codex",
+      command: "codex --model gpt-5.6-sol",
+      sessionId: "01a0068e-3c06-75c3-bfdd-89323e589767",
+    });
   });
 
   it("rejects corrupted persisted descriptors", () => {

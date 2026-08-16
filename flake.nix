@@ -1,5 +1,5 @@
 {
-  description = "Terax - open-source lightweight cross-platform AI-native terminal (ADE)";
+  description = "Anbo - open-source lightweight cross-platform AI-native development environment";
 
   inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
 
@@ -9,16 +9,16 @@
     packages = forAllSystems (system: let
       pkgs = nixpkgs.legacyPackages.${system};
     in {
-      terax = pkgs.callPackage ./nix/package.nix { };
-      default = self.packages.${system}.terax;
+      anbo = pkgs.callPackage ./nix/package.nix { };
+      default = self.packages.${system}.anbo;
     });
 
-    nixosModules.terax = { pkgs, ... }: {
-      environment.systemPackages = [ self.packages.${pkgs.system}.terax ];
+    nixosModules.anbo = { pkgs, ... }: {
+      environment.systemPackages = [ self.packages.${pkgs.system}.anbo ];
     };
 
-    darwinModules.terax = { pkgs, ... }: {
-      environment.systemPackages = [ self.packages.${pkgs.system}.terax ];
+    darwinModules.anbo = { pkgs, ... }: {
+      environment.systemPackages = [ self.packages.${pkgs.system}.anbo ];
     };
   };
 }

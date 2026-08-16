@@ -15,3 +15,11 @@ export function displayAgent(agent: string): string {
     agent.charAt(0).toUpperCase() + agent.slice(1)
   );
 }
+
+export function displayAgentInstance(
+  agent: string,
+  instanceName?: string | null,
+): string {
+  const name = instanceName?.trim();
+  return name || displayAgent(agent);
+}

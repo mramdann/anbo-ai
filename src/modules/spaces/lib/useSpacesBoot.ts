@@ -135,9 +135,14 @@ export function useSpacesBoot({
           restored.push(freshTerminalTab(active, cwd, allocId));
         }
 
-        await Promise.allSettled(
-          uniqueCwds(restored).map((cwd) => native.workspaceAuthorize(cwd)),
-        );
+        await Promise.allSettled([
+          ...spaces.flatMap((space) =>
+            space.root
+              ? [native.workspaceAuthorize(space.root, space.env)]
+              : [],
+          ),
+          ...uniqueCwds(restored).map((cwd) => native.workspaceAuthorize(cwd)),
+        ]);
 
         const initialActiveIndex: Record<string, number> = {};
         for (const [id, st] of states)

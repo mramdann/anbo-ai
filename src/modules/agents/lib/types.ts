@@ -21,6 +21,7 @@ export type AgentSession = {
   leafId: number;
   tabId: number;
   agent: string;
+  name: string;
   status: AgentStatus;
   startedAt: number;
   lastActivityAt: number;
@@ -33,6 +34,7 @@ export type AgentNotification = {
   leafId: number;
   tabId: number;
   agent: string;
+  name: string;
   kind: NotificationKind;
   at: number;
   read: boolean;
