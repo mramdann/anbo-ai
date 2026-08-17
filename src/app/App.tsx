@@ -117,6 +117,7 @@ import {
   clearFocusedTerminal,
   collectRetainedTerminalLeafIds,
   disposeSession,
+  disposeSessionsOutside,
   findLeafCwd,
   hasLeaf,
   leafHasForegroundProcess,
@@ -566,6 +567,7 @@ export default function App() {
 
   useEffect(() => {
     const live = collectRetainedTerminalLeafIds(tabs);
+    disposeSessionsOutside(live);
     for (const id of liveLeavesRef.current) {
       if (!live.has(id)) disposeSession(id);
     }

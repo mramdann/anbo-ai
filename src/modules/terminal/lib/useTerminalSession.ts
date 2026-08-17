@@ -32,9 +32,9 @@ import {
   applyCursorBlink,
   applyCursorStyle,
   applyLetterSpacing,
-  applyTerminalFont,
   applyTheme as applyPoolTheme,
   applyScrollback,
+  applyTerminalFont,
   applyWebglPreference,
   configureRendererPool,
   discardRetainedSlot,
@@ -833,6 +833,14 @@ export function disposeSession(leafId: number): void {
       clearTimeout(w.timer);
       w.resolve();
     }
+  }
+}
+
+export function disposeSessionsOutside(
+  retainedLeafIds: ReadonlySet<number>,
+): void {
+  for (const leafId of [...sessions.keys()]) {
+    if (!retainedLeafIds.has(leafId)) disposeSession(leafId);
   }
 }
 

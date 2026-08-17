@@ -4,6 +4,7 @@ export { collectRetainedTerminalLeafIds } from "./lib/liveTerminals";
 export {
   clearFocusedTerminal,
   disposeSession,
+  disposeSessionsOutside,
   leafHasForegroundProcess,
   leafIdForPty,
   navigateFocusedBlocks,

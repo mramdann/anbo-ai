@@ -1,8 +1,8 @@
 import { isMarkdownPath } from "@/lib/utils";
 import {
-  allocateAgentTabNames,
   type AgentTabIdentity,
   type AgentTabNameRequest,
+  allocateAgentTabNames,
 } from "@/modules/agents/lib/agentTabName";
 import type { AgentInstanceCount } from "@/modules/agents/lib/launcher";
 import type { PersistedAgentResume } from "@/modules/agents/lib/resume";
@@ -25,9 +25,16 @@ import {
 } from "@/modules/terminal/lib/panes";
 import { disposeSession } from "@/modules/terminal/lib/useTerminalSession";
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  reserveRuntimeIds,
+  runtimeTabIdAllocator,
+  takeRuntimeId,
+} from "./runtimeId";
 
 // Matches the renderer slot pool size — over this we'd evict an active leaf.
 export const MAX_PANES_PER_TAB = 4;
+
+const runtimeIds = runtimeTabIdAllocator();
 
 type TabBase = {
   spaceId: string;
@@ -456,9 +463,16 @@ export function planSpaceReset(
 }
 
 export function useTabs(initial?: Partial<TerminalTab>) {
+  const initialIdsRef = useRef<{ tabId: number; leafId: number } | null>(null);
+  if (initialIdsRef.current === null) {
+    initialIdsRef.current = {
+      tabId: takeRuntimeId(runtimeIds),
+      leafId: takeRuntimeId(runtimeIds),
+    };
+  }
+  const initialIds = initialIdsRef.current;
   const [tabs, setTabs] = useState<Tab[]>(() => {
-    const tabId = 1;
-    const leafId = 2;
+    const { tabId, leafId } = initialIds;
     return [
       {
         id: tabId,
@@ -472,7 +486,15 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       },
     ];
   });
-  const [activeId, setActiveId] = useState(1);
+  useEffect(() => {
+    reserveRuntimeIds(runtimeIds, [
+      ...tabs.map((tab) => tab.id),
+      ...tabs.flatMap((tab) =>
+        tab.kind === "terminal" ? leafIds(tab.paneTree) : [],
+      ),
+    ]);
+  }, [tabs]);
+  const [activeId, setActiveId] = useState(initialIds.tabId);
   const [activeBrowserTabIds, setActiveBrowserTabIds] = useState<
     Record<string, number | null>
   >({});
@@ -487,7 +509,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   );
   // Gates warming until boot resolves the restore, so no shell spawns before it.
   const [booted, setBooted] = useState(false);
-  const nextIdRef = useRef(3);
+  const nextIdRef = runtimeIds;
   const activeSpaceIdRef = useRef(DEFAULT_SPACE_ID);
   const tabsRef = useRef(tabs);
   const activeIdRef = useRef(activeId);
