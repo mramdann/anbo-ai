@@ -1,5 +1,38 @@
 const GOOGLE_SEARCH_URL = "https://www.google.com/search?q=";
 
+const BROWSER_PREVIEW_EXTENSIONS = new Set([
+  "aac",
+  "apng",
+  "avif",
+  "bmp",
+  "flac",
+  "gif",
+  "htm",
+  "html",
+  "ico",
+  "jfif",
+  "jpeg",
+  "jpg",
+  "json",
+  "m4a",
+  "m4v",
+  "mov",
+  "mp3",
+  "mp4",
+  "oga",
+  "ogg",
+  "opus",
+  "pdf",
+  "png",
+  "svg",
+  "txt",
+  "wav",
+  "webm",
+  "webp",
+  "xhtml",
+  "xml",
+]);
+
 export function resolveBrowserInput(raw: string): string | null {
   const value = raw.trim();
   if (!value) return null;
@@ -33,6 +66,38 @@ export function windowsPathToFileUrl(value: string): string | null {
     .split("/")
     .map((segment) => encodeURIComponent(segment));
   return `file:///${drive}/${segments.join("/")}`;
+}
+
+export function filePathToBrowserUrl(value: string): string | null {
+  const path = value.trim();
+  if (!path) return null;
+
+  const windowsUrl = windowsPathToFileUrl(path);
+  if (windowsUrl) return windowsUrl;
+
+  const normalized = path.replace(/\\/g, "/");
+  if (normalized.startsWith("//")) {
+    const segments = normalized
+      .slice(2)
+      .split("/")
+      .filter(Boolean)
+      .map((segment) => encodeURIComponent(segment));
+    return segments.length >= 2 ? `file://${segments.join("/")}` : null;
+  }
+  if (!normalized.startsWith("/")) return null;
+
+  const encoded = normalized
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return `file://${encoded}`;
+}
+
+export function isBrowserPreviewablePath(path: string): boolean {
+  const name = path.split(/[\\/]/).pop() ?? "";
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return false;
+  return BROWSER_PREVIEW_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
 }
 
 export function faviconUrlForPage(value: string): string | null {

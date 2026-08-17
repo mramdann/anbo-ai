@@ -22,5 +22,10 @@ export {
 } from "./automationOpen";
 export type { BrowserPaneHandle } from "./BrowserPane";
 export { BrowserStack, selectBackgroundBrowserTabs } from "./BrowserStack";
-export { faviconUrlForPage, googleFaviconUrlForPage } from "./browserInput";
+export {
+  faviconUrlForPage,
+  filePathToBrowserUrl,
+  googleFaviconUrlForPage,
+  isBrowserPreviewablePath,
+} from "./browserInput";
 export { beginBrowserSession, browserEmbedClose } from "./native";

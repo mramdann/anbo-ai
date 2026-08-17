@@ -27,6 +27,7 @@ import { fileIconUrl } from "./lib/iconResolver";
 import { copyToClipboard, revealInFinder } from "./lib/contextActions";
 import { COMPACT_CONTENT, COMPACT_ITEM } from "./lib/menuItemClass";
 import { cn } from "@/lib/utils";
+import { isBrowserPreviewablePath } from "@/modules/browser";
 
 type SearchHit = {
   path: string;
@@ -46,6 +47,7 @@ const DEBOUNCE_MS = 300;
 type Props = {
   rootPath: string;
   onOpenFile: (path: string) => void;
+  onOpenInBrowser?: (path: string) => void;
   open: boolean;
   onRequestClose: () => void;
   onActiveChange?: (active: boolean) => void;
@@ -61,6 +63,7 @@ export type ExplorerSearchHandle = {
 export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function ExplorerSearch({
   rootPath,
   onOpenFile,
+  onOpenInBrowser,
   open,
   onRequestClose,
   onActiveChange,
@@ -282,6 +285,16 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
                           Open
                         </ContextMenuItem>
                       )}
+                      {!hit.is_dir &&
+                        onOpenInBrowser &&
+                        isBrowserPreviewablePath(hit.path) && (
+                          <ContextMenuItem
+                            className={COMPACT_ITEM}
+                            onSelect={() => onOpenInBrowser(hit.path)}
+                          >
+                            Open in Anbo Browser
+                          </ContextMenuItem>
+                        )}
                       {hit.is_dir && onRevealInTerminal && (
                         <ContextMenuItem
                           className={COMPACT_ITEM}

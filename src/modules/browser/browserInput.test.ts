@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  filePathToBrowserUrl,
   faviconUrlForPage,
   googleFaviconUrlForPage,
+  isBrowserPreviewablePath,
   resolveBrowserInput,
   windowsPathToFileUrl,
 } from "./browserInput";
@@ -52,6 +54,40 @@ describe("resolveBrowserInput", () => {
     expect(resolveBrowserInput("file:///C:/work/index.html")).toBe(
       "file:///C:/work/index.html",
     );
+  });
+});
+
+describe("filePathToBrowserUrl", () => {
+  it("encodes local Windows, POSIX, and UNC paths", () => {
+    expect(filePathToBrowserUrl("C:\\work\\landing page#1.html")).toBe(
+      "file:///C:/work/landing%20page%231.html",
+    );
+    expect(filePathToBrowserUrl("/home/me/landing page.html")).toBe(
+      "file:///home/me/landing%20page.html",
+    );
+    expect(filePathToBrowserUrl("\\\\server\\share\\index.html")).toBe(
+      "file://server/share/index.html",
+    );
+  });
+
+  it("rejects empty and relative paths", () => {
+    expect(filePathToBrowserUrl(" ")).toBeNull();
+    expect(filePathToBrowserUrl("src/index.html")).toBeNull();
+  });
+});
+
+describe("isBrowserPreviewablePath", () => {
+  it("accepts browser-renderable files case-insensitively", () => {
+    expect(isBrowserPreviewablePath("C:/work/index.HTML")).toBe(true);
+    expect(isBrowserPreviewablePath("C:/work/manual.pdf")).toBe(true);
+    expect(isBrowserPreviewablePath("/tmp/cover.webp")).toBe(true);
+    expect(isBrowserPreviewablePath("/tmp/movie.mp4")).toBe(true);
+  });
+
+  it("rejects directories and unsupported source or executable files", () => {
+    expect(isBrowserPreviewablePath("C:/work/assets")).toBe(false);
+    expect(isBrowserPreviewablePath("C:/work/app.tsx")).toBe(false);
+    expect(isBrowserPreviewablePath("C:/work/tool.exe")).toBe(false);
   });
 });
 

@@ -52,6 +52,7 @@ import {
   browserOpenPlacement,
   clearBrowserAutomationActivity,
   faviconUrlForPage,
+  filePathToBrowserUrl,
   getBrowserAutomationActivity,
   markBrowserAutomationActivity,
   resolveBrowserCloseTarget,
@@ -1172,6 +1173,14 @@ export default function App() {
     [newBrowserTab],
   );
 
+  const openFileInAnboBrowser = useCallback(
+    (path: string) => {
+      const url = filePathToBrowserUrl(path);
+      if (url) openBrowserTab(url);
+    },
+    [openBrowserTab],
+  );
+
   useEffect(() => {
     setBrowserOpenRequestHandler((payload) => {
       const responseEvent = `${BROWSER_OPEN_RESPONSE_EVENT}:${payload.requestId}`;
@@ -1988,6 +1997,7 @@ export default function App() {
                             }
                             activeFilePath={explorerActiveFilePath}
                             onOpenFile={handleOpenFile}
+                            onOpenInBrowser={openFileInAnboBrowser}
                             onPathRenamed={handlePathRenamed}
                             onPathDeleted={handlePathDeleted}
                             onRevealInTerminal={cdInNewTab}

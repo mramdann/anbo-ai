@@ -41,6 +41,7 @@ import { useExplorerFileDrop } from "./lib/useExplorerFileDrop";
 import { useFileTree } from "./lib/useFileTree";
 import { useGitStatus } from "./lib/useGitStatus";
 import type { GitStatusCode } from "./lib/gitStatusUtils";
+import { isBrowserPreviewablePath } from "@/modules/browser";
 import { useGlobalShortcuts } from "@/modules/shortcuts";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { GitStatusSnapshot } from "@/modules/ai/lib/native";
@@ -56,6 +57,7 @@ type Props = {
   rootPath: string | null;
   activeFilePath?: string | null;
   onOpenFile: (path: string, pin?: boolean) => void;
+  onOpenInBrowser?: (path: string) => void;
   onPathRenamed?: (from: string, to: string) => void;
   onPathDeleted?: (path: string) => void;
   onRevealInTerminal?: (path: string) => void;
@@ -188,6 +190,7 @@ export const FileExplorer = memo(
       rootPath,
       activeFilePath,
       onOpenFile,
+      onOpenInBrowser,
       onPathRenamed,
       onPathDeleted,
       onRevealInTerminal,
@@ -553,6 +556,7 @@ export const FileExplorer = memo(
           ref={searchRef}
           rootPath={rootPath}
           onOpenFile={onOpenFile}
+          onOpenInBrowser={onOpenInBrowser}
           open={isSearchOpen}
           onRequestClose={() => setIsSearchOpen(false)}
           onActiveChange={setIsSearchActive}
@@ -678,6 +682,16 @@ export const FileExplorer = memo(
                       Open
                     </ContextMenuItem>
                   )}
+                  {!menuTarget.isDir &&
+                    onOpenInBrowser &&
+                    isBrowserPreviewablePath(menuTarget.path) && (
+                      <ContextMenuItem
+                        className={COMPACT_ITEM}
+                        onSelect={() => onOpenInBrowser(menuTarget.path)}
+                      >
+                        Open in Anbo Browser
+                      </ContextMenuItem>
+                    )}
                   {menuTarget.isDir && onRevealInTerminal && (
                     <ContextMenuItem
                       className={COMPACT_ITEM}
