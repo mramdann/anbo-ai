@@ -190,6 +190,8 @@ export const AnboNotifications = async () => {
 const ANBO_MCP_NAME: &str = "anbomcp";
 const ANBO_MCP_URL: &str = "http://127.0.0.1:7331/mcp";
 const CLAUDE_MCP_FILE: &str = ".claude/anbo-mcp.json";
+const LEGACY_CLAUDE_MCP_FILE: &str = ".mcp.json";
+const LEGACY_CLAUDE_MCP_NAME: &str = "anbo-browser";
 const CODEX_MCP_FILE: &str = ".codex/config.toml";
 const ANTIGRAVITY_MCP_FILE: &str = ".agents/mcp_config.json";
 const OPENCODE_MCP_FILE: &str = ".opencode/anbo-mcp.json";
@@ -982,6 +984,41 @@ fn json_mcp_status_at(agent: &str, path: &Path) -> bool {
         .is_some_and(|entry| json_mcp_matches(agent, &entry))
 }
 
+fn remove_legacy_claude_mcp_at(path: &Path) -> Result<bool, String> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
+    };
+    let mut root = existing_config(Some(&contents), path)?;
+    let Some(object) = root.as_object_mut() else {
+        return Ok(false);
+    };
+    let Some(servers) = object.get_mut("mcpServers").and_then(Value::as_object_mut) else {
+        return Ok(false);
+    };
+    let owned = servers.get(LEGACY_CLAUDE_MCP_NAME).is_some_and(|entry| {
+        entry.get("type").and_then(Value::as_str) == Some("http")
+            && entry.get("url").and_then(Value::as_str) == Some(ANBO_MCP_URL)
+    });
+    if !owned {
+        return Ok(false);
+    }
+    servers.remove(LEGACY_CLAUDE_MCP_NAME);
+    if servers.is_empty() {
+        object.remove("mcpServers");
+    }
+    if object.is_empty() {
+        std::fs::remove_file(path)
+            .map_err(|error| format!("remove {}: {error}", path.display()))?;
+    } else {
+        let mut output = serde_json::to_string_pretty(&root).map_err(|error| error.to_string())?;
+        output.push('\n');
+        write_atomic(path, &output)?;
+    }
+    Ok(true)
+}
+
 fn parse_codex_config(contents: &str, path: &Path) -> Result<DocumentMut, String> {
     if contents.trim().is_empty() {
         return Ok(DocumentMut::new());
@@ -1096,6 +1133,10 @@ pub fn agent_configure_mcp(
     let workspace = WorkspaceEnv::from_option(workspace);
     let root = authorize_project_root(&registry, &workspace_root, &workspace)?;
     let relative = mcp_project_file(&agent)?;
+    if agent == "claude" && enabled {
+        let legacy = project_file_path(&root, LEGACY_CLAUDE_MCP_FILE, false)?;
+        remove_legacy_claude_mcp_at(&legacy)?;
+    }
     let path = project_file_path(&root, relative, enabled)?;
     let configured = configure_mcp_at(&agent, &path, enabled)?;
     Ok(AgentMcpResult {
@@ -1632,6 +1673,60 @@ mod tests {
         assert!(std::fs::read_to_string(path)
             .unwrap()
             .contains("https://other.test/mcp"));
+    }
+
+    #[test]
+    fn claude_mcp_migration_removes_anbo_only_legacy_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(LEGACY_CLAUDE_MCP_FILE);
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"anbo-browser":{"type":"http","url":"http://127.0.0.1:7331/mcp"}}}"#,
+        )
+        .unwrap();
+
+        assert!(remove_legacy_claude_mcp_at(&path).unwrap());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn claude_mcp_migration_preserves_foreign_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(LEGACY_CLAUDE_MCP_FILE);
+        std::fs::write(
+            &path,
+            r#"{"custom":true,"mcpServers":{"anbo-browser":{"type":"http","url":"http://127.0.0.1:7331/mcp"},"foreign":{"type":"http","url":"https://example.com/mcp"}}}"#,
+        )
+        .unwrap();
+
+        assert!(remove_legacy_claude_mcp_at(&path).unwrap());
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(root["custom"], json!(true));
+        assert!(root["mcpServers"]["foreign"].is_object());
+        assert!(root["mcpServers"].get(LEGACY_CLAUDE_MCP_NAME).is_none());
+    }
+
+    #[test]
+    fn claude_mcp_migration_does_not_claim_a_foreign_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(LEGACY_CLAUDE_MCP_FILE);
+        let original =
+            r#"{"mcpServers":{"anbo-browser":{"type":"http","url":"https://example.com/mcp"}}}"#;
+        std::fs::write(&path, original).unwrap();
+
+        assert!(!remove_legacy_claude_mcp_at(&path).unwrap());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+    }
+
+    #[test]
+    fn claude_mcp_migration_refuses_invalid_json_without_changing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(LEGACY_CLAUDE_MCP_FILE);
+        let original = "{ not json";
+        std::fs::write(&path, original).unwrap();
+
+        assert!(remove_legacy_claude_mcp_at(&path).is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), original);
     }
 
     #[test]

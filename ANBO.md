@@ -186,15 +186,9 @@ Full automation capability is intentional: keep it enabled by default and do not
 
 Agent communication uses `agent_list`, `agent_status`, `agent_read`, `agent_send`, and `agent_wait`. Every call requires an explicit workspace root or space id and never activates a workspace or tab. The registry includes only live detected terminal agents and excludes private terminals. Reads are secret-redacted, cursor-based, and bounded to 12,000 characters. Sends are bounded, serialized per target, wait for a ready prompt by default, and support optional sender ids plus idempotency keys. A second queued send cannot enter the terminal until activity from the previous delivery is observed. MCP intentionally has no agent spawn or close operation; lifecycle ownership remains with the user and the existing AI-panel managed-agent workflow.
 
-Project MCP config (`.mcp.json`), where the client-side server alias may be any name such as `anbomcp`:
+Automatic agent MCP setup is opt-in per CLI in Settings and defaults on for Claude, Codex, Antigravity, and OpenCode. Configuration stays project-local and uses each client's isolated file: `.claude/anbo-mcp.json`, `.codex/config.toml`, `.agents/mcp_config.json`, and `.opencode/anbo-mcp.json`. Claude receives its file through `--mcp-config`; OpenCode receives its file through `OPENCODE_CONFIG`. Anbo adds or removes only the exact `anbomcp` entry it owns and refuses to replace a conflicting entry or invalid configuration. On the first enabled Claude launch, the historical root `.mcp.json` entry named `anbo-browser` is removed only when its type and loopback URL exactly match Anbo; every foreign server and top-level property is preserved.
 
-```json
-{ "mcpServers": { "anbomcp": { "type": "http", "url": "http://127.0.0.1:7331/mcp" } } }
-```
-
-The named-pipe sidecar continues to use the per-install token automatically;
-the token is never written into `.mcp.json`. Anbo does not rewrite project MCP
-configuration when an agent launches.
+The generated configuration is header-free because the HTTP server accepts only loopback connections. The named-pipe sidecar continues to use the per-install token automatically, and no token is written into project files.
 
 ### Releasing to GitHub
 
