@@ -27,6 +27,7 @@ const base = {
   agent: "claude",
   name: "Leander",
   title: "Leander needs your input",
+  workspace: "notaris-surat",
   focused: true,
   visible: false,
   allowToast: true,
@@ -60,7 +61,21 @@ describe("routeAgentNotification", () => {
       expect.objectContaining({
         agent: "claude",
         title: "Leander needs your input",
+        workspace: "notaris-surat",
       }),
+    );
+  });
+
+  it("puts the agent before the workspace in an OS notification", () => {
+    routeAgentNotification({
+      ...base,
+      kind: "attention",
+      focused: false,
+    });
+
+    expect(osNotify).toHaveBeenCalledWith(
+      "Leander needs your input",
+      "Claude Code · notaris-surat",
     );
   });
 });

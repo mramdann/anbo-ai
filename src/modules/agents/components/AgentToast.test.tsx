@@ -8,6 +8,7 @@ const { toast, shortcutLabel } = vi.hoisted(() => ({
 vi.mock("sonner", () => ({ toast }));
 vi.mock("@/modules/shortcuts", () => ({ shortcutLabel }));
 
+import { renderToStaticMarkup } from "react-dom/server";
 import { showAgentToast } from "./AgentToast";
 
 describe("showAgentToast", () => {
@@ -15,17 +16,15 @@ describe("showAgentToast", () => {
     vi.clearAllMocks();
   });
 
-  it("keeps a title-only alert on one compact row", () => {
+  it("identifies the agent below the alert title", () => {
     showAgentToast({
       agent: "claude",
       title: "Aurelia needs your input",
       onActivate: vi.fn(),
     });
 
-    expect(toast).toHaveBeenCalledWith(
-      "Aurelia needs your input",
-      expect.objectContaining({ description: undefined }),
-    );
+    const description = toast.mock.calls[0]?.[1]?.description;
+    expect(renderToStaticMarkup(description)).toContain("Claude Code");
   });
 
   it("keeps the shortcut alongside a real description", () => {
@@ -38,5 +37,20 @@ describe("showAgentToast", () => {
 
     const options = toast.mock.calls[0]?.[1];
     expect(options?.description).toBeTruthy();
+    expect(options?.duration).toBe(30_000);
+  });
+
+  it("shows the agent before the originating workspace", () => {
+    showAgentToast({
+      agent: "claude",
+      title: "Aurelia needs your input",
+      workspace: "notaris-surat",
+      onActivate: vi.fn(),
+    });
+
+    const description = toast.mock.calls[0]?.[1]?.description;
+    expect(renderToStaticMarkup(description)).toContain(
+      "Claude Code · notaris-surat",
+    );
   });
 });

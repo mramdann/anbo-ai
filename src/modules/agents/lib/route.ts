@@ -1,7 +1,7 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { showAgentToast } from "../components/AgentToast";
 import { useAgentStore } from "../store/agentStore";
-import { displayAgentInstance } from "./format";
+import { displayAgent, displayAgentInstance } from "./format";
 import { osNotify } from "./notify";
 import type { AgentSource, NotificationKind } from "./types";
 
@@ -12,6 +12,7 @@ type RouteArgs = {
   kind: NotificationKind;
   title: string;
   body?: string;
+  workspace?: string;
   focused: boolean;
   /** True when the user is currently looking at this agent. */
   visible: boolean;
@@ -29,6 +30,7 @@ export function routeAgentNotification({
   kind,
   title,
   body,
+  workspace,
   focused,
   visible,
   allowToast,
@@ -52,10 +54,13 @@ export function routeAgentNotification({
   }
 
   if (!focused) {
-    void osNotify(title, body ?? displayName);
+    void osNotify(
+      title,
+      [displayAgent(agent), workspace, body].filter(Boolean).join(" · "),
+    );
     return;
   }
   if (allowToast) {
-    showAgentToast({ agent, title, body, onActivate });
+    showAgentToast({ agent, title, body, workspace, onActivate });
   }
 }

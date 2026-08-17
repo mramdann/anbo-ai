@@ -1,4 +1,4 @@
-import type { Tab } from "@/modules/tabs";
+import { labelFor, type Tab } from "@/modules/tabs";
 import { hasLeaf, leafIdForPty } from "@/modules/terminal";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
@@ -14,6 +14,7 @@ type Activate = (tabId: number, leafId: number) => void;
 type Session = (leafId: number, agent: string, sessionId: string) => void;
 type Ctx = {
   tabs: Tab[];
+  spaces: Array<{ id: string; name: string }>;
   activeId: number;
   focused: boolean;
   onActivate: Activate;
@@ -23,10 +24,18 @@ type Ctx = {
 function tabInfo(
   tabs: Tab[],
   leafId: number,
-): { tabId: number; title: string; name: string | null } | null {
+): {
+  tabId: number;
+  name: string;
+  spaceId: string;
+} | null {
   for (const t of tabs) {
     if (t.kind === "terminal" && hasLeaf(t.paneTree, leafId)) {
-      return { tabId: t.id, title: t.title, name: t.agent?.name ?? null };
+      return {
+        tabId: t.id,
+        name: labelFor(t),
+        spaceId: t.spaceId,
+      };
     }
   }
   return null;
@@ -39,6 +48,10 @@ function route(
 ): void {
   const info = tabInfo(ctx.tabs, session.leafId);
   const name = displayAgentInstance(session.agent, info?.name ?? session.name);
+  const workspace = info
+    ? ctx.spaces.find((space) => space.id === info.spaceId)?.name
+    : undefined;
+  const tabId = info?.tabId ?? session.tabId;
   const heading =
     kind === "attention" ? `${name} needs your input` : `${name} finished`;
 
@@ -48,14 +61,14 @@ function route(
     name,
     kind,
     title: heading,
-    body: info?.title && info.title !== name ? info.title : undefined,
+    workspace,
     focused: ctx.focused,
-    visible: ctx.activeId === session.tabId,
+    visible: ctx.activeId === tabId,
     // Stop fires every turn, so finished only updates the bell; attention toasts.
     allowToast: kind === "attention",
-    tabId: session.tabId,
+    tabId,
     leafId: session.leafId,
-    onActivate: () => ctx.onActivate(session.tabId, session.leafId),
+    onActivate: () => ctx.onActivate(tabId, session.leafId),
   });
 }
 
@@ -107,11 +120,13 @@ function handleSignal(sig: AgentSignal, ctx: Ctx): void {
 
 export function AgentNotificationsBridge({
   tabs,
+  spaces,
   activeId,
   onActivate,
   onSession,
 }: {
   tabs: Tab[];
+  spaces: Array<{ id: string; name: string }>;
   activeId: number;
   onActivate: Activate;
   onSession: Session;
@@ -119,18 +134,30 @@ export function AgentNotificationsBridge({
   const focused = useWindowFocus();
   const ctxRef = useRef<Ctx>({
     tabs,
+    spaces,
     activeId,
     focused,
     onActivate,
     onSession,
   });
-  ctxRef.current = { tabs, activeId, focused, onActivate, onSession };
+  ctxRef.current = {
+    tabs,
+    spaces,
+    activeId,
+    focused,
+    onActivate,
+    onSession,
+  };
 
   useEffect(() => {
     const store = useAgentStore.getState();
     for (const session of Object.values(store.sessions)) {
       const info = tabInfo(tabs, session.leafId);
-      if (info?.name) store.setName(session.leafId, info.name);
+      if (!info) {
+        store.finish(session.leafId);
+        continue;
+      }
+      store.setName(session.leafId, info.name);
     }
   }, [tabs]);
 

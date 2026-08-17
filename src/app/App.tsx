@@ -242,6 +242,24 @@ export default function App() {
     useState<SearchAddon | null>(null);
   const searchInlineRef = useRef<SearchInlineHandle | null>(null);
   const terminalRefs = useRef<Map<number, TerminalPaneHandle>>(new Map());
+  const pendingAgentTargetRef = useRef<{
+    spaceId: string;
+    tabId: number;
+    leafId: number;
+  } | null>(null);
+  const focusAgentTerminal = useCallback((leafId: number) => {
+    let attempts = 0;
+    const focus = () => {
+      const terminal = terminalRefs.current.get(leafId);
+      if (terminal) {
+        terminal.focus();
+        return;
+      }
+      attempts += 1;
+      if (attempts < 12) requestAnimationFrame(focus);
+    };
+    requestAnimationFrame(focus);
+  }, []);
   const editorRefs = useRef<Map<number, EditorPaneHandle>>(new Map());
   const browserRefs = useRef<Map<number, BrowserPaneHandle>>(new Map());
   const [activeEditorHandle, setActiveEditorHandle] =
@@ -402,8 +420,17 @@ export default function App() {
     if (prev === null || prev === activeSpaceId) return;
     const meta = useSpaces
       .getState()
-      .spaces.find((s) => s.id === activeSpaceId);
+      .spaces.find((space) => space.id === activeSpaceId);
     if (meta) void adoptWorkspaceEnv(meta.env);
+    const pendingAgentTarget = pendingAgentTargetRef.current;
+    if (pendingAgentTarget?.spaceId === activeSpaceId) {
+      pendingAgentTargetRef.current = null;
+      warmTab(pendingAgentTarget.tabId);
+      focusPane(pendingAgentTarget.tabId, pendingAgentTarget.leafId);
+      setActiveId(pendingAgentTarget.tabId);
+      focusAgentTerminal(pendingAgentTarget.leafId);
+      return;
+    }
     const inSpace = tabsRef.current.filter((t) => t.spaceId === activeSpaceId);
     if (inSpace.length === 0) {
       setActiveId(-1);
@@ -419,6 +446,9 @@ export default function App() {
     spacesHydrated,
     setActiveSpaceForNewTabs,
     setActiveId,
+    warmTab,
+    focusPane,
+    focusAgentTerminal,
     adoptWorkspaceEnv,
   ]);
 
@@ -1307,14 +1337,26 @@ export default function App() {
   // strip don't end up showing a different space than the focused pane.
   const activateAgentTarget = useCallback(
     (tabId: number, leafId: number) => {
-      const space = tabsRef.current.find((t) => t.id === tabId)?.spaceId;
-      if (space && space !== useSpaces.getState().activeId) {
-        useSpaces.getState().setActive(space);
+      const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
+      if (tab?.kind !== "terminal" || !hasLeaf(tab.paneTree, leafId)) {
+        return;
       }
-      setActiveId(tabId);
+      const currentSpaceId = useSpaces.getState().activeId;
+      warmTab(tabId);
       focusPane(tabId, leafId);
+      setActiveId(tabId);
+      if (tab.spaceId !== currentSpaceId) {
+        pendingAgentTargetRef.current = {
+          spaceId: tab.spaceId,
+          tabId,
+          leafId,
+        };
+        useSpaces.getState().setActive(tab.spaceId);
+        return;
+      }
+      focusAgentTerminal(leafId);
     },
-    [setActiveId, focusPane],
+    [setActiveId, warmTab, focusPane, focusAgentTerminal],
   );
 
   const shortcutHandlers = useMemo<ShortcutHandlers>(
@@ -2118,6 +2160,7 @@ export default function App() {
 
               <AgentNotificationsBridge
                 tabs={tabs}
+                spaces={spaceEnvironments}
                 activeId={activeId}
                 onActivate={onActivateAgent}
                 onSession={handleAgentSession}
@@ -2130,7 +2173,9 @@ export default function App() {
                     openAiDiffTab={openAiDiffTab}
                     closeAiDiffTab={closeAiDiffTab}
                   />
-                  <LocalAgentNotificationsBridge />
+                  <LocalAgentNotificationsBridge
+                    workspaceName={activeSpaceName ?? undefined}
+                  />
                 </>
               ) : null}
 

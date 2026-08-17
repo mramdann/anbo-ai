@@ -54,7 +54,11 @@ const AGENTS: &[AgentSpec] = &[
         agent: "antigravity",
         project_file: ".agents/hooks.json",
         legacy_global_file: ".gemini/config/hooks.json",
-        events: &[("PreInvocation", "working"), ("Stop", "finished")],
+        events: &[
+            ("PreInvocation", "working"),
+            ("PreToolUse", "attention"),
+            ("Stop", "finished"),
+        ],
         matcher: false,
         delivery: Delivery::Osc,
     },
@@ -95,16 +99,90 @@ export default function (pi: ExtensionAPI) {
 "#;
 const OPENCODE_PROJECT_FILE: &str = ".opencode/plugins/anbo-notifications.js";
 const OPENCODE_LEGACY_GLOBAL_FILE: &str = ".config/opencode/plugins/anbo-notifications.js";
-const OPENCODE_PLUGIN_MARKER: &str = "anbo-opencode-notifications-v1";
-const OPENCODE_PLUGIN: &str = r#"// anbo-opencode-notifications-v1
-export const AnboNotifications = async () => ({
-  event: async ({ event }) => {
-    if (!process.env.ANBO_TERMINAL || event.type !== "session.created") return;
-    const id = event.properties?.sessionID || event.properties?.info?.id;
-    if (typeof id !== "string" || !/^ses_[A-Za-z0-9]+$/.test(id)) return;
-    process.stdout.write(`\u001b]777;notify;Anbo;opencode;session;${id}\u0007`);
-  },
-});
+const OPENCODE_PLUGIN_MARKER: &str = "anbo-opencode-notifications-v2";
+const OPENCODE_PLUGIN_LEGACY_MARKER: &str = "anbo-opencode-notifications-v1";
+const OPENCODE_PLUGIN: &str = r#"// anbo-opencode-notifications-v2
+export const AnboNotifications = async () => {
+  let sessionId = null;
+  let announced = false;
+  let phase = "idle";
+  const childSessions = new Set();
+
+  const emit = (event) => {
+    if (process.env.ANBO_TERMINAL) {
+      process.stdout.write(`\u001b]777;notify;Anbo;opencode;${event}\u0007`);
+    }
+  };
+  const validId = (id) =>
+    typeof id === "string" && /^ses_[A-Za-z0-9]+$/.test(id);
+  const eventId = (event) =>
+    event.properties?.sessionID || event.properties?.info?.id || null;
+  const announce = () => {
+    if (!announced && validId(sessionId)) {
+      emit(`session;${sessionId}`);
+      announced = true;
+    }
+  };
+  const setPhase = (next) => {
+    if (phase === next) return;
+    announce();
+    if (!announced) return;
+    phase = next;
+    emit(next);
+  };
+
+  return {
+    event: async ({ event }) => {
+      if (!process.env.ANBO_TERMINAL) return;
+
+      if (event.type === "session.created") {
+        const info = event.properties?.info;
+        const id = eventId(event);
+        if (!validId(id)) return;
+        if (info?.parentID) {
+          childSessions.add(id);
+          return;
+        }
+        sessionId = id;
+        announced = false;
+        phase = "idle";
+        return;
+      }
+
+      if (event.type === "session.updated" && !sessionId) {
+        const info = event.properties?.info;
+        const id = eventId(event);
+        if (validId(id) && !info?.parentID) sessionId = id;
+        return;
+      }
+
+      const id = eventId(event);
+      if (validId(id)) {
+        if (childSessions.has(id)) return;
+        if (sessionId && id !== sessionId) return;
+        if (!sessionId) sessionId = id;
+      }
+
+      if (event.type === "session.status") {
+        const status = event.properties?.status?.type || event.properties?.status;
+        if (status === "busy" || status === "retry") setPhase("working");
+        else if (status === "idle" && announced) setPhase("finished");
+        return;
+      }
+      if (event.type === "session.idle") {
+        if (announced) setPhase("finished");
+        return;
+      }
+      if (
+        event.type === "permission.asked" ||
+        event.type === "question.asked" ||
+        event.type === "session.error"
+      ) {
+        setPhase("attention");
+      }
+    },
+  };
+};
 "#;
 
 // Substrings identifying a hook command as ours, across every form we've ever
@@ -146,13 +224,21 @@ fn quote_executable(path: &str) -> String {
 fn hook_helper_command(agent: &str, event: &str) -> String {
     #[cfg(windows)]
     if agent == "antigravity" {
+        let fallback = hook_noop_output(agent, event);
         return format!(
-            "if defined ANBO_HOOK_EXE (%ANBO_HOOK_EXE% __anbo_hook {agent} {event}) else (echo {{}})"
+            "if defined ANBO_HOOK_EXE (%ANBO_HOOK_EXE% __anbo_hook {agent} {event}) else (echo {fallback})"
         );
     }
     let exe = std::env::current_exe()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| "anbo".to_string());
+    #[cfg(windows)]
+    if agent == "codex" {
+        let exe = exe.replace('\'', "''");
+        return format!(
+            "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"& '{exe}' __anbo_hook {agent} {event}\""
+        );
+    }
     format!("{} __anbo_hook {agent} {event}", quote_executable(&exe))
 }
 
@@ -192,10 +278,18 @@ fn merge_hooks(mut root: Value, spec: &AgentSpec) -> Value {
         let definition = spec.events.iter().fold(
             serde_json::Map::from_iter([("enabled".into(), json!(true))]),
             |mut value, (event, marker)| {
-                value.insert(
-                    (*event).into(),
-                    json!([{ "type": "command", "command": hook_command(spec, marker) }]),
-                );
+                let handlers = if *event == "PreToolUse" {
+                    json!([{
+                        "matcher": "ask_question|ask_permission",
+                        "hooks": [{
+                            "type": "command",
+                            "command": hook_command(spec, marker)
+                        }]
+                    }])
+                } else {
+                    json!([{ "type": "command", "command": hook_command(spec, marker) }])
+                };
+                value.insert((*event).into(), handlers);
                 value
             },
         );
@@ -391,7 +485,11 @@ fn enable_opencode_plugin_at(path: &std::path::Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let existing = match std::fs::read_to_string(path) {
         Ok(s) if s == OPENCODE_PLUGIN => return Ok(()),
-        Ok(s) if s.contains(OPENCODE_PLUGIN_MARKER) => Some(s),
+        Ok(s)
+            if s.contains(OPENCODE_PLUGIN_MARKER) || s.contains(OPENCODE_PLUGIN_LEGACY_MARKER) =>
+        {
+            Some(s)
+        }
         Ok(_) => {
             return Err(format!(
                 "{} is not managed by Anbo; refusing to overwrite",
@@ -598,11 +696,14 @@ fn should_emit_hook_event(value: Option<&Value>, agent: &str, event: &str) -> bo
 }
 
 fn hook_noop_output(agent: &str, event: &str) -> String {
-    if agent == "antigravity" && event == "finished" {
-        json!({ "decision": "" }).to_string()
-    } else {
-        "{}".to_string()
+    if agent == "antigravity" {
+        return match event {
+            "attention" => json!({ "decision": "allow" }).to_string(),
+            "finished" => json!({ "decision": "" }).to_string(),
+            _ => "{}".to_string(),
+        };
     }
+    "{}".to_string()
 }
 
 fn hook_terminal_sequence(agent: &str, event: &str, session_id: Option<&str>) -> String {
@@ -784,6 +885,11 @@ mod tests {
         assert!(start.contains("__anbo_hook codex started"));
         let stop = command(&out, "Stop", 0);
         assert!(stop.contains("__anbo_hook codex finished"));
+        #[cfg(windows)]
+        {
+            assert!(start.starts_with("powershell.exe "));
+            assert!(start.contains("-Command \"& '"));
+        }
     }
 
     #[test]
@@ -795,6 +901,14 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("__anbo_hook antigravity working"));
+        assert_eq!(
+            definition["PreToolUse"][0]["matcher"],
+            "ask_question|ask_permission"
+        );
+        assert!(definition["PreToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("__anbo_hook antigravity attention"));
         assert!(definition["Stop"][0]["command"]
             .as_str()
             .unwrap()
@@ -818,6 +932,10 @@ mod tests {
             "if defined ANBO_HOOK_EXE (%ANBO_HOOK_EXE% __anbo_hook antigravity working) else (echo {})"
         );
         assert!(!command.contains('"'));
+
+        let attention = hook_helper_command("antigravity", "attention");
+        assert!(attention.contains("__anbo_hook antigravity attention"));
+        assert!(attention.contains(r#"else (echo {"decision":"allow"})"#));
     }
 
     #[test]
@@ -858,6 +976,10 @@ mod tests {
             r#"{"decision":""}"#
         );
         assert_eq!(hook_noop_output("antigravity", "working"), "{}");
+        assert_eq!(
+            hook_noop_output("antigravity", "attention"),
+            r#"{"decision":"allow"}"#
+        );
     }
 
     #[test]
@@ -914,7 +1036,14 @@ mod tests {
     #[test]
     fn opencode_plugin_emits_exact_session_marker_and_preserves_foreign_files() {
         assert!(OPENCODE_PLUGIN.contains("session.created"));
-        assert!(OPENCODE_PLUGIN.contains("notify;Anbo;opencode;session;${id}"));
+        assert!(OPENCODE_PLUGIN.contains("session.status"));
+        assert!(OPENCODE_PLUGIN.contains("session.idle"));
+        assert!(OPENCODE_PLUGIN.contains("permission.asked"));
+        assert!(OPENCODE_PLUGIN.contains("question.asked"));
+        assert!(OPENCODE_PLUGIN.contains("setPhase(\"working\")"));
+        assert!(OPENCODE_PLUGIN.contains("setPhase(\"finished\")"));
+        assert!(OPENCODE_PLUGIN.contains("notify;Anbo;opencode;${event}"));
+        assert!(OPENCODE_PLUGIN.contains("emit(`session;${sessionId}`)"));
         assert!(OPENCODE_PLUGIN.contains("process.env.ANBO_TERMINAL"));
 
         let dir = std::env::temp_dir().join(format!("anbo-opencode-plugin-{}", std::process::id()));
@@ -923,6 +1052,14 @@ mod tests {
         enable_opencode_plugin_at(&path).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), OPENCODE_PLUGIN);
         enable_opencode_plugin_at(&path).unwrap();
+
+        std::fs::write(
+            &path,
+            "// anbo-opencode-notifications-v1\nexport const legacy = true;",
+        )
+        .unwrap();
+        enable_opencode_plugin_at(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), OPENCODE_PLUGIN);
 
         std::fs::write(&path, "export const mine = true;").unwrap();
         assert!(enable_opencode_plugin_at(&path).is_err());
