@@ -1,5 +1,10 @@
 import { LocalLazyStore } from "@/lib/localStore";
 import {
+  type AgentMcpEnabled,
+  DEFAULT_AGENT_MCP_ENABLED,
+  normalizeAgentMcpEnabled,
+} from "@/modules/agents/lib/agentMcp";
+import {
   type AgentLaunchCommands,
   type CustomCliAgent,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
@@ -171,6 +176,7 @@ export type Preferences = {
   lastWslDistro: string | null;
   zoomLevel: number;
   agentNotifications: boolean;
+  agentMcpEnabled: AgentMcpEnabled;
   agentLaunchCommands: AgentLaunchCommands;
   customCliAgents: CustomCliAgent[];
   defaultWorkspaceEnv: string;
@@ -264,6 +270,7 @@ const KEY_TERMINAL_SCROLLBACK = "terminalScrollback";
 const KEY_LAST_WSL_DISTRO = "lastWslDistro";
 const KEY_ZOOM_LEVEL = "zoomLevel";
 const KEY_AGENT_NOTIFICATIONS = "agentNotifications";
+const KEY_AGENT_MCP_ENABLED = "agentMcpEnabled";
 const KEY_AGENT_LAUNCH_COMMANDS = "agentLaunchCommands";
 const KEY_CUSTOM_CLI_AGENTS = "customCliAgents";
 const KEY_DEFAULT_WORKSPACE_ENV = "defaultWorkspaceEnv";
@@ -349,6 +356,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   lastWslDistro: null,
   zoomLevel: 1.0,
   agentNotifications: true,
+  agentMcpEnabled: DEFAULT_AGENT_MCP_ENABLED,
   agentLaunchCommands: DEFAULT_AGENT_LAUNCH_COMMANDS,
   customCliAgents: [],
   defaultWorkspaceEnv: "local",
@@ -529,6 +537,9 @@ export async function loadPreferences(): Promise<Preferences> {
     agentNotifications:
       get<boolean>(KEY_AGENT_NOTIFICATIONS) ??
       DEFAULT_PREFERENCES.agentNotifications,
+    agentMcpEnabled: normalizeAgentMcpEnabled(
+      get<unknown>(KEY_AGENT_MCP_ENABLED),
+    ),
     agentLaunchCommands: normalizeAgentLaunchCommands(
       get<unknown>(KEY_AGENT_LAUNCH_COMMANDS),
     ),
@@ -892,6 +903,12 @@ export async function setAgentNotifications(value: boolean): Promise<void> {
   await writePref(KEY_AGENT_NOTIFICATIONS, value);
 }
 
+export async function setAgentMcpEnabled(
+  value: AgentMcpEnabled,
+): Promise<void> {
+  await writePref(KEY_AGENT_MCP_ENABLED, normalizeAgentMcpEnabled(value));
+}
+
 export async function setAgentLaunchCommands(
   value: AgentLaunchCommands,
 ): Promise<void> {
@@ -976,6 +993,7 @@ export async function onPreferencesChange(
     [KEY_LAST_WSL_DISTRO]: "lastWslDistro",
     [KEY_ZOOM_LEVEL]: "zoomLevel",
     [KEY_AGENT_NOTIFICATIONS]: "agentNotifications",
+    [KEY_AGENT_MCP_ENABLED]: "agentMcpEnabled",
     [KEY_AGENT_LAUNCH_COMMANDS]: "agentLaunchCommands",
     [KEY_CUSTOM_CLI_AGENTS]: "customCliAgents",
     [KEY_DEFAULT_WORKSPACE_ENV]: "defaultWorkspaceEnv",

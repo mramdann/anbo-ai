@@ -147,6 +147,40 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --bundles nsis
 
+      - name: Smoke packaged Windows application
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $marker = Join-Path $env:RUNNER_TEMP "anbo-packaged-smoke.txt"
+          Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue
+          $env:ANBO_PACKAGED_SMOKE_MARKER = $marker
+          $process = Start-Process `
+            -FilePath "src-tauri/target/release/anbo.exe" `
+            -PassThru `
+            -WindowStyle Hidden
+          try {
+            $deadline = [DateTime]::UtcNow.AddSeconds(45)
+            while ([DateTime]::UtcNow -lt $deadline) {
+              if (Test-Path -LiteralPath $marker) { break }
+              if ($process.HasExited) {
+                throw "Packaged Anbo exited before frontend startup completed (exit $($process.ExitCode))"
+              }
+              Start-Sleep -Milliseconds 250
+              $process.Refresh()
+            }
+            if (-not (Test-Path -LiteralPath $marker)) {
+              throw "Packaged Anbo did not reach frontend-ready within 45 seconds"
+            }
+            if ((Get-Content -LiteralPath $marker -Raw).Trim() -ne "frontend-ready") {
+              throw "Packaged Anbo produced an invalid startup marker"
+            }
+          } finally {
+            $process.Refresh()
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force
+            }
+          }
+
       - name: Upload manual release artifact
         if: ${{ inputs.allow_unsigned_installer }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

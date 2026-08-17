@@ -355,7 +355,9 @@ async function leafHasForegroundJob(leafId: number): Promise<boolean> {
     return await invoke<boolean>("pty_has_foreground_job", { id: s.pty.id });
   } catch (e) {
     console.error("[anbo] pty_has_foreground_job failed for leaf", leafId, e);
-    return false;
+    // Closing a terminal is destructive. If the backend cannot verify whether
+    // a foreground process exists, fail safe and require confirmation.
+    return true;
   }
 }
 

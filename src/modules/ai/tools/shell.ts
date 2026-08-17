@@ -1,27 +1,17 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { native } from "../lib/native";
+import { getPersistentShell } from "../lib/shellSessions";
 import { checkShellCommand } from "../lib/security";
 import type { ToolContext } from "./context";
 import { workspaceScopeKey, type WorkspaceEnv } from "@/modules/workspace";
-
-/**
- * Per-session lazy shell-session id. The agent gets one persistent shell per
- * chat session, so cwd survives across tool calls (cd, mkdir+cd, etc).
- */
-const sessionShells = new Map<string, Promise<number>>();
 
 async function getSessionShell(
   sessionId: string,
   cwd: string | null,
   workspace: WorkspaceEnv,
 ): Promise<number> {
-  let p = sessionShells.get(sessionId);
-  if (!p) {
-    p = native.shellSessionOpen(cwd, workspace);
-    sessionShells.set(sessionId, p);
-  }
-  return p;
+  return getPersistentShell(sessionId, cwd, workspace);
 }
 
 function workspaceSessionKey(

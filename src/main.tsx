@@ -41,6 +41,11 @@ function StartupReady({ children }: { children: ReactNode }) {
   useLayoutEffect(() => {
     document.documentElement.dataset.anboBundleReady = "true";
     window.dispatchEvent(new CustomEvent("anbo:startup-ready"));
+    if (import.meta.env.PROD && "__TAURI_INTERNALS__" in window) {
+      void invoke("packaged_smoke_ready").catch((error) =>
+        console.error("[anbo] packaged startup smoke signal failed", error),
+      );
+    }
   }, []);
   return children;
 }

@@ -1,21 +1,12 @@
+import {
+  sanitizeAgentMessage,
+  submitAgentMessage,
+} from "@/modules/agents/lib/agentAutomation";
 import { useManagedAgentsStore } from "@/modules/agents/store/managedAgentsStore";
 import { writeToSession } from "@/modules/terminal";
 import { tool } from "ai";
 import { z } from "zod";
 import type { ToolContext } from "./context";
-
-// Claude Code's TUI treats a trailing CR in the same write chunk as the text
-// as a literal newline, not a submit. Send the Enter as a separate chunk once
-// the input has rendered so it registers as a standalone keypress.
-const SUBMIT_DELAY_MS = 90;
-
-function hasControlChars(s: string): boolean {
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c < 0x20 || c === 0x7f) return true;
-  }
-  return false;
-}
 
 function tailLines(text: string, n: number): string {
   const parts = text.split("\n");
@@ -78,20 +69,22 @@ export function buildManagedAgentTools(ctx: ToolContext) {
               "no Claude Code agent is active in this session; spawn one with spawn_coding_agent",
           };
         }
-        const oneLine = instruction.replace(/\s*\r?\n\s*/g, " ").trim();
-        if (!oneLine) return { error: "empty instruction" };
-        if (hasControlChars(oneLine)) {
-          return { error: "instruction contains control characters" };
-        }
-        if (!writeToSession(managed.leafId, oneLine)) {
+        const normalized = sanitizeAgentMessage(instruction);
+        if (!normalized.ok) return { error: normalized.error };
+        if (
+          !(await submitAgentMessage(
+            writeToSession,
+            managed.leafId,
+            normalized.message,
+          ))
+        ) {
           store.remove(managed.leafId);
           return { error: "agent terminal is no longer available (closed?)" };
         }
-        setTimeout(() => writeToSession(managed.leafId, "\r"), SUBMIT_DELAY_MS);
         store.bumpRound(managed.leafId);
         return {
           ok: true,
-          sent: oneLine,
+          sent: normalized.message,
           round: store.get(managed.leafId)?.rounds,
         };
       },

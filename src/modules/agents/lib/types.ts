@@ -1,4 +1,5 @@
 export type AgentStatus = "working" | "waiting";
+export type AgentPhase = "working" | "attention" | "finished";
 
 export type AgentSource = "terminal" | "local";
 
@@ -23,6 +24,7 @@ export type AgentSession = {
   agent: string;
   name: string;
   status: AgentStatus;
+  phase: AgentPhase;
   startedAt: number;
   lastActivityAt: number;
   attentionSince: number | null;

@@ -5,6 +5,7 @@ import type { Tab } from "@/modules/tabs";
 type Params = {
   tabs: Tab[];
   disposeTab: (id: number) => void;
+  disposePane: (leafId: number) => void;
 };
 
 /**
@@ -12,9 +13,12 @@ type Params = {
  * process route through a confirmation dialog instead of closing immediately.
  * Owns the three pending-close states the dialogs render from.
  */
-export function useTabCloseGuards({ tabs, disposeTab }: Params) {
+export function useTabCloseGuards({ tabs, disposeTab, disposePane }: Params) {
   const [pendingCloseTab, setPendingCloseTab] = useState<number | null>(null);
   const [pendingTerminalCloseTab, setPendingTerminalCloseTab] = useState<
+    number | null
+  >(null);
+  const [pendingTerminalCloseLeaf, setPendingTerminalCloseLeaf] = useState<
     number | null
   >(null);
   const [pendingDeleteTabs, setPendingDeleteTabs] = useState<number[] | null>(
@@ -53,13 +57,36 @@ export function useTabCloseGuards({ tabs, disposeTab }: Params) {
   }, []);
 
   const confirmTerminalClose = useCallback(() => {
-    if (pendingTerminalCloseTab !== null) disposeTab(pendingTerminalCloseTab);
+    if (pendingTerminalCloseLeaf !== null) {
+      disposePane(pendingTerminalCloseLeaf);
+    } else if (pendingTerminalCloseTab !== null) {
+      disposeTab(pendingTerminalCloseTab);
+    }
     setPendingTerminalCloseTab(null);
-  }, [pendingTerminalCloseTab, disposeTab]);
+    setPendingTerminalCloseLeaf(null);
+  }, [
+    pendingTerminalCloseLeaf,
+    pendingTerminalCloseTab,
+    disposePane,
+    disposeTab,
+  ]);
 
   const cancelTerminalClose = useCallback(() => {
     setPendingTerminalCloseTab(null);
+    setPendingTerminalCloseLeaf(null);
   }, []);
+
+  const handleClosePane = useCallback(
+    async (tabId: number, leafId: number) => {
+      if (await leafHasForegroundProcess(leafId)) {
+        setPendingTerminalCloseTab(tabId);
+        setPendingTerminalCloseLeaf(leafId);
+        return;
+      }
+      disposePane(leafId);
+    },
+    [disposePane],
+  );
 
   const confirmDeleteClose = useCallback(() => {
     if (pendingDeleteTabs !== null) {
@@ -92,8 +119,10 @@ export function useTabCloseGuards({ tabs, disposeTab }: Params) {
   return {
     pendingCloseTab,
     pendingTerminalCloseTab,
+    pendingTerminalCloseLeaf,
     pendingDeleteTabs,
     handleClose,
+    handleClosePane,
     confirmClose,
     cancelClose,
     confirmTerminalClose,

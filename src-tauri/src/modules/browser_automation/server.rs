@@ -31,6 +31,14 @@ fn descriptor_path() -> Result<PathBuf, String> {
     Ok(dir.join("instance.json"))
 }
 
+#[cfg(any(windows, test))]
+fn auth_token_path() -> Result<PathBuf, String> {
+    let root = local_data_root()?;
+    let dir = root.join("runtime").join("browser");
+    fs::create_dir_all(&dir).map_err(|e| format!("failed to create runtime browser dir: {e}"))?;
+    Ok(dir.join("auth-token"))
+}
+
 pub fn remove_descriptor() {
     if let Ok(path) = descriptor_path() {
         if path.exists() {
@@ -75,7 +83,9 @@ pub fn start_server(app: AppHandle) -> Result<(), String> {
     cleanup_stale_descriptor();
 
     let pid = std::process::id();
-    let token = generate_random_token()?;
+    // Persist one per-install token for the named-pipe sidecar. HTTP keeps its
+    // original loopback-only, header-free client configuration.
+    let token = load_or_create_auth_token()?;
     let pipe_name = format!(r"\\.\pipe\anbo-browser-{pid}-{token}");
 
     let started_at = SystemTime::now()
@@ -106,7 +116,7 @@ pub fn start_server(app: AppHandle) -> Result<(), String> {
     }
 
     SERVER_RUNNING.store(true, Ordering::SeqCst);
-    let expected_token = token;
+    let expected_token = token.clone();
 
     // Host the HTTP MCP endpoint alongside the named pipe (best-effort: a bind
     // failure is logged inside the task and does not disable the pipe path).
@@ -348,6 +358,36 @@ fn generate_random_token() -> Result<String, String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+#[cfg(any(windows, test))]
+fn valid_auth_token(token: &str) -> bool {
+    token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[cfg(any(windows, test))]
+fn load_or_create_auth_token() -> Result<String, String> {
+    let path = auth_token_path()?;
+    if let Ok(token) = fs::read_to_string(&path) {
+        let token = token.trim();
+        if valid_auth_token(token) {
+            return Ok(token.to_ascii_lowercase());
+        }
+    }
+
+    let token = generate_random_token()?;
+    let temporary = path.with_extension(format!("tmp.{}", std::process::id()));
+    fs::write(&temporary, token.as_bytes())
+        .map_err(|error| format!("failed to write browser auth token: {error}"))?;
+    if path.exists() {
+        fs::remove_file(&path)
+            .map_err(|error| format!("failed to replace invalid browser auth token: {error}"))?;
+    }
+    fs::rename(&temporary, &path).map_err(|error| {
+        let _ = fs::remove_file(&temporary);
+        format!("failed to persist browser auth token: {error}")
+    })?;
+    Ok(token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,6 +404,13 @@ mod tests {
         let token = generate_random_token().unwrap();
         assert_eq!(token.len(), 64);
         assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn auth_token_validation_rejects_malformed_values() {
+        assert!(valid_auth_token(&"a".repeat(64)));
+        assert!(!valid_auth_token(&"a".repeat(63)));
+        assert!(!valid_auth_token(&format!("{}z", "a".repeat(63))));
     }
 
     #[cfg(windows)]

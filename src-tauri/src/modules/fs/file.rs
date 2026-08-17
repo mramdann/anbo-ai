@@ -16,6 +16,7 @@ const MAX_READ_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 /// Ceiling for explicit "open anyway"; mirrored as FORCE_READ_LIMIT in useDocument.ts.
 const FORCE_MAX_READ_BYTES: u64 = 50 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8 * 1024;
+const EXPECTED_MISSING_VERSION: &str = "__anbo_missing__";
 static FILE_WRITE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
 
 #[derive(Serialize)]
@@ -176,7 +177,12 @@ fn write_if_version(
         .map_err(|_| std::io::Error::other("file write lock poisoned"))?;
     if let Some(expected) = expected_version {
         let current = current_version(target)?;
-        if current.as_ref().map(|(_, version)| version.as_str()) != Some(expected) {
+        let matches = if expected == EXPECTED_MISSING_VERSION {
+            current.is_none()
+        } else {
+            current.as_ref().map(|(_, version)| version.as_str()) == Some(expected)
+        };
+        if !matches {
             return Ok(WriteResult::Conflict {
                 current_mtime: current.as_ref().map(|(mtime, _)| *mtime),
                 current_version: current.map(|(_, version)| version),
@@ -407,6 +413,18 @@ mod tests {
         let result = write_if_version(&target, b"editor", Some(&expected)).unwrap();
         assert!(matches!(result, WriteResult::Written { .. }));
         assert_eq!(std::fs::read(&target).unwrap(), b"editor");
+    }
+
+    #[test]
+    fn versioned_write_can_require_a_missing_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("new.txt");
+        let first = write_if_version(&target, b"first", Some(EXPECTED_MISSING_VERSION)).unwrap();
+        assert!(matches!(first, WriteResult::Written { .. }));
+
+        let second = write_if_version(&target, b"second", Some(EXPECTED_MISSING_VERSION)).unwrap();
+        assert!(matches!(second, WriteResult::Conflict { .. }));
+        assert_eq!(fs::read_to_string(target).unwrap(), "first");
     }
 
     #[test]

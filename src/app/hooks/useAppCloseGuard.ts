@@ -1,5 +1,11 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type { Tab } from "@/modules/tabs";
 import { leafHasForegroundProcess, leafIds } from "@/modules/terminal";
 
@@ -15,12 +21,31 @@ async function anyTerminalBusy(tabs: Tab[]): Promise<boolean> {
 export type AppCloseBlocker = {
   dirtyEditors: number;
   busyTerminal: boolean;
+  persistenceError?: string;
 };
 
-export function useAppCloseGuard(tabsRef: RefObject<Tab[]>) {
+export function useAppCloseGuard(
+  tabsRef: RefObject<Tab[]>,
+  beforeClose?: () => Promise<void>,
+) {
   const [pendingAppClose, setPendingAppClose] =
     useState<AppCloseBlocker | null>(null);
   const forceClose = useRef(false);
+
+  const closeAfterFlush = useCallback(async () => {
+    try {
+      await beforeClose?.();
+    } catch (error) {
+      setPendingAppClose({
+        dirtyEditors: 0,
+        busyTerminal: false,
+        persistenceError: String(error),
+      });
+      return;
+    }
+    forceClose.current = true;
+    void getCurrentWindow().close();
+  }, [beforeClose]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -37,8 +62,7 @@ export function useAppCloseGuard(tabsRef: RefObject<Tab[]>) {
         if (dirtyEditors > 0 || busyTerminal) {
           setPendingAppClose({ dirtyEditors, busyTerminal });
         } else {
-          forceClose.current = true;
-          void getCurrentWindow().close();
+          await closeAfterFlush();
         }
       })
       .then((un) => {
@@ -49,13 +73,18 @@ export function useAppCloseGuard(tabsRef: RefObject<Tab[]>) {
       disposed = true;
       unlisten?.();
     };
-  }, [tabsRef]);
+  }, [tabsRef, closeAfterFlush]);
 
   const confirmAppClose = useCallback(() => {
+    if (!pendingAppClose) return;
     setPendingAppClose(null);
-    forceClose.current = true;
-    void getCurrentWindow().close();
-  }, []);
+    if (pendingAppClose.persistenceError) {
+      forceClose.current = true;
+      void getCurrentWindow().close();
+      return;
+    }
+    void closeAfterFlush();
+  }, [pendingAppClose, closeAfterFlush]);
 
   const cancelAppClose = useCallback(() => setPendingAppClose(null), []);
 

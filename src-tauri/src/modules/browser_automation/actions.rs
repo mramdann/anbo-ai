@@ -139,6 +139,12 @@ pub async fn handle_action(
     method: &str,
     params: Value,
 ) -> Result<Value, (String, String)> {
+    if method.starts_with("agent_") {
+        return crate::modules::browser_automation::agent_actions::handle_agent_action(
+            app, method, params,
+        )
+        .await;
+    }
     let _ = app.emit(
         "browser-automation-activity",
         json!({ "method": method, "params": params }),

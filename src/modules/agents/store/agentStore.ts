@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type {
   AgentNotification,
+  AgentPhase,
   AgentSession,
   AgentStatus,
   LocalAgentState,
@@ -16,7 +17,7 @@ type AgentStoreState = {
   notifications: AgentNotification[];
   start: (leafId: number, tabId: number, agent: string, name: string) => void;
   setName: (leafId: number, name: string) => void;
-  setStatus: (leafId: number, status: AgentStatus) => void;
+  setStatus: (leafId: number, status: AgentStatus, phase?: AgentPhase) => void;
   finish: (leafId: number) => void;
   setLocalAgent: (state: LocalAgentState) => void;
   pushNotification: (n: Omit<AgentNotification, "id" | "at" | "read">) => void;
@@ -41,6 +42,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
             agent,
             name,
             status: "working",
+            phase: "working",
             startedAt: now,
             lastActivityAt: now,
             attentionSince: null,
@@ -61,10 +63,12 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
       };
     }),
 
-  setStatus: (leafId, status) =>
+  setStatus: (leafId, status, requestedPhase) =>
     set((s) => {
       const prev = s.sessions[leafId];
-      if (!prev || prev.status === status) return s;
+      const phase =
+        requestedPhase ?? (status === "working" ? "working" : "attention");
+      if (!prev || (prev.status === status && prev.phase === phase)) return s;
       const now = Date.now();
       return {
         sessions: {
@@ -72,6 +76,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
           [leafId]: {
             ...prev,
             status,
+            phase,
             lastActivityAt: now,
             attentionSince: status === "waiting" ? now : null,
           },

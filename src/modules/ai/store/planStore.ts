@@ -12,6 +12,8 @@ export type QueuedEdit = {
   proposedContent: string;
   /** True if the file did not exist when the edit was queued. */
   isNewFile: boolean;
+  /** Disk version captured when the proposal was produced. */
+  expectedVersion?: string;
   /** Human-readable description, used for create_directory. */
   description?: string;
 };
@@ -53,7 +55,12 @@ export const usePlanStore = create<PlanState>((set, get) => ({
         if (q.kind === "create_directory") {
           await native.createDir(q.path);
         } else {
-          await native.writeFile(q.path, q.proposedContent);
+          await native.writeFile(
+            q.path,
+            q.proposedContent,
+            undefined,
+            q.expectedVersion,
+          );
         }
         results.push({ id: q.id, ok: true });
       } catch (e) {

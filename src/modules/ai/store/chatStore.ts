@@ -28,6 +28,7 @@ import {
   type SessionMeta,
 } from "../lib/sessions";
 import { pushRecentModel } from "../lib/modelPrefs";
+import { releaseShellSessionsForChat } from "../lib/shellSessions";
 
 export type Live = {
   getCwd: () => string | null;
@@ -187,6 +188,7 @@ export function touchChat(id: string, c: Chat<UIMessage>) {
     flushPersistEntry(oldest);
     void chats.get(oldest)?.stop();
     chats.delete(oldest);
+    releaseShellSessionsForChat(oldest);
   }
 }
 // Initial messages for a session, populated at hydration time and consumed
@@ -376,6 +378,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     const remaining = get().sessions.filter((s) => s.id !== id);
     chats.get(id)?.stop();
     chats.delete(id);
+    releaseShellSessionsForChat(id);
     seedMessages.delete(id);
     const pend = pendingPersist.get(id);
     if (pend) {

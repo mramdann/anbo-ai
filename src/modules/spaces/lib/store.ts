@@ -63,6 +63,10 @@ export async function deleteSpaceData(id: string): Promise<void> {
   await store.delete(stateKey(id));
 }
 
+export async function flushSpacesStore(): Promise<void> {
+  await store.save();
+}
+
 export function newSpaceId(): string {
   return `sp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }

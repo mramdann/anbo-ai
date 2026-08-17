@@ -23,12 +23,20 @@ import {
   collectAgentResumeLeaves,
   createAgentResumeStates,
   findAgentLauncher,
+  isMcpAgentId,
   MAX_PARALLEL_OPENCODE_AGENTS,
   nextAttentionTarget,
   pollCodexSession,
   shouldPinAgentSession,
   validateAgentLaunchCommand,
+  withAgentMcpRuntime,
 } from "@/modules/agents";
+import {
+  AGENT_RESPONSE_EVENT,
+  createAgentAutomationService,
+} from "@/modules/agents/lib/agentAutomation";
+import { setAgentRequestHandler } from "@/modules/agents/lib/agentAutomationBridge";
+import { useAgentStore } from "@/modules/agents/store/agentStore";
 import {
   AgentRunBridge,
   AiMiniWindow,
@@ -98,6 +106,7 @@ import {
   useSourceControlContext,
 } from "@/modules/source-control";
 import {
+  flushSpacePersistenceNow,
   newSpaceDefaults,
   SpaceSwitcher,
   useSpacePersistence,
@@ -219,7 +228,6 @@ export default function App() {
     focusPane,
     focusNextPaneInTab,
     swapActivePaneInDirection,
-    closeActivePane,
     closePaneByLeaf,
     clearTabs,
   } = useTabs(getLaunchDir() ? { cwd: getLaunchDir() } : undefined);
@@ -231,6 +239,7 @@ export default function App() {
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
   const customCliAgents = usePreferencesStore((s) => s.customCliAgents);
+  const agentMcpEnabled = usePreferencesStore((s) => s.agentMcpEnabled);
 
   const activeTerminalTab = useMemo(() => {
     const t = tabs.find((x) => x.id === activeId);
@@ -582,8 +591,10 @@ export default function App() {
   const {
     pendingCloseTab,
     pendingTerminalCloseTab,
+    pendingTerminalCloseLeaf,
     pendingDeleteTabs,
     handleClose,
+    handleClosePane,
     confirmClose,
     cancelClose,
     confirmTerminalClose,
@@ -591,10 +602,12 @@ export default function App() {
     confirmDeleteClose,
     cancelDeleteClose,
     handlePathDeleted,
-  } = useTabCloseGuards({ tabs, disposeTab });
+  } = useTabCloseGuards({ tabs, disposeTab, disposePane: closePaneByLeaf });
 
-  const { pendingAppClose, confirmAppClose, cancelAppClose } =
-    useAppCloseGuard(tabsRef);
+  const { pendingAppClose, confirmAppClose, cancelAppClose } = useAppCloseGuard(
+    tabsRef,
+    flushSpacePersistenceNow,
+  );
 
   useEffect(() => {
     const live = collectRetainedTerminalLeafIds(tabs);
@@ -768,6 +781,7 @@ export default function App() {
   );
   useEffect(() => {
     const hookPromises = new Map<string, Promise<unknown>>();
+    const mcpPromises = new Map<string, Promise<boolean>>();
     const hookWorkspace = workspaceForSpace(activeSpaceId ?? DEFAULT_SPACE_ID);
     for (const tab of tabs) {
       if (
@@ -787,8 +801,8 @@ export default function App() {
         if (leaf.resume.agent === "opencode" && workspaceEnv.kind !== "local") {
           continue;
         }
-        const resumeCommand = buildAgentResumeCommand(leaf.resume);
-        if (!resumeCommand) continue;
+        const baseResumeCommand = buildAgentResumeCommand(leaf.resume);
+        if (!baseResumeCommand) continue;
         const launcher = findAgentLauncher(leaf.resume.agent, customCliAgents);
         let hooksReady = Promise.resolve<unknown>(undefined);
         if (launcher?.supportsHooks && activeSpaceRoot) {
@@ -810,9 +824,45 @@ export default function App() {
             hookPromises.set(key, hooksReady);
           }
         }
+        let mcpReady = Promise.resolve(false);
+        if (isMcpAgentId(leaf.resume.agent) && activeSpaceRoot) {
+          const key = `${tab.spaceId}:${leaf.resume.agent}`;
+          const existing = mcpPromises.get(key);
+          if (existing) {
+            mcpReady = existing;
+          } else {
+            const enabled = agentMcpEnabled[leaf.resume.agent];
+            mcpReady = invoke("agent_configure_mcp", {
+              agent: leaf.resume.agent,
+              workspaceRoot: activeSpaceRoot,
+              workspace: hookWorkspace,
+              enabled,
+            })
+              .then(() => enabled)
+              .catch((error) => {
+                console.warn(
+                  `[anbo] could not configure ${leaf.resume.agent} MCP before resume:`,
+                  error,
+                );
+                toast.error("Anbo MCP setup failed", {
+                  description: `${leaf.resume.agent}: ${String(error)}`,
+                });
+                return false;
+              });
+            mcpPromises.set(key, mcpReady);
+          }
+        }
         resumedAgentLeavesRef.current.add(leaf.id);
         void (async () => {
-          await hooksReady;
+          const [, mcpConfigured] = await Promise.all([hooksReady, mcpReady]);
+          const resumeCommand = mcpConfigured
+            ? withAgentMcpRuntime(
+                leaf.resume.agent,
+                baseResumeCommand,
+                activeSpaceRoot ?? "",
+                hookWorkspace.kind === "local",
+              )
+            : baseResumeCommand;
           if (!(await writeToReadySession(leaf.id, `${resumeCommand}\r`))) {
             resumedAgentLeavesRef.current.delete(leaf.id);
             console.error(
@@ -825,6 +875,7 @@ export default function App() {
   }, [
     activeSpaceId,
     activeSpaceRoot,
+    agentMcpEnabled,
     customCliAgents,
     tabs,
     workspaceEnv.kind,
@@ -965,15 +1016,46 @@ export default function App() {
               );
             })
           : Promise.resolve();
+      const mcpEnabled =
+        isMcpAgentId(request.agent) && agentMcpEnabled[request.agent];
+      const mcpReady =
+        isMcpAgentId(request.agent) && activeSpaceRoot
+          ? invoke("agent_configure_mcp", {
+              agent: request.agent,
+              workspaceRoot: activeSpaceRoot,
+              workspace: hookWorkspace,
+              enabled: mcpEnabled,
+            })
+              .then(() => mcpEnabled)
+              .catch((error) => {
+                console.warn(
+                  `[anbo] could not configure ${request.agent} MCP:`,
+                  error,
+                );
+                toast.error("Anbo MCP setup failed", {
+                  description: `${request.agent}: ${String(error)}`,
+                });
+                return false;
+              })
+          : Promise.resolve(false);
 
       const launch = async () => {
-        await hooksReady;
+        const [, mcpConfigured] = await Promise.all([hooksReady, mcpReady]);
         const launchOne = async (leafId: number, index: number) => {
           const resume = agentResumes[index];
-          const launchCommand = buildAgentLaunchCommand(
+          const baseLaunchCommand = buildAgentLaunchCommand(
             resume,
             command.command,
           );
+          const launchCommand =
+            mcpConfigured && activeSpaceRoot
+              ? withAgentMcpRuntime(
+                  request.agent,
+                  baseLaunchCommand,
+                  activeSpaceRoot,
+                  hookWorkspace.kind === "local",
+                )
+              : baseLaunchCommand;
           if (!(await writeToReadySession(leafId, `${launchCommand}\r`))) {
             console.error(
               `[anbo] agent terminal ${leafId} closed before launch`,
@@ -1041,6 +1123,7 @@ export default function App() {
     [
       activeSpaceId,
       activeSpaceRoot,
+      agentMcpEnabled,
       customCliAgents,
       inheritedCwdForNewTab,
       newAgentTabs,
@@ -1288,6 +1371,41 @@ export default function App() {
     });
   }, [activeBrowserTabIds]);
 
+  useEffect(() => {
+    const service = createAgentAutomationService({
+      getTabs: () => tabsRef.current,
+      getSpaces: () => useSpaces.getState().spaces,
+      getSessions: () => useAgentStore.getState().sessions,
+      getActiveTabId: () => activeIdRef.current,
+      getBuffer: (leafId) =>
+        terminalRefs.current.get(leafId)?.getBuffer(400) ?? null,
+      write: writeToSession,
+      subscribeSessions: (listener) =>
+        useAgentStore.subscribe((state, previous) =>
+          listener(state.sessions, previous.sessions),
+        ),
+    });
+    setAgentRequestHandler((payload) => {
+      void service
+        .handle(payload)
+        .then((response) =>
+          emit(`${AGENT_RESPONSE_EVENT}:${payload.requestId}`, response),
+        )
+        .catch((caught: unknown) =>
+          emit(`${AGENT_RESPONSE_EVENT}:${payload.requestId}`, {
+            error: {
+              code: "internal",
+              message:
+                caught instanceof Error
+                  ? caught.message
+                  : "agent request failed unexpectedly",
+            },
+          }),
+        );
+    });
+    return () => service.dispose();
+  }, []);
+
   const splitActiveTabInDockview = useCallback(
     (position: "right" | "bottom") => {
       const source = tabsRef.current.find(
@@ -1334,11 +1452,11 @@ export default function App() {
   const handleCloseTabOrPane = useCallback(() => {
     const t = tabsRef.current.find((x) => x.id === activeId);
     if (t?.kind === "terminal" && leafIds(t.paneTree).length > 1) {
-      closeActivePane(activeId);
+      void handleClosePane(activeId, t.activeLeafId);
       return;
     }
     void handleClose(activeId);
-  }, [activeId, closeActivePane, handleClose]);
+  }, [activeId, handleClose, handleClosePane]);
 
   const [zenMode, setZenMode] = useState(false);
 
@@ -1519,7 +1637,7 @@ export default function App() {
       }
       return false;
     },
-    [activeTab],
+    [activeTab, captureActiveSelection],
   );
 
   useGlobalShortcuts(shortcutHandlers, { isDisabled: shortcutsDisabled });
@@ -2231,6 +2349,7 @@ export default function App() {
                 onCancelClose={cancelClose}
                 onConfirmClose={confirmClose}
                 pendingTerminalCloseTab={pendingTerminalCloseTab}
+                pendingTerminalCloseLeaf={pendingTerminalCloseLeaf}
                 onCancelTerminalClose={cancelTerminalClose}
                 onConfirmTerminalClose={confirmTerminalClose}
                 pendingDeleteTabs={pendingDeleteTabs}

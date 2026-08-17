@@ -57,6 +57,8 @@ function setFile(content: string) {
     kind: "text",
     content,
     size: content.length,
+    mtime: 1,
+    version: "disk-version",
   });
 }
 
@@ -175,9 +177,12 @@ describe("edit tool replacement", () => {
       new_string: "there",
     });
     expect(result.replacements).toBe(1);
-    expect(nativeMock.writeFile).toHaveBeenCalledWith(FILE, "hello there", {
-      kind: "local",
-    });
+    expect(nativeMock.writeFile).toHaveBeenCalledWith(
+      FILE,
+      "hello there",
+      { kind: "local" },
+      "disk-version",
+    );
   });
 
   it("replaces every occurrence and counts them with replace_all", async () => {
@@ -189,9 +194,12 @@ describe("edit tool replacement", () => {
       replace_all: true,
     });
     expect(result.replacements).toBe(3);
-    expect(nativeMock.writeFile).toHaveBeenCalledWith(FILE, "z b z b z", {
-      kind: "local",
-    });
+    expect(nativeMock.writeFile).toHaveBeenCalledWith(
+      FILE,
+      "z b z b z",
+      { kind: "local" },
+      "disk-version",
+    );
   });
 });
 
@@ -206,9 +214,12 @@ describe("multi_edit atomicity", () => {
       ],
     });
     expect(result.replacements).toBe(2);
-    expect(nativeMock.writeFile).toHaveBeenCalledWith(FILE, "1 2", {
-      kind: "local",
-    });
+    expect(nativeMock.writeFile).toHaveBeenCalledWith(
+      FILE,
+      "1 2",
+      { kind: "local" },
+      "disk-version",
+    );
   });
 
   it("writes nothing when a later edit in the batch fails", async () => {

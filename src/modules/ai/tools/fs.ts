@@ -1,6 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { native } from "../lib/native";
+import { EXPECTED_MISSING_VERSION, native } from "../lib/native";
 import {
   checkReadableCanonical,
   checkWritableCanonical,
@@ -173,15 +173,25 @@ export function buildFsTools(ctx: ToolContext) {
         if (!safety.ok) return { error: safety.reason, path: reqPath };
         const abs = safety.canonical;
 
-        if (usePlanStore.getState().active) {
-          let original = "";
-          let isNewFile = false;
-          try {
-            const r = await native.readFile(abs, workspace);
-            if (r.kind === "text") original = r.content;
-          } catch {
-            isNewFile = true;
+        let original = "";
+        let isNewFile = false;
+        let expectedVersion = EXPECTED_MISSING_VERSION;
+        try {
+          const current = await native.readFile(abs, workspace);
+          if (current.kind !== "text") {
+            return {
+              error:
+                "write_file only replaces existing text files; binary or oversized files are refused",
+              path: abs,
+            };
           }
+          original = current.content;
+          expectedVersion = current.version;
+        } catch {
+          isNewFile = true;
+        }
+
+        if (usePlanStore.getState().active) {
           usePlanStore.getState().enqueue({
             id: newQueuedEditId(),
             kind: "write_file",
@@ -189,6 +199,7 @@ export function buildFsTools(ctx: ToolContext) {
             originalContent: original,
             proposedContent: content,
             isNewFile,
+            expectedVersion,
           });
           return {
             path: abs,
@@ -198,7 +209,7 @@ export function buildFsTools(ctx: ToolContext) {
         }
 
         try {
-          await native.writeFile(abs, content, workspace);
+          await native.writeFile(abs, content, workspace, expectedVersion);
           ctx.readCache.set(abs, { size: content.length, hash: djb2(content) });
           return { path: abs, bytesWritten: content.length, ok: true };
         } catch (e) {

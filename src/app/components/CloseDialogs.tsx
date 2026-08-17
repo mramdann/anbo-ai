@@ -1,3 +1,4 @@
+import type { AppCloseBlocker } from "@/app/hooks/useAppCloseGuard";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -8,8 +9,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import type { AppCloseBlocker } from "@/app/hooks/useAppCloseGuard";
 import type { Tab } from "@/modules/tabs";
+import { terminalCloseCopy } from "../lib/terminalCloseCopy";
 
 type Props = {
   tabs: Tab[];
@@ -17,6 +18,7 @@ type Props = {
   onCancelClose: () => void;
   onConfirmClose: () => void;
   pendingTerminalCloseTab: number | null;
+  pendingTerminalCloseLeaf: number | null;
   onCancelTerminalClose: () => void;
   onConfirmTerminalClose: () => void;
   pendingDeleteTabs: number[] | null;
@@ -28,6 +30,9 @@ type Props = {
 };
 
 function appCloseMessage(blocker: AppCloseBlocker): string {
+  if (blocker.persistenceError) {
+    return `Anbo could not save the latest workspace state: ${blocker.persistenceError}. Quit anyway?`;
+  }
   const dirty =
     blocker.dirtyEditors === 1
       ? "1 file has unsaved changes"
@@ -48,6 +53,7 @@ export function CloseDialogs({
   onCancelClose,
   onConfirmClose,
   pendingTerminalCloseTab,
+  pendingTerminalCloseLeaf,
   onCancelTerminalClose,
   onConfirmTerminalClose,
   pendingDeleteTabs,
@@ -57,6 +63,11 @@ export function CloseDialogs({
   onCancelAppClose,
   onConfirmAppClose,
 }: Props) {
+  const terminalCopy = terminalCloseCopy(
+    tabs.find((tab) => tab.id === pendingTerminalCloseTab),
+    pendingTerminalCloseLeaf === null ? "tab" : "pane",
+  );
+
   return (
     <>
       <AlertDialog
@@ -91,9 +102,9 @@ export function CloseDialogs({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Close Terminal?</AlertDialogTitle>
+            <AlertDialogTitle>{terminalCopy.title}</AlertDialogTitle>
             <AlertDialogDescription>
-              A process is running. Closing this tab will terminate it.
+              {terminalCopy.description}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

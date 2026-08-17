@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod agent_actions;
 pub mod cdp;
 pub mod http;
 pub mod mcp;

@@ -29,6 +29,23 @@ fn get_launch_files(state: State<'_, LaunchFiles>) -> Vec<String> {
     std::mem::take(&mut *state.0.lock().expect("LaunchFiles mutex poisoned"))
 }
 
+/// Release CI sets this environment variable to verify that the packaged
+/// WebView2 application reaches the first committed React layout. Normal user
+/// launches do no work here and keep the exact same startup path.
+#[tauri::command]
+fn packaged_smoke_ready(app: tauri::AppHandle) -> Result<bool, String> {
+    let Ok(marker) = std::env::var("ANBO_PACKAGED_SMOKE_MARKER") else {
+        return Ok(false);
+    };
+    let marker = PathBuf::from(marker);
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::write(&marker, b"frontend-ready\n").map_err(|error| error.to_string())?;
+    app.exit(0);
+    Ok(true)
+}
+
 enum LaunchEntry {
     Dir(PathBuf),
     File(PathBuf),
@@ -361,9 +378,12 @@ pub fn run() {
             workspace::workspace_current_dir,
             get_launch_dir,
             get_launch_files,
+            packaged_smoke_ready,
             open_settings_window,
             agent::agent_enable_hooks,
             agent::agent_hooks_status,
+            agent::agent_configure_mcp,
+            agent::agent_mcp_status,
             anbo::resume::anbo_find_claude_session,
             anbo::resume::anbo_find_codex_session,
             secrets::secrets_get,

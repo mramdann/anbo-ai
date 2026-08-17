@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { AgentIcon } from "@/modules/agents/lib/agentIcon";
+import { isMcpAgentId } from "@/modules/agents/lib/agentMcp";
 import {
   AGENT_LAUNCHERS,
   type AgentLaunchCommands,
@@ -42,6 +43,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { ThemePref } from "@/modules/settings/store";
 import {
   setAgentLaunchCommands,
+  setAgentMcpEnabled,
   setAgentNotifications,
   setAutostart,
   setBrowserAutomationEnabled,
@@ -574,6 +576,7 @@ function Label({ children }: { children: React.ReactNode }) {
 
 function TerminalAgentsSettings() {
   const commands = usePreferencesStore((state) => state.agentLaunchCommands);
+  const mcpEnabled = usePreferencesStore((state) => state.agentMcpEnabled);
   const customAgents = usePreferencesStore((state) => state.customCliAgents);
   const [open, setOpen] = useState(true);
   const [newAgent, setNewAgent] = useState<CustomCliAgent | null>(null);
@@ -646,7 +649,23 @@ function TerminalAgentsSettings() {
         </div>
         <div className="flex flex-col gap-1.5 p-2">
           {AGENT_LAUNCHERS.map((agent) => (
-            <BuiltInAgentRow key={agent.id} agent={agent} commands={commands} />
+            <BuiltInAgentRow
+              key={agent.id}
+              agent={agent}
+              commands={commands}
+              mcpEnabled={
+                isMcpAgentId(agent.id) ? mcpEnabled[agent.id] : undefined
+              }
+              onMcpEnabledChange={
+                isMcpAgentId(agent.id)
+                  ? (enabled) =>
+                      void setAgentMcpEnabled({
+                        ...mcpEnabled,
+                        [agent.id]: enabled,
+                      })
+                  : undefined
+              }
+            />
           ))}
           {customAgents.map((agent) => (
             <CustomCliAgentRow
@@ -682,9 +701,13 @@ function TerminalAgentsSettings() {
 function BuiltInAgentRow({
   agent,
   commands,
+  mcpEnabled,
+  onMcpEnabledChange,
 }: {
   agent: (typeof AGENT_LAUNCHERS)[number];
   commands: AgentLaunchCommands;
+  mcpEnabled?: boolean;
+  onMcpEnabledChange?: (enabled: boolean) => void;
 }) {
   const [draft, setDraft] = useState(commands[agent.id]);
   const validation = validateAgentLaunchCommand(draft);
@@ -705,7 +728,7 @@ function BuiltInAgentRow({
   };
 
   return (
-    <div className="grid grid-cols-[16px_minmax(0,1fr)] items-center gap-x-2 gap-y-2 rounded-md border border-border/50 bg-background/35 px-2.5 py-2 sm:grid-cols-[16px_134px_minmax(0,1fr)_56px]">
+    <div className="grid grid-cols-[16px_minmax(0,1fr)] items-center gap-x-2 gap-y-2 rounded-md border border-border/50 bg-background/35 px-2.5 py-2 sm:grid-cols-[16px_112px_minmax(0,1fr)_66px_32px]">
       <div className="flex size-4 items-center justify-center">
         <AgentIcon agent={agent.icon} size={14} className="shrink-0" />
       </div>
@@ -726,6 +749,28 @@ function BuiltInAgentRow({
         className="col-span-2 h-7 min-w-0 rounded-md bg-muted/25 px-2 font-mono text-[11px] sm:col-span-1"
         title={validation.ok ? undefined : validation.error}
       />
+      <div
+        className="col-span-1 hidden items-center justify-end gap-1.5 sm:flex"
+        title={
+          onMcpEnabledChange
+            ? "Install Anbo MCP in this workspace when the agent launches"
+            : "Automatic Anbo MCP setup is not available for this agent"
+        }
+      >
+        <span className="text-[9.5px] text-muted-foreground">MCP</span>
+        {onMcpEnabledChange ? (
+          <Switch
+            checked={mcpEnabled ?? false}
+            onCheckedChange={onMcpEnabledChange}
+            aria-label={`${agent.label} Anbo MCP`}
+            className="scale-90"
+          />
+        ) : (
+          <span className="w-7 text-center text-[10px] text-muted-foreground/50">
+            —
+          </span>
+        )}
+      </div>
       <Button
         type="button"
         size="icon"

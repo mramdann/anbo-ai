@@ -175,20 +175,26 @@ Tauri capabilities are split by window: `default.json` is main-only, `settings.j
 Browser automation (Windows only) controls live native browser tabs without requiring them to be visible or active. Three entry points share one backend (`actions::handle_action`):
 
 - **In-app AI panel**: direct in-process Tauri command `browser_automation_handle_action` — fastest, no setup.
-- **`anbo-browser` CLI/MCP** (`anbo-browser mcp --stdio`): a standalone stdio client that bridges to the running app over a named pipe. Built by `pnpm prepare:browser-sidecar`; **not** shipped with the installer (`bundle.externalBin` is empty), so this path is dev-only.
-- **HTTP MCP server** (hosted by the running app): Streamable HTTP at `http://127.0.0.1:7331/mcp`, so external clients like Claude Code can connect from any installed device with a static URL and no binary path. Stateless (JSON responses, no SSE/session), bound to 127.0.0.1 with Origin validation. Exposes all `browser_*` tools.
+- **`anbo-browser` CLI/MCP** (`anbo-browser mcp --stdio`): a standalone stdio client that bridges to the running app over an authenticated named pipe. Built by `pnpm prepare:browser-sidecar`, bundled by the Windows Tauri config, and registered by the installer. This is the preferred external-client transport because token discovery is automatic.
+- **HTTP MCP server** (hosted by the running app): Streamable HTTP at `http://127.0.0.1:7331/mcp`. Stateless (JSON responses, no SSE/session), bound exclusively to loopback, Origin-validated, and request-size bounded. It keeps the original header-free project configuration and exposes the `browser_*` and `agent_*` tool families.
 
-Enable/disable with **Settings → Browser automation** (default on); the toggle starts/stops both the named-pipe server and the HTTP server, and `browser_automation_status` returns `{ running, mcpUrl }`. Implementation: `src-tauri/src/modules/browser_automation/{http,mcp,server,actions}.rs`.
+Enable/disable with **Settings → Browser automation** (default on); the toggle starts/stops both transports, and `browser_automation_status` returns `{ running, mcpUrl }`. Implementation: `src-tauri/src/modules/browser_automation/{http,mcp,server,actions}.rs`.
 
 Full automation capability is intentional: keep it enabled by default and do not add per-action approval prompts. Security and reliability work must preserve background navigation, click, typing, screenshots, and tab lifecycle operations while enforcing explicit workspace routing, loopback-only transport, bounded input/output, and deterministic cleanup.
 
 `browser_open` and `browser_close` require an explicit workspace root or space id. Open creates a background tab in that space and never switches the user's active workspace or tab; close removes both the React tab and native WebView lifecycle state. Other actions target an explicit `tabId` and serialize through a per-tab lock. Click and keyboard actions use DevTools `Input` events, including focus emulation for background pages, instead of synthetic DOM events. Accessibility refs include their snapshot generation (`g3-e12`); creating a newer snapshot deterministically rejects every older ref before DOM lookup. Snapshot output is viewport-first and hard-bounded to 2,000-16,000 characters (8,000 default), reports truncation, and directs callers to scroll and snapshot again instead of reading an entire large page into model context.
 
-Claude Code config (`.mcp.json`):
+Agent communication uses `agent_list`, `agent_status`, `agent_read`, `agent_send`, and `agent_wait`. Every call requires an explicit workspace root or space id and never activates a workspace or tab. The registry includes only live detected terminal agents and excludes private terminals. Reads are secret-redacted, cursor-based, and bounded to 12,000 characters. Sends are bounded, serialized per target, wait for a ready prompt by default, and support optional sender ids plus idempotency keys. A second queued send cannot enter the terminal until activity from the previous delivery is observed. MCP intentionally has no agent spawn or close operation; lifecycle ownership remains with the user and the existing AI-panel managed-agent workflow.
+
+Project MCP config (`.mcp.json`), where the client-side server alias may be any name such as `anbomcp`:
 
 ```json
-{ "mcpServers": { "anbo-browser": { "type": "http", "url": "http://127.0.0.1:7331/mcp" } } }
+{ "mcpServers": { "anbomcp": { "type": "http", "url": "http://127.0.0.1:7331/mcp" } } }
 ```
+
+The named-pipe sidecar continues to use the per-install token automatically;
+the token is never written into `.mcp.json`. Anbo does not rewrite project MCP
+configuration when an agent launches.
 
 ### Releasing to GitHub
 
@@ -196,7 +202,7 @@ Releases use [release-please](.github/workflows/release-please.yml) with the **R
 
 1. **Land conventional commits on `main`.** `fix:` → patch, `feat:` → minor, `!` / `BREAKING CHANGE:` → major. `docs:` / `test:` / `chore:` do not bump. Version sources (`package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`) are bumped by release-please. The `anbo` entry in `Cargo.lock` carries the generic updater annotation and must be included in the Release PR; `scripts/check-version-sync.mjs` validates all four files without mutating a CI checkout.
 2. **release-please opens a Release PR** titled `chore(main): release X.Y.Z` on each push to `main`; it accumulates pending changes until merged.
-3. **Merge the Release PR (squash).** Release Please is PR-only and never publishes directly. The workflow waits for the exact merge SHA to pass the full `CI` workflow, creates the tag plus a draft release, builds NSIS into that draft, requires SignPath Authenticode plus Tauri updater signing, patches and validates `latest.json`, rechecks the tag SHA, then publishes the complete draft. Any failure leaves the release as a draft. The automated path always requires SignPath. A user may explicitly authorize the manual `workflow_dispatch` input `allow_unsigned_installer` for an exceptional release; it builds a private workflow artifact that an authorized operator uploads to the verified draft. Tauri updater signing and every other exact-SHA/CI/manifest gate remain mandatory.
+3. **Merge the Release PR (squash).** Release Please is PR-only and never publishes directly. The workflow waits for the exact merge SHA to pass the full `CI` workflow, creates the tag plus a draft release, builds NSIS into that draft, launches the actual packaged Windows executable and requires its WebView2 frontend-ready marker, requires SignPath Authenticode plus Tauri updater signing, patches and validates `latest.json`, rechecks the tag SHA, then publishes the complete draft. Any failure leaves the release as a draft. The automated path always requires SignPath. A user may explicitly authorize the manual `workflow_dispatch` input `allow_unsigned_installer` for an exceptional release; it builds a private workflow artifact that an authorized operator uploads to the verified draft. Tauri updater signing and every other exact-SHA/CI/manifest gate remain mandatory.
 4. **Verify before announcing.** Tag exists, both `Release Please` and `Release` are `completed/success`, the GitHub Release is no longer a draft, and the live manifest reports the new version:
    ```bash
    curl -s -o /dev/null -w "%{http_code}\n" https://api.github.com/repos/mramdann/anbo-ai/git/refs/tags/vX.Y.Z   # expect 200

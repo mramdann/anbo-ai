@@ -1,7 +1,7 @@
 import type { Tab } from "@/modules/tabs";
 import { useCallback, useEffect, useRef } from "react";
 import { isSerializableTab, serializeTabs } from "./serialize";
-import { saveState } from "./store";
+import { flushSpacesStore, saveState } from "./store";
 import { useSpaces } from "./useSpaces";
 
 const DEBOUNCE_MS = 3000;
@@ -15,6 +15,12 @@ type Params = Snapshot & {
 
 type LastWrite = { json: string; activeTabIndex: number };
 
+let activeFlusher: (() => Promise<void>) | null = null;
+
+export async function flushSpacePersistenceNow(): Promise<void> {
+  await activeFlusher?.();
+}
+
 export function useSpacePersistence({
   tabs,
   activeId,
@@ -24,6 +30,7 @@ export function useSpacePersistence({
   const last = useRef<Map<string, LastWrite>>(new Map());
   const seeded = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushQueue = useRef<Promise<void>>(Promise.resolve());
   const latest = useRef<Snapshot>({ tabs, activeId, activeSpaceId });
   latest.current = { tabs, activeId, activeSpaceId };
 
@@ -39,7 +46,7 @@ export function useSpacePersistence({
     }
   }
 
-  const flush = useCallback((snap: Snapshot) => {
+  const flush = useCallback(async (snap: Snapshot) => {
     const groups = new Map<string, Tab[]>(
       useSpaces.getState().spaces.map((space) => [space.id, []]),
     );
@@ -49,6 +56,7 @@ export function useSpacePersistence({
       else groups.set(t.spaceId, [t]);
     }
 
+    const writes: Promise<void>[] = [];
     for (const [spaceId, group] of groups) {
       const serialized = serializeTabs(group);
       const prev = last.current.get(spaceId);
@@ -67,10 +75,26 @@ export function useSpacePersistence({
       ) {
         continue;
       }
-      last.current.set(spaceId, { json, activeTabIndex });
-      void saveState(spaceId, { tabs: serialized, activeTabIndex });
+      writes.push(
+        saveState(spaceId, { tabs: serialized, activeTabIndex }).then(() => {
+          last.current.set(spaceId, { json, activeTabIndex });
+        }),
+      );
     }
+    await Promise.all(writes);
+    await flushSpacesStore();
   }, []);
+
+  const enqueueFlush = useCallback(
+    (snap: Snapshot) => {
+      const queued = flushQueue.current
+        .catch(() => undefined)
+        .then(() => flush(snap));
+      flushQueue.current = queued;
+      return queued;
+    },
+    [flush],
+  );
 
   useEffect(() => {
     if (!enabled) return;
@@ -78,19 +102,22 @@ export function useSpacePersistence({
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => {
       timer.current = null;
-      flush(snap);
+      void enqueueFlush(snap);
     }, DEBOUNCE_MS);
     return () => {
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [tabs, activeId, activeSpaceId, enabled, flush]);
+  }, [tabs, activeId, activeSpaceId, enabled, enqueueFlush]);
 
   useEffect(() => {
     if (!enabled) return;
     const onHidden = () => {
-      if (document.visibilityState === "hidden") flush(latest.current);
+      if (document.visibilityState === "hidden")
+        void enqueueFlush(latest.current);
     };
-    const onLeave = () => flush(latest.current);
+    const onLeave = () => void enqueueFlush(latest.current);
+    const registeredFlusher = () => enqueueFlush(latest.current);
+    activeFlusher = registeredFlusher;
     document.addEventListener("visibilitychange", onHidden);
     window.addEventListener("blur", onLeave);
     window.addEventListener("beforeunload", onLeave);
@@ -98,7 +125,8 @@ export function useSpacePersistence({
       document.removeEventListener("visibilitychange", onHidden);
       window.removeEventListener("blur", onLeave);
       window.removeEventListener("beforeunload", onLeave);
-      flush(latest.current);
+      if (activeFlusher === registeredFlusher) activeFlusher = null;
+      void enqueueFlush(latest.current);
     };
-  }, [enabled, flush]);
+  }, [enabled, enqueueFlush]);
 }

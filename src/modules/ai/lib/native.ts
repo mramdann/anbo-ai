@@ -2,9 +2,25 @@ import { invoke } from "@tauri-apps/api/core";
 import { currentWorkspaceEnv, type WorkspaceEnv } from "@/modules/workspace";
 
 export type ReadResult =
-  | { kind: "text"; content: string; size: number }
+  | {
+      kind: "text";
+      content: string;
+      size: number;
+      mtime: number;
+      version: string;
+    }
   | { kind: "binary"; size: number }
   | { kind: "toolarge"; size: number; limit: number };
+
+export type WriteResult =
+  | { status: "written"; mtime: number; version: string }
+  | {
+      status: "conflict";
+      currentMtime: number | null;
+      currentVersion: string | null;
+    };
+
+export const EXPECTED_MISSING_VERSION = "__anbo_missing__";
 
 export type DirEntry = {
   name: string;
@@ -164,12 +180,21 @@ export const native = {
     path: string,
     content: string,
     workspace = currentWorkspaceEnv(),
+    expectedVersion?: string,
   ) =>
-    invoke<void>("fs_write_file", {
+    invoke<WriteResult>("fs_write_file", {
       path,
       content,
       workspace,
       protected: true,
+      expectedVersion,
+    }).then((result) => {
+      if (result.status === "conflict") {
+        throw new Error(
+          "file changed after it was read; read the latest version and retry",
+        );
+      }
+      return result;
     }),
   canonicalize: (path: string, workspace = currentWorkspaceEnv()) =>
     invoke<string>("fs_canonicalize", {
