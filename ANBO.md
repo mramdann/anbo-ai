@@ -192,6 +192,8 @@ The generated configuration is header-free because the HTTP server accepts only 
 
 ### Releasing to GitHub
 
+**SignPath onboarding.** The GitHub integration uses repository variable names `SIGNPATH_ENABLED`, `SIGNPATH_TEST_ENABLED`, `SIGNPATH_ORGANIZATION_ID`, and `SIGNPATH_PROJECT_SLUG`, plus the repository secret `SIGNPATH_API_TOKEN`. Never commit or print the token. `.github/workflows/signpath-test.yml` is the non-publishing end-to-end signing smoke test, is gated only by `SIGNPATH_TEST_ENABLED`, and uses policy `test-signing` with artifact configuration `initial`. Production uses its separate `SIGNPATH_ENABLED` gate plus `release-signing`; keep `SIGNPATH_ENABLED=false` until a publicly trusted certificate (or approved SignPath Foundation OSS certificate) is attached. A self-signed trial certificate is test-only and must never satisfy the production release gate. The repository homepage contains the SignPath Foundation code-signing policy and links to `PRIVACY.md`.
+
 Releases use [release-please](.github/workflows/release-please.yml) with the **Release PR** model. Never bump versions or edit `CHANGELOG.md` by hand — release-please does both from conventional commits.
 
 1. **Land conventional commits on `main`.** `fix:` → patch, `feat:` → minor, `!` / `BREAKING CHANGE:` → major. `docs:` / `test:` / `chore:` do not bump. Version sources (`package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`) are bumped by release-please. The `anbo` entry in `Cargo.lock` carries the generic updater annotation and must be included in the Release PR; `scripts/check-version-sync.mjs` validates all four files without mutating a CI checkout.

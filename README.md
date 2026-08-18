@@ -14,6 +14,8 @@
     <a href="https://github.com/mramdann/anbo-ai/releases/latest">Releases</a>
     ·
     <a href="https://github.com/mramdann/anbo-ai/issues">Issues</a>
+    &middot;
+    <a href="PRIVACY.md">Privacy</a>
     ·
     <a href="https://github.com/crynta/terax-ai">Upstream: Terax</a>
   </p>
@@ -118,6 +120,16 @@ Latest installers are on the [Releases](https://github.com/mramdann/anbo-ai/rele
 
 - **AppImage:** needs FUSE. Without it: `./Anbo_*.AppImage --appimage-extract-and-run`. On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Otherwise the `.deb` / `.rpm` packages link against the system GTK stack and tend to be smoother.
 - **Upstream packages:** community packages for the original Terax project (Arch AUR `terax-bin`, NixOS flake) track Terax, not Anbo. For Anbo, prefer the build-from-source instructions below or the release bundles above.
+
+## Code signing policy
+
+Free code signing is provided by [SignPath.io](https://signpath.io/); the release certificate is provided by the [SignPath Foundation](https://signpath.org/).
+
+- Official signed binaries are built only from this repository by GitHub Actions. The release pipeline requires the exact release commit to pass CI before SignPath receives the installer.
+- Committer and reviewer: [mramdann](https://github.com/mramdann), the repository owner and maintainer.
+- Signing-request approver: [mramdann](https://github.com/mramdann).
+- Anbo's data and network behavior is documented in the [privacy policy](PRIVACY.md). Anbo has no telemetry and sends project or prompt data only to services explicitly selected by the user; update checks retrieve release metadata from this GitHub repository.
+- Only Anbo artifacts produced from Anbo's maintained source and release workflow may be submitted for signing. Release signing requires origin verification and manual approval.
 
 ## Configure AI
 
