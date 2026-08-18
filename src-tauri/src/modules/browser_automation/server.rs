@@ -31,7 +31,7 @@ fn descriptor_path() -> Result<PathBuf, String> {
     Ok(dir.join("instance.json"))
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn auth_token_path() -> Result<PathBuf, String> {
     let root = local_data_root()?;
     let dir = root.join("runtime").join("browser");
@@ -363,7 +363,7 @@ fn valid_auth_token(token: &str) -> bool {
     token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn load_or_create_auth_token() -> Result<String, String> {
     let path = auth_token_path()?;
     if let Ok(token) = fs::read_to_string(&path) {
