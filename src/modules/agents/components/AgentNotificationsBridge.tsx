@@ -93,6 +93,9 @@ function handleSignal(sig: AgentSignal, ctx: Ctx): void {
     case "working":
       store.setStatus(leafId, "working", "working");
       return;
+    case "ready":
+      store.setStatus(leafId, "waiting", "finished");
+      return;
     case "session":
       if (sig.agent && sig.sessionId) {
         ctx.onSession(leafId, sig.agent, sig.sessionId);

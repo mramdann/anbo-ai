@@ -58,8 +58,7 @@ export function withAgentMcpRuntime(
   if (/&&|\|\||[;&|><`]/.test(command)) return command;
   if (agent === "claude") {
     if (/(?:^|\s)--mcp-config(?:\s|=|$)/i.test(command)) return command;
-    const config = workspaceFile(workspaceRoot, ".claude", "anbo-mcp.json");
-    return `${command} --mcp-config ${quoteShellArg(config, localWindows)}`;
+    return `${command} --mcp-config .claude/anbo-mcp.json`;
   }
   if (agent === "opencode") {
     if (/(?:^|\s)(?:\$env:|export\s+)?OPENCODE_CONFIG\s*=/i.test(command)) {

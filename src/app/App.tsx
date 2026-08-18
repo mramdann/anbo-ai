@@ -21,6 +21,7 @@ import {
   buildAgentResumeCommand,
   canLaunchAgentRequest,
   collectAgentResumeLeaves,
+  configuredAgentLaunchRequest,
   createAgentResumeStates,
   findAgentLauncher,
   isMcpAgentId,
@@ -33,6 +34,7 @@ import {
 } from "@/modules/agents";
 import {
   AGENT_RESPONSE_EVENT,
+  agentIdFor,
   createAgentAutomationService,
 } from "@/modules/agents/lib/agentAutomation";
 import { setAgentRequestHandler } from "@/modules/agents/lib/agentAutomationBridge";
@@ -135,6 +137,9 @@ import {
   navigateFocusedBlocks,
   type PaneBounds,
   ptyIdForLeaf,
+  readTerminalBuffer,
+  selectBackgroundTerminalTabs,
+  TerminalStack,
   type TerminalPaneHandle,
   useAgentActivityStore,
   useTerminalFileDrop,
@@ -181,6 +186,14 @@ async function discoverCodexSession({
     }),
   );
 }
+
+type AgentLaunchTarget = {
+  spaceId: string;
+  root: string | null;
+  cwd: string | undefined;
+  workspace: WorkspaceEnv;
+  activate: boolean;
+};
 
 export default function App() {
   useEffect(() => {
@@ -506,6 +519,10 @@ export default function App() {
   const backgroundBrowserTabs = useMemo(
     () => selectBackgroundBrowserTabs(tabs, visibleDockviewTabIds),
     [tabs, visibleDockviewTabIds],
+  );
+  const backgroundTerminalTabs = useMemo(
+    () => selectBackgroundTerminalTabs(tabs, activeSpaceId ?? DEFAULT_SPACE_ID),
+    [tabs, activeSpaceId],
   );
 
   const {
@@ -959,12 +976,12 @@ export default function App() {
     workspaceForSpace,
   ]);
 
-  const launchAgentGroup = useCallback(
-    (request: AgentLaunchRequest) => {
+  const launchAgentGroupAt = useCallback(
+    (request: AgentLaunchRequest, target: AgentLaunchTarget) => {
       const command = validateAgentLaunchCommand(request.command);
-      if (!command.ok) return;
+      if (!command.ok) return null;
       const launcher = findAgentLauncher(request.agent, customCliAgents);
-      if (!launcher) return;
+      if (!launcher) return null;
       const runningAgents = Object.values(
         useAgentActivityStore.getState().agents,
       );
@@ -972,18 +989,18 @@ export default function App() {
         toast.error("OpenCode launch blocked", {
           description: `Anbo limits OpenCode to ${MAX_PARALLEL_OPENCODE_AGENTS} concurrent instances to prevent WebView out-of-memory crashes. Close one before starting another.`,
         });
-        return;
+        return null;
       }
-      const agentCwd = inheritedCwdForNewTab();
+      const agentCwd = target.cwd;
       const agentResumes =
-        request.agent === "opencode" && workspaceEnv.kind !== "local"
+        request.agent === "opencode" && target.workspace.kind !== "local"
           ? Array.from({ length: request.instances }, () => undefined)
           : createAgentResumeStates(
               request.agent,
               command.command,
               request.instances,
             );
-      const { leafIds: agentLeafIds } = newAgentTabs(
+      const { tabIds, leafIds: agentLeafIds } = newAgentTabs(
         agentCwd,
         {
           launcherId: launcher.id,
@@ -992,22 +1009,21 @@ export default function App() {
         },
         request.instances,
         agentResumes,
+        { spaceId: target.spaceId, activate: target.activate },
       );
       const discoversCodex =
-        request.agent === "codex" && workspaceEnv.kind === "local";
+        request.agent === "codex" && target.workspace.kind === "local";
       if (discoversCodex) {
         for (const leafId of agentLeafIds) {
           codexDiscoveryLeavesRef.current.add(leafId);
         }
       }
-      const hookWorkspace = workspaceForSpace(
-        activeSpaceId ?? DEFAULT_SPACE_ID,
-      );
+      const hookWorkspace = target.workspace;
       const hooksReady =
-        launcher.supportsHooks && activeSpaceRoot
+        launcher.supportsHooks && target.root
           ? invoke("agent_enable_hooks", {
               agent: request.agent,
-              workspaceRoot: activeSpaceRoot,
+              workspaceRoot: target.root,
               workspace: hookWorkspace,
             }).catch((error) => {
               console.warn(
@@ -1019,10 +1035,10 @@ export default function App() {
       const mcpEnabled =
         isMcpAgentId(request.agent) && agentMcpEnabled[request.agent];
       const mcpReady =
-        isMcpAgentId(request.agent) && activeSpaceRoot
+        isMcpAgentId(request.agent) && target.root
           ? invoke("agent_configure_mcp", {
               agent: request.agent,
-              workspaceRoot: activeSpaceRoot,
+              workspaceRoot: target.root,
               workspace: hookWorkspace,
               enabled: mcpEnabled,
             })
@@ -1048,11 +1064,11 @@ export default function App() {
             command.command,
           );
           const launchCommand =
-            mcpConfigured && activeSpaceRoot
+            mcpConfigured && target.root
               ? withAgentMcpRuntime(
                   request.agent,
                   baseLaunchCommand,
-                  activeSpaceRoot,
+                  target.root,
                   hookWorkspace.kind === "local",
                 )
               : baseLaunchCommand;
@@ -1063,7 +1079,7 @@ export default function App() {
           }
         };
 
-        const codexCwd = agentCwd ?? activeSpaceRoot ?? undefined;
+        const codexCwd = agentCwd ?? target.root ?? undefined;
         if (discoversCodex && codexCwd) {
           const claimed = new Set<string>();
           for (const tab of tabsRef.current) {
@@ -1119,19 +1135,32 @@ export default function App() {
         );
       };
       void launch();
+      return { tabIds, leafIds: agentLeafIds };
+    },
+    [agentMcpEnabled, customCliAgents, newAgentTabs, pinAgentResumeSession],
+  );
+
+  const launchAgentGroup = useCallback(
+    (request: AgentLaunchRequest) => {
+      launchAgentGroupAt(request, {
+        spaceId: activeSpaceId ?? DEFAULT_SPACE_ID,
+        root: activeSpaceRoot,
+        cwd: inheritedCwdForNewTab(),
+        workspace: workspaceForSpace(activeSpaceId ?? DEFAULT_SPACE_ID),
+        activate: true,
+      });
     },
     [
       activeSpaceId,
       activeSpaceRoot,
-      agentMcpEnabled,
-      customCliAgents,
       inheritedCwdForNewTab,
-      newAgentTabs,
-      pinAgentResumeSession,
-      workspaceEnv.kind,
+      launchAgentGroupAt,
       workspaceForSpace,
     ],
   );
+
+  const launchAgentGroupAtRef = useRef(launchAgentGroupAt);
+  launchAgentGroupAtRef.current = launchAgentGroupAt;
 
   const sendCd = useCallback(
     (path: string) => {
@@ -1377,9 +1406,43 @@ export default function App() {
       getSpaces: () => useSpaces.getState().spaces,
       getSessions: () => useAgentStore.getState().sessions,
       getActiveTabId: () => activeIdRef.current,
-      getBuffer: (leafId) =>
-        terminalRefs.current.get(leafId)?.getBuffer(400) ?? null,
+      getBuffer: (leafId) => readTerminalBuffer(leafId, 400),
       write: writeToSession,
+      spawn: (workspace, agent) => {
+        const space = useSpaces
+          .getState()
+          .spaces.find(
+            (candidate) =>
+              candidate.id === workspace.id &&
+              candidate.root === workspace.root,
+          );
+        if (!space?.root) return null;
+        const preferences = usePreferencesStore.getState();
+        const request = configuredAgentLaunchRequest(
+          agent,
+          preferences.agentLaunchCommands,
+          preferences.customCliAgents,
+        );
+        if (!request) return null;
+        const launched = launchAgentGroupAtRef.current(request, {
+          spaceId: space.id,
+          root: space.root,
+          cwd: space.root,
+          workspace: space.env,
+          activate: false,
+        });
+        if (!launched) return null;
+        const tabId = launched.tabIds[0];
+        const leafId = launched.leafIds[0];
+        return {
+          agentId: agentIdFor(request.agent, request.agent, tabId),
+          cli: request.agent,
+          tabId,
+          leafId,
+          spaceId: space.id,
+          workspace: space.root,
+        };
+      },
       subscribeSessions: (listener) =>
         useAgentStore.subscribe((state, previous) =>
           listener(state.sessions, previous.sessions),
@@ -2220,6 +2283,22 @@ export default function App() {
                               onTitleChange={handleBrowserTitle}
                               onLoadingChange={handleBrowserLoading}
                               getWorkspaceContext={browserWorkspaceContext}
+                            />
+                          </div>
+                        ) : null}
+                        {spacesHydrated && backgroundTerminalTabs.length > 0 ? (
+                          <div
+                            className="invisible pointer-events-none absolute inset-0"
+                            aria-hidden
+                          >
+                            <TerminalStack
+                              tabs={backgroundTerminalTabs}
+                              activeId={-1}
+                              registerHandle={registerTerminalHandle}
+                              onSearchReady={handleSearchReady}
+                              onCwd={handleTerminalCwd}
+                              onExit={handleLeafExit}
+                              onFocusLeaf={handleFocusLeaf}
                             />
                           </div>
                         ) : null}

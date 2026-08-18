@@ -9,6 +9,7 @@ import {
 describe("phaseForSignal", () => {
   it("maps lifecycle kinds to phases", () => {
     expect(phaseForSignal("started")).toBe("working");
+    expect(phaseForSignal("ready")).toBe("idle");
     expect(phaseForSignal("working")).toBe("working");
     expect(phaseForSignal("attention")).toBe("attention");
     expect(phaseForSignal("finished")).toBe("finished");
@@ -36,10 +37,12 @@ describe("tabAgentStatus", () => {
       state: "attention",
       agent: null,
     });
-    expect(tabAgentStatus({ 1: "working", 2: "finished" }, {}, [1, 2])).toEqual({
-      state: "working",
-      agent: null,
-    });
+    expect(tabAgentStatus({ 1: "working", 2: "finished" }, {}, [1, 2])).toEqual(
+      {
+        state: "working",
+        agent: null,
+      },
+    );
     expect(tabAgentStatus({ 1: "finished" }, {}, [1])).toEqual({
       state: "finished",
       agent: null,

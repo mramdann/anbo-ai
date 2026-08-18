@@ -18,6 +18,7 @@ export {
   type AgentLauncherId,
   type AgentLaunchRequest,
   canLaunchAgentRequest,
+  configuredAgentLaunchRequest,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
   findAgentLauncher,
   MAX_PARALLEL_OPENCODE_AGENTS,

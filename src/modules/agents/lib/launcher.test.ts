@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_LAUNCHERS,
   canLaunchAgentRequest,
+  configuredAgentLaunchRequest,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
   findAgentLauncher,
   getAgentLaunchers,
@@ -143,6 +144,58 @@ describe("custom CLI agents", () => {
     });
     expect(findAgentLauncher("custom:aider", custom)?.label).toBe("Aider");
     expect(findAgentLauncher("custom:missing", custom)).toBeUndefined();
+  });
+
+  it("resolves spawn commands only from stored built-in and custom settings", () => {
+    const commands = { ...DEFAULT_AGENT_LAUNCH_COMMANDS, claude: "cc-safe" };
+    const custom = [
+      {
+        id: "custom:sample" as const,
+        icon: "robot" as const,
+        name: "Sample",
+        command: "sample --resume",
+      },
+    ];
+
+    expect(configuredAgentLaunchRequest("claude", commands, custom)).toEqual({
+      agent: "claude",
+      command: "cc-safe",
+      instances: 1,
+    });
+    expect(
+      configuredAgentLaunchRequest("custom:sample", commands, custom),
+    ).toEqual({
+      agent: "custom:sample",
+      command: "sample --resume",
+      instances: 1,
+    });
+    expect(configuredAgentLaunchRequest("SAMPLE", commands, custom)).toEqual({
+      agent: "custom:sample",
+      command: "sample --resume",
+      instances: 1,
+    });
+    expect(
+      configuredAgentLaunchRequest("custom:missing", commands, custom),
+    ).toBeNull();
+  });
+
+  it("resolves every built-in launcher from its stored command", () => {
+    const commands = Object.fromEntries(
+      AGENT_LAUNCHERS.map((launcher) => [
+        launcher.id,
+        `${launcher.id} --anbo-test`,
+      ]),
+    ) as typeof DEFAULT_AGENT_LAUNCH_COMMANDS;
+
+    for (const launcher of AGENT_LAUNCHERS) {
+      expect(
+        configuredAgentLaunchRequest(launcher.label, commands, []),
+      ).toEqual({
+        agent: launcher.id,
+        command: `${launcher.id} --anbo-test`,
+        instances: 1,
+      });
+    }
   });
 
   it("migrates the retired Gemini icon on persisted custom agents", () => {

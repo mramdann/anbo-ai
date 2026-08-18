@@ -115,10 +115,8 @@ function normalizeCustomCliAgentIcon(
   value: unknown,
 ): CustomCliAgentIcon | undefined {
   if (value === "gemini") return "antigravity";
-  return (
-    typeof value === "string" &&
+  return typeof value === "string" &&
     (CUSTOM_CLI_AGENT_ICONS as readonly string[]).includes(value)
-  )
     ? (value as CustomCliAgentIcon)
     : undefined;
 }
@@ -270,4 +268,27 @@ export function findAgentLauncher(
   customAgents: readonly CustomCliAgent[] = [],
 ): AgentLauncher | undefined {
   return getAgentLaunchers(customAgents).find((agent) => agent.id === id);
+}
+
+export function configuredAgentLaunchRequest(
+  id: string,
+  commands: AgentLaunchCommands,
+  customAgents: readonly CustomCliAgent[],
+): AgentLaunchRequest | null {
+  const requested = id.trim();
+  const launchers = getAgentLaunchers(customAgents);
+  const launcher =
+    launchers.find((candidate) => candidate.id === requested) ??
+    launchers.find(
+      (candidate) =>
+        candidate.label.toLocaleLowerCase() === requested.toLocaleLowerCase(),
+    );
+  if (!launcher) return null;
+  const configuredCommand = isBuiltInAgentLauncherId(launcher.id)
+    ? commands[launcher.id]
+    : launcher.defaultCommand;
+  const command = validateAgentLaunchCommand(configuredCommand);
+  return command.ok
+    ? { agent: launcher.id, command: command.command, instances: 1 }
+    : null;
 }

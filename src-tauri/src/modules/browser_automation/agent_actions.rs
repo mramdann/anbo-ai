@@ -109,11 +109,23 @@ fn validate_params(method: &str, params: &Value) -> Result<u64, (String, String)
         ));
     }
     required_bounded_string(params, "workspace", MAX_WORKSPACE_BYTES)?;
-    if method != "agent_list" {
+    if !matches!(method, "agent_list" | "agent_spawn") {
         required_bounded_string(params, "agentId", MAX_AGENT_ID_BYTES)?;
     }
     match method {
         "agent_list" | "agent_status" => Ok(5_000),
+        "agent_spawn" => {
+            let agent = required_bounded_string(params, "agent", 71)?;
+            if agent.chars().any(char::is_control) {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    "agent contains control characters".to_string(),
+                ));
+            }
+            let timeout =
+                bounded_integer(params, "timeout", 100, MAX_TIMEOUT_MS)?.unwrap_or(15_000);
+            Ok(timeout + 2_000)
+        }
         "agent_read" => {
             optional_bounded_string(params, "cursor", MAX_CURSOR_BYTES)?;
             bounded_integer(params, "maxChars", 1, MAX_READ_CHARS)?;
@@ -230,10 +242,23 @@ mod tests {
         let missing_agent =
             validate_params("agent_status", &json!({ "workspace": "C:/repo" })).unwrap_err();
         assert_eq!(missing_agent.0, error_codes::INVALID_REQUEST);
+        let missing_spawn_agent =
+            validate_params("agent_spawn", &json!({ "workspace": "C:/repo" })).unwrap_err();
+        assert_eq!(missing_spawn_agent.0, error_codes::INVALID_REQUEST);
     }
 
     #[test]
     fn validation_bounds_read_send_and_wait_inputs() {
+        assert!(validate_params(
+            "agent_spawn",
+            &json!({ "workspace": "C:/repo", "agent": "Sample CLI" })
+        )
+        .is_ok());
+        assert!(validate_params(
+            "agent_spawn",
+            &json!({ "workspace": "C:/repo", "agent": "custom:sample-cli" })
+        )
+        .is_ok());
         assert!(validate_params(
             "agent_read",
             &json!({ "workspace": "C:/repo", "agentId": "agent:one:1", "maxChars": 12_001 })

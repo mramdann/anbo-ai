@@ -105,6 +105,32 @@ type Session = {
 
 const sessions = new Map<number, Session>();
 
+export function readTerminalBuffer(
+  leafId: number,
+  maxLines = 200,
+): string | null {
+  const session = sessions.get(leafId);
+  if (!session) return null;
+  const slot = getLiveSlotForLeaf(leafId);
+  if (slot) {
+    const buffer = slot.term.buffer.active;
+    const lines: string[] = [];
+    const start = Math.max(0, buffer.length - maxLines);
+    for (let index = start; index < buffer.length; index++) {
+      lines.push(buffer.getLine(index)?.translateToString(true) ?? "");
+    }
+    while (lines.length && lines[lines.length - 1] === "") lines.pop();
+    return lines.join("\n");
+  }
+  const source =
+    session.snapshot ??
+    new TextDecoder().decode(session.dormantRing.tail(256 * 1024));
+  if (!source) return "";
+  const lines = stripAnsi(source).split(/\r?\n/).slice(-maxLines);
+  while (lines.length && lines[lines.length - 1] === "") lines.pop();
+  return lines.join("\n");
+}
+
 // Block-overlay viewport listeners, keyed by leafId at module scope so the
 // overlay (a child) can subscribe before the parent effect creates the session.
 const blockViewportListeners = new Map<number, Set<() => void>>();
@@ -988,28 +1014,7 @@ export function useTerminalSession({
   const focus = useCallback(() => focusSlot(leafId), [leafId]);
 
   const getBuffer = useCallback(
-    (maxLines = 200): string | null => {
-      const s = sessions.get(leafId);
-      if (!s) return null;
-      const slot = getLiveSlotForLeaf(leafId);
-      if (slot) {
-        const buf = slot.term.buffer.active;
-        const total = buf.length;
-        const lines: string[] = [];
-        const start = Math.max(0, total - maxLines);
-        for (let i = start; i < total; i++) {
-          lines.push(buf.getLine(i)?.translateToString(true) ?? "");
-        }
-        while (lines.length && lines[lines.length - 1] === "") lines.pop();
-        return lines.join("\n");
-      }
-      if (!s.snapshot) return "";
-      const plain = stripAnsi(s.snapshot);
-      const lines = plain.split(/\r?\n/);
-      const tail = lines.slice(-maxLines);
-      while (tail.length && tail[tail.length - 1] === "") tail.pop();
-      return tail.join("\n");
-    },
+    (maxLines = 200): string | null => readTerminalBuffer(leafId, maxLines),
     [leafId],
   );
 

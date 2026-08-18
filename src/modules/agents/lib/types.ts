@@ -5,6 +5,7 @@ export type AgentSource = "terminal" | "local";
 
 export type AgentSignalKind =
   | "started"
+  | "ready"
   | "working"
   | "session"
   | "attention"

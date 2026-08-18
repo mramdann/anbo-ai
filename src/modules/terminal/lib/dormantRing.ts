@@ -78,6 +78,24 @@ export class DormantRing {
     this.overflowed = false;
   }
 
+  tail(maxBytes: number): Uint8Array {
+    const requested = Math.max(0, Math.min(this.total, maxBytes));
+    if (requested === 0) return new Uint8Array();
+    const output = new Uint8Array(requested);
+    let remaining = requested;
+    let outputOffset = requested;
+    const last = this.blocks.length - 1;
+    for (let index = last; index >= this.head && remaining > 0; index--) {
+      const block = this.blocks[index];
+      const length = index === last ? this.tailLen : block.length;
+      const take = Math.min(length, remaining);
+      outputOffset -= take;
+      output.set(block.subarray(length - take, length), outputOffset);
+      remaining -= take;
+    }
+    return outputOffset === 0 ? output : output.subarray(outputOffset);
+  }
+
   byteLength(): number {
     return this.total;
   }

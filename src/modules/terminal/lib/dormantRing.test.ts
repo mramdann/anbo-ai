@@ -20,6 +20,14 @@ describe("DormantRing", () => {
     expect(ring.byteLength()).toBe(0);
   });
 
+  it("reads a bounded tail without consuming buffered output", () => {
+    const ring = new DormantRing(64, 8);
+    ring.push(enc.encode("0123456789abcdef"));
+    expect(dec.decode(ring.tail(6))).toBe("abcdef");
+    expect(ring.byteLength()).toBe(16);
+    expect(drainToString(ring)).toBe("0123456789abcdef");
+  });
+
   it("coalesces many tiny chunks without premature overflow", () => {
     const ring = new DormantRing(4096, 64);
     for (let i = 0; i < 1000; i++) ring.push(enc.encode("ab"));

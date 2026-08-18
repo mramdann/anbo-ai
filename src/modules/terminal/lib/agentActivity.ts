@@ -66,13 +66,13 @@ let bound = false;
 
 /** Maps a raw detector signal to the phase it drives, `"exited"` to drop the
  * pty, or `null` to ignore. Pure so the mapping stays unit-testable. */
-export function phaseForSignal(
-  kind: string,
-): Exclude<AgentPhase, "idle"> | "exited" | null {
+export function phaseForSignal(kind: string): AgentPhase | "exited" | null {
   switch (kind) {
     case "started":
     case "working":
       return "working";
+    case "ready":
+      return "idle";
     case "attention":
       return "attention";
     case "finished":

@@ -57,6 +57,11 @@ afterEach(() => {
 });
 
 describe("agent workspace scoping", () => {
+  it("uses a readable workspace-scoped callsign and CLI id", () => {
+    expect(agentIdFor("Lucian", "claude", 14)).toBe("lucian-claude:14");
+    expect(agentIdFor("Claude", "claude", 14)).toBe("claude:14");
+  });
+
   it("requires an explicit open workspace and normalizes Windows paths", () => {
     expect(resolveAgentWorkspace([space()], undefined).ok).toBe(false);
     expect(resolveAgentWorkspace([space()], "c:\\WORK\\alpha\\")).toMatchObject(
@@ -85,7 +90,8 @@ describe("agent workspace scoping", () => {
     );
     expect(agents).toEqual([
       expect.objectContaining({
-        agentId: agentIdFor("space-a", 101),
+        agentId: agentIdFor("Atlas", "claude", 10),
+        leafId: 101,
         name: "Atlas",
         active: true,
         sessionId: "00000000-0000-4000-8000-000000000001",
@@ -157,6 +163,7 @@ describe("agent messages", () => {
         writes.push([leafId, data]);
         return true;
       },
+      spawn: () => null,
       subscribeSessions: () => () => {},
     });
     const pending = service.handle({
@@ -164,7 +171,7 @@ describe("agent messages", () => {
       method: "agent_send",
       params: {
         workspace: "C:/work/alpha",
-        agentId: agentIdFor("space-a", 101),
+        agentId: agentIdFor("Atlas", "claude", 10),
         message: "continue",
       },
     });
@@ -175,6 +182,85 @@ describe("agent messages", () => {
       [101, "\r"],
     ]);
     sessions = {};
+    service.dispose();
+  });
+
+  it("waits until Codex renders the input before pressing Enter", async () => {
+    vi.useFakeTimers();
+    let buffer = "Codex ready";
+    const writes: Array<[number, string]> = [];
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab()] as Tab[],
+      getSpaces: () => [space()],
+      getSessions: () => ({
+        101: session({ agent: "codex", name: "Spica" }),
+      }),
+      getActiveTabId: () => null,
+      getBuffer: () => buffer,
+      write: (leafId, data) => {
+        writes.push([leafId, data]);
+        return true;
+      },
+      spawn: () => null,
+      subscribeSessions: () => () => {},
+    });
+
+    const pending = service.handle({
+      requestId: "request-codex",
+      method: "agent_send",
+      params: {
+        workspace: "space-a",
+        agentId: "spica-codex:10",
+        message: "SPICA AGENT OK",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(writes).toEqual([[101, "SPICA AGENT OK"]]);
+    buffer = "Codex ready\nSPICAAGENTOK";
+    await vi.advanceTimersByTimeAsync(25);
+    await expect(pending).resolves.toMatchObject({ result: { ok: true } });
+    expect(writes).toEqual([
+      [101, "SPICA AGENT OK"],
+      [101, "\r"],
+    ]);
+    service.dispose();
+  });
+
+  it("sends immediately to a working agent when readiness waiting is disabled", async () => {
+    vi.useFakeTimers();
+    const writes: Array<[number, string]> = [];
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab()] as Tab[],
+      getSpaces: () => [space()],
+      getSessions: () => ({
+        101: session({ status: "working", phase: "working" }),
+      }),
+      getActiveTabId: () => null,
+      getBuffer: () => "ready",
+      write: (leafId, data) => {
+        writes.push([leafId, data]);
+        return true;
+      },
+      spawn: () => null,
+      subscribeSessions: () => () => {},
+    });
+
+    const pending = service.handle({
+      requestId: "request-direct",
+      method: "agent_send",
+      params: {
+        workspace: "space-a",
+        agentId: "atlas-claude:10",
+        message: "inspect the workspace",
+        waitForReady: false,
+      },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(pending).resolves.toMatchObject({ result: { ok: true } });
+    expect(writes).toEqual([
+      [101, "inspect the workspace"],
+      [101, "\r"],
+    ]);
     service.dispose();
   });
 
@@ -193,6 +279,7 @@ describe("agent messages", () => {
       getActiveTabId: () => null,
       getBuffer: () => "",
       write: () => true,
+      spawn: () => null,
       subscribeSessions: (next) => {
         notify = next;
         return () => {
@@ -205,7 +292,7 @@ describe("agent messages", () => {
       method: "agent_wait",
       params: {
         workspace: "space-a",
-        agentId: agentIdFor("space-a", 101),
+        agentId: agentIdFor("Atlas", "claude", 10),
         status: "finished",
         timeout: 1_000,
       },
@@ -225,6 +312,111 @@ describe("agent messages", () => {
         agent: { phase: "finished" },
       },
     });
+    service.dispose();
+  });
+});
+
+describe("agent spawning", () => {
+  it("spawns one configured custom agent in the explicit workspace without changing focus", async () => {
+    let tabs: Tab[] = [];
+    let sessions: Record<number, AgentSession> = {};
+    const writes: Array<[number, string]> = [];
+    const activeTabId = 77;
+    const service = createAgentAutomationService({
+      getTabs: () => tabs,
+      getSpaces: () => [space()],
+      getSessions: () => sessions,
+      getActiveTabId: () => activeTabId,
+      getBuffer: () => writes.map(([, data]) => data).join(""),
+      write: (leafId, data) => {
+        writes.push([leafId, data]);
+        return true;
+      },
+      spawn: (workspace, agent) => {
+        expect(workspace).toEqual({ id: "space-a", root: "C:/work/alpha" });
+        expect(agent).toBe("custom:sample-cli");
+        tabs = [terminalTab({ title: "Claude" })];
+        sessions = {
+          101: session({
+            agent: "custom:sample-cli",
+            name: "Sample",
+            status: "working",
+            phase: "working",
+          }),
+        };
+        return {
+          agentId: agentIdFor(agent, agent, 10),
+          cli: agent,
+          tabId: 10,
+          leafId: 101,
+          spaceId: workspace.id,
+          workspace: workspace.root,
+        };
+      },
+      subscribeSessions: () => () => {},
+    });
+
+    await expect(
+      service.handle({
+        requestId: "spawn-1",
+        method: "agent_spawn",
+        params: { workspace: "space-a", agent: "custom:sample-cli" },
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        ok: true,
+        pending: false,
+        placement: "background",
+        agent: {
+          agentId: "sample-sample-cli:10",
+          name: "Sample",
+          active: false,
+        },
+      },
+    });
+    expect(activeTabId).toBe(77);
+    await expect(
+      service.handle({
+        requestId: "spawn-send-1",
+        method: "agent_send",
+        params: {
+          workspace: "space-a",
+          agentId: "sample-sample-cli:10",
+          message: "first task",
+        },
+      }),
+    ).resolves.toMatchObject({ result: { ok: true } });
+    expect(writes).toEqual([
+      [101, "first task"],
+      [101, "\r"],
+    ]);
+    service.dispose();
+  });
+
+  it("reports an agent id that is not registered by the launcher", async () => {
+    const spawn = vi.fn(() => null);
+    const service = createAgentAutomationService({
+      getTabs: () => [],
+      getSpaces: () => [space()],
+      getSessions: () => ({}),
+      getActiveTabId: () => null,
+      getBuffer: () => "",
+      write: () => true,
+      spawn,
+      subscribeSessions: () => () => {},
+    });
+
+    await expect(
+      service.handle({
+        requestId: "spawn-2",
+        method: "agent_spawn",
+        params: { workspace: "space-a", agent: "unknown" },
+      }),
+    ).resolves.toMatchObject({ error: { code: "launch_failed" } });
+    expect(spawn).toHaveBeenCalledWith(
+      { id: "space-a", root: "C:/work/alpha" },
+      "unknown",
+    );
     service.dispose();
   });
 });

@@ -32,6 +32,7 @@ const AGENTS: &[AgentSpec] = &[
         project_file: ".claude/settings.local.json",
         legacy_global_file: ".claude/settings.json",
         events: &[
+            ("SessionStart", "ready"),
             ("UserPromptSubmit", "working"),
             ("Notification", "attention"),
             ("Stop", "finished"),
@@ -44,7 +45,7 @@ const AGENTS: &[AgentSpec] = &[
         project_file: ".codex/hooks.json",
         legacy_global_file: ".codex/hooks.json",
         events: &[
-            ("SessionStart", "started"),
+            ("SessionStart", "ready"),
             ("UserPromptSubmit", "working"),
             ("PermissionRequest", "attention"),
             ("Stop", "finished"),
@@ -1194,11 +1195,13 @@ mod tests {
     #[test]
     fn claude_adds_all_event_hooks_to_empty_config() {
         let out = merge_hooks(json!({}), spec("claude"));
+        assert_eq!(hook_count(&out, "SessionStart"), 1);
         assert_eq!(hook_count(&out, "UserPromptSubmit"), 1);
         assert_eq!(hook_count(&out, "Notification"), 1);
         assert_eq!(hook_count(&out, "Stop"), 1);
         assert!(command(&out, "Notification", 0).contains("__anbo_hook claude attention"));
         assert!(command(&out, "Stop", 0).contains("__anbo_hook claude finished"));
+        assert!(command(&out, "SessionStart", 0).contains("__anbo_hook claude ready"));
         assert!(command(&out, "UserPromptSubmit", 0).contains("__anbo_hook claude working"));
         assert!(!command(&out, "Stop", 0).contains("/dev/tty"));
     }
@@ -1230,7 +1233,7 @@ mod tests {
         assert_eq!(hook_count(&out, "PermissionRequest"), 1);
         assert_eq!(hook_count(&out, "Stop"), 1);
         let start = command(&out, "SessionStart", 0);
-        assert!(start.contains("__anbo_hook codex started"));
+        assert!(start.contains("__anbo_hook codex ready"));
         let stop = command(&out, "Stop", 0);
         assert!(stop.contains("__anbo_hook codex finished"));
         #[cfg(windows)]

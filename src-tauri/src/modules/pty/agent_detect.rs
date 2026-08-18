@@ -49,6 +49,7 @@ enum Status {
 pub enum Transition {
     Started { agent: String },
     Session { agent: String, session_id: String },
+    Ready,
     Working,
     Attention,
     Finished,
@@ -78,6 +79,12 @@ impl Transition {
                 kind: "session",
                 agent: Some(agent),
                 session_id: Some(session_id),
+            },
+            Transition::Ready => AgentSignal {
+                id,
+                kind: "ready",
+                agent: None,
+                session_id: None,
             },
             Transition::Working => AgentSignal {
                 id,
@@ -242,6 +249,11 @@ impl AgentDetector {
                 return;
             }
             match event {
+                b"ready" => {
+                    self.ensure_armed(agent, emit);
+                    self.status = Status::Waiting;
+                    emit(Transition::Ready);
+                }
                 b"working" => {
                     self.ensure_armed(agent, emit);
                     self.set_working(emit);
@@ -468,6 +480,19 @@ mod tests {
         assert_eq!(
             run(&mut g, &osc("777;notify;Anbo;antigravity;finished")),
             vec![started("antigravity"), Transition::Finished]
+        );
+    }
+
+    #[test]
+    fn ready_marker_arms_and_marks_the_initial_prompt_waiting() {
+        let mut detector = AgentDetector::new();
+        assert_eq!(
+            run(&mut detector, &osc("777;notify;Anbo;claude;ready")),
+            vec![started("claude"), Transition::Ready]
+        );
+        assert_eq!(
+            run(&mut detector, &osc("777;notify;Anbo;claude;working")),
+            vec![Transition::Working]
         );
     }
 

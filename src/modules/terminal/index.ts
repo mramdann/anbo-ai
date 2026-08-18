@@ -1,6 +1,9 @@
 export { TerminalPane, type TerminalPaneHandle } from "./TerminalPane";
 export { TerminalStack } from "./TerminalStack";
-export { collectRetainedTerminalLeafIds } from "./lib/liveTerminals";
+export {
+  collectRetainedTerminalLeafIds,
+  selectBackgroundTerminalTabs,
+} from "./lib/liveTerminals";
 export {
   clearFocusedTerminal,
   disposeSession,
@@ -9,6 +12,7 @@ export {
   leafIdForPty,
   navigateFocusedBlocks,
   ptyIdForLeaf,
+  readTerminalBuffer,
   respawnSession,
   whenSessionReady,
   writeToReadySession,

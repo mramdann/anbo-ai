@@ -21,9 +21,7 @@ describe("agent MCP runtime wiring", () => {
         "C:\\work\\demo",
         true,
       ),
-    ).toBe(
-      "claude --model sonnet --mcp-config 'C:\\work\\demo\\.claude\\anbo-mcp.json'",
-    );
+    ).toBe("claude --model sonnet --mcp-config .claude/anbo-mcp.json");
   });
 
   it("does not override a custom Claude MCP config", () => {

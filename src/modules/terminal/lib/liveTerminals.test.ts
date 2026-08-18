@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Tab } from "@/modules/tabs/lib/useTabs";
 import {
   collectRetainedTerminalLeafIds,
+  selectBackgroundTerminalTabs,
   selectLiveTerminals,
 } from "./liveTerminals";
 
@@ -44,6 +45,18 @@ describe("selectLiveTerminals", () => {
       },
     ];
     expect(selectLiveTerminals(tabs).map((t) => t.id)).toEqual([1, 2]);
+  });
+
+  it("selects only warm terminals outside the active workspace", () => {
+    const tabs: Tab[] = [
+      term(1, { spaceId: "active" }),
+      term(2, { spaceId: "background" }),
+      term(3, { spaceId: "background", cold: true }),
+    ];
+
+    expect(
+      selectBackgroundTerminalTabs(tabs, "active").map((tab) => tab.id),
+    ).toEqual([2]);
   });
 
   it("retains every agent leaf across ten workspaces", () => {

@@ -3,7 +3,7 @@ import {
   submitAgentMessage,
 } from "@/modules/agents/lib/agentAutomation";
 import { useManagedAgentsStore } from "@/modules/agents/store/managedAgentsStore";
-import { writeToSession } from "@/modules/terminal";
+import { readTerminalBuffer, writeToSession } from "@/modules/terminal";
 import { tool } from "ai";
 import { z } from "zod";
 import type { ToolContext } from "./context";
@@ -74,6 +74,7 @@ export function buildManagedAgentTools(ctx: ToolContext) {
         if (
           !(await submitAgentMessage(
             writeToSession,
+            readTerminalBuffer,
             managed.leafId,
             normalized.message,
           ))

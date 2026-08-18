@@ -9,6 +9,15 @@ export function selectLiveTerminals(tabs: Tab[]): TerminalTab[] {
   return tabs.filter((t): t is TerminalTab => t.kind === "terminal" && !t.cold);
 }
 
+export function selectBackgroundTerminalTabs(
+  tabs: Tab[],
+  activeSpaceId: string,
+): TerminalTab[] {
+  return selectLiveTerminals(tabs).filter(
+    (tab) => tab.spaceId !== activeSpaceId,
+  );
+}
+
 export function collectRetainedTerminalLeafIds(tabs: Tab[]): Set<number> {
   const retained = new Set<number>();
   for (const tab of tabs) {

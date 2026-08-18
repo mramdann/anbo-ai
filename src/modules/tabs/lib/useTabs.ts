@@ -711,11 +711,12 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       agent: AgentTabNameRequest,
       instances: AgentInstanceCount,
       agentResumes: Array<PersistedAgentResume | undefined> = [],
+      options: { spaceId?: string; activate?: boolean } = {},
     ) => {
       if (!Number.isInteger(instances) || instances < 1 || instances > 4) {
         throw new RangeError("Agent instance count must be between 1 and 4.");
       }
-      const spaceId = activeSpaceIdRef.current;
+      const spaceId = options.spaceId ?? activeSpaceIdRef.current;
       const tabIds = Array.from(
         { length: instances },
         () => nextIdRef.current++,
@@ -736,7 +737,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
         });
         return [...current, ...created];
       });
-      setActiveId(tabIds[0]);
+      if (options.activate !== false) setActiveId(tabIds[0]);
       return { tabIds, leafIds: agentLeafIds };
     },
     [],

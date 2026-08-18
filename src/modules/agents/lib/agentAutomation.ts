@@ -16,8 +16,11 @@ const OUTPUT_HISTORY_CHARS = 64_000;
 const MAX_DEDUPLICATION_KEYS = 100;
 const MAX_TRACKED_AGENTS = 100;
 const SUBMIT_DELAY_MS = 90;
+const INPUT_READY_TIMEOUT_MS = 8_000;
+const INPUT_READY_POLL_MS = 25;
 
 export type AgentAutomationMethod =
+  | "agent_spawn"
   | "agent_list"
   | "agent_status"
   | "agent_read"
@@ -42,12 +45,22 @@ export type AgentDescriptor = {
   status: AgentStatus;
   phase: AgentPhase;
   tabId: number;
+  leafId: number;
   spaceId: string;
   workspace: string;
   sessionId?: string;
   active: boolean;
   startedAt: number;
   lastActivityAt: number;
+};
+
+export type AgentSpawnHandle = {
+  agentId: string;
+  cli: string;
+  tabId: number;
+  leafId: number;
+  spaceId: string;
+  workspace: string;
 };
 
 type ServiceDependencies = {
@@ -57,6 +70,10 @@ type ServiceDependencies = {
   getActiveTabId: () => number | null;
   getBuffer: (leafId: number) => string | null;
   write: (leafId: number, data: string) => boolean;
+  spawn: (
+    workspace: ResolvedWorkspace,
+    agent: string,
+  ) => AgentSpawnHandle | null;
   subscribeSessions: (
     listener: (
       sessions: Record<number, AgentSession>,
@@ -154,8 +171,21 @@ function tabHasLeaf(tab: TerminalTab, leafId: number): boolean {
   return visit(tab.paneTree);
 }
 
-export function agentIdFor(spaceId: string, leafId: number): string {
-  return `agent:${encodeURIComponent(spaceId)}:${leafId}`;
+function agentIdPart(value: string): string {
+  return value
+    .normalize("NFKD")
+    .toLocaleLowerCase()
+    .replace(/^custom:/, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+}
+
+export function agentIdFor(name: string, cli: string, tabId: number): string {
+  const cliPart = agentIdPart(cli) || "agent";
+  const namePart = agentIdPart(name) || cliPart;
+  const identity = namePart === cliPart ? cliPart : `${namePart}-${cliPart}`;
+  return `${identity}:${tabId}`;
 }
 
 export function collectWorkspaceAgents(
@@ -178,7 +208,7 @@ export function collectWorkspaceAgents(
       if (!tab || !tabHasLeaf(tab, session.leafId)) return [];
       return [
         {
-          agentId: agentIdFor(space.id, session.leafId),
+          agentId: agentIdFor(session.name, session.agent, session.tabId),
           name: session.name,
           cli: session.agent,
           status: session.status,
@@ -186,6 +216,7 @@ export function collectWorkspaceAgents(
             session.phase ??
             (session.status === "working" ? "working" : "attention"),
           tabId: session.tabId,
+          leafId: session.leafId,
           spaceId: space.id,
           workspace: space.root,
           sessionId: findResumeSessionId(tab, session.leafId),
@@ -223,11 +254,37 @@ export function sanitizeAgentMessage(
 
 export async function submitAgentMessage(
   write: (leafId: number, data: string) => boolean,
+  getBuffer: (leafId: number) => string | null,
   leafId: number,
   message: string,
+  verifyInput = false,
 ): Promise<boolean> {
+  const before = verifyInput ? getBuffer(leafId) : null;
   if (!write(leafId, message)) return false;
-  await new Promise<void>((resolve) => setTimeout(resolve, SUBMIT_DELAY_MS));
+  if (verifyInput) {
+    const needle = message.replace(/\s+/g, "").slice(-120);
+    const deadline = Date.now() + INPUT_READY_TIMEOUT_MS;
+    let observed = false;
+    while (Date.now() < deadline) {
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, INPUT_READY_POLL_MS),
+      );
+      const current = getBuffer(leafId);
+      if (
+        current !== null &&
+        current !== before &&
+        current.replace(/\s+/g, "").includes(needle)
+      ) {
+        observed = true;
+        break;
+      }
+    }
+    if (!observed) {
+      await new Promise<void>((resolve) => setTimeout(resolve, SUBMIT_DELAY_MS));
+    }
+  } else {
+    await new Promise<void>((resolve) => setTimeout(resolve, SUBMIT_DELAY_MS));
+  }
   return write(leafId, "\r");
 }
 
@@ -368,26 +425,36 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
   const sendQueues = new Map<string, Promise<AgentAutomationResponse>>();
   const sendAcknowledgements = new Map<string, number>();
   const messageIds = new Map<string, number>();
+  const initialSpawnLeaves = new Set<number>();
+
+  const resolveWorkspace = (
+    params: Record<string, unknown>,
+  ):
+    | { ok: true; workspace: ResolvedWorkspace }
+    | { ok: false; response: AgentAutomationResponse } => {
+    const workspace = resolveAgentWorkspace(deps.getSpaces(), params.workspace);
+    return workspace.ok
+      ? { ok: true, workspace: workspace.space }
+      : {
+          ok: false,
+          response: error("workspace_not_found", workspace.error),
+        };
+  };
 
   const resolveAgents = (
     params: Record<string, unknown>,
   ):
     | { ok: true; workspace: ResolvedWorkspace; agents: AgentDescriptor[] }
     | { ok: false; response: AgentAutomationResponse } => {
-    const workspace = resolveAgentWorkspace(deps.getSpaces(), params.workspace);
-    if (!workspace.ok) {
-      return {
-        ok: false,
-        response: error("workspace_not_found", workspace.error),
-      };
-    }
+    const resolved = resolveWorkspace(params);
+    if (!resolved.ok) return resolved;
     const agents = collectWorkspaceAgents(
       deps.getTabs(),
       deps.getSessions(),
-      workspace.space,
+      resolved.workspace,
       deps.getActiveTabId(),
     );
-    return { ok: true, workspace: workspace.space, agents };
+    return { ok: true, workspace: resolved.workspace, agents };
   };
 
   const resolveTarget = (
@@ -409,9 +476,19 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         response: error("invalid_request", "agentId is required"),
       };
     }
-    const agent = resolved.agents.find(
-      (candidate) => candidate.agentId === agentId,
-    );
+    const agent = resolved.agents.find((candidate) => {
+      const provisionalId = agentIdFor(
+        candidate.cli,
+        candidate.cli,
+        candidate.tabId,
+      );
+      const legacyId = `agent:${encodeURIComponent(resolved.workspace.id)}:${candidate.leafId}`;
+      return (
+        candidate.agentId === agentId ||
+        provisionalId === agentId ||
+        legacyId === agentId
+      );
+    });
     if (!agent) {
       output.remove(agentId);
       sendAcknowledgements.delete(agentId);
@@ -423,8 +500,12 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         ),
       };
     }
-    const leafId = Number(agentId.slice(agentId.lastIndexOf(":") + 1));
-    return { ok: true, workspace: resolved.workspace, agent, leafId };
+    return {
+      ok: true,
+      workspace: resolved.workspace,
+      agent,
+      leafId: agent.leafId,
+    };
   };
 
   const waitFor = async (
@@ -490,6 +571,38 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     });
   };
 
+  const waitForSpawn = (
+    workspace: ResolvedWorkspace,
+    leafId: number,
+    timeoutMs: number,
+  ): Promise<AgentDescriptor | null> =>
+    new Promise((resolve) => {
+      let settled = false;
+      let unsubscribe = () => {};
+      const inspect = () => {
+        if (settled) return;
+        const agent = collectWorkspaceAgents(
+          deps.getTabs(),
+          deps.getSessions(),
+          workspace,
+          deps.getActiveTabId(),
+        ).find((candidate) => candidate.leafId === leafId);
+        if (!agent) return;
+        settled = true;
+        clearTimeout(timer);
+        unsubscribe();
+        resolve(agent);
+      };
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        unsubscribe();
+        resolve(null);
+      }, timeoutMs);
+      unsubscribe = deps.subscribeSessions(inspect);
+      inspect();
+    });
+
   const send = async (
     params: Record<string, unknown>,
   ): Promise<AgentAutomationResponse> => {
@@ -546,10 +659,12 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     ) {
       sendAcknowledgements.delete(target.agent.agentId);
     }
-    if (target.agent.status !== "waiting") {
-      if (!waitForReady) {
-        return error("agent_busy", `${target.agent.name} is currently working`);
-      }
+    const acceptsInitialSpawnMessage = initialSpawnLeaves.has(target.leafId);
+    if (
+      target.agent.status !== "waiting" &&
+      waitForReady &&
+      !acceptsInitialSpawnMessage
+    ) {
       const waited = await waitFor(params, "waiting", timeout);
       if (!waited.matched) {
         return error(
@@ -565,10 +680,17 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     if (!current.ok) return current.response;
     if (
       !deps.getSessions()[current.leafId] ||
-      !(await submitAgentMessage(deps.write, current.leafId, message.message))
+      !(await submitAgentMessage(
+        deps.write,
+        deps.getBuffer,
+        current.leafId,
+        message.message,
+        acceptsInitialSpawnMessage || current.agent.cli === "codex",
+      ))
     ) {
       return error("agent_not_found", "agent terminal is no longer available");
     }
+    initialSpawnLeaves.delete(current.leafId);
     sendAcknowledgements.set(
       current.agent.agentId,
       current.agent.lastActivityAt,
@@ -601,6 +723,44 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       request: AgentAutomationRequest,
     ): Promise<AgentAutomationResponse> {
       const params = request.params ?? {};
+      if (request.method === "agent_spawn") {
+        const resolved = resolveWorkspace(params);
+        if (!resolved.ok) return resolved.response;
+        const requestedAgent = paramString(params, "agent");
+        if (!requestedAgent) {
+          return error("invalid_request", "agent is required");
+        }
+        const spawned = deps.spawn(resolved.workspace, requestedAgent);
+        if (!spawned) {
+          return error(
+            "launch_failed",
+            `${requestedAgent} is not registered or could not be launched in ${resolved.workspace.root}`,
+          );
+        }
+        initialSpawnLeaves.add(spawned.leafId);
+        while (initialSpawnLeaves.size > MAX_TRACKED_AGENTS) {
+          const oldest = initialSpawnLeaves.values().next().value;
+          if (oldest === undefined) break;
+          initialSpawnLeaves.delete(oldest);
+        }
+        const timeout =
+          typeof params.timeout === "number" && Number.isInteger(params.timeout)
+            ? Math.max(100, Math.min(60_000, params.timeout))
+            : 15_000;
+        const agent = await waitForSpawn(
+          resolved.workspace,
+          spawned.leafId,
+          timeout,
+        );
+        return {
+          result: {
+            ok: true,
+            pending: agent === null,
+            placement: "background",
+            agent: agent ?? spawned,
+          },
+        };
+      }
       if (request.method === "agent_list") {
         const resolved = resolveAgents(params);
         if (!resolved.ok) return resolved.response;
@@ -686,6 +846,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       sendQueues.clear();
       sendAcknowledgements.clear();
       messageIds.clear();
+      initialSpawnLeaves.clear();
     },
   };
 }
