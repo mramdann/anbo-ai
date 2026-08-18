@@ -226,6 +226,42 @@ describe("agent messages", () => {
     service.dispose();
   });
 
+  it("does not acknowledge or submit Codex input that was never rendered", async () => {
+    vi.useFakeTimers();
+    const writes: Array<[number, string]> = [];
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab()] as Tab[],
+      getSpaces: () => [space()],
+      getSessions: () => ({
+        101: session({ agent: "codex", name: "Spica" }),
+      }),
+      getActiveTabId: () => null,
+      getBuffer: () => "Codex is still starting",
+      write: (leafId, data) => {
+        writes.push([leafId, data]);
+        return true;
+      },
+      spawn: () => null,
+      subscribeSessions: () => () => {},
+    });
+
+    const pending = service.handle({
+      requestId: "request-codex-not-ready",
+      method: "agent_send",
+      params: {
+        workspace: "space-a",
+        agentId: "spica-codex:10",
+        message: "SPICA AGENT OK",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(8_000);
+    await expect(pending).resolves.toMatchObject({
+      error: { code: "agent_not_ready" },
+    });
+    expect(writes).toEqual([[101, "SPICA AGENT OK"]]);
+    service.dispose();
+  });
+
   it("sends immediately to a working agent when readiness waiting is disabled", async () => {
     vi.useFakeTimers();
     const writes: Array<[number, string]> = [];

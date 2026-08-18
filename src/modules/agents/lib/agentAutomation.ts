@@ -280,7 +280,7 @@ export async function submitAgentMessage(
       }
     }
     if (!observed) {
-      await new Promise<void>((resolve) => setTimeout(resolve, SUBMIT_DELAY_MS));
+      return false;
     }
   } else {
     await new Promise<void>((resolve) => setTimeout(resolve, SUBMIT_DELAY_MS));
@@ -678,17 +678,21 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
 
     const current = resolveTarget(params);
     if (!current.ok) return current.response;
-    if (
-      !deps.getSessions()[current.leafId] ||
-      !(await submitAgentMessage(
-        deps.write,
-        deps.getBuffer,
-        current.leafId,
-        message.message,
-        acceptsInitialSpawnMessage || current.agent.cli === "codex",
-      ))
-    ) {
+    if (!deps.getSessions()[current.leafId]) {
       return error("agent_not_found", "agent terminal is no longer available");
+    }
+    const submitted = await submitAgentMessage(
+      deps.write,
+      deps.getBuffer,
+      current.leafId,
+      message.message,
+      acceptsInitialSpawnMessage || current.agent.cli === "codex",
+    );
+    if (!submitted) {
+      return error(
+        "agent_not_ready",
+        `${current.agent.name} did not render the input before timeout; retry after the CLI reaches its prompt`,
+      );
     }
     initialSpawnLeaves.delete(current.leafId);
     sendAcknowledgements.set(
