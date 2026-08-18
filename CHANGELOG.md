@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.2](https://github.com/mramdann/anbo-ai/compare/v0.16.1...v0.16.2) (2026-08-18)
+
+
+### Bug Fixes
+
+* **release:** automate updater publication ([61feac8](https://github.com/mramdann/anbo-ai/commit/61feac85c27df5ce6b5410d73fbe8aba96e53099))
+
 ## [0.16.1](https://github.com/mramdann/anbo-ai/compare/v0.16.0...v0.16.1) (2026-08-18)
 
 
