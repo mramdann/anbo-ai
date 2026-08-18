@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/mramdann/anbo-ai/compare/v0.16.0...v0.16.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **agents:** reject unrendered Codex input ([ed66391](https://github.com/mramdann/anbo-ai/commit/ed66391b680f9e49ee8642cddefc175fea5bbe94))
+
 ## [0.16.0](https://github.com/mramdann/anbo-ai/compare/v0.15.1...v0.16.0) (2026-08-18)
 
 
