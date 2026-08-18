@@ -16,6 +16,19 @@ jobs:
       id-token: write
 
     steps:
+      - name: Validate SignPath credentials
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+        run: |
+          $headers = @{ Authorization = "Bearer $env:SIGNPATH_API_TOKEN" }
+          $uri = "https://app.signpath.io/Api/v1/$env:SIGNPATH_ORGANIZATION_ID/Projects"
+          $response = Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $uri
+          if ($response.StatusCode -ne 200) {
+            throw "SignPath credential validation returned HTTP $($response.StatusCode)"
+          }
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
@@ -69,11 +82,11 @@ jobs:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
           project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: 'test-signing'
-          artifact-configuration-slug: 'initial'
+          signing-policy-slug: "test-signing"
+          artifact-configuration-slug: "initial"
           github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
           wait-for-completion: true
-          output-artifact-directory: 'signed'
+          output-artifact-directory: "signed"
 
       - name: Verify signatures exist
         shell: pwsh
