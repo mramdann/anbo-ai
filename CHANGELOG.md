@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.16.0](https://github.com/mramdann/anbo-ai/compare/v0.15.1...v0.16.0) (2026-08-18)
+
+
+### Features
+
+* add MCP agent orchestration ([f2e94cd](https://github.com/mramdann/anbo-ai/commit/f2e94cdd21d51ac9b222a4f525a5e3c254cd1a06))
+* add workspace agent MCP and harden lifecycle ([083588e](https://github.com/mramdann/anbo-ai/commit/083588e486c24e14a5b3360a0ff4657e7d3b919c))
+* **browser:** open workspace files from explorer ([4dd60e5](https://github.com/mramdann/anbo-ai/commit/4dd60e571fb5f9c169d6725f1d22adeb18297826))
+
+
+### Bug Fixes
+
+* **agents:** harden lifecycle notifications and routing ([29da08a](https://github.com/mramdann/anbo-ai/commit/29da08a1ae644830fdbd9212f16073c2c03845db))
+* **agents:** migrate legacy Claude MCP config ([169ff9d](https://github.com/mramdann/anbo-ai/commit/169ff9db634f0d37ba27f2fba42316d5b74f10b2))
+* **ci:** gate sidecar token helpers to Windows ([ef49f8e](https://github.com/mramdann/anbo-ai/commit/ef49f8eb6424f004d5600ee0c97d26b02b48b3d9))
+* **release:** restore Cargo lock version annotation ([2689d88](https://github.com/mramdann/anbo-ai/commit/2689d8809cd7d65a79f965794bba2d4cb6a147f0))
+* **tabs:** preserve runtime ids across remounts ([c1885e5](https://github.com/mramdann/anbo-ai/commit/c1885e517f81cd5751ebaf8599f5351f0a2f7241))
+
 ## [0.15.1](https://github.com/mramdann/anbo-ai/compare/v0.15.0...v0.15.1) (2026-08-16)
 
 
