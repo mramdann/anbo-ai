@@ -80,6 +80,14 @@ Anbo is a lightweight open-source terminal (ADE) built on Tauri 2 + Rust and Rea
 - Curated dev-server port presets and a sandboxed iframe fallback
 - AI automation tools (snapshot, click, type, scroll, screenshot, history) drive the active browser tab, plus an `anbo-browser` CLI / MCP sidecar
 
+### CLI agents
+
+- Launch Claude, Codex, OpenCode, and Antigravity in independent workspace-scoped terminal tabs
+- Resume supported CLI sessions while preserving tab identity and multi-pane layouts
+- Assign readable per-workspace callsigns such as `spica-codex:21`
+- Coordinate agents through local MCP tools: `agent_spawn`, `agent_list`, `agent_status`, `agent_read`, `agent_send`, and `agent_wait`
+- Run background agents without activating their workspace or stealing the user's current tab focus
+
 ### Themes and customization
 
 - Custom themes built in-app, switch between bundled presets and your own
@@ -116,6 +124,23 @@ Latest installers are on the [Releases](https://github.com/mramdann/anbo-ai/rele
 1. Open **Settings -> AI**.
 2. Pick a provider and paste your API key. For local inference, point Anbo at your LM Studio / MLX / Ollama endpoint.
 3. Keys are written to the OS keychain via `keyring`. They never touch disk or localStorage.
+
+## Connect to Anbo MCP
+
+Enable **Settings -> Browser automation** and connect an MCP client to Anbo's loopback-only endpoint:
+
+```json
+{
+  "mcpServers": {
+    "anbomcp": {
+      "type": "http",
+      "url": "http://127.0.0.1:7331/mcp"
+    }
+  }
+}
+```
+
+The server exposes `browser_*` automation and `agent_*` orchestration tools. Agent operations require an explicit workspace path or space id and never switch the user's active workspace. Automatic project-local MCP setup is available for Claude, Codex, OpenCode, and Antigravity from Settings. The HTTP endpoint accepts loopback connections only and does not require a token in project configuration.
 
 ## Build from source
 
