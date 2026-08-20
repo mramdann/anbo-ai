@@ -1430,7 +1430,12 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
   useLayoutEffect(() => {
     if (!api) return;
     const panel = api.getPanel(workspaceDockviewPanelId(props.activeId));
-    if (panel && api.activePanel !== panel) panel.api.setActive();
+    if (panel) {
+      if (api.activePanel !== panel) panel.api.setActive();
+      if (panel.group && api.activeGroup !== panel.group) {
+        panel.group.focus();
+      }
+    }
   }, [api, props.activeId]);
 
   useEffect(() => {

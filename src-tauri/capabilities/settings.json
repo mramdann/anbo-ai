@@ -12,6 +12,7 @@
     "core:window:allow-start-dragging",
     "core:window:allow-close",
     "core:window:allow-destroy",
+    "core:window:allow-show",
     "opener:default",
     "os:allow-arch",
     "os:allow-platform",

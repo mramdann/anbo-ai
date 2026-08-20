@@ -20,6 +20,7 @@ describe("WorkspaceDockview visual handoff", () => {
     expect(source).toMatch(
       /useLayoutEffect\(\(\) => \{\s*if \(!api\) return;\s*const panel = api\.getPanel\(workspaceDockviewPanelId\(props\.activeId\)\)/,
     );
+    expect(source).toContain("panel.group.focus()");
   });
 
   it("ignores minimized geometry and forces one stable layout on restore", () => {
