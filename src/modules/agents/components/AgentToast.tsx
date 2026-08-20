@@ -22,6 +22,9 @@ export function showAgentToast({
   const detail = [displayAgent(agent), workspace, body]
     .filter(Boolean)
     .join(" · ");
+  void import("../lib/attentionSound")
+    .then(({ playAttentionSound }) => playAttentionSound())
+    .catch(() => {});
   toast(title, {
     description: detail ? (
       hint ? (
@@ -36,7 +39,13 @@ export function showAgentToast({
       )
     ) : undefined,
     icon: <AgentIcon agent={agent} size={18} />,
-    action: { label: "Open", onClick: onActivate },
+    action: {
+      label: "Open",
+      onClick: (event) => {
+        event?.preventDefault?.();
+        onActivate();
+      },
+    },
     duration: 30_000,
   });
 }

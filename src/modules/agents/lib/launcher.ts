@@ -4,7 +4,7 @@ export const AGENT_LAUNCHERS = [
     icon: "claude",
     label: "Claude",
     defaultCommand: "claude",
-    supportsHooks: true,
+    supportsHooks: false,
     custom: false,
   },
   {
@@ -12,7 +12,7 @@ export const AGENT_LAUNCHERS = [
     icon: "codex",
     label: "Codex",
     defaultCommand: "codex",
-    supportsHooks: true,
+    supportsHooks: false,
     custom: false,
   },
   {
@@ -20,7 +20,7 @@ export const AGENT_LAUNCHERS = [
     icon: "antigravity",
     label: "Antigravity",
     defaultCommand: "agy",
-    supportsHooks: true,
+    supportsHooks: false,
     custom: false,
   },
   {
@@ -28,7 +28,7 @@ export const AGENT_LAUNCHERS = [
     icon: "pi",
     label: "Pi",
     defaultCommand: "pi",
-    supportsHooks: true,
+    supportsHooks: false,
     custom: false,
   },
   {
@@ -36,7 +36,7 @@ export const AGENT_LAUNCHERS = [
     icon: "opencode",
     label: "OpenCode",
     defaultCommand: "opencode",
-    supportsHooks: true,
+    supportsHooks: false,
     custom: false,
   },
   {

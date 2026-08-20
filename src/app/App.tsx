@@ -28,16 +28,12 @@ import {
   MAX_PARALLEL_OPENCODE_AGENTS,
   nextAttentionTarget,
   pollCodexSession,
-  shouldPinAgentSession,
   validateAgentLaunchCommand,
   withAgentMcpRuntime,
 } from "@/modules/agents";
-import {
-  AGENT_RESPONSE_EVENT,
-  agentIdFor,
-  createAgentAutomationService,
-} from "@/modules/agents/lib/agentAutomation";
 import { setAgentRequestHandler } from "@/modules/agents/lib/agentAutomationBridge";
+import { AGENT_RESPONSE_EVENT } from "@/modules/agents/lib/agentAutomationProtocol";
+import { agentIdFor } from "@/modules/agents/lib/agentIdentity";
 import { useAgentStore } from "@/modules/agents/store/agentStore";
 import {
   AgentRunBridge,
@@ -166,19 +162,22 @@ import { useAppCloseGuard } from "./hooks/useAppCloseGuard";
 import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
 import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
 
-async function discoverCodexSession({
+async function discoverAgentSession({
+  agent,
   cwd,
   sinceTs,
   claimed,
   workspace,
 }: {
+  agent: string;
   cwd: string;
   sinceTs: number;
   claimed: ReadonlySet<string>;
   workspace: WorkspaceEnv;
 }): Promise<string | null> {
   return pollCodexSession(() =>
-    invoke<string | null>("anbo_find_codex_session", {
+    invoke<string | null>("anbo_find_agent_session", {
+      agent,
       cwd,
       sinceTs,
       claimed: [...claimed],
@@ -220,6 +219,7 @@ export default function App() {
     newAgentTab,
     newAgentTabs,
     pinAgentResumeSession,
+    clearAgentResume,
     newPrivateTab,
     openFileTab,
     pinTab,
@@ -279,9 +279,9 @@ export default function App() {
         return;
       }
       attempts += 1;
-      if (attempts < 12) requestAnimationFrame(focus);
+      if (attempts < 16) requestAnimationFrame(focus);
     };
-    requestAnimationFrame(focus);
+    setTimeout(() => requestAnimationFrame(focus), 0);
   }, []);
   const editorRefs = useRef<Map<number, EditorPaneHandle>>(new Map());
   const browserRefs = useRef<Map<number, BrowserPaneHandle>>(new Map());
@@ -355,6 +355,42 @@ export default function App() {
     },
     [spaceEnvironments, workspaceEnv],
   );
+  const cleanedAgentHookRootsRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (!spacesHydrated) return;
+    for (const space of spaceEnvironments) {
+      if (!space.root || cleanedAgentHookRootsRef.current.has(space.root)) {
+        continue;
+      }
+      cleanedAgentHookRootsRef.current.add(space.root);
+      void (async () => {
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          try {
+            const removed = await invoke<number>("agent_cleanup_hooks", {
+              workspaceRoot: space.root,
+              workspace: space.env,
+            });
+            if (removed > 0) {
+              console.info(
+                `[anbo] removed ${removed} project agent hook integration(s) from ${space.root}`,
+              );
+            }
+            return;
+          } catch (error) {
+            if (attempt === 9) {
+              cleanedAgentHookRootsRef.current.delete(space.root ?? "");
+              console.warn(
+                "[anbo] could not remove project agent hooks:",
+                error,
+              );
+              return;
+            }
+            await new Promise((resolve) => window.setTimeout(resolve, 300));
+          }
+        }
+      })();
+    }
+  }, [spaceEnvironments, spacesHydrated]);
   // Welcome when the ACTIVE space has no tabs (not total tabs — other spaces may
   // have tabs). Closing the last terminal in a space → welcome for that space.
   const showWorkspaceWelcome =
@@ -785,64 +821,48 @@ export default function App() {
   }, [newBlockTab, inheritedCwdForNewTab]);
 
   const resumedAgentLeavesRef = useRef(new Set<number>());
-  const codexDiscoveryLeavesRef = useRef(new Set<number>());
-  const codexRecoveryRunningRef = useRef(false);
-  const [codexDiscoveryRetry, setCodexDiscoveryRetry] = useState(0);
-  const handleAgentSession = useCallback(
-    (leafId: number, agent: string, sessionId: string) => {
-      if (shouldPinAgentSession(agent)) {
-        pinAgentResumeSession(leafId, sessionId);
-      }
-    },
-    [pinAgentResumeSession],
-  );
+  const agentDiscoveryLeavesRef = useRef(new Set<number>());
+  const requestedAgentDiscoveryLeavesRef = useRef(new Set<number>());
+  const agentRecoveryRunningRef = useRef(false);
+  const [agentDiscoveryRetry, setAgentDiscoveryRetry] = useState(0);
+  const handleAgentSettled = useCallback((leafId: number) => {
+    requestedAgentDiscoveryLeavesRef.current.add(leafId);
+    setAgentDiscoveryRetry((value) => value + 1);
+  }, []);
   useEffect(() => {
-    const hookPromises = new Map<string, Promise<unknown>>();
     const mcpPromises = new Map<string, Promise<boolean>>();
-    const hookWorkspace = workspaceForSpace(activeSpaceId ?? DEFAULT_SPACE_ID);
+    let resumeDelay = 0;
     for (const tab of tabs) {
-      if (
-        tab.spaceId !== (activeSpaceId ?? DEFAULT_SPACE_ID) ||
-        tab.kind !== "terminal" ||
-        tab.cold
-      ) {
+      if (tab.kind !== "terminal") continue;
+      const agentLeaves = collectAgentResumeLeaves(tab.paneTree);
+      if (!agentLeaves.some(({ resume }) => resume.resumeOnStart)) continue;
+      if (tab.cold) {
+        warmTab(tab.id);
         continue;
       }
-      for (const leaf of collectAgentResumeLeaves(tab.paneTree)) {
+      const space = spaceEnvironments.find(
+        (candidate) => candidate.id === tab.spaceId,
+      );
+      if (!space) continue;
+      const targetRoot = space.root;
+      const targetWorkspace = space.env;
+      for (const leaf of agentLeaves) {
         if (
           !leaf.resume.resumeOnStart ||
           resumedAgentLeavesRef.current.has(leaf.id)
         ) {
           continue;
         }
-        if (leaf.resume.agent === "opencode" && workspaceEnv.kind !== "local") {
+        if (
+          leaf.resume.agent === "opencode" &&
+          targetWorkspace.kind !== "local"
+        ) {
           continue;
         }
         const baseResumeCommand = buildAgentResumeCommand(leaf.resume);
         if (!baseResumeCommand) continue;
-        const launcher = findAgentLauncher(leaf.resume.agent, customCliAgents);
-        let hooksReady = Promise.resolve<unknown>(undefined);
-        if (launcher?.supportsHooks && activeSpaceRoot) {
-          const key = `${tab.spaceId}:${leaf.resume.agent}`;
-          const existing = hookPromises.get(key);
-          if (existing) {
-            hooksReady = existing;
-          } else {
-            hooksReady = invoke("agent_enable_hooks", {
-              agent: leaf.resume.agent,
-              workspaceRoot: activeSpaceRoot,
-              workspace: hookWorkspace,
-            }).catch((error) => {
-              console.warn(
-                `[anbo] could not enable ${leaf.resume.agent} notifications before resume:`,
-                error,
-              );
-            });
-            hookPromises.set(key, hooksReady);
-          }
-        }
         let mcpReady = Promise.resolve(false);
-        if (isMcpAgentId(leaf.resume.agent) && activeSpaceRoot) {
+        if (isMcpAgentId(leaf.resume.agent) && targetRoot) {
           const key = `${tab.spaceId}:${leaf.resume.agent}`;
           const existing = mcpPromises.get(key);
           if (existing) {
@@ -851,8 +871,8 @@ export default function App() {
             const enabled = agentMcpEnabled[leaf.resume.agent];
             mcpReady = invoke("agent_configure_mcp", {
               agent: leaf.resume.agent,
-              workspaceRoot: activeSpaceRoot,
-              workspace: hookWorkspace,
+              workspaceRoot: targetRoot,
+              workspace: targetWorkspace,
               enabled,
             })
               .then(() => enabled)
@@ -870,14 +890,19 @@ export default function App() {
           }
         }
         resumedAgentLeavesRef.current.add(leaf.id);
+        const delay = resumeDelay;
+        resumeDelay += 4_000;
         void (async () => {
-          const [, mcpConfigured] = await Promise.all([hooksReady, mcpReady]);
+          if (delay > 0) {
+            await new Promise<void>((resolve) => setTimeout(resolve, delay));
+          }
+          const mcpConfigured = await mcpReady;
           const resumeCommand = mcpConfigured
             ? withAgentMcpRuntime(
                 leaf.resume.agent,
                 baseResumeCommand,
-                activeSpaceRoot ?? "",
-                hookWorkspace.kind === "local",
+                targetRoot ?? "",
+                targetWorkspace.kind === "local",
               )
             : baseResumeCommand;
           if (!(await writeToReadySession(leaf.id, `${resumeCommand}\r`))) {
@@ -890,91 +915,86 @@ export default function App() {
       }
     }
   }, [
-    activeSpaceId,
-    activeSpaceRoot,
     agentMcpEnabled,
-    customCliAgents,
+    spaceEnvironments,
     tabs,
-    workspaceEnv.kind,
-    workspaceForSpace,
+    warmTab,
   ]);
 
   useEffect(() => {
-    if (
-      workspaceEnv.kind !== "local" ||
-      !activeSpaceRoot ||
-      codexRecoveryRunningRef.current
-    ) {
-      return;
-    }
-    const spaceId = activeSpaceId ?? DEFAULT_SPACE_ID;
+    if (agentRecoveryRunningRef.current) return;
     const pending = tabs
-      .flatMap((tab) =>
-        tab.spaceId === spaceId && tab.kind === "terminal" && !tab.cold
-          ? collectAgentResumeLeaves(tab.paneTree)
-          : [],
-      )
+      .flatMap((tab) => {
+        if (tab.kind !== "terminal" || tab.cold) return [];
+        const space = spaceEnvironments.find(
+          (candidate) => candidate.id === tab.spaceId,
+        );
+        if (!space?.root || space.env.kind !== "local") return [];
+        return collectAgentResumeLeaves(tab.paneTree).map((leaf) => ({
+          leaf,
+          root: space.root as string,
+          workspace: space.env,
+        }));
+      })
       .filter(
-        (leaf) =>
-          leaf.resume.agent === "codex" &&
+        ({ leaf }) =>
           !leaf.resume.sessionId &&
           leaf.resume.armed === false &&
-          !codexDiscoveryLeavesRef.current.has(leaf.id),
+          requestedAgentDiscoveryLeavesRef.current.has(leaf.id) &&
+          !agentDiscoveryLeavesRef.current.has(leaf.id),
       );
     if (pending.length === 0) return;
     const recoverable = pending.filter(
-      (leaf) =>
-        leaf.resume.discoveryStartedAt !== undefined || pending.length === 1,
+      ({ leaf }) => leaf.resume.discoveryStartedAt !== undefined,
     );
     if (recoverable.length === 0) return;
 
-    codexRecoveryRunningRef.current = true;
+    agentRecoveryRunningRef.current = true;
     void (async () => {
       try {
-        const claimed = new Set<string>();
+        const claimedByAgent = new Map<string, Set<string>>();
         for (const tab of tabsRef.current) {
           if (tab.kind !== "terminal") continue;
           for (const leaf of collectAgentResumeLeaves(tab.paneTree)) {
-            if (leaf.resume.agent === "codex" && leaf.resume.sessionId) {
-              claimed.add(leaf.resume.sessionId);
-            }
+            if (!leaf.resume.sessionId) continue;
+            const claimed =
+              claimedByAgent.get(leaf.resume.agent) ?? new Set<string>();
+            claimed.add(leaf.resume.sessionId);
+            claimedByAgent.set(leaf.resume.agent, claimed);
           }
         }
-        for (const leaf of recoverable) {
-          codexDiscoveryLeavesRef.current.add(leaf.id);
+        for (const { leaf, root, workspace } of recoverable) {
+          agentDiscoveryLeavesRef.current.add(leaf.id);
           try {
-            const sessionId = await discoverCodexSession({
-              cwd: leaf.cwd ?? activeSpaceRoot,
+            const claimed =
+              claimedByAgent.get(leaf.resume.agent) ?? new Set<string>();
+            const sessionId = await discoverAgentSession({
+              agent: leaf.resume.agent,
+              cwd: leaf.cwd ?? root,
               sinceTs: leaf.resume.discoveryStartedAt ?? 0,
               claimed,
-              workspace: workspaceForSpace(spaceId),
+              workspace,
             });
             if (sessionId) {
               claimed.add(sessionId);
+              claimedByAgent.set(leaf.resume.agent, claimed);
               pinAgentResumeSession(leaf.id, sessionId);
+              requestedAgentDiscoveryLeavesRef.current.delete(leaf.id);
             }
           } catch (error) {
             console.warn(
-              `[anbo] could not recover Codex session for terminal ${leaf.id} on attempt ${codexDiscoveryRetry + 1}:`,
+              `[anbo] could not recover ${leaf.resume.agent} session for terminal ${leaf.id} on attempt ${agentDiscoveryRetry + 1}:`,
               error,
             );
           } finally {
-            codexDiscoveryLeavesRef.current.delete(leaf.id);
+            agentDiscoveryLeavesRef.current.delete(leaf.id);
           }
         }
       } finally {
-        codexRecoveryRunningRef.current = false;
+        agentRecoveryRunningRef.current = false;
       }
     })();
-  }, [
-    activeSpaceId,
-    activeSpaceRoot,
-    codexDiscoveryRetry,
-    pinAgentResumeSession,
-    tabs,
-    workspaceEnv.kind,
-    workspaceForSpace,
-  ]);
+  }, [agentDiscoveryRetry, pinAgentResumeSession, spaceEnvironments, tabs]);
 
   const launchAgentGroupAt = useCallback(
     (request: AgentLaunchRequest, target: AgentLaunchTarget) => {
@@ -1011,27 +1031,7 @@ export default function App() {
         agentResumes,
         { spaceId: target.spaceId, activate: target.activate },
       );
-      const discoversCodex =
-        request.agent === "codex" && target.workspace.kind === "local";
-      if (discoversCodex) {
-        for (const leafId of agentLeafIds) {
-          codexDiscoveryLeavesRef.current.add(leafId);
-        }
-      }
-      const hookWorkspace = target.workspace;
-      const hooksReady =
-        launcher.supportsHooks && target.root
-          ? invoke("agent_enable_hooks", {
-              agent: request.agent,
-              workspaceRoot: target.root,
-              workspace: hookWorkspace,
-            }).catch((error) => {
-              console.warn(
-                `[anbo] could not enable ${request.agent} notifications:`,
-                error,
-              );
-            })
-          : Promise.resolve();
+      const targetWorkspace = target.workspace;
       const mcpEnabled =
         isMcpAgentId(request.agent) && agentMcpEnabled[request.agent];
       const mcpReady =
@@ -1039,7 +1039,7 @@ export default function App() {
           ? invoke("agent_configure_mcp", {
               agent: request.agent,
               workspaceRoot: target.root,
-              workspace: hookWorkspace,
+              workspace: targetWorkspace,
               enabled: mcpEnabled,
             })
               .then(() => mcpEnabled)
@@ -1056,7 +1056,7 @@ export default function App() {
           : Promise.resolve(false);
 
       const launch = async () => {
-        const [, mcpConfigured] = await Promise.all([hooksReady, mcpReady]);
+        const mcpConfigured = await mcpReady;
         const launchOne = async (leafId: number, index: number) => {
           const resume = agentResumes[index];
           const baseLaunchCommand = buildAgentLaunchCommand(
@@ -1069,7 +1069,7 @@ export default function App() {
                   request.agent,
                   baseLaunchCommand,
                   target.root,
-                  hookWorkspace.kind === "local",
+                  targetWorkspace.kind === "local",
                 )
               : baseLaunchCommand;
           if (!(await writeToReadySession(leafId, `${launchCommand}\r`))) {
@@ -1079,57 +1079,6 @@ export default function App() {
           }
         };
 
-        const codexCwd = agentCwd ?? target.root ?? undefined;
-        if (discoversCodex && codexCwd) {
-          const claimed = new Set<string>();
-          for (const tab of tabsRef.current) {
-            if (tab.kind !== "terminal") continue;
-            for (const leaf of collectAgentResumeLeaves(tab.paneTree)) {
-              if (leaf.resume.agent === "codex" && leaf.resume.sessionId) {
-                claimed.add(leaf.resume.sessionId);
-              }
-            }
-          }
-
-          // Start Codex panes one at a time so each newly-created rollout can
-          // be bound to the exact leaf that launched it. The wait is only for
-          // session metadata creation, not for the agent's first response.
-          for (const [index, leafId] of agentLeafIds.entries()) {
-            const sinceTs =
-              agentResumes[index]?.discoveryStartedAt ?? Date.now() - 1_000;
-            let discovered = false;
-            try {
-              await launchOne(leafId, index);
-              const sessionId = await discoverCodexSession({
-                cwd: codexCwd,
-                sinceTs,
-                claimed,
-                workspace: hookWorkspace,
-              });
-              if (sessionId) {
-                discovered = true;
-                claimed.add(sessionId);
-                pinAgentResumeSession(leafId, sessionId);
-              } else {
-                console.warn(
-                  `[anbo] Codex session discovery timed out for terminal ${leafId}`,
-                );
-              }
-            } catch (error) {
-              console.warn(
-                `[anbo] could not discover Codex session for terminal ${leafId}:`,
-                error,
-              );
-            } finally {
-              codexDiscoveryLeavesRef.current.delete(leafId);
-              if (!discovered) {
-                setCodexDiscoveryRetry((value) => value + 1);
-              }
-            }
-          }
-          return;
-        }
-
         await Promise.all(
           agentLeafIds.map((leafId, index) => launchOne(leafId, index)),
         );
@@ -1137,7 +1086,7 @@ export default function App() {
       void launch();
       return { tabIds, leafIds: agentLeafIds };
     },
-    [agentMcpEnabled, customCliAgents, newAgentTabs, pinAgentResumeSession],
+    [agentMcpEnabled, customCliAgents, newAgentTabs],
   );
 
   const launchAgentGroup = useCallback(
@@ -1401,56 +1350,69 @@ export default function App() {
   }, [activeBrowserTabIds]);
 
   useEffect(() => {
-    const service = createAgentAutomationService({
-      getTabs: () => tabsRef.current,
-      getSpaces: () => useSpaces.getState().spaces,
-      getSessions: () => useAgentStore.getState().sessions,
-      getActiveTabId: () => activeIdRef.current,
-      getBuffer: (leafId) => readTerminalBuffer(leafId, 400),
-      write: writeToSession,
-      spawn: (workspace, agent) => {
-        const space = useSpaces
-          .getState()
-          .spaces.find(
-            (candidate) =>
-              candidate.id === workspace.id &&
-              candidate.root === workspace.root,
-          );
-        if (!space?.root) return null;
-        const preferences = usePreferencesStore.getState();
-        const request = configuredAgentLaunchRequest(
-          agent,
-          preferences.agentLaunchCommands,
-          preferences.customCliAgents,
-        );
-        if (!request) return null;
-        const launched = launchAgentGroupAtRef.current(request, {
-          spaceId: space.id,
-          root: space.root,
-          cwd: space.root,
-          workspace: space.env,
-          activate: false,
-        });
-        if (!launched) return null;
-        const tabId = launched.tabIds[0];
-        const leafId = launched.leafIds[0];
-        return {
-          agentId: agentIdFor(request.agent, request.agent, tabId),
-          cli: request.agent,
-          tabId,
-          leafId,
-          spaceId: space.id,
-          workspace: space.root,
-        };
-      },
-      subscribeSessions: (listener) =>
-        useAgentStore.subscribe((state, previous) =>
-          listener(state.sessions, previous.sessions),
-        ),
-    });
+    let servicePromise:
+      | Promise<
+          ReturnType<
+            typeof import("@/modules/agents/lib/agentAutomation")["createAgentAutomationService"]
+          >
+        >
+      | undefined;
+    const getService = () => {
+      servicePromise ??= import("@/modules/agents/lib/agentAutomation").then(
+        ({ createAgentAutomationService }) =>
+          createAgentAutomationService({
+            getTabs: () => tabsRef.current,
+            getSpaces: () => useSpaces.getState().spaces,
+            getSessions: () => useAgentStore.getState().sessions,
+            getActiveTabId: () => activeIdRef.current,
+            getBuffer: (leafId) => readTerminalBuffer(leafId, 400),
+            write: writeToSession,
+            spawn: (workspace, agent) => {
+              const space = useSpaces
+                .getState()
+                .spaces.find(
+                  (candidate) =>
+                    candidate.id === workspace.id &&
+                    candidate.root === workspace.root,
+                );
+              if (!space?.root) return null;
+              const preferences = usePreferencesStore.getState();
+              const request = configuredAgentLaunchRequest(
+                agent,
+                preferences.agentLaunchCommands,
+                preferences.customCliAgents,
+              );
+              if (!request) return null;
+              const launched = launchAgentGroupAtRef.current(request, {
+                spaceId: space.id,
+                root: space.root,
+                cwd: space.root,
+                workspace: space.env,
+                activate: false,
+              });
+              if (!launched) return null;
+              const tabId = launched.tabIds[0];
+              const leafId = launched.leafIds[0];
+              return {
+                agentId: agentIdFor(request.agent, request.agent, tabId),
+                cli: request.agent,
+                tabId,
+                leafId,
+                spaceId: space.id,
+                workspace: space.root,
+              };
+            },
+            subscribeSessions: (listener) =>
+              useAgentStore.subscribe((state, previous) =>
+                listener(state.sessions, previous.sessions),
+              ),
+          }),
+      );
+      return servicePromise;
+    };
     setAgentRequestHandler((payload) => {
-      void service
-        .handle(payload)
+      void getService()
+        .then((service) => service.handle(payload))
         .then((response) =>
           emit(`${AGENT_RESPONSE_EVENT}:${payload.requestId}`, response),
         )
@@ -1466,7 +1428,9 @@ export default function App() {
           }),
         );
     });
-    return () => service.dispose();
+    return () => {
+      void servicePromise?.then((service) => service.dispose());
+    };
   }, []);
 
   const splitActiveTabInDockview = useCallback(
@@ -2370,7 +2334,8 @@ export default function App() {
                 spaces={spaceEnvironments}
                 activeId={activeId}
                 onActivate={onActivateAgent}
-                onSession={handleAgentSession}
+                onSettled={handleAgentSettled}
+                onExit={clearAgentResume}
               />
               <Toaster position="bottom-right" />
 

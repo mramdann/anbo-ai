@@ -83,7 +83,7 @@ PowerShell / PSReadLine sends a cursor-position query (`ESC[6n`) at startup and 
 
 ### Agent detection
 
-The reader thread runs an `AgentDetector` (`agent_detect.rs`) over the byte stream. It is armed by `OSC 133;C;<cmd>` or by a self-armed `OSC 777` marker and emits `anbo:agent-signal` transitions (`started`, `working`, `attention`, `finished`, `exited`). Detection is driven only by OSC sequences, never by raw output, so a repainting TUI never flaps.
+The reader thread runs an `AgentDetector` (`agent_detect.rs`) over shell integration boundaries. `OSC 133;C;<cmd>` starts a recognized agent process and `OSC 133;D` ends it. Frontend `AgentScreenObserver` derives working, attention, ready, and finished from the rendered xterm screen plus submitted Enter input. It samples stable states and compares their latest positions, so a repainting TUI or stale scrollback text does not flap status. Historical `OSC 777` input remains parser-compatible during migration but is ignored as an activity source by the frontend.
 
 ### Enter key
 

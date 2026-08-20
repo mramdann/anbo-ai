@@ -15,7 +15,6 @@ import {
   writeToReadySession,
   writeToSession,
 } from "@/modules/terminal";
-import { invoke } from "@tauri-apps/api/core";
 import { type RefObject, useEffect, useRef } from "react";
 import type { Live } from "../store/chatStore";
 import { redactSensitive } from "./redact";
@@ -244,15 +243,6 @@ export function useAiLiveBridge(params: Params) {
         useManagedAgentsStore
           .getState()
           .register({ leafId, tabId, sessionId, task: oneLine, cwd });
-        const workspaceRoot =
-          ref.current.explorerRoot ?? ref.current.launchCwd ?? ref.current.home;
-        if (workspaceRoot) {
-          void invoke("agent_enable_hooks", {
-            agent: "claude",
-            workspaceRoot,
-            workspace: ref.current.workspace,
-          }).catch(() => {});
-        }
         void (async () => {
           if (!(await writeToReadySession(leafId, "claude\r", 15_000))) {
             useManagedAgentsStore.getState().setPhase(leafId, "attention");

@@ -6,9 +6,23 @@ import type {
 import { redactSensitive } from "@/modules/ai/lib/redact";
 import type { SpaceMeta } from "@/modules/spaces/lib/store";
 import type { Tab, TerminalTab } from "@/modules/tabs";
+import { isAgentScreenReady } from "./agentScreenClassifier";
+import type {
+  AgentAutomationRequest,
+  AgentAutomationResponse,
+} from "./agentAutomationProtocol";
+import { agentIdFor } from "./agentIdentity";
 
-export const AGENT_REQUEST_EVENT = "anbo:agent-request";
-export const AGENT_RESPONSE_EVENT = "anbo:agent-response";
+export {
+  AGENT_REQUEST_EVENT,
+  AGENT_RESPONSE_EVENT,
+} from "./agentAutomationProtocol";
+export type {
+  AgentAutomationMethod,
+  AgentAutomationRequest,
+  AgentAutomationResponse,
+} from "./agentAutomationProtocol";
+export { agentIdFor } from "./agentIdentity";
 
 const MAX_MESSAGE_CHARS = 8_000;
 const MAX_OUTPUT_CHARS = 12_000;
@@ -18,25 +32,8 @@ const MAX_TRACKED_AGENTS = 100;
 const SUBMIT_DELAY_MS = 90;
 const INPUT_READY_TIMEOUT_MS = 8_000;
 const INPUT_READY_POLL_MS = 25;
-
-export type AgentAutomationMethod =
-  | "agent_spawn"
-  | "agent_list"
-  | "agent_status"
-  | "agent_read"
-  | "agent_send"
-  | "agent_wait";
-
-export type AgentAutomationRequest = {
-  requestId: string;
-  method: AgentAutomationMethod;
-  params: Record<string, unknown>;
-};
-
-export type AgentAutomationResponse = {
-  result?: unknown;
-  error?: { code: string; message: string };
-};
+const TUI_READY_POLL_MS = 100;
+const TUI_READY_STABLE_POLLS = 3;
 
 export type AgentDescriptor = {
   agentId: string;
@@ -171,23 +168,6 @@ function tabHasLeaf(tab: TerminalTab, leafId: number): boolean {
   return visit(tab.paneTree);
 }
 
-function agentIdPart(value: string): string {
-  return value
-    .normalize("NFKD")
-    .toLocaleLowerCase()
-    .replace(/^custom:/, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48);
-}
-
-export function agentIdFor(name: string, cli: string, tabId: number): string {
-  const cliPart = agentIdPart(cli) || "agent";
-  const namePart = agentIdPart(name) || cliPart;
-  const identity = namePart === cliPart ? cliPart : `${namePart}-${cliPart}`;
-  return `${identity}:${tabId}`;
-}
-
 export function collectWorkspaceAgents(
   tabs: Tab[],
   sessions: Record<number, AgentSession>,
@@ -252,6 +232,41 @@ export function sanitizeAgentMessage(
   return { ok: true, message };
 }
 
+export function isAgentTuiReady(cli: string, buffer: string | null): boolean {
+  const normalizedCli = cli.replace(/^custom:/, "").toLowerCase();
+  if (
+    normalizedCli !== "codex" &&
+    normalizedCli !== "claude" &&
+    normalizedCli !== "antigravity" &&
+    normalizedCli !== "agy" &&
+    normalizedCli !== "opencode"
+  ) {
+    return true;
+  }
+  return isAgentScreenReady(normalizedCli, buffer);
+}
+
+export async function waitForAgentTuiReady(
+  getBuffer: () => string | null,
+  cli: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  let stablePolls = 0;
+  while (Date.now() < deadline) {
+    if (isAgentTuiReady(cli, getBuffer())) {
+      stablePolls += 1;
+      if (stablePolls >= TUI_READY_STABLE_POLLS) return true;
+    } else {
+      stablePolls = 0;
+    }
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, TUI_READY_POLL_MS),
+    );
+  }
+  return false;
+}
+
 export async function submitAgentMessage(
   write: (leafId: number, data: string) => boolean,
   getBuffer: (leafId: number) => string | null,
@@ -262,7 +277,14 @@ export async function submitAgentMessage(
   const before = verifyInput ? getBuffer(leafId) : null;
   if (!write(leafId, message)) return false;
   if (verifyInput) {
-    const needle = message.replace(/\s+/g, "").slice(-120);
+    const compactEcho = (value: string) =>
+      value
+        .replace(
+          /\x1b\[[0-9;>?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][AB012]|\x1b[78=>]|\x1bc|\x1b[NOP\]X^_]/g,
+          "",
+        )
+        .replace(/[\s\u0000-\u001f\u007f]+/g, "");
+    const needle = compactEcho(message).slice(-120);
     const deadline = Date.now() + INPUT_READY_TIMEOUT_MS;
     let observed = false;
     while (Date.now() < deadline) {
@@ -273,7 +295,7 @@ export async function submitAgentMessage(
       if (
         current !== null &&
         current !== before &&
-        current.replace(/\s+/g, "").includes(needle)
+        compactEcho(current).includes(needle)
       ) {
         observed = true;
         break;
@@ -423,7 +445,10 @@ function paramString(
 export function createAgentAutomationService(deps: ServiceDependencies) {
   const output = new AgentOutputTracker();
   const sendQueues = new Map<string, Promise<AgentAutomationResponse>>();
-  const sendAcknowledgements = new Map<string, number>();
+  const sendAcknowledgements = new Map<
+    string,
+    { lastActivityAt: number; buffer: string | null }
+  >();
   const messageIds = new Map<string, number>();
   const initialSpawnLeaves = new Set<number>();
 
@@ -523,7 +548,9 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     const matchesDesired = (agent: AgentDescriptor) =>
       desired === "finished"
         ? agent.phase === "finished"
-        : desired !== null && agent.status === desired;
+        : desired !== null &&
+          (agent.status === desired ||
+            (desired === "waiting" && agent.phase === "attention"));
     if (matchesDesired(initial.agent)) {
       return { matched: true, agent: initial.agent };
     }
@@ -634,29 +661,31 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         ? Math.max(100, Math.min(60_000, params.timeout))
         : 30_000;
 
-    const awaitingActivityAfter = sendAcknowledgements.get(
+    const awaitingAcknowledgement = sendAcknowledgements.get(
       target.agent.agentId,
     );
-    if (
-      awaitingActivityAfter !== undefined &&
-      target.agent.lastActivityAt <= awaitingActivityAfter
-    ) {
-      const acknowledged = await waitFor(params, null, timeout);
-      if (!acknowledged.matched) {
+    if (awaitingAcknowledgement) {
+      const deadline = Date.now() + timeout;
+      let acknowledged = false;
+      while (Date.now() < deadline) {
+        target = resolveTarget(params);
+        if (!target.ok) return target.response;
+        if (
+          target.agent.lastActivityAt >
+            awaitingAcknowledgement.lastActivityAt ||
+          deps.getBuffer(target.leafId) !== awaitingAcknowledgement.buffer
+        ) {
+          acknowledged = true;
+          break;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      }
+      if (!acknowledged) {
         return error(
-          acknowledged.closed ? "agent_not_found" : "timeout",
-          acknowledged.closed
-            ? "agent closed before acknowledging the previous message"
-            : `timed out waiting for ${target.agent.name} to acknowledge the previous message`,
+          "timeout",
+          `timed out waiting for ${target.agent.name} to acknowledge the previous message`,
         );
       }
-      target = resolveTarget(params);
-      if (!target.ok) return target.response;
-    }
-    if (
-      awaitingActivityAfter !== undefined &&
-      target.agent.lastActivityAt > awaitingActivityAfter
-    ) {
       sendAcknowledgements.delete(target.agent.agentId);
     }
     const acceptsInitialSpawnMessage = initialSpawnLeaves.has(target.leafId);
@@ -681,6 +710,20 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     if (!deps.getSessions()[current.leafId]) {
       return error("agent_not_found", "agent terminal is no longer available");
     }
+    if (
+      waitForReady &&
+      (acceptsInitialSpawnMessage || current.agent.cli === "codex") &&
+      !(await waitForAgentTuiReady(
+        () => deps.getBuffer(current.leafId),
+        current.agent.cli,
+        timeout,
+      ))
+    ) {
+      return error(
+        "agent_not_ready",
+        `${current.agent.name} did not reach a stable input prompt before timeout`,
+      );
+    }
     const submitted = await submitAgentMessage(
       deps.write,
       deps.getBuffer,
@@ -695,10 +738,10 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       );
     }
     initialSpawnLeaves.delete(current.leafId);
-    sendAcknowledgements.set(
-      current.agent.agentId,
-      current.agent.lastActivityAt,
-    );
+    sendAcknowledgements.set(current.agent.agentId, {
+      lastActivityAt: current.agent.lastActivityAt,
+      buffer: deps.getBuffer(current.leafId),
+    });
     while (sendAcknowledgements.size > MAX_TRACKED_AGENTS) {
       const oldest = sendAcknowledgements.keys().next().value;
       if (oldest === undefined) break;

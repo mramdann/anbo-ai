@@ -10,13 +10,15 @@
 //! + integrasi ke pty/session.rs spawn menyusul.
 
 use std::collections::HashSet;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use crate::modules::workspace::{authorize_existing_path, WorkspaceEnv, WorkspaceRegistry};
 
 const CODEX_SESSION_META_MAX_BYTES: u64 = 256 * 1024;
 const CODEX_SESSION_SCAN_LIMIT: usize = 20_000;
+const SESSION_LOG_TAIL_MAX_BYTES: u64 = 2 * 1024 * 1024;
+const ANTIGRAVITY_DB_MAX_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Dir projects claude (port claudeProjectsDir). Override via env utk test.
 /// Default: ~/.claude/projects.
@@ -45,6 +47,41 @@ fn codex_sessions_dir() -> PathBuf {
     dirs::home_dir()
         .map(|home| home.join(".codex").join("sessions"))
         .unwrap_or_else(|| PathBuf::from(".codex/sessions"))
+}
+
+fn opencode_log_path() -> PathBuf {
+    std::env::var_os("ANBO_OPENCODE_LOG")
+        .map(PathBuf::from)
+        .or_else(|| {
+            dirs::home_dir().map(|home| {
+                home.join(".local")
+                    .join("share")
+                    .join("opencode")
+                    .join("log")
+                    .join("opencode.log")
+            })
+        })
+        .unwrap_or_else(|| PathBuf::from(".local/share/opencode/log/opencode.log"))
+}
+
+fn antigravity_conversations_dir() -> PathBuf {
+    std::env::var_os("ANBO_ANTIGRAVITY_CONVERSATIONS")
+        .map(PathBuf::from)
+        .or_else(|| {
+            dirs::home_dir().map(|home| {
+                home.join(".gemini")
+                    .join("antigravity-cli")
+                    .join("conversations")
+            })
+        })
+        .unwrap_or_else(|| PathBuf::from(".gemini/antigravity-cli/conversations"))
+}
+
+fn pi_sessions_dir() -> PathBuf {
+    std::env::var_os("ANBO_PI_SESSIONS")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".pi").join("agent").join("sessions")))
+        .unwrap_or_else(|| PathBuf::from(".pi/agent/sessions"))
 }
 
 /// Encode cwd claude → nama folder (port encodeClaudeCwd opencode-discover.ts:64).
@@ -156,9 +193,11 @@ pub fn anbo_find_claude_session(
 }
 
 fn normalized_cwd(path: &str) -> String {
-    let value = std::fs::canonicalize(path)
+    let resolved = std::fs::canonicalize(path)
         .unwrap_or_else(|_| PathBuf::from(path))
         .to_string_lossy()
+        .into_owned();
+    let value = strip_verbatim_prefix(&resolved)
         .replace('\\', "/")
         .trim_end_matches('/')
         .to_string();
@@ -281,6 +320,182 @@ pub fn anbo_find_codex_session(
         since_ts,
         &claimed,
     ))
+}
+
+fn read_file_tail(path: &Path, max_bytes: u64) -> Option<String> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(max_bytes);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::with_capacity((len - start) as usize);
+    file.read_to_end(&mut bytes).ok()?;
+    if start > 0 {
+        if let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') {
+            bytes.drain(..=newline);
+        }
+    }
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn quoted_log_field(line: &str, key: &str) -> Option<String> {
+    let start = line.find(key)? + key.len();
+    let tail = line.get(start..)?;
+    let end = tail.find('"')?;
+    Some(tail[..end].replace("\\\\", "\\"))
+}
+
+fn plain_log_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let start = line.find(key)? + key.len();
+    line.get(start..)?.split_whitespace().next()
+}
+
+fn find_opencode_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>) -> Option<String> {
+    let expected = normalized_cwd(cwd);
+    let log = read_file_tail(&opencode_log_path(), SESSION_LOG_TAIL_MAX_BYTES)?;
+    let mut best: Option<(String, u64)> = None;
+    for line in log.lines() {
+        if !line.contains("message=created id=ses_") {
+            continue;
+        }
+        let Some(id) = plain_log_field(line, " id=") else {
+            continue;
+        };
+        if claimed.contains(id) {
+            continue;
+        }
+        let Some(directory) = quoted_log_field(line, " directory=\"") else {
+            continue;
+        };
+        if normalized_cwd(&directory) != expected {
+            continue;
+        }
+        let Some(created) =
+            plain_log_field(line, " time.created=").and_then(|value| value.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        if created < since_ts {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(_, ts)| created > *ts) {
+            best = Some((id.to_string(), created));
+        }
+    }
+    best.map(|(id, _)| id)
+}
+
+fn bytes_contain(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+fn find_antigravity_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>) -> Option<String> {
+    let expected = normalized_cwd(cwd);
+    let expected_bytes = expected.as_bytes();
+    let mut best: Option<(String, u64)> = None;
+    for entry in std::fs::read_dir(antigravity_conversations_dir())
+        .ok()?
+        .flatten()
+    {
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "db") {
+            continue;
+        }
+        let Some(id) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !is_uuid(id) || claimed.contains(id) {
+            continue;
+        }
+        let Some(created) = session_created_ms(&path) else {
+            continue;
+        };
+        let Ok(metadata) = path.metadata() else {
+            continue;
+        };
+        if created < since_ts || metadata.len() > ANTIGRAVITY_DB_MAX_BYTES {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let normalized = String::from_utf8_lossy(&bytes)
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        if !bytes_contain(normalized.as_bytes(), expected_bytes) {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(_, ts)| created > *ts) {
+            best = Some((id.to_string(), created));
+        }
+    }
+    best.map(|(id, _)| id)
+}
+
+fn pi_session_meta(path: &Path) -> Option<(String, String)> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut input = String::new();
+    file.take(64 * 1024).read_to_string(&mut input).ok()?;
+    let value: serde_json::Value = serde_json::from_str(input.lines().next()?).ok()?;
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("session") {
+        return None;
+    }
+    Some((
+        value.get("id")?.as_str()?.to_string(),
+        value.get("cwd")?.as_str()?.to_string(),
+    ))
+}
+
+fn find_pi_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>) -> Option<String> {
+    let expected = normalized_cwd(cwd);
+    let mut best: Option<(String, u64)> = None;
+    for path in codex_session_files(&pi_sessions_dir()) {
+        let Some(created) = session_created_ms(&path) else {
+            continue;
+        };
+        if created < since_ts {
+            continue;
+        }
+        let Some((id, directory)) = pi_session_meta(&path) else {
+            continue;
+        };
+        if !is_uuid(&id) || claimed.contains(&id) || normalized_cwd(&directory) != expected {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(_, ts)| created > *ts) {
+            best = Some((id, created));
+        }
+    }
+    best.map(|(id, _)| id)
+}
+
+#[tauri::command]
+pub fn anbo_find_agent_session(
+    agent: String,
+    cwd: String,
+    since_ts: u64,
+    claimed: Vec<String>,
+    workspace: Option<WorkspaceEnv>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<Option<String>, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    if !matches!(workspace, WorkspaceEnv::Local) {
+        return Ok(None);
+    }
+    let cwd = authorize_existing_path(&registry, &cwd, &workspace)?;
+    let cwd = cwd.to_string_lossy();
+    let claimed: HashSet<String> = claimed.into_iter().collect();
+    let session = match agent.as_str() {
+        "claude" => find_claude_session(&cwd, since_ts, &claimed),
+        "codex" => find_codex_session(&cwd, since_ts, &claimed),
+        "antigravity" => find_antigravity_session(&cwd, since_ts, &claimed),
+        "pi" => find_pi_session(&cwd, since_ts, &claimed),
+        "opencode" => find_opencode_session(&cwd, since_ts, &claimed),
+        _ => None,
+    };
+    Ok(session)
 }
 
 #[cfg(test)]
@@ -460,6 +675,72 @@ mod tests {
         .is_none());
 
         std::env::remove_var("ANBO_CODEX_SESSIONS");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn hookless_discovery_reads_opencode_antigravity_and_pi_storage() {
+        let tmp = std::env::temp_dir().join(format!("anbo-agent-stores-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let cwd = tmp.join("project");
+        fs::create_dir_all(&cwd).unwrap();
+        let cwd_text = cwd.to_string_lossy();
+
+        let opencode_log = tmp.join("opencode.log");
+        let opencode_id = "ses_hookless123";
+        let escaped_cwd = cwd_text.replace('\\', "\\\\");
+        fs::write(
+            &opencode_log,
+            format!(
+                "timestamp=2026-08-20T00:00:00Z level=INFO message=created id={opencode_id} directory=\"{escaped_cwd}\" time.created=1787000000000\n"
+            ),
+        )
+        .unwrap();
+        std::env::set_var("ANBO_OPENCODE_LOG", &opencode_log);
+        assert_eq!(
+            find_opencode_session(&cwd_text, 0, &HashSet::new()).as_deref(),
+            Some(opencode_id)
+        );
+
+        let antigravity_dir = tmp.join("antigravity");
+        fs::create_dir_all(&antigravity_dir).unwrap();
+        let antigravity_id = "11111111-2222-4333-8444-555555555555";
+        fs::write(
+            antigravity_dir.join(format!("{antigravity_id}.db")),
+            format!(
+                "binary-prefix\0file:///{}\0binary-suffix",
+                cwd_text.replace('\\', "/")
+            ),
+        )
+        .unwrap();
+        std::env::set_var("ANBO_ANTIGRAVITY_CONVERSATIONS", &antigravity_dir);
+        assert_eq!(
+            find_antigravity_session(&cwd_text, 0, &HashSet::new()).as_deref(),
+            Some(antigravity_id)
+        );
+
+        let pi_dir = tmp.join("pi").join("project");
+        fs::create_dir_all(&pi_dir).unwrap();
+        let pi_id = "019fc684-96b2-7717-ac08-3afca66e8a0b";
+        let pi_session = serde_json::json!({
+            "type": "session",
+            "id": pi_id,
+            "cwd": cwd_text.as_ref(),
+        });
+        fs::write(
+            pi_dir.join(format!("session_{pi_id}.jsonl")),
+            format!("{}\n", serde_json::to_string(&pi_session).unwrap()),
+        )
+        .unwrap();
+        std::env::set_var("ANBO_PI_SESSIONS", tmp.join("pi"));
+        assert_eq!(
+            find_pi_session(&cwd_text, 0, &HashSet::new()).as_deref(),
+            Some(pi_id)
+        );
+
+        std::env::remove_var("ANBO_OPENCODE_LOG");
+        std::env::remove_var("ANBO_ANTIGRAVITY_CONVERSATIONS");
+        std::env::remove_var("ANBO_PI_SESSIONS");
         let _ = fs::remove_dir_all(&tmp);
     }
 

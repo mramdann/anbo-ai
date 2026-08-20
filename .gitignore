@@ -35,3 +35,6 @@ src-tauri/binaries/
 .anbo/
 .cate/
 .claude/
+/.agents/mcp_config.json
+/.codex/config.toml
+/.opencode/anbo-mcp.json

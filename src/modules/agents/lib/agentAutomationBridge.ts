@@ -1,7 +1,7 @@
 import {
   AGENT_REQUEST_EVENT,
   type AgentAutomationRequest,
-} from "@/modules/agents/lib/agentAutomation";
+} from "@/modules/agents/lib/agentAutomationProtocol";
 import { listen } from "@tauri-apps/api/event";
 
 type AgentRequestHandler = (request: AgentAutomationRequest) => void;

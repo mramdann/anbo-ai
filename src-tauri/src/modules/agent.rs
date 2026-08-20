@@ -635,6 +635,48 @@ pub fn agent_enable_hooks(
     enable_project_integration(&agent, &root)
 }
 
+fn cleanup_project_integrations(root: &Path) -> Result<usize, String> {
+    let mut removed = 0;
+    let mut errors = Vec::new();
+    for spec in AGENTS {
+        match project_file_path(root, spec.project_file, false)
+            .and_then(|path| remove_legacy_json_at(&path, spec))
+        {
+            Ok(true) => removed += 1,
+            Ok(false) => {}
+            Err(error) => errors.push(error),
+        }
+    }
+    for (relative, marker) in [
+        (PI_PROJECT_FILE, PI_EXTENSION_MARKER),
+        (OPENCODE_PROJECT_FILE, OPENCODE_PLUGIN_MARKER),
+    ] {
+        match project_file_path(root, relative, false)
+            .and_then(|path| remove_legacy_owned_file(&path, marker))
+        {
+            Ok(true) => removed += 1,
+            Ok(false) => {}
+            Err(error) => errors.push(error),
+        }
+    }
+    if errors.is_empty() {
+        Ok(removed)
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+#[tauri::command]
+pub fn agent_cleanup_hooks(
+    workspace_root: String,
+    workspace: Option<WorkspaceEnv>,
+    registry: tauri::State<'_, WorkspaceRegistry>,
+) -> Result<usize, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let root = authorize_project_root(&registry, &workspace_root, &workspace)?;
+    cleanup_project_integrations(&root)
+}
+
 fn enable_project_integration(agent: &str, root: &Path) -> Result<(), String> {
     if agent == "pi" {
         let path = project_file_path(root, PI_PROJECT_FILE, true)?;
@@ -1528,6 +1570,35 @@ mod tests {
         ] {
             assert!(dir.path().join(relative).is_file(), "missing {relative}");
         }
+    }
+
+    #[test]
+    fn project_cleanup_removes_only_anbo_owned_integrations() {
+        let dir = tempfile::tempdir().unwrap();
+        for agent in ["claude", "codex", "antigravity", "pi", "opencode"] {
+            enable_project_integration(agent, dir.path()).unwrap();
+        }
+        let claude_path = dir.path().join(".claude/settings.local.json");
+        let mut claude: Value =
+            serde_json::from_str(&std::fs::read_to_string(&claude_path).unwrap()).unwrap();
+        claude["theme"] = json!("mine");
+        claude["hooks"]["Stop"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "hooks": [{ "type": "command", "command": "my-stop-hook" }] }));
+        std::fs::write(&claude_path, serde_json::to_string_pretty(&claude).unwrap()).unwrap();
+
+        assert_eq!(cleanup_project_integrations(dir.path()).unwrap(), 5);
+        let cleaned: Value =
+            serde_json::from_str(&std::fs::read_to_string(&claude_path).unwrap()).unwrap();
+        assert_eq!(cleaned["theme"], "mine");
+        assert_eq!(hook_count(&cleaned, "Stop"), 1);
+        assert_eq!(command(&cleaned, "Stop", 0), "my-stop-hook");
+        assert!(!dir.path().join(".codex/hooks.json").exists());
+        assert!(!dir.path().join(".agents/hooks.json").exists());
+        assert!(!dir.path().join(PI_PROJECT_FILE).exists());
+        assert!(!dir.path().join(OPENCODE_PROJECT_FILE).exists());
+        assert_eq!(cleanup_project_integrations(dir.path()).unwrap(), 0);
     }
 
     #[cfg(unix)]

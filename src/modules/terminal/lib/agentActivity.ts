@@ -84,8 +84,36 @@ export function phaseForSignal(kind: string): AgentPhase | "exited" | null {
   }
 }
 
-// The Rust detector arms via the Claude Code / Codex / Antigravity OSC 777 marker and
-// reports per-pty lifecycle: started, working, attention, finished, exited.
+export function setAgentActivity(
+  ptyId: number,
+  agent: string,
+  phase: AgentPhase,
+): void {
+  clearFinishedTimer(ptyId);
+  const store = useAgentActivityStore.getState();
+  store.setAgent(ptyId, agent);
+  store.setPhase(ptyId, phase);
+  if (phase === "finished") {
+    finishedTimers.set(
+      ptyId,
+      setTimeout(() => {
+        finishedTimers.delete(ptyId);
+        const current = useAgentActivityStore.getState();
+        if (current.phases[ptyId] === "finished") {
+          current.setPhase(ptyId, "idle");
+        }
+      }, FINISHED_TTL_MS),
+    );
+  }
+}
+
+export function clearAgentActivity(ptyId: number): void {
+  clearFinishedTimer(ptyId);
+  useAgentActivityStore.getState().clear(ptyId);
+}
+
+// Rust owns only process lifecycle. Working, attention, and finished are
+// derived from the rendered terminal screen in AgentNotificationsBridge.
 export function ensureAgentActivityListener(
   exited: (ptyId: number) => void,
 ): void {
@@ -93,29 +121,9 @@ export function ensureAgentActivityListener(
   if (bound || typeof window === "undefined") return;
   bound = true;
   void listen<AgentSignal>("anbo:agent-signal", (e) => {
-    const { id, agent } = e.payload;
-    const action = phaseForSignal(e.payload.kind);
-    if (action === null) return;
-    clearFinishedTimer(id);
-    const store = useAgentActivityStore.getState();
-    if (action === "exited") {
-      store.clear(id);
-      onExited?.(id);
-      return;
-    }
-    // The agent name only rides the `started` signal (incl. self-arm).
-    if (agent) store.setAgent(id, agent);
-    store.setPhase(id, action);
-    if (action === "finished") {
-      finishedTimers.set(
-        id,
-        setTimeout(() => {
-          finishedTimers.delete(id);
-          const s = useAgentActivityStore.getState();
-          if (s.phases[id] === "finished") s.setPhase(id, "idle");
-        }, FINISHED_TTL_MS),
-      );
-    }
+    if (e.payload.kind !== "exited") return;
+    clearAgentActivity(e.payload.id);
+    onExited?.(e.payload.id);
   });
 }
 

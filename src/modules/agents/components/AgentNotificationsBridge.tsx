@@ -1,8 +1,20 @@
 import { labelFor, type Tab } from "@/modules/tabs";
-import { hasLeaf, leafIdForPty } from "@/modules/terminal";
+import {
+  clearAgentActivity,
+  hasLeaf,
+  leafIdForPty,
+  ptyIdForLeaf,
+  readTerminalBuffer,
+  setAgentActivity,
+  subscribeTerminalInput,
+} from "@/modules/terminal";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
 import { displayAgentInstance } from "../lib/format";
+import {
+  AgentScreenObserver,
+  type ObservedAgentSignal,
+} from "../lib/agentScreenObserver";
 import { maybeTriggerManagedReview } from "../lib/review";
 import { routeAgentNotification } from "../lib/route";
 import type { AgentSession, AgentSignal } from "../lib/types";
@@ -11,14 +23,16 @@ import { useAgentStore } from "../store/agentStore";
 import { useManagedAgentsStore } from "../store/managedAgentsStore";
 
 type Activate = (tabId: number, leafId: number) => void;
-type Session = (leafId: number, agent: string, sessionId: string) => void;
+type Settled = (leafId: number, agent: string) => void;
+type Exit = (leafId: number) => void;
 type Ctx = {
   tabs: Tab[];
   spaces: Array<{ id: string; name: string }>;
   activeId: number;
   focused: boolean;
   onActivate: Activate;
-  onSession: Session;
+  onSettled: Settled;
+  onExit: Exit;
 };
 
 function tabInfo(
@@ -72,7 +86,40 @@ function route(
   });
 }
 
-function handleSignal(sig: AgentSignal, ctx: Ctx): void {
+function applyObserved(sig: ObservedAgentSignal, ctx: Ctx): void {
+  const store = useAgentStore.getState();
+  switch (sig.kind) {
+    case "working":
+      store.setStatus(sig.leafId, "working", "working");
+      setAgentActivity(sig.ptyId, sig.agent, "working");
+      return;
+    case "ready":
+      store.setStatus(sig.leafId, "waiting", "finished");
+      setAgentActivity(sig.ptyId, sig.agent, "idle");
+      return;
+    case "attention": {
+      store.setStatus(sig.leafId, "waiting", "attention");
+      setAgentActivity(sig.ptyId, sig.agent, "attention");
+      const session = store.sessions[sig.leafId];
+      if (session) route(session, "attention", ctx);
+      return;
+    }
+    case "finished": {
+      store.setStatus(sig.leafId, "waiting", "finished");
+      setAgentActivity(sig.ptyId, sig.agent, "finished");
+      const session = store.sessions[sig.leafId];
+      if (session) route(session, "finished", ctx);
+      maybeTriggerManagedReview(sig.leafId);
+      ctx.onSettled(sig.leafId, sig.agent);
+    }
+  }
+}
+
+function handleLifecycleSignal(
+  sig: AgentSignal,
+  ctx: Ctx,
+  observer: AgentScreenObserver,
+): void {
   const leafId = leafIdForPty(sig.id);
   if (leafId === null) return;
   const store = useAgentStore.getState();
@@ -88,35 +135,21 @@ function handleSignal(sig: AgentSignal, ctx: Ctx): void {
         agent,
         displayAgentInstance(agent, info.name),
       );
-      return;
-    }
-    case "working":
-      store.setStatus(leafId, "working", "working");
-      return;
-    case "ready":
-      store.setStatus(leafId, "waiting", "finished");
-      return;
-    case "session":
-      if (sig.agent && sig.sessionId) {
-        ctx.onSession(leafId, sig.agent, sig.sessionId);
+      if (!observer.has(leafId)) {
+        applyObserved(observer.start(leafId, sig.id, agent), ctx);
       }
-      return;
-    case "attention": {
-      store.setStatus(leafId, "waiting", "attention");
-      const session = store.sessions[leafId];
-      if (session) route(session, "attention", ctx);
-      return;
-    }
-    case "finished": {
-      store.setStatus(leafId, "waiting", "finished");
-      const session = store.sessions[leafId];
-      if (session) route(session, "finished", ctx);
-      maybeTriggerManagedReview(leafId);
       return;
     }
     case "exited":
+      observer.stop(leafId);
+      clearAgentActivity(sig.id);
       store.finish(leafId);
       useManagedAgentsStore.getState().remove(leafId);
+      ctx.onExit(leafId);
+      return;
+    default:
+      // Hook/plugin status and session markers are intentionally ignored. The
+      // rendered terminal screen is the only activity source after cutover.
       return;
   }
 }
@@ -126,22 +159,26 @@ export function AgentNotificationsBridge({
   spaces,
   activeId,
   onActivate,
-  onSession,
+  onSettled,
+  onExit,
 }: {
   tabs: Tab[];
   spaces: Array<{ id: string; name: string }>;
   activeId: number;
   onActivate: Activate;
-  onSession: Session;
+  onSettled: Settled;
+  onExit: Exit;
 }) {
   const focused = useWindowFocus();
+  const observerRef = useRef(new AgentScreenObserver());
   const ctxRef = useRef<Ctx>({
     tabs,
     spaces,
     activeId,
     focused,
     onActivate,
-    onSession,
+    onSettled,
+    onExit,
   });
   ctxRef.current = {
     tabs,
@@ -149,7 +186,8 @@ export function AgentNotificationsBridge({
     activeId,
     focused,
     onActivate,
-    onSession,
+    onSettled,
+    onExit,
   };
 
   useEffect(() => {
@@ -157,10 +195,20 @@ export function AgentNotificationsBridge({
     for (const session of Object.values(store.sessions)) {
       const info = tabInfo(tabs, session.leafId);
       if (!info) {
+        observerRef.current.stop(session.leafId);
         store.finish(session.leafId);
         continue;
       }
       store.setName(session.leafId, info.name);
+      if (!observerRef.current.has(session.leafId)) {
+        const ptyId = ptyIdForLeaf(session.leafId);
+        if (ptyId !== null) {
+          applyObserved(
+            observerRef.current.start(session.leafId, ptyId, session.agent),
+            ctxRef.current,
+          );
+        }
+      }
     }
   }, [tabs]);
 
@@ -168,7 +216,7 @@ export function AgentNotificationsBridge({
     let alive = true;
     let unlisten: (() => void) | undefined;
     listen<AgentSignal>("anbo:agent-signal", (e) =>
-      handleSignal(e.payload, ctxRef.current),
+      handleLifecycleSignal(e.payload, ctxRef.current, observerRef.current),
     )
       .then((u) => {
         if (alive) unlisten = u;
@@ -178,6 +226,23 @@ export function AgentNotificationsBridge({
     return () => {
       alive = false;
       unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const unsubscribeInput = subscribeTerminalInput((leafId, data) => {
+      const signal = observerRef.current.input(leafId, data);
+      if (signal) applyObserved(signal, ctxRef.current);
+    });
+    const timer = window.setInterval(() => {
+      const signals = observerRef.current.poll((leafId) =>
+        readTerminalBuffer(leafId, 160),
+      );
+      for (const signal of signals) applyObserved(signal, ctxRef.current);
+    }, 200);
+    return () => {
+      unsubscribeInput();
+      window.clearInterval(timer);
     };
   }, []);
 

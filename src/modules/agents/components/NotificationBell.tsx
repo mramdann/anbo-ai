@@ -6,19 +6,14 @@ import {
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown01Icon,
-  ArrowUp01Icon,
   CheckmarkCircle02Icon,
-  Loading03Icon,
   Notification01Icon,
-  Notification03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { WorkspaceEnv } from "@/modules/workspace";
 import { AgentIcon } from "../lib/agentIcon";
-import { displayAgent, displayAgentInstance } from "../lib/format";
+import { displayAgentInstance } from "../lib/format";
 import type { AgentNotification, AgentStatus } from "../lib/types";
 import { useAgentStore } from "../store/agentStore";
 
@@ -84,68 +79,6 @@ const NOTIF_LABEL: Record<AgentNotification["kind"], string> = {
   error: "failed",
 };
 
-const HOOK_AGENTS = [
-  "claude",
-  "codex",
-  "antigravity",
-  "pi",
-  "opencode",
-] as const;
-
-function HookAgentRow({
-  id,
-  label,
-  ready,
-  installing,
-  onEnable,
-}: {
-  id: string;
-  label: string;
-  ready: boolean;
-  installing: boolean;
-  onEnable: () => void;
-}) {
-  return (
-    <div className="flex items-center gap-2 px-2 py-1">
-      <AgentIcon
-        agent={id}
-        size={14}
-        className="shrink-0 text-muted-foreground"
-      />
-      <span className="flex-1 truncate text-[12px] text-muted-foreground">
-        {label}
-      </span>
-      {ready ? (
-        <span className="flex items-center gap-1 text-[11px] font-medium text-primary">
-          <HugeiconsIcon
-            icon={CheckmarkCircle02Icon}
-            size={13}
-            strokeWidth={1.75}
-          />
-          configured
-        </span>
-      ) : (
-        <button
-          type="button"
-          onClick={onEnable}
-          disabled={installing}
-          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
-        >
-          {installing ? (
-            <HugeiconsIcon
-              icon={Loading03Icon}
-              size={12}
-              strokeWidth={1.75}
-              className="animate-spin"
-            />
-          ) : null}
-          {installing ? "Enabling" : "Enable"}
-        </button>
-      )}
-    </div>
-  );
-}
-
 function NotificationRow({
   n,
   onClick,
@@ -194,9 +127,8 @@ export function NotificationBell({
   workspace,
 }: Props) {
   const [open, setOpen] = useState(false);
-  const [hooks, setHooks] = useState<Record<string, boolean>>({});
-  const [installing, setInstalling] = useState<string | null>(null);
-  const [alertsOpen, setAlertsOpen] = useState(false);
+  void workspaceRoot;
+  void workspace;
   const sessions = useAgentStore((s) => s.sessions);
   const localAgent = useAgentStore((s) => s.localAgent);
   const notifications = useAgentStore((s) => s.notifications);
@@ -217,50 +149,10 @@ export function NotificationBell({
   // to the badge to avoid double-counting.
   const unreadDone = history.filter((n) => !n.read).length;
   const badge = waitingCount + unreadDone;
-  const enabledCount = HOOK_AGENTS.filter((id) => hooks[id] === true).length;
-
-  const refreshHooks = useCallback(() => {
-    if (!workspaceRoot) {
-      setHooks({});
-      return;
-    }
-    for (const id of HOOK_AGENTS) {
-      invoke<boolean>("agent_hooks_status", {
-        agent: id,
-        workspaceRoot,
-        workspace,
-      })
-        .then((ok) => setHooks((h) => ({ ...h, [id]: ok })))
-        .catch(() => setHooks((h) => ({ ...h, [id]: false })));
-    }
-  }, [workspaceRoot, workspace]);
-
-  useEffect(() => {
-    setHooks({});
-    if (open) refreshHooks();
-  }, [open, refreshHooks]);
-
   const onOpenChange = (next: boolean) => {
     setOpen(next);
     if (next) {
       markAllRead();
-    }
-  };
-
-  const enableHooks = async (id: string) => {
-    if (!workspaceRoot) return;
-    setInstalling(id);
-    try {
-      await invoke("agent_enable_hooks", {
-        agent: id,
-        workspaceRoot,
-        workspace,
-      });
-      setHooks((h) => ({ ...h, [id]: true }));
-    } catch {
-      setHooks((h) => ({ ...h, [id]: false }));
-    } finally {
-      setInstalling(null);
     }
   };
 
@@ -376,50 +268,9 @@ export function NotificationBell({
           </div>
         )}
 
-        <div className="border-t border-border/60 p-1">
-          <button
-            type="button"
-            onClick={() => setAlertsOpen((v) => !v)}
-            aria-expanded={alertsOpen}
-            className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70 transition-colors hover:text-foreground"
-          >
-            <HugeiconsIcon
-              icon={Notification03Icon}
-              size={11}
-              strokeWidth={2}
-            />
-            Workspace alerts
-            <span className="ml-auto flex items-center gap-1.5 normal-case tracking-normal">
-              {enabledCount > 0 ? (
-                <span className="text-[10px] text-muted-foreground/60">
-                  {enabledCount} on
-                </span>
-              ) : null}
-              <HugeiconsIcon
-                icon={alertsOpen ? ArrowUp01Icon : ArrowDown01Icon}
-                size={13}
-                strokeWidth={2}
-              />
-            </span>
-          </button>
-          {alertsOpen
-            ? HOOK_AGENTS.map((id) => (
-                <HookAgentRow
-                  key={id}
-                  id={id}
-                  label={displayAgent(id)}
-                  ready={hooks[id] === true}
-                  installing={installing === id}
-                  onEnable={() => enableHooks(id)}
-                />
-              ))
-            : null}
-          {alertsOpen ? (
-            <p className="px-2 pt-1 pb-1.5 text-[10px] leading-relaxed text-muted-foreground/70">
-              Stored only in this workspace. Some CLIs ask you to trust project
-              hooks once before alerts become active.
-            </p>
-          ) : null}
+        <div className="border-t border-border/60 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground/70">
+          Agent status is observed locally from each terminal. No CLI hooks are
+          installed.
         </div>
       </PopoverContent>
     </Popover>

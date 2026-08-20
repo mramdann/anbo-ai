@@ -83,25 +83,11 @@ export function createAgentResumeStates(
   if (!isResumableAgentId(agent) || !canAttachSession(agent, command)) {
     return Array.from({ length: instances }, () => undefined);
   }
-  if (agent === "opencode") {
-    return Array.from({ length: instances }, () => ({
-      agent,
-      armed: false,
-      command,
-    }));
-  }
-  if (agent === "codex") {
-    return Array.from({ length: instances }, () => ({
-      agent,
-      armed: false,
-      command,
-      discoveryStartedAt: Date.now(),
-    }));
-  }
   return Array.from({ length: instances }, () => ({
     agent,
     armed: false,
     command,
+    discoveryStartedAt: Date.now(),
   }));
 }
 

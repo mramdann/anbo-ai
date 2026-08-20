@@ -14,11 +14,14 @@ export {
   ptyIdForLeaf,
   readTerminalBuffer,
   respawnSession,
+  subscribeTerminalInput,
   whenSessionReady,
   writeToReadySession,
   writeToSession,
 } from "./lib/useTerminalSession";
 export {
+  clearAgentActivity,
+  setAgentActivity,
   type AgentTabStatus,
   tabAgentStatus,
   useAgentActivityStore,

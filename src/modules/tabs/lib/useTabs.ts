@@ -7,6 +7,7 @@ import {
 import type { AgentInstanceCount } from "@/modules/agents/lib/launcher";
 import type { PersistedAgentResume } from "@/modules/agents/lib/resume";
 import {
+  clearLeafAgentResume,
   findLeafCwd,
   hasLeaf,
   insertNodeBeside,
@@ -775,6 +776,18 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     },
     [],
   );
+
+  const clearAgentResume = useCallback((leafId: number) => {
+    setTabs((current) =>
+      current.map((tab) => {
+        if (tab.kind !== "terminal" || !hasLeaf(tab.paneTree, leafId)) {
+          return tab;
+        }
+        const paneTree = clearLeafAgentResume(tab.paneTree, leafId);
+        return paneTree === tab.paneTree ? tab : { ...tab, paneTree };
+      }),
+    );
+  }, []);
 
   const newPrivateTab = useCallback((cwd?: string) => {
     const tabId = nextIdRef.current++;
@@ -1580,6 +1593,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     newAgentTab,
     newAgentTabs,
     pinAgentResumeSession,
+    clearAgentResume,
     newPrivateTab,
     openFileTab,
     pinTab,

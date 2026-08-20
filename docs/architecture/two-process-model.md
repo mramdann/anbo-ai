@@ -108,9 +108,10 @@ Three distinct surfaces:
 
 - `secrets_get` / `secrets_set` / `secrets_delete` / `secrets_get_all` - OS keychain access, service `anbo-ai`
 
-### Agent hooks (`src-tauri/src/modules/agent.rs`)
+### Agent integration (`src-tauri/src/modules/agent.rs`)
 
-- `agent_enable_hooks` / `agent_hooks_status` - install/status terminal coding-agent hooks (Claude Code, Codex, Antigravity CLI, Pi, OpenCode)
+- `agent_cleanup_hooks` - remove only historical Anbo-owned project hook/plugin entries during the hookless migration
+- `agent_configure_mcp` - configure the optional workspace-local Anbo MCP connection independently from status observation
 
 ### History (`src-tauri/src/modules/history/`)
 

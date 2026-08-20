@@ -63,11 +63,14 @@ describe("agent resume commands", () => {
       "opencode --model x/y",
       1,
     );
-    expect(pending).toEqual({
-      agent: "opencode",
-      armed: false,
-      command: "opencode --model x/y",
-    });
+    expect(pending).toEqual(
+      expect.objectContaining({
+        agent: "opencode",
+        armed: false,
+        command: "opencode --model x/y",
+        discoveryStartedAt: expect.any(Number),
+      }),
+    );
     expect(buildAgentLaunchCommand(pending, "opencode --model x/y")).toBe(
       "opencode --model x/y",
     );

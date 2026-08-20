@@ -95,6 +95,21 @@ export function pinLeafAgentResumeSession(
   return changed ? { ...n, children } : n;
 }
 
+export function clearLeafAgentResume(n: PaneNode, id: PaneId): PaneNode {
+  if (isLeaf(n)) {
+    if (n.id !== id || !n.agentResume) return n;
+    const { agentResume: _agentResume, ...leaf } = n;
+    return leaf;
+  }
+  let changed = false;
+  const children = n.children.map((child) => {
+    const next = clearLeafAgentResume(child, id);
+    if (next !== child) changed = true;
+    return next;
+  });
+  return changed ? { ...n, children } : n;
+}
+
 /**
  * Insert a new leaf next to `targetId` in direction `dir`.
  *

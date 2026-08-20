@@ -7,8 +7,10 @@ import {
   agentIdFor,
   collectWorkspaceAgents,
   createAgentAutomationService,
+  isAgentTuiReady,
   resolveAgentWorkspace,
   sanitizeAgentMessage,
+  submitAgentMessage,
 } from "./agentAutomation";
 
 const space = (overrides: Partial<SpaceMeta> = {}): SpaceMeta => ({
@@ -149,6 +151,112 @@ describe("agent messages", () => {
     expect(sanitizeAgentMessage("bad\u0007")).toMatchObject({ ok: false });
   });
 
+  it("recognizes stable prompts for every built-in agent CLI", () => {
+    expect(
+      isAgentTuiReady("claude", "Claude Code\nPress ? for shortcuts\n❯ "),
+    ).toBe(true);
+    expect(
+      isAgentTuiReady(
+        "codex",
+        "OpenAI Codex\nmodel: gpt-5.6-sol /model to change\n› Ask Codex to do anything",
+      ),
+    ).toBe(true);
+    expect(
+      isAgentTuiReady(
+        "codex",
+        "Previous response\n› Improve documentation in @filename\n\ngpt-5.6-sol high",
+      ),
+    ).toBe(true);
+    expect(
+      isAgentTuiReady("antigravity", "Antigravity CLI\n? for shortcuts\n>"),
+    ).toBe(true);
+    expect(isAgentTuiReady("opencode", "ready\nctrl+p commands")).toBe(true);
+    expect(
+      isAgentTuiReady(
+        "codex",
+        "OpenAI Codex\n2. Trust all and continue\nPress enter to confirm",
+      ),
+    ).toBe(false);
+    expect(
+      isAgentTuiReady(
+        "codex",
+        "This command requires approval\n› 1. Yes\n\ngpt-5.6-sol high",
+      ),
+    ).toBe(false);
+  });
+
+  it("verifies an input echo even when a TUI inserts ANSI repaint codes", async () => {
+    const writes: string[] = [];
+    let reads = 0;
+    const message = "Choose Alpha or Beta";
+    const submitted = await submitAgentMessage(
+      (_leafId, data) => {
+        writes.push(data);
+        return true;
+      },
+      () => {
+        reads += 1;
+        return reads === 1
+          ? "Antigravity CLI\n>"
+          : "Choose\x1b[>4;2m Alpha\x1b[>4;2m or Beta";
+      },
+      101,
+      message,
+      true,
+    );
+
+    expect(submitted).toBe(true);
+    expect(writes).toEqual([message, "\r"]);
+  });
+
+  it("does not type into a Codex trust prompt while a spawned CLI starts", async () => {
+    vi.useFakeTimers();
+    let buffer =
+      "OpenAI Codex\n1. Review hooks\n2. Trust all and continue\nPress enter to confirm";
+    const writes: Array<[number, string]> = [];
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab()] as Tab[],
+      getSpaces: () => [space()],
+      getSessions: () => ({
+        101: session({ agent: "codex", name: "Spica" }),
+      }),
+      getActiveTabId: () => null,
+      getBuffer: () => buffer,
+      write: (leafId, data) => {
+        writes.push([leafId, data]);
+        return true;
+      },
+      spawn: () => null,
+      subscribeSessions: () => () => {},
+    });
+
+    const pending = service.handle({
+      requestId: "send-after-spawn",
+      method: "agent_send",
+      params: {
+        workspace: "space-a",
+        agentId: "spica-codex:10",
+        message: "SPICA AGENT OK",
+        timeout: 2_000,
+      },
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(writes).toEqual([]);
+
+    buffer =
+      "OpenAI Codex\nmodel: gpt-5.6-sol /model to change\n\n› Ask Codex to do anything";
+    await vi.advanceTimersByTimeAsync(500);
+    expect(writes).toEqual([[101, "SPICA AGENT OK"]]);
+    buffer += "\nSPICAAGENTOK";
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(pending).resolves.toMatchObject({ result: { ok: true } });
+    expect(writes).toEqual([
+      [101, "SPICA AGENT OK"],
+      [101, "\r"],
+    ]);
+    service.dispose();
+  });
+
   it("submits to the requested waiting leaf without changing UI focus", async () => {
     vi.useFakeTimers();
     let sessions: Record<number, AgentSession> = { 101: session() };
@@ -187,7 +295,8 @@ describe("agent messages", () => {
 
   it("waits until Codex renders the input before pressing Enter", async () => {
     vi.useFakeTimers();
-    let buffer = "Codex ready";
+    let buffer =
+      "OpenAI Codex\nmodel: gpt-5.6-sol /model to change\n\n› Ask Codex to do anything";
     const writes: Array<[number, string]> = [];
     const service = createAgentAutomationService({
       getTabs: () => [terminalTab()] as Tab[],
@@ -216,7 +325,7 @@ describe("agent messages", () => {
     });
     await vi.advanceTimersByTimeAsync(500);
     expect(writes).toEqual([[101, "SPICA AGENT OK"]]);
-    buffer = "Codex ready\nSPICAAGENTOK";
+    buffer += "\nSPICAAGENTOK";
     await vi.advanceTimersByTimeAsync(25);
     await expect(pending).resolves.toMatchObject({ result: { ok: true } });
     expect(writes).toEqual([
@@ -252,13 +361,14 @@ describe("agent messages", () => {
         workspace: "space-a",
         agentId: "spica-codex:10",
         message: "SPICA AGENT OK",
+        timeout: 8_000,
       },
     });
-    await vi.advanceTimersByTimeAsync(8_000);
+    await vi.advanceTimersByTimeAsync(8_100);
     await expect(pending).resolves.toMatchObject({
       error: { code: "agent_not_ready" },
     });
-    expect(writes).toEqual([[101, "SPICA AGENT OK"]]);
+    expect(writes).toEqual([]);
     service.dispose();
   });
 
@@ -297,6 +407,56 @@ describe("agent messages", () => {
       [101, "inspect the workspace"],
       [101, "\r"],
     ]);
+    service.dispose();
+  });
+
+  it("accepts the next message after terminal output acknowledges a fast turn", async () => {
+    vi.useFakeTimers();
+    let buffer = "Claude Code\nmanual mode on\nâ¯ ";
+    const writes: string[] = [];
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab()] as Tab[],
+      getSpaces: () => [space()],
+      getSessions: () => ({ 101: session() }),
+      getActiveTabId: () => null,
+      getBuffer: () => buffer,
+      write: (_leafId, data) => {
+        writes.push(data);
+        if (data === "first") {
+          setTimeout(() => {
+            buffer += "\nfirst\nanswer\nâ¯ ";
+          }, 200);
+        }
+        return true;
+      },
+      spawn: () => null,
+      subscribeSessions: () => () => {},
+    });
+
+    const first = service.handle({
+      requestId: "first",
+      method: "agent_send",
+      params: {
+        workspace: "space-a",
+        agentId: "atlas-claude:10",
+        message: "first",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(first).resolves.toMatchObject({ result: { ok: true } });
+
+    const second = service.handle({
+      requestId: "second",
+      method: "agent_send",
+      params: {
+        workspace: "space-a",
+        agentId: "atlas-claude:10",
+        message: "second",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(second).resolves.toMatchObject({ result: { ok: true } });
+    expect(writes).toEqual(["first", "\r", "second", "\r"]);
     service.dispose();
   });
 
@@ -346,6 +506,61 @@ describe("agent messages", () => {
       result: {
         matched: true,
         agent: { phase: "finished" },
+      },
+    });
+    service.dispose();
+  });
+
+  it("matches waiting status when an agent transitions into attention phase", async () => {
+    let notify: (
+      sessions: Record<number, AgentSession>,
+      previous: Record<number, AgentSession>,
+    ) => void = () => {};
+    let sessions: Record<number, AgentSession> = {
+      101: session({
+        status: "working",
+        phase: "working",
+        lastActivityAt: 10,
+      }),
+    };
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab({ title: "Claude" })],
+      getSpaces: () => [space()],
+      getSessions: () => sessions,
+      getActiveTabId: () => 10,
+      getBuffer: () => "",
+      write: () => true,
+      spawn: () => null,
+      subscribeSessions: (next) => {
+        notify = next;
+        return () => {
+          notify = () => {};
+        };
+      },
+    });
+    const pending = service.handle({
+      requestId: "request-3",
+      method: "agent_wait",
+      params: {
+        workspace: "space-a",
+        agentId: agentIdFor("Atlas", "claude", 10),
+        status: "waiting",
+        timeout: 1_000,
+      },
+    });
+    const previous = sessions;
+    sessions = {
+      101: session({
+        status: "working",
+        phase: "attention",
+        lastActivityAt: 25,
+      }),
+    };
+    notify(sessions, previous);
+    await expect(pending).resolves.toMatchObject({
+      result: {
+        matched: true,
+        agent: { status: "working", phase: "attention" },
       },
     });
     service.dispose();

@@ -1,4 +1,5 @@
 import {
+  clearLeafAgentResume,
   firstLeafSlotId,
   leafIds,
   type PaneNode,
@@ -28,6 +29,27 @@ describe("pinLeafAgentResumeSession", () => {
         command: "opencode",
         sessionId: "ses_test123",
       },
+    });
+  });
+
+  it("removes resume metadata when the agent process exits", () => {
+    const tree: PaneNode = {
+      kind: "leaf",
+      id: 1,
+      cwd: "C:/work",
+      agentResume: {
+        agent: "claude",
+        armed: true,
+        command: "claude",
+        resumeOnStart: true,
+        sessionId: "session-id",
+      },
+    };
+
+    expect(clearLeafAgentResume(tree, 1)).toEqual({
+      kind: "leaf",
+      id: 1,
+      cwd: "C:/work",
     });
   });
 });

@@ -177,6 +177,7 @@ fn ensure_utf8_locale(cmd: &mut CommandBuilder) {
 }
 
 fn apply_common(cmd: &mut CommandBuilder, cwd: Option<String>, blocks: bool) {
+    cmd.env_remove("NO_COLOR");
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("ANBO_TERMINAL", "1");
@@ -1135,7 +1136,8 @@ fn which_in_path(name: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{fish_init_command, remove_owned_fish_file, sanitize_shell_override};
+    use super::{apply_common, fish_init_command, remove_owned_fish_file, sanitize_shell_override};
+    use portable_pty::CommandBuilder;
 
     #[cfg(windows)]
     use super::hook_executable_env_value;
@@ -1147,6 +1149,24 @@ mod tests {
             .to_string_lossy()
             .into_owned();
         assert_eq!(sanitize_shell_override(Some(exe)), None);
+    }
+
+    #[test]
+    fn common_shell_environment_drops_inherited_no_color() {
+        let mut cmd = CommandBuilder::new("shell");
+        cmd.env("NO_COLOR", "1");
+
+        apply_common(&mut cmd, None, false);
+
+        assert!(cmd.get_env("NO_COLOR").is_none());
+        assert_eq!(
+            cmd.get_env("TERM").and_then(std::ffi::OsStr::to_str),
+            Some("xterm-256color")
+        );
+        assert_eq!(
+            cmd.get_env("COLORTERM").and_then(std::ffi::OsStr::to_str),
+            Some("truecolor")
+        );
     }
 
     #[test]

@@ -105,6 +105,20 @@ type Session = {
 
 const sessions = new Map<number, Session>();
 
+type TerminalInputListener = (leafId: number, data: string) => void;
+const terminalInputListeners = new Set<TerminalInputListener>();
+
+export function subscribeTerminalInput(
+  listener: TerminalInputListener,
+): () => void {
+  terminalInputListeners.add(listener);
+  return () => terminalInputListeners.delete(listener);
+}
+
+function notifyTerminalInput(leafId: number, data: string): void {
+  for (const listener of terminalInputListeners) listener(leafId, data);
+}
+
 export function readTerminalBuffer(
   leafId: number,
   maxLines = 200,
@@ -184,9 +198,11 @@ export function writeToSession(leafId: number, data: string): boolean {
   const s = sessions.get(leafId);
   if (!s || s.shellExited) return false;
   if (s.pty) {
+    notifyTerminalInput(leafId, data);
     void s.pty.write(data);
     return true;
   }
+  notifyTerminalInput(leafId, data);
   queuePendingInput(s, data);
   return true;
 }
@@ -200,6 +216,7 @@ export async function writeToReadySession(
   const session = sessions.get(leafId);
   if (!session?.pty || session.shellExited) return false;
   try {
+    notifyTerminalInput(leafId, data);
     await session.pty.write(data);
     return true;
   } catch {
@@ -215,6 +232,7 @@ export function submitToLeaf(leafId: number, text: string): void {
   const data = text.includes("\n")
     ? `\x1b[200~${text}\x1b[201~\r`
     : `${text}\r`;
+  notifyTerminalInput(leafId, data);
   if (s.pty) void s.pty.write(data);
   else queuePendingInput(s, data);
 }
@@ -428,6 +446,7 @@ configureRendererPool({
           if (data.includes("\r")) void respawnSession(leafId);
           return;
         }
+        notifyTerminalInput(leafId, data);
         if (s.pty) void s.pty.write(data);
         else queuePendingInput(s, data);
       },
@@ -1005,6 +1024,7 @@ export function useTerminalSession({
     (data: string) => {
       const s = sessions.get(leafId);
       if (!s || s.shellExited) return;
+      notifyTerminalInput(leafId, data);
       if (s.pty) void s.pty.write(data);
       else queuePendingInput(s, data);
     },
