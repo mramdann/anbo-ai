@@ -25,6 +25,16 @@
 
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\anbo-browser.exe" "" '"$INSTDIR\anbo-browser.exe"'
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\anbo-browser.exe" "Path" "$INSTDIR"
+
+  ; NTFS keeps the old directory-entry casing when a file is overwritten in
+  ; place, so upgrades from lowercase-productName installs would keep showing
+  ; "anbo" in the Start Menu. Force-rename via a temp name to apply "Anbo".
+  ; Rename only succeeds when the shortcut exists, so fresh installs with
+  ; shortcut creation disabled are unaffected.
+  Rename "$SMPROGRAMS\anbo.lnk" "$SMPROGRAMS\Anbo.tmp.lnk"
+  Rename "$SMPROGRAMS\Anbo.tmp.lnk" "$SMPROGRAMS\Anbo.lnk"
+  Rename "$DESKTOP\anbo.lnk" "$DESKTOP\Anbo.tmp.lnk"
+  Rename "$DESKTOP\Anbo.tmp.lnk" "$DESKTOP\Anbo.lnk"
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL

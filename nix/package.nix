@@ -9,15 +9,15 @@ let
 
   srcMap = {
     x86_64-linux = fetchurl {
-      url = "https://github.com/mramdann/anbo-ai/releases/download/v${version}/anbo_${version}_amd64.deb";
+      url = "https://github.com/mramdann/anbo-ai/releases/download/v${version}/Anbo_${version}_amd64.deb";
       hash = sources.hashes.x86_64-linux;
     };
     x86_64-darwin = fetchurl {
-      url = "https://github.com/mramdann/anbo-ai/releases/download/v${version}/anbo_x64.app.tar.gz";
+      url = "https://github.com/mramdann/anbo-ai/releases/download/v${version}/Anbo_x64.app.tar.gz";
       hash = sources.hashes.x86_64-darwin;
     };
     aarch64-darwin = fetchurl {
-      url = "https://github.com/mramdann/anbo-ai/releases/download/v${version}/anbo_aarch64.app.tar.gz";
+      url = "https://github.com/mramdann/anbo-ai/releases/download/v${version}/Anbo_aarch64.app.tar.gz";
       hash = sources.hashes.aarch64-darwin;
     };
   };
