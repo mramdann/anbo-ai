@@ -430,9 +430,7 @@ fn find_antigravity_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>)
         let Ok(bytes) = std::fs::read(&path) else {
             continue;
         };
-        let normalized = String::from_utf8_lossy(&bytes)
-            .replace('\\', "/")
-            .to_ascii_lowercase();
+        let normalized = normalize_cwd_text(&String::from_utf8_lossy(&bytes));
         if !expected
             .iter()
             .any(|candidate| bytes_contain(normalized.as_bytes(), candidate.as_bytes()))
@@ -531,6 +529,16 @@ mod tests {
         assert!(!is_uuid("not-a-uuid"));
         assert!(!is_uuid("a1b2c3d4-e5f6-7890")); // terlalu pendek
         assert!(!is_uuid("a1b2c3d4-e5f6-7890-abcd-ef1234567890-extra"));
+    }
+
+    #[test]
+    fn cwd_normalization_preserves_case_on_case_sensitive_platforms() {
+        let normalized = normalize_cwd_text("/tmp/Upper/Project/");
+        if cfg!(windows) {
+            assert_eq!(normalized, "/tmp/upper/project");
+        } else {
+            assert_eq!(normalized, "/tmp/Upper/Project");
+        }
     }
 
     // Versi encode tanpa canonicalize (canonicalize butuh path nyata di disk;
