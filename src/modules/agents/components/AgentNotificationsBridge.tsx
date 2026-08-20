@@ -8,6 +8,7 @@ import {
   setAgentActivity,
   subscribeTerminalInput,
 } from "@/modules/terminal";
+import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
 import { displayAgentInstance } from "../lib/format";
@@ -230,6 +231,7 @@ export function AgentNotificationsBridge({
   }, []);
 
   useEffect(() => {
+    if (!isTauri()) return;
     const unsubscribeInput = subscribeTerminalInput((leafId, data) => {
       const signal = observerRef.current.input(leafId, data);
       if (signal) applyObserved(signal, ctxRef.current);
