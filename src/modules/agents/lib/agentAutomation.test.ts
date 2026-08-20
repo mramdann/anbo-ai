@@ -170,6 +170,12 @@ describe("agent messages", () => {
     expect(
       isAgentTuiReady("antigravity", "Antigravity CLI\n? for shortcuts\n>"),
     ).toBe(true);
+    expect(
+      isAgentTuiReady(
+        "antigravity",
+        "Antigravity CLI\nSigning in...\nPS C:\\work\\alpha>",
+      ),
+    ).toBe(false);
     expect(isAgentTuiReady("opencode", "ready\nctrl+p commands")).toBe(true);
     expect(
       isAgentTuiReady(
@@ -663,6 +669,76 @@ describe("agent spawning", () => {
     ).resolves.toMatchObject({ result: { ok: true } });
     expect(writes).toEqual([
       [101, "first task"],
+      [101, "\r"],
+    ]);
+    service.dispose();
+  });
+
+  it("waits for the real Antigravity prompt after its login shell", async () => {
+    vi.useFakeTimers();
+    let tabs: Tab[] = [];
+    let sessions: Record<number, AgentSession> = {};
+    let buffer =
+      "Antigravity CLI\nSigning in...\nPS C:\\work\\alpha>";
+    const writes: Array<[number, string]> = [];
+    const service = createAgentAutomationService({
+      getTabs: () => tabs,
+      getSpaces: () => [space()],
+      getSessions: () => sessions,
+      getActiveTabId: () => null,
+      getBuffer: () => buffer,
+      write: (leafId, data) => {
+        writes.push([leafId, data]);
+        return true;
+      },
+      spawn: (workspace, agent) => {
+        tabs = [terminalTab({ title: "Antigravity" })];
+        sessions = {
+          101: session({
+            agent: "antigravity",
+            name: "Antigravity",
+            status: "working",
+            phase: "working",
+          }),
+        };
+        return {
+          agentId: agentIdFor(agent, agent, 10),
+          cli: agent,
+          tabId: 10,
+          leafId: 101,
+          spaceId: workspace.id,
+          workspace: workspace.root,
+        };
+      },
+      subscribeSessions: () => () => {},
+    });
+
+    await expect(
+      service.handle({
+        requestId: "spawn-antigravity",
+        method: "agent_spawn",
+        params: { workspace: "space-a", agent: "antigravity" },
+      }),
+    ).resolves.toMatchObject({ result: { ok: true, pending: false } });
+
+    const pending = service.handle({
+      requestId: "send-antigravity",
+      method: "agent_send",
+      params: {
+        workspace: "space-a",
+        agentId: "antigravity:10",
+        message: "first Antigravity task",
+        timeout: 5_000,
+      },
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(writes).toEqual([]);
+
+    buffer = "Antigravity CLI\n? for shortcuts\n>";
+    await vi.advanceTimersByTimeAsync(1_100);
+    await expect(pending).resolves.toMatchObject({ result: { ok: true } });
+    expect(writes).toEqual([
+      [101, "first Antigravity task"],
       [101, "\r"],
     ]);
     service.dispose();

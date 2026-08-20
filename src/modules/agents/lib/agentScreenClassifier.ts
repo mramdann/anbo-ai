@@ -84,7 +84,7 @@ export function classifyAgentScreen(
       }
       break;
     case "antigravity":
-      if (/(?:Antigravity CLI|for shortcuts)/i.test(screen)) {
+      if (/\? for shortcuts/i.test(screen)) {
         readyAt = screen.lastIndexOf(">");
       }
       break;

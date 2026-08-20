@@ -662,6 +662,11 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       typeof params.timeout === "number" && Number.isInteger(params.timeout)
         ? Math.max(100, Math.min(60_000, params.timeout))
         : 30_000;
+    const normalizedCli = target.agent.cli
+      .replace(/^custom:/, "")
+      .toLowerCase();
+    const isAntigravity =
+      normalizedCli === "antigravity" || normalizedCli === "agy";
 
     const awaitingAcknowledgement = sendAcknowledgements.get(
       target.agent.agentId,
@@ -726,11 +731,6 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         `${current.agent.name} did not reach a stable input prompt before timeout`,
       );
     }
-    const normalizedCli = current.agent.cli
-      .replace(/^custom:/, "")
-      .toLowerCase();
-    const isAntigravity =
-      normalizedCli === "antigravity" || normalizedCli === "agy";
     const submitted = await submitAgentMessage(
       deps.write,
       deps.getBuffer,
