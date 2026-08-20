@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.2](https://github.com/mramdann/anbo-ai/compare/v0.17.1...v0.17.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* **agents:** wait for Antigravity prompt after login ([8c369cd](https://github.com/mramdann/anbo-ai/commit/8c369cdc5e0f0030364d4cfdff01f11d8d22aa35))
+
 ## [0.17.1](https://github.com/mramdann/anbo-ai/compare/v0.17.0...v0.17.1) (2026-08-20)
 
 
