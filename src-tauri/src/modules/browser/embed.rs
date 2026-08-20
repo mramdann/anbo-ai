@@ -36,6 +36,11 @@ const MAX_ACTIVE_EMBEDS: usize = 256;
 const MAX_CLOSED_EMBEDS: usize = 16 * 1024;
 const MAX_RELEASED_OWNERS: usize = 32 * 1024;
 
+#[cfg(any(target_os = "linux", test))]
+const fn browser_child_transparent() -> bool {
+    cfg!(target_os = "linux")
+}
+
 #[derive(Clone, serde::Serialize)]
 struct BrowserNavEvent {
     #[serde(rename = "tabId")]
@@ -361,8 +366,10 @@ fn spawn_browser_child(
             };
             "#,
         );
-    #[cfg(not(target_os = "macos"))]
-    let builder = builder.transparent(true);
+    #[cfg(target_os = "linux")]
+    let builder = builder.transparent(browser_child_transparent());
+    #[cfg(not(target_os = "linux"))]
+    let builder = builder;
     let builder = builder
         .on_navigation(move |target| {
             let root = navigation_local_root.lock().ok();
@@ -1313,8 +1320,8 @@ pub async fn browser_embed_close(
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_insert, navigation_allowed, parse_pane_url, physical_rect, should_process_update,
-        EmbedBounds,
+        bounded_insert, browser_child_transparent, navigation_allowed, parse_pane_url,
+        physical_rect, should_process_update, EmbedBounds,
     };
     use std::collections::HashSet;
     use url::Url;
@@ -1323,6 +1330,11 @@ mod tests {
     fn accepts_http_and_https_urls() {
         assert!(parse_pane_url("http://localhost:3000", None).is_ok());
         assert!(parse_pane_url("https://example.com/path", None).is_ok());
+    }
+
+    #[test]
+    fn native_browser_transparency_is_linux_only() {
+        assert_eq!(browser_child_transparent(), cfg!(target_os = "linux"));
     }
 
     #[test]
