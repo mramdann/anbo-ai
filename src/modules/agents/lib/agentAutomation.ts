@@ -30,6 +30,7 @@ const OUTPUT_HISTORY_CHARS = 64_000;
 const MAX_DEDUPLICATION_KEYS = 100;
 const MAX_TRACKED_AGENTS = 100;
 const SUBMIT_DELAY_MS = 90;
+const ANTIGRAVITY_SUBMIT_DELAY_MS = 750;
 const INPUT_READY_TIMEOUT_MS = 8_000;
 const INPUT_READY_POLL_MS = 25;
 const TUI_READY_POLL_MS = 100;
@@ -273,6 +274,7 @@ export async function submitAgentMessage(
   leafId: number,
   message: string,
   verifyInput = false,
+  submitDelayMs = SUBMIT_DELAY_MS,
 ): Promise<boolean> {
   const before = verifyInput ? getBuffer(leafId) : null;
   if (!write(leafId, message)) return false;
@@ -305,7 +307,7 @@ export async function submitAgentMessage(
       return false;
     }
   } else {
-    await new Promise<void>((resolve) => setTimeout(resolve, SUBMIT_DELAY_MS));
+    await new Promise<void>((resolve) => setTimeout(resolve, submitDelayMs));
   }
   return write(leafId, "\r");
 }
@@ -724,12 +726,19 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         `${current.agent.name} did not reach a stable input prompt before timeout`,
       );
     }
+    const normalizedCli = current.agent.cli
+      .replace(/^custom:/, "")
+      .toLowerCase();
+    const isAntigravity =
+      normalizedCli === "antigravity" || normalizedCli === "agy";
     const submitted = await submitAgentMessage(
       deps.write,
       deps.getBuffer,
       current.leafId,
       message.message,
-      acceptsInitialSpawnMessage || current.agent.cli === "codex",
+      !isAntigravity &&
+        (acceptsInitialSpawnMessage || normalizedCli === "codex"),
+      isAntigravity ? ANTIGRAVITY_SUBMIT_DELAY_MS : SUBMIT_DELAY_MS,
     );
     if (!submitted) {
       return error(

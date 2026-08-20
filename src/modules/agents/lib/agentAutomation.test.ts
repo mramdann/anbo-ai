@@ -209,6 +209,30 @@ describe("agent messages", () => {
     expect(writes).toEqual([message, "\r"]);
   });
 
+  it("allows Antigravity input to settle before pressing Enter", async () => {
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    const message =
+      "Tes produksi Anbo. Jangan ubah file. Balas tepat: ANBO_PROD_ANTIGRAVITY_OK";
+    const pending = submitAgentMessage(
+      (_leafId, data) => {
+        writes.push(data);
+        return true;
+      },
+      () => "Antigravity CLI\n>",
+      102,
+      message,
+      false,
+      750,
+    );
+
+    await vi.advanceTimersByTimeAsync(749);
+    expect(writes).toEqual([message]);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toBe(true);
+    expect(writes).toEqual([message, "\r"]);
+  });
+
   it("does not type into a Codex trust prompt while a spawned CLI starts", async () => {
     vi.useFakeTimers();
     let buffer =
