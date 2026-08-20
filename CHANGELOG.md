@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/mramdann/anbo-ai/compare/v0.17.0...v0.17.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **agents:** settle Antigravity input before submit ([02e4be2](https://github.com/mramdann/anbo-ai/commit/02e4be2aa7d1fedd196838923a873c4c683bddc9))
+
 ## [0.17.0](https://github.com/mramdann/anbo-ai/compare/v0.16.2...v0.17.0) (2026-08-20)
 
 
