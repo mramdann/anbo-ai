@@ -197,7 +197,11 @@ fn normalized_cwd(path: &str) -> String {
         .unwrap_or_else(|_| PathBuf::from(path))
         .to_string_lossy()
         .into_owned();
-    let value = strip_verbatim_prefix(&resolved)
+    normalize_cwd_text(&resolved)
+}
+
+fn normalize_cwd_text(path: &str) -> String {
+    let value = strip_verbatim_prefix(path)
         .replace('\\', "/")
         .trim_end_matches('/')
         .to_string();
@@ -392,8 +396,13 @@ fn bytes_contain(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 fn find_antigravity_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>) -> Option<String> {
-    let expected = normalized_cwd(cwd);
-    let expected_bytes = expected.as_bytes();
+    let canonical = normalized_cwd(cwd);
+    let lexical = normalize_cwd_text(cwd);
+    let expected = if canonical == lexical {
+        vec![canonical]
+    } else {
+        vec![canonical, lexical]
+    };
     let mut best: Option<(String, u64)> = None;
     for entry in std::fs::read_dir(antigravity_conversations_dir())
         .ok()?
@@ -424,7 +433,10 @@ fn find_antigravity_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>)
         let normalized = String::from_utf8_lossy(&bytes)
             .replace('\\', "/")
             .to_ascii_lowercase();
-        if !bytes_contain(normalized.as_bytes(), expected_bytes) {
+        if !expected
+            .iter()
+            .any(|candidate| bytes_contain(normalized.as_bytes(), candidate.as_bytes()))
+        {
             continue;
         }
         if best.as_ref().is_none_or(|(_, ts)| created > *ts) {
