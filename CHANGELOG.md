@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.17.0](https://github.com/mramdann/anbo-ai/compare/v0.16.2...v0.17.0) (2026-08-20)
+
+
+### Features
+
+* **agents:** replace hook status tracking with screen observation ([602ca1c](https://github.com/mramdann/anbo-ai/commit/602ca1c0c25fb312136f60c743b1d9258152710e))
+
+
+### Bug Fixes
+
+* **agents:** match lexical Antigravity workspace paths ([53c50a9](https://github.com/mramdann/anbo-ai/commit/53c50a974c768c63a36884d459f674de2f62ab64))
+* **agents:** poll terminal screens only inside Tauri ([f5daf4e](https://github.com/mramdann/anbo-ai/commit/f5daf4ec127e17a6ef943147b499fcbcbebb296b))
+* **agents:** preserve case in Antigravity session matching ([634fb42](https://github.com/mramdann/anbo-ai/commit/634fb423a130a00424cb75b1daebbcab6bc97872))
+* **browser:** keep Windows browser surfaces opaque ([8b81f20](https://github.com/mramdann/anbo-ai/commit/8b81f20a913bc3265b6e8f42b5301476528dbac5))
+* **release:** finalize Release Please metadata ([62a82fd](https://github.com/mramdann/anbo-ai/commit/62a82fdabba91e8912b3607061438176a39533b9))
+* **release:** normalize Anbo product and artifact casing ([a732268](https://github.com/mramdann/anbo-ai/commit/a732268047ad0595244a10339976169948fd755e))
+* **ui:** stabilize restored window and pane presentation ([cf907f2](https://github.com/mramdann/anbo-ai/commit/cf907f25cfdd6ea4c5eafd93f408b2d9a3bcd468))
+
 ## [0.16.2](https://github.com/mramdann/anbo-ai/compare/v0.16.1...v0.16.2) (2026-08-18)
 
 
