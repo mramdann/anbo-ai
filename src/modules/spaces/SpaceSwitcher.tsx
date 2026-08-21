@@ -245,6 +245,7 @@ export function SpaceSwitcher({
           title={shortcut ? `Spaces · ${shortcut}` : "Spaces"}
           className="flex h-7 shrink-0 items-center gap-2 rounded-md px-2 text-muted-foreground/90 outline-none transition-colors hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground"
         >
+          <SpaceAvatar space={current} size="sm" active />
           <span className="max-w-36 truncate text-xs font-medium">
             {current.name}
           </span>
@@ -256,11 +257,17 @@ export function SpaceSwitcher({
           />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" sideOffset={6} className="w-[20rem] p-1.5">
-        <div className="flex items-center justify-between px-1.5 pb-1.5 pt-0.5">
-          <span className="text-xs font-semibold text-foreground">Spaces</span>
+      <PopoverContent
+        align="start"
+        sideOffset={6}
+        className="w-[340px] p-1.5 [zoom:var(--app-zoom)]"
+      >
+        <div className="flex items-center justify-between px-2 pb-2 pt-1">
+          <span className="text-[13px] font-semibold text-foreground">
+            Spaces
+          </span>
           {shortcut && (
-            <Kbd className="h-5 bg-muted/70 text-[10px]">{shortcut}</Kbd>
+            <Kbd className="h-5 bg-muted/70 text-[11px]">{shortcut}</Kbd>
           )}
         </div>
         <div className="-mx-0.5 max-h-[60vh] overflow-y-auto px-0.5">
@@ -304,9 +311,9 @@ export function SpaceSwitcher({
           <button
             type="button"
             onClick={onNewSpace}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-[13px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
           >
-            <HugeiconsIcon icon={PlusSignIcon} size={14} strokeWidth={1.75} />
+            <HugeiconsIcon icon={PlusSignIcon} size={15} strokeWidth={1.75} />
             <span className="flex-1">New space</span>
           </button>
         </div>
@@ -412,7 +419,7 @@ function SpaceRow({
           }
         }}
         className={cn(
-          "group relative flex cursor-pointer select-none items-center gap-1.5 rounded-md px-1.5 py-1 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/40",
+          "group relative flex cursor-pointer select-none items-center gap-2 rounded-md px-2 py-1.5 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/40",
           moveTarget
             ? "bg-primary/10 ring-1 ring-inset ring-primary/40"
             : isActive
@@ -428,11 +435,11 @@ function SpaceRow({
             e.stopPropagation();
             onToggle();
           }}
-          className="flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground/60 hover:text-foreground"
+          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 hover:text-foreground"
         >
           <HugeiconsIcon
             icon={expanded ? ArrowDown01Icon : ArrowRight01Icon}
-            size={13}
+            size={14}
             strokeWidth={2}
           />
         </button>
@@ -445,16 +452,16 @@ function SpaceRow({
             className="ml-0.5"
           />
         ) : (
-          <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-foreground">
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">
             {space.name}
           </span>
         )}
         {!editing && (
           <div
             data-no-drag
-            className="relative flex h-5 w-16 shrink-0 items-center justify-end"
+            className="relative flex h-6 w-[4.5rem] shrink-0 items-center justify-end"
           >
-            <span className="absolute right-1 text-[10px] tabular-nums text-muted-foreground/50 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
+            <span className="absolute right-1 text-[11px] tabular-nums text-muted-foreground/50 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
               {tabs.length}
             </span>
             <div className="pointer-events-none absolute right-0 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
@@ -482,7 +489,7 @@ function SpaceRow({
       </div>
 
       {expanded && (
-        <div className="flex flex-col gap-px py-0.5 pl-9 pr-0.5">
+        <div className="flex flex-col gap-px py-0.5 pl-11 pr-0.5">
           {tabs.map((t) => (
             <TabRow
               key={t.id}
@@ -497,7 +504,7 @@ function SpaceRow({
             />
           ))}
           {tabs.length === 0 && (
-            <span className="px-2 py-1 text-[10.5px] text-muted-foreground/50">
+            <span className="px-2 py-1.5 text-[11px] text-muted-foreground/50">
               {draggingTabFromOther ? "Drop to move here" : "No tabs"}
             </span>
           )}
@@ -555,17 +562,17 @@ function TabRow({
           }
         }}
         className={cn(
-          "group/tab relative flex cursor-pointer select-none items-center gap-1.5 rounded-md px-1.5 py-0.5 outline-none transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-primary/40",
+          "group/tab relative flex cursor-pointer select-none items-center gap-2 rounded-md px-1.5 py-1 outline-none transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-primary/40",
           isDragging && "opacity-50",
         )}
       >
         <TabIcon tab={tab} size="sm" />
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-[11px] leading-tight">
+          <span className="truncate text-xs leading-tight">
             {labelFor(tab)}
           </span>
           {subtitle && (
-            <span className="truncate text-[9px] leading-tight text-muted-foreground/55">
+            <span className="truncate text-[10px] leading-tight text-muted-foreground/55">
               {subtitle}
             </span>
           )}
@@ -578,9 +585,9 @@ function TabRow({
             onClose();
           }}
           aria-label="Close tab"
-          className="flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/tab:opacity-70 hover:opacity-100"
+          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/tab:opacity-70 hover:opacity-100"
         >
-          <HugeiconsIcon icon={Cancel01Icon} size={11} strokeWidth={2} />
+          <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={2} />
         </button>
       </div>
     </div>
@@ -609,7 +616,7 @@ function OverlayChip({
   label: string;
 }) {
   return (
-    <div className="flex items-center gap-2 rounded-md border border-border bg-popover px-2 py-1.5 text-xs shadow-lg">
+    <div className="flex items-center gap-2 rounded-md border border-border bg-popover px-2 py-1.5 text-xs shadow-lg [zoom:var(--app-zoom)]">
       {tab ? (
         <TabIcon tab={tab} />
       ) : (
@@ -645,13 +652,13 @@ function RowAction({
         onClick();
       }}
       className={cn(
-        "flex size-5 items-center justify-center rounded text-muted-foreground/70 transition-colors",
+        "flex size-6 items-center justify-center rounded text-muted-foreground/70 transition-colors",
         destructive
           ? "hover:bg-destructive/10 hover:text-destructive"
           : "hover:bg-accent hover:text-foreground",
       )}
     >
-      <HugeiconsIcon icon={icon} size={13} strokeWidth={1.75} />
+      <HugeiconsIcon icon={icon} size={14} strokeWidth={1.75} />
     </button>
   );
 }
