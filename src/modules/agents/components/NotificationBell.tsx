@@ -5,13 +5,13 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import type { WorkspaceEnv } from "@/modules/workspace";
 import {
   CheckmarkCircle02Icon,
   Notification01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState } from "react";
-import type { WorkspaceEnv } from "@/modules/workspace";
 import { AgentIcon } from "../lib/agentIcon";
 import { displayAgentInstance } from "../lib/format";
 import type { AgentNotification, AgentStatus } from "../lib/types";
@@ -267,11 +267,6 @@ export function NotificationBell({
             ))}
           </div>
         )}
-
-        <div className="border-t border-border/60 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground/70">
-          Agent status is observed locally from each terminal. No CLI hooks are
-          installed.
-        </div>
       </PopoverContent>
     </Popover>
   );
