@@ -15,6 +15,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { type FontWeight, Terminal } from "@xterm/xterm";
 import { shouldCursorBlink } from "./cursorBlink";
 import { terminalReadlineSequence } from "./keymap";
+import { shouldShowTerminalScrollbar } from "./scrollbarVisibility";
 import {
   readTerminalClipboard,
   writeTerminalClipboard,
@@ -25,6 +26,10 @@ export const POOL_MAX_SIZE = 5;
 const FIT_DEBOUNCE_MS = 8;
 const PTY_RESIZE_DEBOUNCE_MS = 256;
 const SNAPSHOT_SCROLLBACK_CAP = 5_000;
+// xterm and FitAddon fall back to a 14px gutter when this is missing or zero.
+// Reserve one layout pixel, then let CSS paint the wider thumb as an overlay.
+// Alternate-screen TUIs therefore do not keep an empty scrollbar gutter.
+const TERMINAL_SCROLLBAR_LAYOUT_WIDTH = 1;
 
 export type SlotAdapter = {
   resolveLeaf(leafId: number): LeafBridge | null;
@@ -281,6 +286,7 @@ function termOptions() {
     cursorStyle: prefs.terminalCursorStyle,
     cursorInactiveStyle: "outline" as const,
     scrollback: prefs.terminalScrollback,
+    overviewRuler: { width: TERMINAL_SCROLLBAR_LAYOUT_WIDTH },
     allowProposedApi: true,
     minimumContrastRatio: bgActive(prefs) ? MCR_BG_ACTIVE : MCR_BG_INACTIVE,
   };
@@ -339,9 +345,15 @@ function createSlot(): Slot {
     lastUsedAt: 0,
   };
 
-  const syncTerminalLayout = () => scheduleSettledSlotFit(slot);
+  const syncTerminalLayout = () => {
+    host.dataset.anboTerminalScrollable = String(
+      shouldShowTerminalScrollbar(term.buffer.active),
+    );
+    scheduleSettledSlotFit(slot);
+  };
   term.buffer.onBufferChange(syncTerminalLayout);
   term.onRender(syncTerminalLayout);
+  term.onScroll(syncTerminalLayout);
   term.onWriteParsed(syncTerminalLayout);
   term.onResize(syncTerminalLayout);
   syncTerminalLayout();

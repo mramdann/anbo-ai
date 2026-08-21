@@ -273,34 +273,65 @@ html[data-native-browser-live="true"] footer {
  * own stylesheet (which is not in any layer and would otherwise override).
  *
  * Newer xterm renders scrollbars as real <div class="scrollbar vertical|horizontal">
- * children rather than relying on native overflow scrollbars. Both code paths exist
- * across versions, so we hide both.
+ * children rather than relying on native overflow scrollbars. Keep the vertical
+ * scrollbar narrow and theme-aware, and suppress the unused horizontal track.
  */
-.xterm .scrollbar,
-.xterm .scrollbar.vertical,
 .xterm .scrollbar.horizontal {
   display: none !important;
-  visibility: hidden !important;
-  width: 0 !important;
   height: 0 !important;
+  pointer-events: none !important;
+}
+.xterm .xterm-scrollable-element > .scrollbar.vertical {
+  width: 5px !important;
+}
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  left: 1px !important;
+  width: 3px !important;
+  border-radius: 999px;
+}
+.xterm .xterm-decoration-overview-ruler {
+  display: none !important;
+}
+[data-anbo-terminal-scrollable="false"]
+  .xterm
+  .xterm-scrollable-element
+  > .scrollbar.vertical {
+  opacity: 0 !important;
   pointer-events: none !important;
 }
 .xterm .xterm-viewport,
 .xterm-viewport {
-  scrollbar-width: none !important;
+  scrollbar-width: thin !important;
+  scrollbar-color: color-mix(in oklab, var(--foreground) 28%, transparent)
+    transparent;
   -ms-overflow-style: none !important;
 }
 .xterm .xterm-viewport::-webkit-scrollbar,
 .xterm-viewport::-webkit-scrollbar {
-  width: 0 !important;
+  width: 5px !important;
   height: 0 !important;
-  display: none !important;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-track,
+.xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb,
+.xterm-viewport::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--foreground) 28%, transparent);
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb:hover,
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--foreground) 48%, transparent);
 }
 .xterm,
 .xterm-screen,
 .xterm:focus,
 .xterm.focus {
   outline: none !important;
+}
+.xterm .xterm-screen {
+  margin-inline: auto;
 }
 
 .cm-editor,

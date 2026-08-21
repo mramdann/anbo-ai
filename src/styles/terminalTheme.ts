@@ -9,6 +9,7 @@ export function buildTerminalTheme(): ITheme {
     cursor: t.cursor,
     cursorAccent: t.cursorAccent,
     selectionBackground: t.selection,
+    overviewRulerBorder: "transparent",
     black: t.ansiBlack,
     red: t.ansiRed,
     green: t.ansiGreen,
