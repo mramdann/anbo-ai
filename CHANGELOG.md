@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.17.3](https://github.com/mramdann/anbo-ai/compare/v0.17.2...v0.17.3) (2026-08-21)
+
+
+### Bug Fixes
+
+* **notifications:** remove implementation footer ([dd0526d](https://github.com/mramdann/anbo-ai/commit/dd0526dc8529cc2c40e93061c2449546ed129ba0))
+* **spaces:** scale workspace switcher with UI ([67087ba](https://github.com/mramdann/anbo-ai/commit/67087bae3c147b306ced8d1007c06ad88165d8c4))
+* **terminal:** balance agent panes and scrollbars ([aa412a6](https://github.com/mramdann/anbo-ai/commit/aa412a603ab8851f6f712022161d742e1342acbb))
+* **terminal:** synchronize sizing after layout ([880fef2](https://github.com/mramdann/anbo-ai/commit/880fef252e73226c13d88dc79bf1f2b6f65cbb3b))
+
 ## [0.17.2](https://github.com/mramdann/anbo-ai/compare/v0.17.1...v0.17.2) (2026-08-20)
 
 
