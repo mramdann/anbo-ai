@@ -1,5 +1,6 @@
-import { invoke, Channel } from "@tauri-apps/api/core";
 import { currentWorkspaceEnv } from "@/modules/workspace";
+import { Channel, invoke } from "@tauri-apps/api/core";
+import { LatestResizeQueue } from "./latestResizeQueue";
 
 const textEncoder = new TextEncoder();
 
@@ -55,15 +56,19 @@ export async function openPty(
 
   let closed = false;
   const headers = { "x-pty-id": String(id) };
+  const resizeQueue = new LatestResizeQueue(({ cols: c, rows: r }) =>
+    invoke("pty_resize", { id, cols: c, rows: r }),
+  );
 
   return {
     id,
     // Raw bytes + id header: no JSON round-trip on the per-keystroke path.
     write: (data) => invoke("pty_write", textEncoder.encode(data), { headers }),
-    resize: (c, r) => invoke("pty_resize", { id, cols: c, rows: r }),
+    resize: (c, r) => resizeQueue.request({ cols: c, rows: r }),
     close: async () => {
       if (closed) return;
       closed = true;
+      resizeQueue.dispose();
       try {
         await invoke("pty_close", { id });
       } finally {

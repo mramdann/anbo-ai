@@ -119,6 +119,7 @@ export type WorkspaceDockviewProps = {
     spaceId: string;
     revision: number;
   }[];
+  onLayoutSettled?: () => void;
   /** Render one tab's content directly inside its dockview panel (flat model). */
   renderTab: (tab: Tab, visible: boolean) => ReactNode;
 };
@@ -711,6 +712,7 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
   const loadedSpaceRef = useRef<string | null>(null);
   const loadedTabsRef = useRef<readonly Tab[]>([]);
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const layoutSettledFrameRef = useRef(0);
   latest.current = props;
   const layoutKey = `${props.spaceId}:${props.tabs.map((tab) => tab.id).join(",")}`;
   const persistenceTabsKey = JSON.stringify([
@@ -758,6 +760,18 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
       if (currentApi && spaceId !== null) persistLayout(currentApi, spaceId);
     }, LAYOUT_WRITE_DEBOUNCE_MS);
   }, [persistLayout]);
+
+  const scheduleLayoutSettled = useCallback(() => {
+    if (layoutSettledFrameRef.current) {
+      cancelAnimationFrame(layoutSettledFrameRef.current);
+    }
+    layoutSettledFrameRef.current = requestAnimationFrame(() => {
+      layoutSettledFrameRef.current = requestAnimationFrame(() => {
+        layoutSettledFrameRef.current = 0;
+        latest.current.onLayoutSettled?.();
+      });
+    });
+  }, []);
 
   const placeGhost = useCallback((clientX: number, clientY: number) => {
     lastPointerRef.current = { x: clientX, y: clientY };
@@ -1115,6 +1129,9 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
   useEffect(
     () => () => {
       cleanupDragRef.current?.();
+      if (layoutSettledFrameRef.current) {
+        cancelAnimationFrame(layoutSettledFrameRef.current);
+      }
     },
     [],
   );
@@ -1164,7 +1181,8 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
     } finally {
       applyingLayout.current = false;
     }
-  }, [api, props.spaceId, flushPersistedLayout]);
+    scheduleLayoutSettled();
+  }, [api, props.spaceId, flushPersistedLayout, scheduleLayoutSettled]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: persistenceTabsKey deliberately tracks ref-backed tab snapshots.
   useEffect(() => {
@@ -1228,6 +1246,7 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
     };
     const changed = api.onDidLayoutChange(() => {
       schedulePersistedLayout();
+      scheduleLayoutSettled();
       cleanupEmptyGroups();
     });
     cleanupEmptyGroups();
@@ -1236,7 +1255,12 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
       changed.dispose();
       flushPersistedLayout(loadedSpaceRef.current, api);
     };
-  }, [api, flushPersistedLayout, schedulePersistedLayout]);
+  }, [
+    api,
+    flushPersistedLayout,
+    scheduleLayoutSettled,
+    schedulePersistedLayout,
+  ]);
 
   // Incremental model sync keeps group membership and split geometry intact.
   // biome-ignore lint/correctness/useExhaustiveDependencies: layoutKey deliberately reruns ref-driven incremental sync.
@@ -1332,7 +1356,8 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
     } finally {
       applyingLayout.current = false;
     }
-  }, [api, layoutKey, syncRevision]);
+    scheduleLayoutSettled();
+  }, [api, layoutKey, scheduleLayoutSettled, syncRevision]);
 
   useEffect(() => {
     if (!api) return;
@@ -1371,12 +1396,16 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
         applyingLayout.current = false;
       }
     }
-    if (moved) schedulePersistedLayout();
+    if (moved) {
+      schedulePersistedLayout();
+      scheduleLayoutSettled();
+    }
   }, [
     api,
     props.externalSplits,
     props.spaceId,
     props.tabs,
+    scheduleLayoutSettled,
     schedulePersistedLayout,
   ]);
 
@@ -1418,12 +1447,16 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
         applyingLayout.current = false;
       }
     }
-    if (moved) schedulePersistedLayout();
+    if (moved) {
+      schedulePersistedLayout();
+      scheduleLayoutSettled();
+    }
   }, [
     api,
     props.externalMoves,
     props.spaceId,
     props.tabs,
+    scheduleLayoutSettled,
     schedulePersistedLayout,
   ]);
 

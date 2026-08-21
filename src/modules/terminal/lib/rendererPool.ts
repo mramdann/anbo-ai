@@ -67,6 +67,7 @@ export type Slot = {
   webglReapTimer: ReturnType<typeof setTimeout> | null;
   slotReapTimer: ReturnType<typeof setTimeout> | null;
   unhideRaf: number | null;
+  settledFitRaf: number | null;
   lastCols: number;
   lastRows: number;
   lastW: number;
@@ -112,6 +113,48 @@ function canFitTerminal(container: HTMLElement): boolean {
 }
 
 function restoreVisibleSlotsAfterWindowRestore(): void {
+  refitVisibleSlots(true);
+}
+
+function scheduleSettledSlotFit(slot: Slot): void {
+  if (slot.settledFitRaf !== null || isWindowPresentationBlocked()) return;
+  const proposed = slot.fitAddon.proposeDimensions();
+  if (
+    !proposed ||
+    (proposed.cols === slot.term.cols && proposed.rows === slot.term.rows)
+  ) {
+    return;
+  }
+  slot.settledFitRaf = requestAnimationFrame(() => {
+    slot.settledFitRaf = null;
+    const leafId = slot.currentLeafId;
+    const container = slot.host.parentElement;
+    if (
+      leafId === null ||
+      slot.parked ||
+      !container ||
+      !canFitTerminal(container) ||
+      !adapter?.isLeafVisible(leafId)
+    ) {
+      return;
+    }
+    const next = slot.fitAddon.proposeDimensions();
+    if (
+      !next ||
+      (next.cols === slot.term.cols && next.rows === slot.term.rows)
+    ) {
+      return;
+    }
+    slot.fitAddon.fit();
+    slot.lastW = container.clientWidth;
+    slot.lastH = container.clientHeight;
+    slot.lastCols = slot.term.cols;
+    slot.lastRows = slot.term.rows;
+    adapter.resolveLeaf(leafId)?.resizePty(slot.lastCols, slot.lastRows);
+  });
+}
+
+function refitVisibleSlots(kick: boolean): void {
   if (isWindowPresentationBlocked()) return;
   for (const slot of slots) {
     const leafId = slot.currentLeafId;
@@ -132,11 +175,15 @@ function restoreVisibleSlotsAfterWindowRestore(): void {
     slot.lastRows = slot.term.rows;
     const bridge = adapter.resolveLeaf(leafId);
     bridge?.resizePty(slot.lastCols, slot.lastRows);
-    bridge?.kickPty(slot.lastCols, slot.lastRows);
+    if (kick) bridge?.kickPty(slot.lastCols, slot.lastRows);
     try {
       slot.term.refresh(0, slot.term.rows - 1);
     } catch {}
   }
+}
+
+export function refitVisibleTerminalSlots(): void {
+  refitVisibleSlots(false);
 }
 
 function setWindowActive(active: boolean): void {
@@ -284,12 +331,20 @@ function createSlot(): Slot {
     webglReapTimer: null,
     slotReapTimer: null,
     unhideRaf: null,
+    settledFitRaf: null,
     lastCols: term.cols,
     lastRows: term.rows,
     lastW: 0,
     lastH: 0,
     lastUsedAt: 0,
   };
+
+  const syncTerminalLayout = () => scheduleSettledSlotFit(slot);
+  term.buffer.onBufferChange(syncTerminalLayout);
+  term.onRender(syncTerminalLayout);
+  term.onWriteParsed(syncTerminalLayout);
+  term.onResize(syncTerminalLayout);
+  syncTerminalLayout();
 
   term.attachCustomKeyEventHandler((event) => {
     // During IME composition the browser is assembling a multi-keystroke
@@ -784,6 +839,10 @@ function disposeSlot(slot: Slot): void {
   cancelSlotReap(slot);
   cancelWebglReap(slot);
   cancelPendingUnhide(slot);
+  if (slot.settledFitRaf !== null) {
+    cancelAnimationFrame(slot.settledFitRaf);
+    slot.settledFitRaf = null;
+  }
   if (slot.fitTimer) clearTimeout(slot.fitTimer);
   if (slot.ptyTimer) clearTimeout(slot.ptyTimer);
   slot.fitTimer = null;

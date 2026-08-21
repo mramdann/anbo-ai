@@ -134,9 +134,10 @@ import {
   type PaneBounds,
   ptyIdForLeaf,
   readTerminalBuffer,
+  refitVisibleTerminalSlots,
   selectBackgroundTerminalTabs,
-  TerminalStack,
   type TerminalPaneHandle,
+  TerminalStack,
   useAgentActivityStore,
   useTerminalFileDrop,
   writeToReadySession,
@@ -914,12 +915,7 @@ export default function App() {
         })();
       }
     }
-  }, [
-    agentMcpEnabled,
-    spaceEnvironments,
-    tabs,
-    warmTab,
-  ]);
+  }, [agentMcpEnabled, spaceEnvironments, tabs, warmTab]);
 
   useEffect(() => {
     if (agentRecoveryRunningRef.current) return;
@@ -2183,6 +2179,7 @@ export default function App() {
                             hideTabs={zenMode}
                             externalMoves={dockviewExternalMoves}
                             externalSplits={dockviewExternalSplits}
+                            onLayoutSettled={refitVisibleTerminalSlots}
                             onSelect={setActiveId}
                             onRevealTab={warmTab}
                             onTabVisibilityChange={handleDockviewTabVisibility}
