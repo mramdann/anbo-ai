@@ -80,6 +80,12 @@ jobs:
             found { print }
           ' CHANGELOG.md > release-notes.md
           test -s release-notes.md
+          cat >> release-notes.md <<'EOF'
+
+          ## Code signing
+
+          Free code signing provided by SignPath.io, certificate by SignPath Foundation. See the [Anbo code signing policy](https://github.com/mramdann/anbo-ai/blob/main/CODE_SIGNING_POLICY.md).
+          EOF
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

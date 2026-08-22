@@ -16,6 +16,8 @@
     <a href="https://github.com/mramdann/anbo-ai/issues">Issues</a>
     &middot;
     <a href="PRIVACY.md">Privacy</a>
+    &middot;
+    <a href="CODE_SIGNING_POLICY.md">Code signing</a>
     ·
     <a href="https://github.com/crynta/terax-ai">Upstream: Terax</a>
   </p>
@@ -112,7 +114,7 @@ Latest installers are on the [Releases](https://github.com/mramdann/anbo-ai/rele
 
 ### Windows notes
 
-- On first launch Windows shows "Windows protected your PC" because Anbo isn't code-signed. Click **More info** then **Run anyway**.
+- The release pipeline is prepared to Authenticode-sign Windows installers through SignPath and refuses to publish when trusted signing is unavailable. Until SignPath Foundation finishes provisioning the GitHub.com trusted build system for Anbo, available installers remain historical unsigned builds and may show a SmartScreen warning.
 - Default shell detection: `pwsh.exe` (PowerShell 7+) -> `powershell.exe` (Windows PowerShell 5.1) -> `cmd.exe`.
 - WSL is a first-class workspace environment, not a wrapped subprocess.
 
@@ -124,7 +126,7 @@ Latest installers are on the [Releases](https://github.com/mramdann/anbo-ai/rele
 ## Release integrity
 
 - Official Windows binaries are built only from this repository by GitHub Actions after the exact release commit passes CI.
-- The Windows installer is not Authenticode-signed, so Windows may show a SmartScreen warning on first installation.
+- The release pipeline refuses to publish a Windows installer unless Windows validates its trusted Authenticode signature. See the [code signing policy](CODE_SIGNING_POLICY.md).
 - Updater packages are signed with Tauri's updater key. Anbo verifies that signature before installing an update.
 - Anbo's data and network behavior is documented in the [privacy policy](PRIVACY.md). Anbo has no telemetry and sends project or prompt data only to services explicitly selected by the user; update checks retrieve release metadata from this GitHub repository.
 

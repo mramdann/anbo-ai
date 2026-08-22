@@ -33,6 +33,9 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag_name }}
       EXPECTED_SHA: ${{ inputs.expected_sha }}
+      SIGNPATH_ENABLED: ${{ vars.SIGNPATH_ENABLED || 'false' }}
+      SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+      SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -44,12 +47,21 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
         run: |
           set -euo pipefail
           test -n "$RELEASE_TAG"
           test -n "$EXPECTED_SHA"
           test -n "$TAURI_SIGNING_PRIVATE_KEY" \
             || { echo "TAURI_SIGNING_PRIVATE_KEY is missing"; exit 1; }
+          test -n "$SIGNPATH_API_TOKEN" \
+            || { echo "SIGNPATH_API_TOKEN is missing"; exit 1; }
+          test "$SIGNPATH_ENABLED" = "true" \
+            || { echo "SIGNPATH_ENABLED must be true for a production release"; exit 1; }
+          test -n "$SIGNPATH_ORGANIZATION_ID" \
+            || { echo "SIGNPATH_ORGANIZATION_ID repository variable is missing"; exit 1; }
+          test -n "$SIGNPATH_PROJECT_SLUG" \
+            || { echo "SIGNPATH_PROJECT_SLUG repository variable is missing"; exit 1; }
 
           RELEASE_SHA=$(git rev-list -n 1 "refs/tags/$RELEASE_TAG")
           test "$RELEASE_SHA" = "$EXPECTED_SHA" \
@@ -73,7 +85,11 @@ jobs:
     needs: gate
     runs-on: windows-latest
     permissions:
+      actions: read
       contents: write
+      id-token: write
+    outputs:
+      installer_sha256: ${{ steps.verify-signed.outputs.installer_sha256 }}
     env:
       RELEASE_TAG: ${{ inputs.tag_name }}
       RELEASE_SHA: ${{ needs.gate.outputs.release_sha }}
@@ -116,6 +132,79 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: --bundles nsis
+
+      - id: locate-installer
+        name: Stage Windows installer for SignPath
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = Get-ChildItem `
+            -Path "src-tauri/target/release/bundle/nsis" `
+            -Filter "*_x64-setup.exe" | Select-Object -First 1
+          if (-not $installer) { throw "NSIS installer was not produced" }
+          New-Item -ItemType Directory -Path signpath-staging -Force | Out-Null
+          Copy-Item -LiteralPath $installer.FullName -Destination signpath-staging/anbo-setup.exe
+          "installer_path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+
+      - id: upload-unsigned-installer
+        name: Upload installer for trusted Authenticode signing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-unsigned-${{ needs.gate.outputs.release_sha }}
+          path: signpath-staging/
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign Windows installer with SignPath
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: initial
+          github-artifact-id: ${{ steps.upload-unsigned-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed-installer
+
+      - id: verify-signed
+        name: Verify signed installer and refresh updater signature
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          INSTALLER_PATH: ${{ steps.locate-installer.outputs.installer_path }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $signed = Get-ChildItem -Path signed-installer -Filter anbo-setup.exe -Recurse |
+            Select-Object -First 1
+          if (-not $signed) { throw "SignPath did not return anbo-setup.exe" }
+
+          $signature = Get-AuthenticodeSignature -LiteralPath $signed.FullName
+          if ($signature.Status -ne "Valid" -or -not $signature.SignerCertificate) {
+            throw "SignPath artifact has invalid Authenticode status: $($signature.Status)"
+          }
+
+          Copy-Item -LiteralPath $signed.FullName -Destination $env:INSTALLER_PATH -Force
+          $updaterSignature = "$env:INSTALLER_PATH.sig"
+          Remove-Item -LiteralPath $updaterSignature -ErrorAction SilentlyContinue
+          pnpm tauri signer sign "$env:INSTALLER_PATH"
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $updaterSignature)) {
+            throw "Tauri updater signature was not regenerated for the signed installer"
+          }
+
+          $hash = (Get-FileHash -LiteralPath $env:INSTALLER_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+          $subject = $signature.SignerCertificate.Subject
+          "installer_sha256=$hash" >> $env:GITHUB_OUTPUT
+          Write-Host "Validated Authenticode signer: $subject"
+
+          gh release upload $env:RELEASE_TAG `
+            $env:INSTALLER_PATH `
+            $updaterSignature `
+            --clobber `
+            --repo $env:GITHUB_REPOSITORY
 
       - name: Smoke packaged Windows application
         shell: pwsh
@@ -187,7 +276,7 @@ jobs:
             --yes --repo "$GITHUB_REPOSITORY"
 
   publish-release:
-    needs: [gate, patch-updater-manifest]
+    needs: [gate, publish-tauri, patch-updater-manifest]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -196,6 +285,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag_name }}
       RELEASE_SHA: ${{ needs.gate.outputs.release_sha }}
+      EXPECTED_INSTALLER_SHA256: ${{ needs.publish-tauri.outputs.installer_sha256 }}
     steps:
       - name: Validate complete draft and publish atomically
         env:
@@ -210,6 +300,9 @@ jobs:
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir final-assets
           EXE=$(find final-assets -maxdepth 1 -name '*_x64-setup.exe' -print -quit)
           test -n "$EXE" && test -s "$EXE"
+          test -n "$EXPECTED_INSTALLER_SHA256"
+          test "$(sha256sum "$EXE" | cut -d ' ' -f 1)" = "$EXPECTED_INSTALLER_SHA256" \
+            || { echo "Published installer differs from the verified Authenticode artifact"; exit 1; }
           test -s final-assets/latest.json
           VERSION=${RELEASE_TAG#v}
           jq -e --arg version "$VERSION" '
