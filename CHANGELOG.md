@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/mramdann/anbo-ai/compare/v0.17.3...v0.18.0) (2026-08-22)
+
+
+### Features
+
+* require trusted Windows release signing ([0adbd44](https://github.com/mramdann/anbo-ai/commit/0adbd44f33658c66cb9ef3da69410eaa36b5532a))
+
 ## [0.17.3](https://github.com/mramdann/anbo-ai/compare/v0.17.2...v0.17.3) (2026-08-21)
 
 
