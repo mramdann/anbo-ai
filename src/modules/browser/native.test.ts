@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  BROWSER_LOADING_FALLBACK_MS,
   browserPresentationBounds,
   browserUrlError,
   canMeasureBrowserPane,
@@ -13,6 +14,9 @@ import {
 } from "./native";
 
 describe("native browser URL policy", () => {
+  it("keeps loading visible long enough for stop to target a live request", () => {
+    expect(BROWSER_LOADING_FALLBACK_MS).toBe(30_000);
+  });
   it("allows HTTP(S) and local files while rejecting active content schemes", () => {
     expect(isSupportedBrowserUrl("http://localhost:3000")).toBe(true);
     expect(isSupportedBrowserUrl("https://example.com/path")).toBe(true);

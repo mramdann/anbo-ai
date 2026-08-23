@@ -11,7 +11,7 @@ use tauri::Listener;
 use tauri::Webview;
 
 use crate::modules::app_data::local_data_root;
-use crate::modules::browser::embed::active_local_root;
+use crate::modules::browser::embed::{active_loading, active_local_root, set_active_loading};
 use crate::modules::browser_automation::cdp::{
     call_devtools_protocol_method, capture_screenshot, execute_script, execute_script_with_timeout,
 };
@@ -45,10 +45,6 @@ const MAX_SNAPSHOT_FRAMES: usize = 32;
 const MAX_SNAPSHOT_ELEMENTS: usize = 1_000;
 const MAX_SCREENSHOT_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const SUBMISSION_OBSERVATION_MS: u64 = 3_000;
-/// How long to wait for a page to become interactive after issuing a navigation
-/// (navigate/back/forward/reload) before returning. Best-effort — the command
-/// returns `ok` regardless once this elapses.
-const NAVIGATE_READY_TIMEOUT_MS: u64 = 8000;
 const BROWSER_OPEN_REQUEST_EVENT: &str = "anbo:browser-open-request";
 const BROWSER_OPEN_RESPONSE_EVENT: &str = "anbo:browser-open-response";
 const BROWSER_CLOSE_REQUEST_EVENT: &str = "anbo:browser-close-request";
@@ -184,7 +180,10 @@ pub async fn handle_action(
                 .unwrap_or_default();
             let mut result = Vec::new();
             for tab_id in tab_ids {
-                if let Some(tab) = by_id.remove(&tab_id) {
+                if let Some(mut tab) = by_id.remove(&tab_id) {
+                    if let Some(loading) = active_loading(tab_id) {
+                        tab.loading = loading;
+                    }
                     result.push(serde_json::to_value(tab).unwrap_or_default());
                     continue;
                 }
@@ -207,7 +206,7 @@ pub async fn handle_action(
                         "automationTarget": false,
                         "automationActive": false,
                         "automationMethod": null,
-                        "loading": null,
+                        "loading": active_loading(tab_id),
                     }));
                 }
             }
@@ -241,7 +240,13 @@ pub async fn handle_action(
             })?;
             ensure_bounded(url, MAX_URL_BYTES, "url")?;
 
-            if !url.starts_with("http://") && !url.starts_with("https://") {
+            let target = url::Url::parse(url).map_err(|error| {
+                (
+                    error_codes::NAVIGATION_FAILED.to_string(),
+                    format!("invalid URL: {error}"),
+                )
+            })?;
+            if !matches!(target.scheme(), "http" | "https") {
                 return Err((
                     error_codes::NAVIGATION_FAILED.to_string(),
                     "only http:// and https:// URLs are allowed".to_string(),
@@ -252,18 +257,16 @@ pub async fn handle_action(
             let _lock = tab_lock.lock().await;
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
-            let script = format!(
-                "window.location.href = {};",
-                serde_json::to_string(url).unwrap()
-            );
-            // Setting location.href unloads the current document, so the script
-            // callback is routinely dropped mid-navigation — that's expected, not
-            // an error. Use a short timeout and ignore the outcome; wait_for_ready
-            // confirms the new page actually loaded before we return.
-            let _ = execute_script_with_timeout(&webview, &script, SCRIPT_POLL_TIMEOUT).await;
-            wait_for_ready(&webview, NAVIGATE_READY_TIMEOUT_MS).await;
+            set_active_loading(tab_id, true);
+            if let Err(error) = webview.navigate(target) {
+                set_active_loading(tab_id, false);
+                return Err((
+                    error_codes::NAVIGATION_FAILED.to_string(),
+                    error.to_string(),
+                ));
+            }
 
-            Ok(json!({ "tabId": tab_id, "url": url, "ok": true }))
+            Ok(json!({ "tabId": tab_id, "url": url, "ok": true, "loading": true }))
         }
 
         "reload" | "back" | "forward" | "stop" => {
@@ -272,22 +275,16 @@ pub async fn handle_action(
             let _lock = tab_lock.lock().await;
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
-            let js = match method {
-                "reload" => "window.location.reload();",
-                "back" => "window.history.back();",
-                "forward" => "window.history.forward();",
-                "stop" => "window.stop();",
-                _ => unreachable!(),
-            };
-            // reload/back/forward kick off an async navigation, so the script
-            // callback may be dropped as the document unloads — treat that as
-            // expected and wait for the page to become interactive. `stop` halts
-            // loading, so it needs no readiness gate.
-            let _ = execute_script_with_timeout(&webview, js, SCRIPT_POLL_TIMEOUT).await;
-            if method != "stop" {
-                wait_for_ready(&webview, NAVIGATE_READY_TIMEOUT_MS).await;
-            }
-            Ok(json!({ "tabId": tab_id, "action": method, "ok": true }))
+            let navigated = dispatch_navigation_action(&webview, tab_id, method)
+                .await
+                .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+            Ok(json!({
+                "tabId": tab_id,
+                "action": method,
+                "ok": true,
+                "navigated": navigated,
+                "loading": active_loading(tab_id)
+            }))
         }
 
         "snapshot" => {
@@ -572,19 +569,26 @@ pub async fn handle_action(
                 .clamp(100, MAX_WAIT_TIMEOUT_MS);
 
             let tab_lock = get_tab_lock(tab_id);
-            let _lock = tab_lock.lock().await;
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
 
             let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+            let js = build_wait_for_text_js(text);
             loop {
-                let js = build_wait_for_text_js(text);
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
                 let poll_timeout = remaining.min(Duration::from_millis(750));
-                let res = execute_script_with_timeout(&webview, &js, poll_timeout)
-                    .await
-                    .unwrap_or_default();
-                if res.trim() == "true" {
+                let found = {
+                    let _lock = tab_lock.lock().await;
+                    let main = execute_script_with_timeout(&webview, &js, poll_timeout)
+                        .await
+                        .unwrap_or_default();
+                    if main.trim() == "true" {
+                        true
+                    } else {
+                        wait_text_in_child_frames(&webview, &js, deadline).await
+                    }
+                };
+                if found {
                     return Ok(json!({ "tabId": tab_id, "found": true, "text": text }));
                 }
 
@@ -1040,15 +1044,12 @@ pub async fn handle_action(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
 
-            let logs = execute_script(
-                &webview,
-                "JSON.stringify((window.__anboLogs || []).slice(-50))",
-            )
-            .await
-            .unwrap_or_else(|_| "[]".to_string());
-
-            let logs = serde_json::from_str::<String>(&logs).unwrap_or(logs);
-            Ok(json!({ "logs": serde_json::from_str::<Value>(&logs).unwrap_or(json!([])) }))
+            let (logs, included_frames, skipped_frames) = collect_console_logs(&webview).await;
+            Ok(json!({
+                "logs": logs,
+                "includedFrames": included_frames,
+                "skippedFrames": skipped_frames
+            }))
         }
 
         _ => Err((
@@ -1375,6 +1376,135 @@ fn count_frame_nodes(frame_tree: &Value) -> usize {
         .unwrap_or(0)
 }
 
+fn history_entry_id(payload: &Value, delta: i64) -> Option<i64> {
+    let current = payload.get("currentIndex")?.as_i64()?;
+    let target = current.checked_add(delta)?;
+    let index = usize::try_from(target).ok()?;
+    payload
+        .get("entries")?
+        .as_array()?
+        .get(index)?
+        .get("id")?
+        .as_i64()
+}
+
+async fn dispatch_navigation_action(
+    webview: &Webview,
+    tab_id: i64,
+    action: &str,
+) -> Result<bool, String> {
+    match action {
+        "stop" => {
+            call_devtools_protocol_method(webview, "Page.stopLoading", "{}", SCRIPT_POLL_TIMEOUT)
+                .await?;
+            set_active_loading(tab_id, false);
+            Ok(false)
+        }
+        "reload" => {
+            set_active_loading(tab_id, true);
+            if let Err(error) =
+                call_devtools_protocol_method(webview, "Page.reload", "{}", SCRIPT_POLL_TIMEOUT)
+                    .await
+            {
+                set_active_loading(tab_id, false);
+                return Err(error);
+            }
+            Ok(true)
+        }
+        "back" | "forward" => {
+            let raw = call_devtools_protocol_method(
+                webview,
+                "Page.getNavigationHistory",
+                "{}",
+                SCRIPT_POLL_TIMEOUT,
+            )
+            .await?;
+            let history: Value = serde_json::from_str(&raw)
+                .map_err(|error| format!("invalid navigation history response: {error}"))?;
+            let delta = if action == "back" { -1 } else { 1 };
+            let Some(entry_id) = history_entry_id(&history, delta) else {
+                return Ok(false);
+            };
+            set_active_loading(tab_id, true);
+            let params = json!({ "entryId": entry_id }).to_string();
+            if let Err(error) = call_devtools_protocol_method(
+                webview,
+                "Page.navigateToHistoryEntry",
+                &params,
+                SCRIPT_POLL_TIMEOUT,
+            )
+            .await
+            {
+                set_active_loading(tab_id, false);
+                return Err(error);
+            }
+            Ok(true)
+        }
+        _ => Err(format!("unknown browser navigation action '{action}'")),
+    }
+}
+
+fn parse_console_entries(raw: &str, frame: &str) -> Vec<Value> {
+    let decoded = serde_json::from_str::<String>(raw).unwrap_or_else(|_| raw.to_string());
+    let Ok(Value::Array(entries)) = serde_json::from_str::<Value>(&decoded) else {
+        return Vec::new();
+    };
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            let message = entry.get("msg")?.as_str()?;
+            let level = entry.get("level").and_then(Value::as_str).unwrap_or("info");
+            let timestamp = entry.get("ts").and_then(Value::as_u64).unwrap_or(0);
+            Some(json!({
+                "level": level.chars().take(16).collect::<String>(),
+                "msg": message.chars().take(4_000).collect::<String>(),
+                "ts": timestamp,
+                "frame": frame
+            }))
+        })
+        .collect()
+}
+
+async fn collect_console_logs(webview: &Webview) -> (Vec<Value>, usize, usize) {
+    const FRAME_LOG_EXPRESSION: &str =
+        "document.documentElement?.getAttribute('data-anbo-console-logs') || '[]'";
+    let (frame_ids, frame_limit_reached) = get_frame_ids(webview)
+        .await
+        .unwrap_or_else(|_| (Vec::new(), false));
+    let mut logs = Vec::new();
+    let mut included_frames = 0usize;
+    let mut skipped_frames = usize::from(frame_limit_reached);
+
+    for (index, frame_id) in frame_ids.iter().enumerate() {
+        match evaluate_in_frame(webview, frame_id, FRAME_LOG_EXPRESSION).await {
+            Ok(raw) => {
+                included_frames += 1;
+                let frame = if index == 0 {
+                    "main".to_string()
+                } else {
+                    format!("frame-{index}")
+                };
+                logs.extend(parse_console_entries(&raw, &frame));
+            }
+            Err(_) => skipped_frames += 1,
+        }
+    }
+
+    if included_frames == 0 {
+        let raw = execute_script(webview, "JSON.stringify(window.__anboLogs || [])")
+            .await
+            .unwrap_or_else(|_| "[]".to_string());
+        logs.extend(parse_console_entries(&raw, "main"));
+        included_frames = usize::from(!logs.is_empty());
+    }
+
+    logs.sort_by_key(|entry| entry.get("ts").and_then(Value::as_u64).unwrap_or(0));
+    if logs.len() > 50 {
+        logs.drain(..logs.len() - 50);
+    }
+    (logs, included_frames, skipped_frames)
+}
+
 async fn create_frame_execution_context(webview: &Webview, frame_id: &str) -> Result<i64, String> {
     let params = json!({
         "frameId": frame_id,
@@ -1615,6 +1745,37 @@ fn build_wait_for_text_js(text: &str) -> String {
         }})()"#,
         serde_json::to_string(text).unwrap()
     )
+}
+
+async fn wait_text_in_child_frames(
+    webview: &Webview,
+    script: &str,
+    deadline: tokio::time::Instant,
+) -> bool {
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    if remaining.is_zero() {
+        return false;
+    }
+    let frame_tree_timeout = remaining.min(Duration::from_millis(750));
+    let Ok(Ok((frame_ids, _))) =
+        tokio::time::timeout(frame_tree_timeout, get_frame_ids(webview)).await
+    else {
+        return false;
+    };
+    for frame_id in frame_ids.iter().skip(1) {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        let frame_timeout = remaining.min(Duration::from_millis(750));
+        if tokio::time::timeout(frame_timeout, evaluate_in_frame(webview, frame_id, script))
+            .await
+            .is_ok_and(|result| result.is_ok_and(|value| value.trim() == "true"))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn decode_screenshot_response(response: &str) -> Result<Vec<u8>, String> {
@@ -2345,6 +2506,37 @@ mod tests {
         collect_frame_ids(&tree, &mut ids);
         assert_eq!(ids, ["root", "first", "nested", "second"]);
         assert_eq!(count_frame_nodes(&tree), 4);
+    }
+
+    #[test]
+    fn navigation_history_selects_only_an_existing_adjacent_entry() {
+        let history = json!({
+            "currentIndex": 1,
+            "entries": [{ "id": 10 }, { "id": 11 }, { "id": 12 }]
+        });
+        assert_eq!(history_entry_id(&history, -1), Some(10));
+        assert_eq!(history_entry_id(&history, 1), Some(12));
+        assert_eq!(history_entry_id(&history, 2), None);
+        assert_eq!(
+            history_entry_id(&json!({ "currentIndex": 0, "entries": [] }), -1),
+            None
+        );
+    }
+
+    #[test]
+    fn console_entries_are_bounded_and_annotated_with_their_frame() {
+        let raw = serde_json::to_string(&json!([
+            { "level": "info", "msg": "main ready", "ts": 11 },
+            { "level": "error", "msg": "frame failed", "ts": 12 },
+            { "level": "info", "other": "ignored" }
+        ]))
+        .unwrap();
+        let encoded = serde_json::to_string(&raw).unwrap();
+        let entries = parse_console_entries(&encoded, "frame-1");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["frame"], "frame-1");
+        assert_eq!(entries[1]["level"], "error");
+        assert_eq!(entries[1]["ts"], 12);
     }
 
     #[test]

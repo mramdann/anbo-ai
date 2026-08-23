@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tauri::webview::{Color, DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder};
@@ -81,6 +82,7 @@ struct ActiveEmbed {
     instance_id: String,
     owner_id: String,
     local_root: Arc<Mutex<Option<PathBuf>>>,
+    loading: Arc<AtomicBool>,
 }
 
 static CLOSED_EMBEDS: OnceLock<Mutex<HashSet<EmbedKey>>> = OnceLock::new();
@@ -144,6 +146,22 @@ pub fn active_local_root(tab_id: i64) -> Option<PathBuf> {
         .clone();
     let resolved = root.lock().ok()?.clone();
     resolved
+}
+
+pub fn active_loading(tab_id: i64) -> Option<bool> {
+    active_embeds()
+        .lock()
+        .ok()?
+        .get(&tab_id)
+        .map(|entry| entry.loading.load(Ordering::Acquire))
+}
+
+pub fn set_active_loading(tab_id: i64, loading: bool) {
+    if let Ok(active) = active_embeds().lock() {
+        if let Some(entry) = active.get(&tab_id) {
+            entry.loading.store(loading, Ordering::Release);
+        }
+    }
 }
 
 pub fn clear_lifecycle_state() {
@@ -344,6 +362,14 @@ fn spawn_browser_child(
     let popup_local_root = local_root.clone();
     let event_local_root = local_root.clone();
     let title_local_root = local_root;
+    let loading = active_embeds()
+        .lock()
+        .map_err(|_| "browser lifecycle state is unavailable".to_string())?
+        .get(&tab_id)
+        .map(|entry| entry.loading.clone())
+        .ok_or_else(|| "browser lifecycle state is unavailable".to_string())?;
+    let popup_loading = loading.clone();
+    let event_loading = loading;
     let builder = WebviewBuilder::new(embed_label(tab_id), WebviewUrl::External(target))
         .data_directory(browser_data_dir)
         // Opaque background so a not-yet-painted webview (new tab, mid-load) shows
@@ -351,7 +377,20 @@ fn spawn_browser_child(
         .background_color(Color(255, 255, 255, 255))
         .initialization_script(
             r#"
-            window.__anboLogs = window.__anboLogs || [];
+            (() => {
+            const anboLogs = Array.isArray(window.__anboLogs) ? window.__anboLogs : [];
+            window.__anboLogs = anboLogs;
+            const syncAnboLogs = () => {
+                try {
+                    document.documentElement?.setAttribute(
+                        'data-anbo-console-logs',
+                        JSON.stringify(anboLogs.slice(-50))
+                    );
+                } catch (_) {}
+            };
+            if (!document.documentElement) {
+                document.addEventListener('DOMContentLoaded', syncAnboLogs, { once: true });
+            }
             const safeStringify = (arg) => {
                 try {
                     if (arg === null || typeof arg !== 'object') return String(arg).slice(0, 2000);
@@ -368,16 +407,20 @@ fn spawn_browser_child(
             };
             const origLog = console.log;
             console.log = function(...args) {
-                window.__anboLogs.push({ level: 'info', msg: args.slice(0, 20).map(safeStringify).join(' ').slice(0, 4000) });
-                if (window.__anboLogs.length > 50) window.__anboLogs.shift();
+                anboLogs.push({ level: 'info', msg: args.slice(0, 20).map(safeStringify).join(' ').slice(0, 4000), ts: Date.now() });
+                if (anboLogs.length > 50) anboLogs.shift();
+                syncAnboLogs();
                 origLog.apply(console, args);
             };
             const origErr = console.error;
             console.error = function(...args) {
-                window.__anboLogs.push({ level: 'error', msg: args.slice(0, 20).map(safeStringify).join(' ').slice(0, 4000) });
-                if (window.__anboLogs.length > 50) window.__anboLogs.shift();
+                anboLogs.push({ level: 'error', msg: args.slice(0, 20).map(safeStringify).join(' ').slice(0, 4000), ts: Date.now() });
+                if (anboLogs.length > 50) anboLogs.shift();
+                syncAnboLogs();
                 origErr.apply(console, args);
             };
+            syncAnboLogs();
+            })();
             "#,
         );
     #[cfg(target_os = "linux")]
@@ -401,6 +444,7 @@ fn spawn_browser_child(
                 root.as_deref().and_then(Option::as_deref),
             ) {
                 if let Some(webview) = popup_app.get_webview(&popup_label) {
+                    popup_loading.store(true, Ordering::Release);
                     let _ = webview.navigate(target);
                 }
             }
@@ -421,8 +465,14 @@ fn spawn_browser_child(
                 return;
             };
             let kind = match payload.event() {
-                PageLoadEvent::Started => "navigated",
-                PageLoadEvent::Finished => "loaded",
+                PageLoadEvent::Started => {
+                    event_loading.store(true, Ordering::Release);
+                    "navigated"
+                }
+                PageLoadEvent::Finished => {
+                    event_loading.store(false, Ordering::Release);
+                    "loaded"
+                }
             };
             let _ = navigation_app.emit(
                 BROWSER_NAV_EVENT,
@@ -988,6 +1038,11 @@ pub async fn browser_embed_update(
         .filter(|entry| entry.instance_id == instance_id && entry.owner_id == owner_id)
         .map(|entry| entry.local_root.clone())
         .unwrap_or_else(|| Arc::new(Mutex::new(None)));
+    let loading = active
+        .get(&tab_id)
+        .filter(|entry| entry.instance_id == instance_id && entry.owner_id == owner_id)
+        .map(|entry| entry.loading.clone())
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(true)));
     *local_root
         .lock()
         .map_err(|_| "browser local-file policy is unavailable".to_string())? = resolved_local_root;
@@ -997,6 +1052,7 @@ pub async fn browser_embed_update(
             instance_id: instance_id.clone(),
             owner_id: owner_id.clone(),
             local_root: local_root.clone(),
+            loading: loading.clone(),
         },
     );
     drop(active);
@@ -1015,6 +1071,7 @@ pub async fn browser_embed_update(
         if let Some(target) = target {
             let current = webview.url().map_err(|error| error.to_string())?;
             if current != target {
+                loading.store(true, Ordering::Release);
                 webview
                     .navigate(target)
                     .map_err(|error| error.to_string())?;
@@ -1082,6 +1139,7 @@ pub async fn browser_embed_navigate(
         parse_pane_url(&url, root.as_deref())?
     };
     if let Some(webview) = webview {
+        set_active_loading(tab_id, true);
         webview
             .navigate(target)
             .map_err(|error| error.to_string())?;
@@ -1116,6 +1174,7 @@ pub async fn browser_embed_dispatch(
         return Ok(());
     };
     if action == "reload" {
+        set_active_loading(tab_id, true);
         return webview.reload().map_err(|error| error.to_string());
     }
     let script = match action.as_str() {
@@ -1124,6 +1183,11 @@ pub async fn browser_embed_dispatch(
         "stop" => "window.stop()",
         other => return Err(format!("unknown browser action: {other}")),
     };
+    if action == "stop" {
+        set_active_loading(tab_id, false);
+    } else {
+        set_active_loading(tab_id, true);
+    }
     webview.eval(script).map_err(|error| error.to_string())
 }
 

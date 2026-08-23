@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { WorkspaceEnv } from "@/modules/workspace";
 
 export const BROWSER_NAV_EVENT = "anbo:browser-nav";
+export const BROWSER_LOADING_FALLBACK_MS = 30_000;
 
 export type BrowserNavEvent = {
   tabId: number;

@@ -26,6 +26,7 @@ import { BrowserStartPage } from "./BrowserStartPage";
 import { recordBrowserVisit } from "./history";
 import {
   BROWSER_NAV_EVENT,
+  BROWSER_LOADING_FALLBACK_MS,
   type BrowserNavEvent,
   browserEmbedDispatch,
   browserEmbedNavigate,
@@ -186,13 +187,14 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       onLoadingChangeRef.current?.(loading);
     }, [loading]);
 
-    // Safety net: the `loaded` page event is unreliable in the native webview
-    // (it sometimes never fires), so a tab could otherwise show the loading
-    // spinner forever even after the page fully rendered. Force-clear after a
-    // grace period. Cleared automatically once loading flips back to false.
+    // Keep a bounded fallback for a renderer that never reports completion.
+    // Normal loading state follows the native Started/Finished lifecycle.
     useEffect(() => {
       if (!loading) return;
-      const timer = setTimeout(() => setLoading(false), 6000);
+      const timer = setTimeout(
+        () => setLoading(false),
+        BROWSER_LOADING_FALLBACK_MS,
+      );
       return () => clearTimeout(timer);
     }, [loading]);
 
@@ -517,10 +519,6 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
           const title = payload.title.trim().slice(0, 200);
           onTitleChangeRef.current(title);
           recordBrowserVisit(payload.url, title);
-          // The document has a title → it has loaded enough to identify itself.
-          // `loaded` is unreliable in the native webview, so treat the title as
-          // a secondary signal to stop the spinner once content is present.
-          setLoading(false);
         }
         currentUrlRef.current = payload.url;
         if (

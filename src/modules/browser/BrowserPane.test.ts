@@ -59,6 +59,13 @@ describe("BrowserPane iframe sandbox", () => {
 });
 
 describe("BrowserPane native layering", () => {
+  it("uses native page completion instead of a title change to clear loading", () => {
+    expect(src).toContain("BROWSER_LOADING_FALLBACK_MS");
+    expect(src).not.toMatch(
+      /payload\.kind === "title"[\s\S]{0,500}setLoading\(false\)/,
+    );
+  });
+
   it("uses the captured browser frame only while dragging", () => {
     expect(src).toContain("browserEmbedSnapshot");
     expect(src).toContain("native && visible && dragActive && freezeFrame");
