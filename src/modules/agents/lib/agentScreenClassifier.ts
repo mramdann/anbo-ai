@@ -3,7 +3,6 @@ export type AgentScreenState = "attention" | "ready" | "working" | null;
 const ATTENTION_PATTERNS = [
   /press enter to confirm/i,
   /press enter to (?:continue|submit)/i,
-  /esc\s*to\s*c.?ncel/i,
   /esc dismiss/i,
   /enter\s*to\s*select/i,
   /type\s*something/i,
@@ -22,9 +21,24 @@ const WORKING_PATTERNS = [
   /esc to interrupt/i,
   /esc\s+interrup/i,
   /working \(\d+s/i,
+  /(?:^|\n)\s*(?:[*•]\s*)?working\.{2,}/i,
   /thought for \d+s/i,
   /(?:^|\n)\s*[*] working\b/i,
   /(?:^|\n)\s*[*] (?:build|plan|explore)\b/i,
+  /(?:^|\n)\s*(?:running|searching|fetching|thinking)\.{3}/i,
+  /generating\.{0,3}/i,
+  /waiting\.{0,3}/i,
+];
+
+// These markers are transient controls rendered by a live TUI. Several CLIs
+// keep their input prompt mounted below the spinner, so position alone cannot
+// decide that the newer-looking prompt means the turn has settled. Completed
+// summaries such as "Thought for 12s" intentionally do not belong here.
+const LIVE_WORKING_PATTERNS = [
+  /esc to interrupt/i,
+  /esc\s+interrup/i,
+  /working \(\d+s[^\n]*(?:interrupt|esc)/i,
+  /(?:^|\n)\s*(?:[*•]\s*)?working\.{2,}/i,
   /(?:^|\n)\s*(?:running|searching|fetching|thinking)\.{3}/i,
   /generating\.{0,3}/i,
   /waiting\.{0,3}/i,
@@ -64,6 +78,7 @@ export function classifyAgentScreen(
   const screen = tail(buffer);
   const attentionAt = lastAnyIndex(screen, ATTENTION_PATTERNS);
   const workingAt = lastAnyIndex(screen, WORKING_PATTERNS);
+  const liveWorkingAt = lastAnyIndex(screen, LIVE_WORKING_PATTERNS);
   const resolvedAttentionAt = lastAnyIndex(screen, [
     /user\s*answered/i,
     /permission\s+(?:granted|approved)/i,
@@ -71,6 +86,7 @@ export function classifyAgentScreen(
     /\? for shortcuts/i,
   ]);
   let readyAt = -1;
+  let openCodeCompletionAt = -1;
 
   switch (normalizedAgent(agent)) {
     case "claude":
@@ -96,6 +112,10 @@ export function classifyAgentScreen(
           /[·•]\s*(?:\d+m\s*)?\d+(?:\.\d+)?s\b/i,
         ),
       );
+      openCodeCompletionAt = lastPatternIndex(
+        screen,
+        /(?:\u00b7|\u2022|\u00c2\u00b7|\u00e2\u20ac\u00a2)\s*(?:\d+m\s*)?\d+(?:\.\d+)?s\b/i,
+      );
       break;
     case "pi":
       if (/(?:pi coding agent|for shortcuts|session)/i.test(screen)) {
@@ -120,6 +140,15 @@ export function classifyAgentScreen(
   }
   if (attentionAt >= readyAt && attentionAt >= workingAt && attentionAt >= 0) {
     return "attention";
+  }
+  if (
+    liveWorkingAt >= 0 &&
+    liveWorkingAt > attentionAt &&
+    (normalizedAgent(agent) !== "opencode" ||
+      liveWorkingAt > openCodeCompletionAt) &&
+    screen.length - liveWorkingAt <= 2_400
+  ) {
+    return "working";
   }
   if (workingAt > readyAt && workingAt >= 0) return "working";
   return readyAt >= 0 ? "ready" : null;

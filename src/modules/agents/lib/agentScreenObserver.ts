@@ -22,10 +22,13 @@ type Entry = {
   hasTurn: boolean;
   settledOnce: boolean;
   workingUntil: number;
+  readySince: number | null;
+  sawWorkingForTurn: boolean;
 };
 
 const STABLE_POLLS = 2;
 const MIN_WORKING_MS = 1_000;
+const READY_WITHOUT_PROGRESS_MS = 1_500;
 
 export class AgentScreenObserver {
   private readonly entries = new Map<number, Entry>();
@@ -41,6 +44,8 @@ export class AgentScreenObserver {
       hasTurn: false,
       settledOnce: false,
       workingUntil: 0,
+      readySince: null,
+      sawWorkingForTurn: false,
     });
     return { leafId, ptyId, agent, kind: "working" };
   }
@@ -60,10 +65,13 @@ export class AgentScreenObserver {
   ): ObservedAgentSignal | null {
     const entry = this.entries.get(leafId);
     if (!entry || !/[\r\n]/.test(data)) return null;
+    const wasAttention = entry.phase === "attention";
     entry.hasTurn = true;
     entry.workingUntil = now + MIN_WORKING_MS;
     entry.candidate = null;
     entry.stablePolls = 0;
+    entry.readySince = null;
+    entry.sawWorkingForTurn = wasAttention;
     if (entry.phase === "working") return null;
     entry.phase = "working";
     return this.signal(entry, "working");
@@ -81,10 +89,13 @@ export class AgentScreenObserver {
       else {
         entry.candidate = candidate;
         entry.stablePolls = 1;
+        entry.readySince = null;
       }
       if (entry.stablePolls < STABLE_POLLS) continue;
 
       if (candidate === "working") {
+        entry.readySince = null;
+        if (entry.hasTurn) entry.sawWorkingForTurn = true;
         if (entry.phase !== "working") {
           entry.phase = "working";
           entry.hasTurn = true;
@@ -94,6 +105,8 @@ export class AgentScreenObserver {
       }
 
       if (candidate === "attention") {
+        entry.readySince = null;
+        if (entry.hasTurn) entry.sawWorkingForTurn = true;
         if (entry.phase !== "attention") {
           entry.phase = "attention";
           signals.push(this.signal(entry, "attention"));
@@ -102,6 +115,10 @@ export class AgentScreenObserver {
       }
 
       if (candidate !== "ready" || now < entry.workingUntil) continue;
+      if (entry.hasTurn && !entry.sawWorkingForTurn) {
+        entry.readySince ??= now;
+        if (now - entry.readySince < READY_WITHOUT_PROGRESS_MS) continue;
+      }
       if (entry.phase === "ready") continue;
       entry.phase = "ready";
       if (!entry.settledOnce && !entry.hasTurn) {
@@ -112,6 +129,8 @@ export class AgentScreenObserver {
       if (entry.hasTurn) {
         entry.hasTurn = false;
         entry.settledOnce = true;
+        entry.readySince = null;
+        entry.sawWorkingForTurn = false;
         signals.push(this.signal(entry, "finished"));
       } else {
         signals.push(this.signal(entry, "ready"));

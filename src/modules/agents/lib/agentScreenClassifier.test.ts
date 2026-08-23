@@ -45,6 +45,15 @@ describe("classifyAgentScreen", () => {
     ).toBe("working");
   });
 
+  it("keeps OpenCode working when ctrl+p remains after the interrupt footer", () => {
+    expect(
+      classifyAgentScreen(
+        "opencode",
+        "Berita menarik terbaru\n+ Thought: Planning Indonesian news browsing ... 2.0s\nBuild · GPT-5.6 Sol\nesc interrupt 8.7K (2%) ctrl+p commands",
+      ),
+    ).toBe("working");
+  });
+
   it("detects OpenCode completion when its resumed TUI omits the command hint", () => {
     expect(
       classifyAgentScreen(
@@ -59,6 +68,15 @@ describe("classifyAgentScreen", () => {
       classifyAgentScreen(
         "antigravity",
         "Antigravity CLI\n> request\nesc to cancel\nGenerating...",
+      ),
+    ).toBe("working");
+  });
+
+  it("treats Antigravity Working plus esc-to-cancel as active work", () => {
+    expect(
+      classifyAgentScreen(
+        "antigravity",
+        "Antigravity CLI\n> carikan berita\nWorking...\n>\nesc to cancel\nGemini 3.7 Flash · high",
       ),
     ).toBe("working");
   });
@@ -95,4 +113,20 @@ describe("classifyAgentScreen", () => {
       ),
     ).toBe("working");
   });
+
+  it.each([
+    [
+      "codex",
+      "OpenAI Codex\nâ€º Ask Codex to do anything\n• Working (3s · esc to interrupt)\nâ€º \ngpt-5.6-sol high",
+    ],
+    [
+      "claude",
+      "Claude Code\n❯ explain this repository\nWorking (5s · esc to interrupt)\n❯ \nmanual mode on · ? for shortcuts",
+    ],
+  ])(
+    "keeps %s working when its persistent input prompt is below the live spinner",
+    (agent, screen) => {
+      expect(classifyAgentScreen(agent, screen)).toBe("working");
+    },
+  );
 });

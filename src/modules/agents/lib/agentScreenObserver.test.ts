@@ -37,6 +37,27 @@ describe("AgentScreenObserver", () => {
     observer.input(10, "\r", 200);
     observer.poll(() => ready, 300);
     expect(observer.poll(() => ready, 400)).toEqual([]);
-    expect(observer.poll(() => ready, 1_200)[0]?.kind).toBe("finished");
+    expect(observer.poll(() => ready, 1_200)).toEqual([]);
+    expect(observer.poll(() => ready, 2_600)).toEqual([]);
+    expect(observer.poll(() => ready, 2_700)[0]?.kind).toBe("finished");
+  });
+
+  it("does not let a persistent ready prompt overwrite a new working turn", () => {
+    const observer = new AgentScreenObserver();
+    observer.start(10, 20, "codex");
+    observer.poll(() => ready, 0);
+    observer.poll(() => ready, 100);
+
+    expect(observer.input(10, "\r", 200)?.kind).toBe("working");
+    expect(observer.poll(() => ready, 1_200)).toEqual([]);
+    expect(observer.poll(() => ready, 1_400)).toEqual([]);
+
+    const active =
+      "OpenAI Codex\n• Working (3s · esc to interrupt)\n› \ngpt-5.6-sol high";
+    expect(observer.poll(() => active, 1_600)).toEqual([]);
+    expect(observer.poll(() => active, 1_800)).toEqual([]);
+
+    expect(observer.poll(() => ready, 2_000)).toEqual([]);
+    expect(observer.poll(() => ready, 2_200)[0]?.kind).toBe("finished");
   });
 });
