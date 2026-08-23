@@ -3,10 +3,18 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 static SNAPSHOT_GENERATIONS: Mutex<Option<HashMap<i64, u64>>> = Mutex::new(None);
+static REF_FRAME_TARGETS: Mutex<Option<HashMap<i64, HashMap<String, RefFrameTarget>>>> =
+    Mutex::new(None);
 
 pub const DEFAULT_SNAPSHOT_MAX_CHARS: usize = 8_000;
 pub const MIN_SNAPSHOT_MAX_CHARS: usize = 2_000;
 pub const MAX_SNAPSHOT_MAX_CHARS: usize = 16_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefFrameTarget {
+    pub frame_id: String,
+    pub is_main: bool,
+}
 
 fn generations() -> &'static Mutex<Option<HashMap<i64, u64>>> {
     &SNAPSHOT_GENERATIONS
@@ -48,6 +56,11 @@ pub fn remove_generation(tab_id: i64) {
             map.remove(&tab_id);
         }
     }
+    if let Ok(mut guard) = REF_FRAME_TARGETS.lock() {
+        if let Some(map) = guard.as_mut() {
+            map.remove(&tab_id);
+        }
+    }
 }
 
 pub fn clear_generations() {
@@ -56,6 +69,25 @@ pub fn clear_generations() {
             map.clear();
         }
     }
+    if let Ok(mut guard) = REF_FRAME_TARGETS.lock() {
+        if let Some(map) = guard.as_mut() {
+            map.clear();
+        }
+    }
+}
+
+pub fn replace_ref_frame_targets(tab_id: i64, targets: HashMap<String, RefFrameTarget>) {
+    let mut guard = REF_FRAME_TARGETS.lock().unwrap();
+    guard
+        .get_or_insert_with(HashMap::new)
+        .insert(tab_id, targets);
+}
+
+pub fn get_ref_frame_target(tab_id: i64, ref_id: &str) -> Option<RefFrameTarget> {
+    REF_FRAME_TARGETS
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref()?.get(&tab_id)?.get(ref_id).cloned())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,9 +100,18 @@ pub struct SnapshotPayload {
 }
 
 pub fn build_snapshot_js(generation_id: u64) -> String {
+    build_snapshot_js_with_prefix(generation_id, &format!("g{generation_id}-e"))
+}
+
+pub fn build_frame_snapshot_js(generation_id: u64, frame_index: usize) -> String {
+    build_snapshot_js_with_prefix(generation_id, &format!("g{generation_id}-f{frame_index}-e"))
+}
+
+fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String {
     format!(
         r#"(function() {{
             const gen = "gen-{generation_id}";
+            const refPrefix = {ref_prefix_json};
             let refIdx = 1;
             const elements = [];
             const maxItems = 1000;
@@ -106,6 +147,14 @@ pub fn build_snapshot_js(generation_id: u64) -> String {
                        rect.top <= window.innerHeight && rect.left <= window.innerWidth;
             }}
 
+            function processShadow(el) {{
+                if (!el || !el.shadowRoot || elements.length >= maxItems) return;
+                for (let i = 0; i < el.shadowRoot.childNodes.length; i++) {{
+                    process(el.shadowRoot.childNodes[i]);
+                    if (elements.length >= maxItems) break;
+                }}
+            }}
+
             function process(node) {{
                 if (!node) return;
                 if (elements.length >= maxItems) {{
@@ -133,17 +182,23 @@ pub fn build_snapshot_js(generation_id: u64) -> String {
                 if (tag === 'script' || tag === 'style' || tag === 'noscript') return;
 
                 const roleAttr = el.getAttribute('role') || '';
+                const inputType = tag === 'input'
+                    ? (el.getAttribute('type') || 'text').toLowerCase()
+                    : '';
                 const isInteractive = ['a', 'button', 'input', 'select', 'textarea'].includes(tag) ||
                                       el.hasAttribute('onclick') ||
                                       roleAttr === 'button' || roleAttr === 'checkbox' || roleAttr === 'link' ||
                                       el.getAttribute('contenteditable') === 'true';
+                // File inputs are commonly intentionally hidden behind an
+                // upload button (including YouTube Studio). CDP can safely set
+                // them without opening a native file chooser, so retain a ref.
+                const isHiddenFileInput = tag === 'input' && inputType === 'file';
 
-                if (isInteractive && isVisible(el)) {{
-                    const ref = 'g{generation_id}-e' + (refIdx++);
+                if (isInteractive && (isVisible(el) || isHiddenFileInput)) {{
+                    const ref = refPrefix + (refIdx++);
                     el.setAttribute('data-anbo-ref', ref);
                     el.setAttribute('data-anbo-gen', gen);
 
-                    const inputType = (el.getAttribute('type') || 'text').toLowerCase();
                     let role = roleAttr || tag;
                     if (tag === 'input') {{
                         role = 'input[' + inputType + ']';
@@ -189,6 +244,7 @@ pub fn build_snapshot_js(generation_id: u64) -> String {
                         disabled: el.disabled || false,
                         in_viewport: isInViewport(el)
                     }});
+                    processShadow(el);
                     return;
                 }}
 
@@ -196,6 +252,9 @@ pub fn build_snapshot_js(generation_id: u64) -> String {
                     process(el.childNodes[i]);
                     if (elements.length >= maxItems) break;
                 }}
+                // Traverse open Shadow DOM roots used by modern upload UIs.
+                // Closed roots remain inaccessible by browser design.
+                processShadow(el);
             }}
 
             if (document.body) {{
@@ -208,7 +267,8 @@ pub fn build_snapshot_js(generation_id: u64) -> String {
                 elements: elements,
                 source_truncated: sourceTruncated
             }});
-        }})();"#
+        }})();"#,
+        ref_prefix_json = serde_json::to_string(ref_prefix).unwrap()
     )
 }
 
@@ -385,6 +445,48 @@ mod tests {
     }
 
     #[test]
+    fn child_frame_snapshot_uses_namespaced_refs() {
+        let script = build_frame_snapshot_js(4, 2);
+        assert!(script.contains(r#"const refPrefix = "g4-f2-e""#));
+        assert!(script.contains("const gen = \"gen-4\""));
+    }
+
+    #[test]
+    fn snapshot_keeps_hidden_file_inputs_and_open_shadow_roots() {
+        let script = build_snapshot_js(8);
+        assert!(
+            script.contains("const isHiddenFileInput = tag === 'input' && inputType === 'file'")
+        );
+        assert!(script.contains("isVisible(el) || isHiddenFileInput"));
+        assert!(script.contains("el.shadowRoot.childNodes"));
+    }
+
+    #[test]
+    fn ref_frame_targets_are_replaced_per_snapshot() {
+        let tab_id = 98_765;
+        replace_ref_frame_targets(
+            tab_id,
+            HashMap::from([(
+                "g1-f1-e1".to_string(),
+                RefFrameTarget {
+                    frame_id: "child-a".to_string(),
+                    is_main: false,
+                },
+            )]),
+        );
+        assert_eq!(
+            get_ref_frame_target(tab_id, "g1-f1-e1"),
+            Some(RefFrameTarget {
+                frame_id: "child-a".to_string(),
+                is_main: false,
+            })
+        );
+        replace_ref_frame_targets(tab_id, HashMap::new());
+        assert!(get_ref_frame_target(tab_id, "g1-f1-e1").is_none());
+        remove_generation(tab_id);
+    }
+
+    #[test]
     fn snapshot_output_is_hard_capped_and_reports_truncation() {
         let payload = SnapshotPayload {
             title: "Large".to_string(),
@@ -416,7 +518,8 @@ mod tests {
     #[test]
     fn snapshot_refs_include_the_generation() {
         let script = build_snapshot_js(42);
-        assert!(script.contains("const ref = 'g42-e' + (refIdx++);"));
+        assert!(script.contains(r#"const refPrefix = "g42-e""#));
+        assert!(script.contains("const ref = refPrefix + (refIdx++);"));
         assert!(script.contains("const gen = \"gen-42\";"));
     }
 }

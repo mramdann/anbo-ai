@@ -446,20 +446,7 @@ async fn run_mcp_stdio() {
                     "jsonrpc": "2.0",
                     "id": id,
                     "result": {
-                        "tools": [
-                            { "name": "browser_open", "description": "Open a native browser tab without focusing it in an explicitly selected Anbo workspace.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1 } }, "required": ["url", "workspace"] } },
-                            { "name": "browser_close", "description": "Close a native browser tab in an explicitly selected Anbo workspace.", "annotations": { "destructiveHint": true, "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "workspace": { "type": "string", "minLength": 1 } }, "required": ["tabId", "workspace"] } },
-                            { "name": "browser_tabs", "description": "List active native browser tabs in Anbo", "inputSchema": { "type": "object", "properties": {} } },
-                            { "name": "browser_get_url", "description": "Get current URL of a browser tab", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" } }, "required": ["tabId"] } },
-                            { "name": "browser_navigate", "description": "Navigate a browser tab to an HTTP/HTTPS URL", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "url": { "type": "string" } }, "required": ["tabId", "url"] } },
-                            { "name": "browser_snapshot", "description": "Get a token-bounded accessibility snapshot with viewport text and generation-scoped refs. Defaults to 8000 characters and never exceeds 16000. Use only refs from the latest snapshot.", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "maxChars": { "type": "integer", "minimum": 2000, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
-                            { "name": "browser_click", "description": "Click an element by generation-scoped ref (for example g3-e12)", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "ref": { "type": "string" } }, "required": ["tabId", "ref"] } },
-                            { "name": "browser_type", "description": "Type text into an input element by ref", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "ref": { "type": "string" }, "text": { "type": "string" }, "append": { "type": "boolean" } }, "required": ["tabId", "ref", "text"] } },
-                            { "name": "browser_press", "description": "Press a keyboard key (e.g. Enter, Tab)", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "key": { "type": "string" } }, "required": ["tabId", "key"] } },
-                            { "name": "browser_scroll", "description": "Scroll the page", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "x": { "type": "number" }, "y": { "type": "number" } }, "required": ["tabId"] } },
-                            { "name": "browser_wait", "description": "Wait for text content to appear on the page", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" }, "text": { "type": "string" }, "timeout": { "type": "integer" } }, "required": ["tabId", "text"] } },
-                            { "name": "browser_screenshot", "description": "Capture screenshot of browser tab to disk artifact", "inputSchema": { "type": "object", "properties": { "tabId": { "type": "integer" } }, "required": ["tabId"] } }
-                        ]
+                        "tools": anbo_lib::modules::browser_automation::mcp::tool_definitions()
                     }
                 });
                 let _ = stdout
@@ -475,21 +462,9 @@ async fn run_mcp_stdio() {
                     .unwrap_or("");
                 let tool_args = params_obj.get("arguments").cloned().unwrap_or(json!({}));
 
-                let mapped_method = match name {
-                    "browser_open" => "open",
-                    "browser_close" => "close",
-                    "browser_tabs" => "list_tabs",
-                    "browser_get_url" => "get_url",
-                    "browser_navigate" => "navigate",
-                    "browser_snapshot" => "snapshot",
-                    "browser_click" => "click",
-                    "browser_type" => "type_text",
-                    "browser_press" => "press_key",
-                    "browser_scroll" => "scroll",
-                    "browser_wait" => "wait",
-                    "browser_screenshot" => "screenshot",
-                    _ => "",
-                };
+                let mapped_method =
+                    anbo_lib::modules::browser_automation::mcp::tool_name_to_method(name)
+                        .unwrap_or("");
 
                 if mapped_method.is_empty() {
                     let resp = json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": "Method not found" } });

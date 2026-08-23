@@ -3,7 +3,7 @@ use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use tauri::webview::{Color, NewWindowResponse, PageLoadEvent, WebviewBuilder};
+use tauri::webview::{Color, DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder};
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, Rect, WebviewUrl};
 use url::Url;
 
@@ -130,6 +130,20 @@ pub fn is_embed_tab_active(tab_id: i64) -> bool {
         .lock()
         .map(|active| active.contains_key(&tab_id))
         .unwrap_or(false)
+}
+
+/// Canonical workspace root attached to a live native browser tab. Automation
+/// file operations use this instead of the foreground workspace so background
+/// tabs cannot cross workspace boundaries.
+pub fn active_local_root(tab_id: i64) -> Option<PathBuf> {
+    let root = active_embeds()
+        .lock()
+        .ok()?
+        .get(&tab_id)?
+        .local_root
+        .clone();
+    let resolved = root.lock().ok()?.clone();
+    resolved
 }
 
 pub fn clear_lifecycle_state() {
@@ -446,6 +460,27 @@ fn spawn_browser_child(
                     title: Some(title),
                 },
             );
+        })
+        .on_download(move |_webview, event| {
+            match event {
+                DownloadEvent::Requested { url, destination } => {
+                    return crate::modules::browser_automation::download::on_download_requested(
+                        tab_id,
+                        url.as_str(),
+                        destination,
+                    );
+                }
+                DownloadEvent::Finished { url, path, success } => {
+                    crate::modules::browser_automation::download::on_download_finished(
+                        tab_id,
+                        url.as_str(),
+                        path,
+                        success,
+                    );
+                }
+                _ => {}
+            }
+            true
         });
 
     window
@@ -1259,6 +1294,9 @@ pub async fn browser_embed_begin_session(
             .lock()
             .map_err(|_| "browser lifecycle state is unavailable".to_string())?
             .remove(&tab_id);
+        crate::modules::browser_automation::download::remove_tab(tab_id);
+        crate::modules::browser_automation::snapshot::remove_generation(tab_id);
+        remove_tab_lock(tab_id);
     }
     if is_new_session {
         closed_embeds()
@@ -1313,6 +1351,7 @@ pub async fn browser_embed_close(
         }
     }
     remove_tab_lock(tab_id);
+    crate::modules::browser_automation::download::remove_tab(tab_id);
     crate::modules::browser_automation::snapshot::remove_generation(tab_id);
     Ok(())
 }

@@ -1,6 +1,7 @@
 pub mod actions;
 pub mod agent_actions;
 pub mod cdp;
+pub mod download;
 pub mod http;
 pub mod mcp;
 pub mod protocol;
@@ -58,6 +59,7 @@ pub async fn browser_automation_handle_action(
 
 pub fn on_exit() {
     server::stop_server();
+    download::clear();
     registry::clear_tab_locks();
     snapshot::clear_generations();
 }

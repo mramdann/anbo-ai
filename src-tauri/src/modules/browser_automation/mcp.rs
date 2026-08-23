@@ -21,6 +21,10 @@ fn workspace_prop() -> Value {
     json!({ "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id. UI focus is never used as a fallback." })
 }
 
+fn file_workspace_prop() -> Value {
+    json!({ "type": "string", "minLength": 1, "description": "Required absolute workspace root. Upload sources and download destinations are confined to this tab's workspace." })
+}
+
 fn agent_id_prop() -> Value {
     json!({ "type": "string", "minLength": 1, "description": "Workspace-scoped agent id returned by agent_list." })
 }
@@ -31,6 +35,7 @@ pub fn tool_definitions() -> Value {
     let tab = tab_id_prop();
     let refr = ref_prop();
     let workspace = workspace_prop();
+    let file_workspace = file_workspace_prop();
     let agent_id = agent_id_prop();
     json!([
         { "name": "browser_open", "description": "Open a native browser tab without focusing it in an explicitly selected Anbo workspace. Pass the agent's workspace root or a space id; UI focus is never used as a fallback.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["url", "workspace"] } },
@@ -49,6 +54,10 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_scroll", "description": "Scroll the page by x/y pixels.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "x": { "type": "number" }, "y": { "type": "number" } }, "required": ["tabId"] } },
         { "name": "browser_wait", "description": "Wait until visible page text, title, or an accessibility label appears.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "text": { "type": "string" }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "description": "Timeout in milliseconds (default 10000, maximum 60000)." } }, "required": ["tabId", "text"] } },
         { "name": "browser_screenshot", "description": "Capture a PNG screenshot of a browser tab to a disk artifact.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "description": "Optional workspace root; screenshot lands under <workspace>/.anbo/artifacts." } }, "required": ["tabId"] } },
+        { "name": "browser_upload", "description": "Attach one or more workspace files to an <input type=file> ref without opening a native file chooser. Hidden file inputs and refs in open Shadow DOM or child frames are supported. This selects files only; use a separate click/press to submit the form.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "workspace": file_workspace.clone(), "paths": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "type": "string", "minLength": 1 }, "description": "Absolute paths inside the workspace, or paths relative to the workspace root." } }, "required": ["tabId", "ref", "workspace", "paths"] } },
+        { "name": "browser_download", "description": "Arm a workspace-scoped native download and click a ref. Returns a downloadId once the download starts; completed files land under <workspace>/.anbo/downloads. Use browser_download_wait for large files.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "workspace": file_workspace.clone(), "fileName": { "type": "string", "minLength": 1, "maxLength": 255, "description": "Optional safe destination file name. Existing files are never overwritten." }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 10000, "description": "How long to wait for the page to start the download." } }, "required": ["tabId", "ref", "workspace"] } },
+        { "name": "browser_download_status", "description": "Read the current state and verified destination of a workspace-scoped browser download.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "downloadId": { "type": "string", "minLength": 1, "maxLength": 128 }, "workspace": file_workspace.clone() }, "required": ["downloadId", "workspace"] } },
+        { "name": "browser_download_wait", "description": "Wait for a browser download to change state or finish. Normal timeout returns timedOut:true so large downloads can be polled without losing their downloadId.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "downloadId": { "type": "string", "minLength": 1, "maxLength": 128 }, "workspace": file_workspace, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 30000 } }, "required": ["downloadId", "workspace"] } },
         { "name": "browser_select_option", "description": "Select an option on a <select> element by ref (by value or label).", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "value": { "type": "string" } }, "required": ["tabId", "ref", "value"] } },
         { "name": "browser_hover", "description": "Hover an element by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_scroll_to_element", "description": "Scroll an element into view by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
@@ -83,6 +92,10 @@ pub fn tool_name_to_method(name: &str) -> Option<&'static str> {
         "browser_scroll" => "scroll",
         "browser_wait" => "wait",
         "browser_screenshot" => "screenshot",
+        "browser_upload" => "upload_files",
+        "browser_download" => "download",
+        "browser_download_status" => "download_status",
+        "browser_download_wait" => "download_wait",
         "browser_select_option" => "select_option",
         "browser_hover" => "hover",
         "browser_scroll_to_element" => "scroll_to_element",
@@ -106,7 +119,7 @@ mod tests {
     #[test]
     fn tools_have_capability_prefixes_and_unique_names() {
         let tools = tool_definitions().as_array().unwrap().clone();
-        assert_eq!(tools.len(), 28);
+        assert_eq!(tools.len(), 32);
         let mut names = std::collections::HashSet::new();
         for t in &tools {
             let n = t.get("name").and_then(|v| v.as_str()).unwrap();
@@ -143,6 +156,29 @@ mod tests {
         );
         assert_eq!(close["annotations"]["destructiveHint"], true);
         assert_eq!(tool_name_to_method("browser_close"), Some("close"));
+    }
+
+    #[test]
+    fn browser_file_tools_are_workspace_scoped() {
+        let tools = tool_definitions();
+        for name in [
+            "browser_upload",
+            "browser_download",
+            "browser_download_status",
+            "browser_download_wait",
+        ] {
+            let tool = tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap();
+            assert!(tool["inputSchema"]["required"]
+                .as_array()
+                .is_some_and(|required| required.contains(&json!("workspace"))));
+        }
+        assert_eq!(tool_name_to_method("browser_upload"), Some("upload_files"));
+        assert_eq!(tool_name_to_method("browser_download"), Some("download"));
     }
 
     #[test]

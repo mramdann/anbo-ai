@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Anbo file automation fixture</title>
+  </head>
+  <body>
+    <h1>Anbo file automation fixture</h1>
+    <anbo-upload></anbo-upload>
+    <a href="download-fixture.txt" download="download-fixture.txt">Download fixture</a>
+    <output id="selection">No files selected</output>
+    <script>
+      customElements.define(
+        "anbo-upload",
+        class extends HTMLElement {
+          constructor() {
+            super();
+            const root = this.attachShadow({ mode: "open" });
+            root.innerHTML = `
+              <label for="files">Automation upload</label>
+              <input id="files" type="file" multiple hidden />
+            `;
+            root.querySelector("input").addEventListener("change", (event) => {
+              document.querySelector("#selection").textContent = Array.from(
+                event.target.files,
+              )
+                .map((file) => file.name)
+                .join(", ");
+            });
+          }
+        },
+      );
+    </script>
+  </body>
+</html>
