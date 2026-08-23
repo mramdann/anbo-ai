@@ -4,6 +4,7 @@ export const BROWSER_CLOSE_REQUEST_EVENT = "anbo:browser-close-request";
 export const BROWSER_CLOSE_RESPONSE_EVENT = "anbo:browser-close-response";
 export const BROWSER_TABS_REQUEST_EVENT = "anbo:browser-tabs-request";
 export const BROWSER_TABS_RESPONSE_EVENT = "anbo:browser-tabs-response";
+export const BROWSER_POPUP_REQUEST_EVENT = "anbo:browser-popup-request";
 
 export type BrowserOpenRequest = {
   requestId: string;
@@ -20,6 +21,31 @@ export type BrowserCloseRequest = {
 export type BrowserTabsRequest = {
   requestId: string;
 };
+
+export type BrowserPopupRequest = {
+  sourceTabId: number;
+  url: string;
+};
+
+export type BrowserPopupStamp = {
+  key: string;
+  at: number;
+};
+
+export function acceptBrowserPopupRequest(
+  previous: BrowserPopupStamp | null,
+  request: BrowserPopupRequest,
+  now = Date.now(),
+): { accept: boolean; stamp: BrowserPopupStamp } {
+  const stamp = {
+    key: `${request.sourceTabId}\u0000${request.url}`,
+    at: now,
+  };
+  return {
+    accept: !(previous?.key === stamp.key && now - previous.at < 1_000),
+    stamp,
+  };
+}
 
 export type BrowserTabMetadata = {
   tabId: number;
@@ -164,6 +190,49 @@ export function createBrowserTabsListener(subscribe: BrowserTabsSubscribe) {
   };
 }
 
+type BrowserPopupHandler = (request: BrowserPopupRequest) => void;
+type BrowserPopupSubscribe = (
+  handler: BrowserPopupHandler,
+) => Promise<() => void>;
+
+export function createBrowserPopupListener(subscribe: BrowserPopupSubscribe) {
+  let handler: BrowserPopupHandler | null = null;
+  let subscription: Promise<void> | null = null;
+  let unlisten: (() => void) | null = null;
+  let generation = 0;
+
+  const start = () => {
+    if (subscription || unlisten) return;
+    const currentGeneration = generation;
+    subscription = subscribe((request) => handler?.(request))
+      .then((dispose) => {
+        subscription = null;
+        if (generation !== currentGeneration) {
+          dispose();
+          return;
+        }
+        unlisten = dispose;
+      })
+      .catch(() => {
+        subscription = null;
+      });
+  };
+
+  return {
+    setHandler(next: BrowserPopupHandler) {
+      handler = next;
+      start();
+    },
+    stop() {
+      generation += 1;
+      handler = null;
+      unlisten?.();
+      unlisten = null;
+      subscription = null;
+    },
+  };
+}
+
 export type BrowserOpenPlacement =
   | "visible-background-tab"
   | "inactive-workspace";
@@ -261,4 +330,25 @@ export function resolveBrowserCloseTarget(
     };
   }
   return { ok: true, space: resolved.space, tab };
+}
+
+export function resolveBrowserPopupSpace(
+  tabs: BrowserCloseTarget[],
+  spaces: BrowserOpenSpace[],
+  sourceTabId: number,
+): BrowserOpenSpaceResult {
+  const source = tabs.find(
+    (tab) => tab.id === sourceTabId && tab.kind === "browser",
+  );
+  if (!source) {
+    return { ok: false, error: `popup source tab ${sourceTabId} is not open` };
+  }
+  const space = spaces.find((candidate) => candidate.id === source.spaceId);
+  if (!space) {
+    return {
+      ok: false,
+      error: `popup source workspace ${source.spaceId} is not open`,
+    };
+  }
+  return { ok: true, space };
 }

@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  acceptBrowserPopupRequest,
   browserOpenPlacement,
   createBrowserCloseListener,
   createBrowserOpenListener,
+  createBrowserPopupListener,
   createBrowserTabsListener,
   resolveBrowserCloseTarget,
   resolveBrowserOpenSpace,
+  resolveBrowserPopupSpace,
 } from "./automationOpen";
 
 const spaces = [
@@ -83,6 +86,74 @@ describe("resolveBrowserCloseTarget", () => {
       ok: false,
       error: "browser tab 9 is not open in workspace: a",
     });
+  });
+});
+
+describe("resolveBrowserPopupSpace", () => {
+  const tabs = [
+    { id: 7, kind: "browser", spaceId: "a" },
+    { id: 8, kind: "browser", spaceId: "b" },
+    { id: 9, kind: "terminal", spaceId: "a" },
+  ];
+
+  it("keeps a popup in its source browser workspace", () => {
+    expect(resolveBrowserPopupSpace(tabs, spaces, 8)).toEqual({
+      ok: true,
+      space: spaces[1],
+    });
+  });
+
+  it("rejects stale and non-browser popup sources", () => {
+    expect(resolveBrowserPopupSpace(tabs, spaces, 9)).toEqual({
+      ok: false,
+      error: "popup source tab 9 is not open",
+    });
+    expect(resolveBrowserPopupSpace(tabs, spaces, 99)).toEqual({
+      ok: false,
+      error: "popup source tab 99 is not open",
+    });
+  });
+});
+
+describe("acceptBrowserPopupRequest", () => {
+  it("deduplicates native and automation popup signals for the same target", () => {
+    const request = { sourceTabId: 7, url: "https://example.com/popup" };
+    const first = acceptBrowserPopupRequest(null, request, 1_000);
+    expect(first.accept).toBe(true);
+    expect(acceptBrowserPopupRequest(first.stamp, request, 1_500).accept).toBe(
+      false,
+    );
+    expect(acceptBrowserPopupRequest(first.stamp, request, 2_100).accept).toBe(
+      true,
+    );
+  });
+});
+
+describe("createBrowserPopupListener", () => {
+  it("forwards popup requests and disposes its native subscription", async () => {
+    let nativeHandler:
+      | ((payload: { sourceTabId: number; url: string }) => void)
+      | null = null;
+    const dispose = vi.fn();
+    const listener = createBrowserPopupListener(async (handler) => {
+      nativeHandler = handler;
+      return dispose;
+    });
+    const received = vi.fn();
+    listener.setHandler(received);
+    await Promise.resolve();
+
+    const emitPopup = nativeHandler as
+      | ((payload: { sourceTabId: number; url: string }) => void)
+      | null;
+    emitPopup?.({ sourceTabId: 7, url: "https://example.com/popup" });
+    expect(received).toHaveBeenCalledWith({
+      sourceTabId: 7,
+      url: "https://example.com/popup",
+    });
+
+    listener.stop();
+    expect(dispose).toHaveBeenCalledOnce();
   });
 });
 

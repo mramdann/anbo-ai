@@ -3,6 +3,7 @@ pub mod agent_actions;
 pub mod cdp;
 pub mod download;
 pub mod http;
+pub mod locator;
 pub mod mcp;
 pub mod protocol;
 pub mod registry;

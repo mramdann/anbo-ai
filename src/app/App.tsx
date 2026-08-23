@@ -53,6 +53,7 @@ import {
   BROWSER_TABS_RESPONSE_EVENT,
   type BrowserPaneHandle,
   BrowserStack,
+  acceptBrowserPopupRequest,
   beginBrowserSession,
   browserEmbedClose,
   browserOpenPlacement,
@@ -63,11 +64,13 @@ import {
   markBrowserAutomationActivity,
   resolveBrowserCloseTarget,
   resolveBrowserOpenSpace,
+  resolveBrowserPopupSpace,
   selectBackgroundBrowserTabs,
 } from "@/modules/browser";
 import {
   setBrowserCloseRequestHandler,
   setBrowserOpenRequestHandler,
+  setBrowserPopupRequestHandler,
   setBrowserTabsRequestHandler,
 } from "@/modules/browser/automationOpenBridge";
 import { CommandPalette, createCommandItems } from "@/modules/command-palette";
@@ -286,6 +289,10 @@ export default function App() {
   }, []);
   const editorRefs = useRef<Map<number, EditorPaneHandle>>(new Map());
   const browserRefs = useRef<Map<number, BrowserPaneHandle>>(new Map());
+  const lastBrowserPopupRef = useRef<{
+    key: string;
+    at: number;
+  } | null>(null);
   const [activeEditorHandle, setActiveEditorHandle] =
     useState<EditorPaneHandle | null>(null);
   const [gitHistoryHandle, setGitHistoryHandle] =
@@ -1309,6 +1316,32 @@ export default function App() {
       });
     });
   }, [closeTab]);
+
+  useEffect(() => {
+    setBrowserPopupRequestHandler((payload) => {
+      const decision = acceptBrowserPopupRequest(
+        lastBrowserPopupRef.current,
+        payload,
+      );
+      lastBrowserPopupRef.current = decision.stamp;
+      if (!decision.accept) return;
+      let protocol: string;
+      try {
+        protocol = new URL(payload.url).protocol;
+      } catch {
+        protocol = "";
+      }
+      if (protocol !== "http:" && protocol !== "https:") return;
+      const { spaces } = useSpaces.getState();
+      const resolved = resolveBrowserPopupSpace(
+        tabsRef.current,
+        spaces,
+        payload.sourceTabId,
+      );
+      if (!resolved.ok) return;
+      openBrowserTab(payload.url, false, resolved.space.id);
+    });
+  }, [openBrowserTab]);
 
   useEffect(() => {
     setBrowserTabsRequestHandler(({ requestId }) => {

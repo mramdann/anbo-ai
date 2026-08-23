@@ -126,12 +126,17 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                 return true;
             }}
 
-            try {{
-                document.querySelectorAll('[data-anbo-ref]').forEach(el => {{
+            function clearRefs(root) {{
+                if (!root || !root.querySelectorAll) return;
+                root.querySelectorAll('[data-anbo-ref]').forEach(el => {{
                     el.removeAttribute('data-anbo-ref');
                     el.removeAttribute('data-anbo-gen');
                 }});
-            }} catch(e) {{}}
+                root.querySelectorAll('*').forEach(el => {{
+                    if (el.shadowRoot) clearRefs(el.shadowRoot);
+                }});
+            }}
+            try {{ clearRefs(document); }} catch(e) {{}}
 
             function isVisible(el) {{
                 if (!el) return false;

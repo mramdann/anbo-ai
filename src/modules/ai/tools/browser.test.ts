@@ -2,7 +2,9 @@ import type { ToolExecutionOptions } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "./context";
 
-const invokeMock = vi.hoisted(() => vi.fn(async () => "{}"));
+const invokeMock = vi.hoisted(() =>
+  vi.fn(async (_command: string, _args: { requestJson: string }) => "{}"),
+);
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 
@@ -62,6 +64,97 @@ describe("AI browser tools", () => {
         requestJson: JSON.stringify({ action: "click", tabId: 42, ref: "e7" }),
       },
     );
+  });
+
+  it("finds a role by accessible name with bounded output", async () => {
+    await run("browser_find", {
+      by: "role",
+      value: "button",
+      name: "Save",
+      exact: true,
+      includeHidden: false,
+      limit: 3,
+      timeout: 2500,
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "browser_automation_handle_action",
+      {
+        requestJson: JSON.stringify({
+          action: "find",
+          tabId: 42,
+          by: "role",
+          value: "button",
+          name: "Save",
+          exact: true,
+          includeHidden: false,
+          limit: 3,
+          timeout: 2500,
+        }),
+      },
+    );
+  });
+
+  it("routes complex element and keyboard actions to the same active tab", async () => {
+    await run("browser_check", { ref: "g4-e2", checked: true });
+    await run("browser_drag", {
+      sourceRef: "g4-e3",
+      targetRef: "g4-e4",
+    });
+    await run("browser_keyboard", {
+      key: "a",
+      keyAction: "press",
+      modifiers: ["Control"],
+    });
+
+    expect(
+      invokeMock.mock.calls.map((call) => JSON.parse(call[1].requestJson)),
+    ).toEqual([
+      { action: "check", tabId: 42, ref: "g4-e2", checked: true },
+      {
+        action: "drag",
+        tabId: 42,
+        sourceRef: "g4-e3",
+        targetRef: "g4-e4",
+      },
+      {
+        action: "key",
+        tabId: 42,
+        key: "a",
+        keyAction: "press",
+        modifiers: ["Control"],
+      },
+    ]);
+  });
+
+  it("passes richer wait and dialog contracts without overloading action", async () => {
+    await run("browser_wait", {
+      condition: "ref",
+      ref: "g5-e7",
+      state: "visible",
+      timeout: 3000,
+    });
+    await run("browser_dialog", {
+      ref: "g5-e8",
+      dialogAction: "accept",
+      promptText: "Anbo",
+    });
+
+    expect(JSON.parse(invokeMock.mock.calls[0][1].requestJson)).toEqual({
+      action: "wait",
+      tabId: 42,
+      condition: "ref",
+      ref: "g5-e7",
+      state: "visible",
+      timeout: 3000,
+    });
+    expect(JSON.parse(invokeMock.mock.calls[1][1].requestJson)).toEqual({
+      action: "dialog",
+      tabId: 42,
+      ref: "g5-e8",
+      dialogAction: "accept",
+      promptText: "Anbo",
+    });
   });
 
   it("does not invoke the backend without an active browser tab", async () => {

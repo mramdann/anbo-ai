@@ -11,11 +11,16 @@ use tauri::Listener;
 use tauri::Webview;
 
 use crate::modules::app_data::local_data_root;
-use crate::modules::browser::embed::{active_loading, active_local_root, set_active_loading};
+use crate::modules::browser::embed::{
+    active_loading, active_local_root, set_active_loading, BROWSER_POPUP_REQUEST_EVENT,
+};
 use crate::modules::browser_automation::cdp::{
     call_devtools_protocol_method, capture_screenshot, execute_script, execute_script_with_timeout,
 };
 use crate::modules::browser_automation::download;
+use crate::modules::browser_automation::locator::{
+    build_find_js, LocatorMatch, LocatorPayload, LocatorQuery, MAX_LOCATOR_MATCHES,
+};
 use crate::modules::browser_automation::protocol::error_codes;
 use crate::modules::browser_automation::registry::{
     get_active_tabs, get_embed_webview, get_tab_lock, remove_tab_lock,
@@ -35,6 +40,7 @@ const MAX_WAIT_TIMEOUT_MS: u64 = 60_000;
 const MAX_URL_BYTES: usize = 8 * 1024;
 const MAX_INPUT_TEXT_BYTES: usize = 64 * 1024;
 const MAX_WAIT_TEXT_BYTES: usize = 2 * 1024;
+const MAX_LOCATOR_VALUE_BYTES: usize = 4 * 1024;
 const MAX_KEY_BYTES: usize = 64;
 const MAX_WORKSPACE_BYTES: usize = 4 * 1024;
 const MAX_REF_BYTES: usize = 32;
@@ -322,6 +328,54 @@ pub async fn handle_action(
             }))
         }
 
+        "find" => {
+            let tab_id = extract_tab_id(&params)?;
+            let locator = extract_locator(&params)?;
+            let timeout_ms = params
+                .get("timeout")
+                .and_then(Value::as_u64)
+                .unwrap_or(5_000)
+                .clamp(100, MAX_WAIT_TIMEOUT_MS);
+            let tab_lock = get_tab_lock(tab_id);
+            let webview = get_embed_webview(app, tab_id)
+                .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
+            let generation = get_next_generation(tab_id);
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+
+            loop {
+                let result = {
+                    let _lock = tab_lock.lock().await;
+                    collect_locator_matches(&webview, tab_id, generation, &locator).await
+                }?;
+                if !result.matches.is_empty() {
+                    let count = result.matches.len();
+                    return Ok(json!({
+                        "tabId": tab_id,
+                        "generation": generation,
+                        "by": locator.by,
+                        "value": locator.value,
+                        "matches": result.matches,
+                        "count": count,
+                        "scanned": result.scanned,
+                        "truncated": result.truncated,
+                        "includedFrames": result.included_frames,
+                        "skippedFrames": result.skipped_frames
+                    }));
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    let url = webview.url().map(|url| url.to_string()).unwrap_or_default();
+                    return Err((
+                        error_codes::TIMEOUT.to_string(),
+                        format!(
+                            "timed out finding {} '{}' after {timeout_ms}ms at {url}",
+                            locator.by, locator.value
+                        ),
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            }
+        }
+
         "click" => {
             let tab_id = extract_tab_id(&params)?;
             let ref_id = extract_ref(&params)?;
@@ -330,11 +384,232 @@ pub async fn handle_action(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
             wait_for_ready(&webview, 3000).await;
+            let generation = get_current_generation(tab_id);
+            let target = get_ref_frame_target(tab_id, &ref_id);
+            let popup_url = popup_url_for_ref(&webview, target.as_ref(), &ref_id, generation)
+                .await
+                .unwrap_or(None);
             let dispatch = click_ref(&webview, tab_id, &ref_id).await?;
+            if let Some(url) = popup_url {
+                let _ = app.emit(
+                    BROWSER_POPUP_REQUEST_EVENT,
+                    json!({ "sourceTabId": tab_id, "url": url }),
+                );
+            }
 
             Ok(json!({
                 "tabId": tab_id,
                 "ref": ref_id,
+                "ok": true,
+                "dispatch": dispatch
+            }))
+        }
+
+        "double_click" => {
+            let tab_id = extract_tab_id(&params)?;
+            let ref_id = extract_ref(&params)?;
+            let tab_lock = get_tab_lock(tab_id);
+            let _lock = tab_lock.lock().await;
+            let webview = get_embed_webview(app, tab_id)
+                .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
+            let generation = get_current_generation(tab_id);
+            ensure_current_ref(&ref_id, generation)?;
+            let target = get_ref_frame_target(tab_id, &ref_id);
+            let actionable = wait_for_actionable_ref(
+                &webview,
+                target.as_ref(),
+                &ref_id,
+                generation,
+                ActionabilityRequirement::Click,
+            )
+            .await?;
+            let dispatch = if target.as_ref().is_some_and(|target| !target.is_main) {
+                dom_click_ref(&webview, target.as_ref(), &ref_id, generation, 2).await?;
+                "dom-frame"
+            } else {
+                dispatch_mouse_click(&webview, actionable.x, actionable.y, 2)
+                    .await
+                    .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+                "devtools"
+            };
+            Ok(json!({
+                "tabId": tab_id,
+                "ref": ref_id,
+                "ok": true,
+                "dispatch": dispatch,
+                "clickCount": 2
+            }))
+        }
+
+        "focus" => {
+            let tab_id = extract_tab_id(&params)?;
+            let ref_id = extract_ref(&params)?;
+            let tab_lock = get_tab_lock(tab_id);
+            let _lock = tab_lock.lock().await;
+            let webview = get_embed_webview(app, tab_id)
+                .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
+            let generation = get_current_generation(tab_id);
+            ensure_current_ref(&ref_id, generation)?;
+            let target = get_ref_frame_target(tab_id, &ref_id);
+            wait_for_actionable_ref(
+                &webview,
+                target.as_ref(),
+                &ref_id,
+                generation,
+                ActionabilityRequirement::Focus,
+            )
+            .await?;
+            let script = deep_ref_expression(
+                &ref_id,
+                &format!(
+                    r#"
+                    if (!el || el.getAttribute('data-anbo-gen') !== "gen-{generation}") {{
+                        return JSON.stringify({{ ok: false, error: 'stale_ref' }});
+                    }}
+                    el.focus({{ preventScroll: true }});
+                    const root = el.getRootNode && el.getRootNode();
+                    return JSON.stringify({{ ok: !!root && root.activeElement === el }});"#
+                ),
+            );
+            let response = execute_ref_script(&webview, target.as_ref(), &script)
+                .await
+                .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+            let decoded: String = serde_json::from_str(&response).unwrap_or(response);
+            let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+            if parsed.get("ok").and_then(Value::as_bool) != Some(true) {
+                return Err((
+                    error_codes::CDP_FAILED.to_string(),
+                    format!("element ref '{ref_id}' could not be focused"),
+                ));
+            }
+            Ok(json!({ "tabId": tab_id, "ref": ref_id, "ok": true, "focused": true }))
+        }
+
+        "check" => {
+            let tab_id = extract_tab_id(&params)?;
+            let ref_id = extract_ref(&params)?;
+            let requested = params
+                .get("checked")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let tab_lock = get_tab_lock(tab_id);
+            let _lock = tab_lock.lock().await;
+            let webview = get_embed_webview(app, tab_id)
+                .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
+            let generation = get_current_generation(tab_id);
+            ensure_current_ref(&ref_id, generation)?;
+            let target = get_ref_frame_target(tab_id, &ref_id);
+            let actionable = wait_for_actionable_ref(
+                &webview,
+                target.as_ref(),
+                &ref_id,
+                generation,
+                ActionabilityRequirement::Click,
+            )
+            .await?;
+            if actionable.tag != "input"
+                || !matches!(actionable.input_type.as_str(), "checkbox" | "radio")
+            {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    format!("element ref '{ref_id}' is not a checkbox or radio"),
+                ));
+            }
+            if actionable.input_type == "radio" && !requested {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    "radio inputs cannot be unchecked directly".to_string(),
+                ));
+            }
+            let before = actionable.checked.unwrap_or(false);
+            if before != requested {
+                if target.as_ref().is_some_and(|target| !target.is_main) {
+                    dom_click_ref(&webview, target.as_ref(), &ref_id, generation, 1).await?;
+                } else {
+                    dispatch_mouse_click(&webview, actionable.x, actionable.y, 1)
+                        .await
+                        .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+                }
+            }
+            let checked =
+                wait_for_checked_state(&webview, target.as_ref(), &ref_id, generation, requested)
+                    .await?;
+            Ok(json!({
+                "tabId": tab_id,
+                "ref": ref_id,
+                "ok": true,
+                "checked": checked,
+                "changed": before != requested
+            }))
+        }
+
+        "drag" => {
+            let tab_id = extract_tab_id(&params)?;
+            let source_ref = extract_named_ref(&params, "sourceRef")?;
+            let target_ref = extract_named_ref(&params, "targetRef")?;
+            if source_ref == target_ref {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    "sourceRef and targetRef must be different".to_string(),
+                ));
+            }
+            let tab_lock = get_tab_lock(tab_id);
+            let _lock = tab_lock.lock().await;
+            let webview = get_embed_webview(app, tab_id)
+                .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
+            let generation = get_current_generation(tab_id);
+            ensure_current_ref(&source_ref, generation)?;
+            ensure_current_ref(&target_ref, generation)?;
+            let source_target = get_ref_frame_target(tab_id, &source_ref);
+            let destination_target = get_ref_frame_target(tab_id, &target_ref);
+            if source_target != destination_target {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    "drag source and target must be in the same document or frame".to_string(),
+                ));
+            }
+            let source = wait_for_actionable_ref(
+                &webview,
+                source_target.as_ref(),
+                &source_ref,
+                generation,
+                ActionabilityRequirement::Click,
+            )
+            .await?;
+            let destination = wait_for_actionable_ref(
+                &webview,
+                destination_target.as_ref(),
+                &target_ref,
+                generation,
+                ActionabilityRequirement::Click,
+            )
+            .await?;
+            let dispatch = if source.draggable
+                || source_target.as_ref().is_some_and(|target| !target.is_main)
+            {
+                dispatch_dom_drag(
+                    &webview,
+                    source_target.as_ref(),
+                    &source_ref,
+                    &target_ref,
+                    generation,
+                )
+                .await?;
+                if source.draggable {
+                    "dom-html5"
+                } else {
+                    "dom-frame"
+                }
+            } else {
+                dispatch_mouse_drag(&webview, source.x, source.y, destination.x, destination.y)
+                    .await
+                    .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+                "devtools"
+            };
+            Ok(json!({
+                "tabId": tab_id,
+                "sourceRef": source_ref,
+                "targetRef": target_ref,
                 "ok": true,
                 "dispatch": dispatch
             }))
@@ -362,15 +637,22 @@ pub async fn handle_action(
             let cur_gen = get_current_generation(tab_id);
             ensure_current_ref(&ref_id, cur_gen)?;
             let target = get_ref_frame_target(tab_id, &ref_id);
-            let ref_json = serde_json::to_string(&ref_id).unwrap();
+            wait_for_actionable_ref(
+                &webview,
+                target.as_ref(),
+                &ref_id,
+                cur_gen,
+                ActionabilityRequirement::Editable,
+            )
+            .await?;
 
-            let js = format!(
-                r#"(function() {{
-                    const refId = {};
-                    const el = document.querySelector(`[data-anbo-ref="${{CSS.escape(refId)}}"]`);
-                    if (!el) return JSON.stringify({{ ok: false, error: "stale_ref" }});
-                    const gen = el.getAttribute('data-anbo-gen');
-                    if (gen !== "gen-{}") return JSON.stringify({{ ok: false, error: "stale_ref" }});
+            let js = deep_ref_expression(
+                &ref_id,
+                &format!(
+                    r#"
+                    if (!el || el.getAttribute('data-anbo-gen') !== "gen-{cur_gen}") {{
+                        return JSON.stringify({{ ok: false, error: "stale_ref" }});
+                    }}
                     el.focus();
                     const text = {};
                     const currentValue = el.isContentEditable
@@ -394,12 +676,10 @@ pub async fn handle_action(
                         inputType: 'insertText'
                     }}));
                     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    return JSON.stringify({{ ok: true }});
-                }})();"#,
-                ref_json,
-                cur_gen,
-                serde_json::to_string(text).unwrap(),
-                append
+                    return JSON.stringify({{ ok: true }});"#,
+                    serde_json::to_string(text).unwrap(),
+                    append
+                ),
             );
 
             let res = execute_ref_script(&webview, target.as_ref(), &js)
@@ -535,6 +815,43 @@ pub async fn handle_action(
             }))
         }
 
+        "key" => {
+            let tab_id = extract_tab_id(&params)?;
+            let key = params.get("key").and_then(Value::as_str).ok_or_else(|| {
+                (
+                    error_codes::INVALID_REQUEST.to_string(),
+                    "missing 'key' parameter".to_string(),
+                )
+            })?;
+            ensure_bounded(key, MAX_KEY_BYTES, "key")?;
+            let action = params
+                .get("keyAction")
+                .and_then(Value::as_str)
+                .unwrap_or("press");
+            if !matches!(action, "press" | "down" | "up") {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    format!("unsupported keyboard action '{action}'"),
+                ));
+            }
+            let modifiers = extract_key_modifiers(&params)?;
+            let tab_lock = get_tab_lock(tab_id);
+            let _lock = tab_lock.lock().await;
+            let webview = get_embed_webview(app, tab_id)
+                .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
+            dispatch_key_action(&webview, key, action, modifiers)
+                .await
+                .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+            Ok(json!({
+                "tabId": tab_id,
+                "key": key,
+                "action": action,
+                "modifiers": modifier_names(modifiers),
+                "ok": true,
+                "dispatch": "devtools"
+            }))
+        }
+
         "scroll" => {
             let tab_id = extract_tab_id(&params)?;
             let x = params.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -555,13 +872,7 @@ pub async fn handle_action(
 
         "wait" => {
             let tab_id = extract_tab_id(&params)?;
-            let text = params.get("text").and_then(|v| v.as_str()).ok_or_else(|| {
-                (
-                    error_codes::INVALID_REQUEST.to_string(),
-                    "missing 'text' parameter".to_string(),
-                )
-            })?;
-            ensure_bounded(text, MAX_WAIT_TEXT_BYTES, "text")?;
+            let condition = extract_wait_condition(&params)?;
             let timeout_ms = params
                 .get("timeout")
                 .and_then(|v| v.as_u64())
@@ -573,23 +884,33 @@ pub async fn handle_action(
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
 
             let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
-            let js = build_wait_for_text_js(text);
+            let mut stable_since = None;
             loop {
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
                 let poll_timeout = remaining.min(Duration::from_millis(750));
-                let found = {
+                let matched = {
                     let _lock = tab_lock.lock().await;
-                    let main = execute_script_with_timeout(&webview, &js, poll_timeout)
-                        .await
-                        .unwrap_or_default();
-                    if main.trim() == "true" {
-                        true
-                    } else {
-                        wait_text_in_child_frames(&webview, &js, deadline).await
-                    }
+                    wait_condition_matches(&webview, tab_id, &condition, deadline, poll_timeout)
+                        .await?
                 };
-                if found {
-                    return Ok(json!({ "tabId": tab_id, "found": true, "text": text }));
+                let requires_stability = matches!(
+                    &condition,
+                    WaitCondition::Load {
+                        state
+                    } if state == "networkIdle"
+                );
+                if matched {
+                    let since = stable_since.get_or_insert_with(tokio::time::Instant::now);
+                    if !requires_stability || since.elapsed() >= Duration::from_millis(500) {
+                        return Ok(json!({
+                            "tabId": tab_id,
+                            "found": true,
+                            "condition": condition.kind(),
+                            "state": condition.state_label()
+                        }));
+                    }
+                } else {
+                    stable_since = None;
                 }
 
                 if tokio::time::Instant::now() >= deadline {
@@ -597,12 +918,87 @@ pub async fn handle_action(
                     return Err((
                         error_codes::TIMEOUT.to_string(),
                         format!(
-                            "timed out waiting for text '{text}' after {timeout_ms}ms at {url}"
+                            "timed out waiting for {} '{}' after {timeout_ms}ms at {url}",
+                            condition.kind(),
+                            condition.state_label()
                         ),
                     ));
                 }
                 tokio::time::sleep(Duration::from_millis(150)).await;
             }
+        }
+
+        "dialog" => {
+            let tab_id = extract_tab_id(&params)?;
+            let ref_id = extract_ref(&params)?;
+            let action = params
+                .get("dialogAction")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    (
+                        error_codes::INVALID_REQUEST.to_string(),
+                        "browser_dialog requires an action".to_string(),
+                    )
+                })?;
+            if !matches!(action, "accept" | "dismiss") {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    format!("unsupported dialog action '{action}'"),
+                ));
+            }
+            let prompt_text = params
+                .get("promptText")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            ensure_bounded(prompt_text, MAX_LOCATOR_VALUE_BYTES, "promptText")?;
+            let tab_lock = get_tab_lock(tab_id);
+            let _lock = tab_lock.lock().await;
+            let webview = get_embed_webview(app, tab_id)
+                .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
+            let generation = get_current_generation(tab_id);
+            ensure_current_ref(&ref_id, generation)?;
+            let target = get_ref_frame_target(tab_id, &ref_id);
+            let actionable = wait_for_actionable_ref(
+                &webview,
+                target.as_ref(),
+                &ref_id,
+                generation,
+                ActionabilityRequirement::Click,
+            )
+            .await?;
+            install_dialog_capture(
+                &webview,
+                target.as_ref(),
+                &ref_id,
+                generation,
+                action == "accept",
+                prompt_text,
+            )
+            .await?;
+            let trigger_result = if target.as_ref().is_some_and(|target| !target.is_main) {
+                dom_click_ref(&webview, target.as_ref(), &ref_id, generation, 1)
+                    .await
+                    .map(|_| "dom-frame")
+            } else {
+                dispatch_mouse_click(&webview, actionable.x, actionable.y, 1)
+                    .await
+                    .map(|_| "devtools")
+                    .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))
+            };
+            let dialog_result = take_dialog_capture(&webview, target.as_ref()).await;
+            let dispatch = trigger_result?;
+            let dialog = dialog_result?;
+            Ok(json!({
+                "tabId": tab_id,
+                "ref": ref_id,
+                "action": action,
+                "ok": true,
+                "dispatch": dispatch,
+                "kind": dialog.get("kind").cloned().unwrap_or(Value::Null),
+                "message": dialog.get("message").cloned().unwrap_or(Value::Null),
+                "defaultText": dialog.get("defaultText").cloned().unwrap_or(Value::Null),
+                "promptTextSet": action == "accept" && !prompt_text.is_empty()
+            }))
         }
 
         "screenshot" => {
@@ -766,17 +1162,24 @@ pub async fn handle_action(
             let cur_gen = get_current_generation(tab_id);
             ensure_current_ref(&ref_id, cur_gen)?;
             let target = get_ref_frame_target(tab_id, &ref_id);
-            let ref_json = serde_json::to_string(&ref_id).unwrap();
+            wait_for_actionable_ref(
+                &webview,
+                target.as_ref(),
+                &ref_id,
+                cur_gen,
+                ActionabilityRequirement::Focus,
+            )
+            .await?;
             let value_json = serde_json::to_string(value).unwrap();
-            let js = format!(
-                r#"(function() {{
-                    const refId = {};
-                    const el = document.querySelector(`[data-anbo-ref="${{CSS.escape(refId)}}"]`);
-                    if (!el) return JSON.stringify({{ ok: false, error: "stale_ref" }});
-                    const gen = el.getAttribute('data-anbo-gen');
-                    if (gen !== "gen-{}") return JSON.stringify({{ ok: false, error: "stale_ref" }});
+            let js = deep_ref_expression(
+                &ref_id,
+                &format!(
+                    r#"
+                    if (!el || el.getAttribute('data-anbo-gen') !== "gen-{cur_gen}") {{
+                        return JSON.stringify({{ ok: false, error: "stale_ref" }});
+                    }}
                     if (el.tagName !== 'SELECT') return JSON.stringify({{ ok: false, error: "not_a_select" }});
-                    const want = {};
+                    const want = {value_json};
                     let matched = null;
                     for (const opt of el.options) {{
                         const label = (opt.textContent || '').trim();
@@ -787,9 +1190,8 @@ pub async fn handle_action(
                     el.value = matched.value;
                     el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    return JSON.stringify({{ ok: true, value: matched.value, label: (matched.textContent || '').trim() }});
-                }})();"#,
-                ref_json, cur_gen, value_json
+                    return JSON.stringify({{ ok: true, value: matched.value, label: (matched.textContent || '').trim() }});"#
+                ),
             );
             let res = execute_ref_script(&webview, target.as_ref(), &js)
                 .await
@@ -833,14 +1235,21 @@ pub async fn handle_action(
             let cur_gen = get_current_generation(tab_id);
             ensure_current_ref(&ref_id, cur_gen)?;
             let target = get_ref_frame_target(tab_id, &ref_id);
-            let ref_json = serde_json::to_string(&ref_id).unwrap();
-            let js = format!(
-                r#"(function() {{
-                    const refId = {};
-                    const el = document.querySelector(`[data-anbo-ref="${{CSS.escape(refId)}}"]`);
-                    if (!el) return JSON.stringify({{ ok: false, error: "stale_ref" }});
-                    const gen = el.getAttribute('data-anbo-gen');
-                    if (gen !== "gen-{}") return JSON.stringify({{ ok: false, error: "stale_ref" }});
+            wait_for_actionable_ref(
+                &webview,
+                target.as_ref(),
+                &ref_id,
+                cur_gen,
+                ActionabilityRequirement::Click,
+            )
+            .await?;
+            let js = deep_ref_expression(
+                &ref_id,
+                &format!(
+                    r#"
+                    if (!el || el.getAttribute('data-anbo-gen') !== "gen-{cur_gen}") {{
+                        return JSON.stringify({{ ok: false, error: "stale_ref" }});
+                    }}
                     el.scrollIntoView({{ block: 'center' }});
                     const r = el.getBoundingClientRect();
                     const x = r.left + r.width / 2;
@@ -849,9 +1258,8 @@ pub async fn handle_action(
                     el.dispatchEvent(new MouseEvent('mouseover', opts));
                     el.dispatchEvent(new MouseEvent('mousemove', opts));
                     el.dispatchEvent(new MouseEvent('mouseenter', {{ bubbles: false, cancelable: false, clientX: x, clientY: y, view: window }}));
-                    return JSON.stringify({{ ok: true }});
-                }})();"#,
-                ref_json, cur_gen
+                    return JSON.stringify({{ ok: true }});"#
+                ),
             );
             let res = execute_ref_script(&webview, target.as_ref(), &js)
                 .await
@@ -878,19 +1286,17 @@ pub async fn handle_action(
             let cur_gen = get_current_generation(tab_id);
             ensure_current_ref(&ref_id, cur_gen)?;
             let target = get_ref_frame_target(tab_id, &ref_id);
-            let ref_json = serde_json::to_string(&ref_id).unwrap();
-            let js = format!(
-                r#"(function() {{
-                    const refId = {};
-                    const el = document.querySelector(`[data-anbo-ref="${{CSS.escape(refId)}}"]`);
-                    if (!el) return JSON.stringify({{ ok: false, error: "stale_ref" }});
-                    const gen = el.getAttribute('data-anbo-gen');
-                    if (gen !== "gen-{}") return JSON.stringify({{ ok: false, error: "stale_ref" }});
+            let js = deep_ref_expression(
+                &ref_id,
+                &format!(
+                    r#"
+                    if (!el || el.getAttribute('data-anbo-gen') !== "gen-{cur_gen}") {{
+                        return JSON.stringify({{ ok: false, error: "stale_ref" }});
+                    }}
                     el.scrollIntoView({{ block: 'center', inline: 'center' }});
                     const r = el.getBoundingClientRect();
-                    return JSON.stringify({{ ok: true, rect: {{ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }} }});
-                }})();"#,
-                ref_json, cur_gen
+                    return JSON.stringify({{ ok: true, rect: {{ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }} }});"#
+                ),
             );
             let res = execute_ref_script(&webview, target.as_ref(), &js)
                 .await
@@ -935,17 +1341,8 @@ pub async fn handle_action(
             let target = ref_id
                 .as_deref()
                 .and_then(|ref_id| get_ref_frame_target(tab_id, ref_id));
-            let ref_json = serde_json::to_string(ref_id.as_deref().unwrap_or("")).unwrap();
-            let js = format!(
-                r#"(function() {{
-                    const refId = {};
-                    let el = null;
-                    if (refId) {{
-                        el = document.querySelector(`[data-anbo-ref="${{CSS.escape(refId)}}"]`);
-                        if (!el) return JSON.stringify({{ ok: false, error: "stale_ref" }});
-                    }} else {{
-                        el = document.body;
-                    }}
+            let text_body = format!(
+                r#"
                     if (!el) return JSON.stringify({{ ok: false, error: "no_body" }});
                     const domText = (el.innerText || el.textContent || '').trim();
                     const labelledBy = (el.getAttribute && el.getAttribute('aria-labelledby') || '')
@@ -974,14 +1371,27 @@ pub async fn handle_action(
                     )) || '';
                     const text = domText || accessibleText.trim();
                     const source = domText ? 'domText' : (text ? 'accessibleName' : 'empty');
-                    const max = {};
+                    const max = {max_length};
                     let truncated = false;
                     let out = text;
                     if (text.length > max) {{ out = text.slice(0, max); truncated = true; }}
-                    return JSON.stringify({{ ok: true, text: out, source: source, truncated: truncated, totalLength: text.length }});
-                }})();"#,
-                ref_json, max_length
+                    return JSON.stringify({{ ok: true, text: out, source: source, truncated: truncated, totalLength: text.length }});"#
             );
+            let js = if let Some(ref_id) = ref_id.as_deref() {
+                let generation = get_current_generation(tab_id);
+                deep_ref_expression(
+                    ref_id,
+                    &format!(
+                        r#"
+                        if (!el || el.getAttribute('data-anbo-gen') !== "gen-{generation}") {{
+                            return JSON.stringify({{ ok: false, error: "stale_ref" }});
+                        }}
+                        {text_body}"#
+                    ),
+                )
+            } else {
+                format!("(function() {{ const el = document.body; {text_body} }})()")
+            };
             let res = execute_ref_script(&webview, target.as_ref(), &js)
                 .await
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
@@ -1569,6 +1979,188 @@ fn parse_snapshot_payload(raw: String) -> Result<SnapshotPayload, String> {
         .map_err(|error| format!("failed to parse snapshot JSON: {error}"))
 }
 
+#[derive(Debug)]
+struct LocatorRequest {
+    by: String,
+    value: String,
+    name: Option<String>,
+    exact: bool,
+    include_hidden: bool,
+    limit: usize,
+}
+
+struct CollectedLocatorMatches {
+    matches: Vec<LocatorMatch>,
+    scanned: usize,
+    truncated: bool,
+    included_frames: usize,
+    skipped_frames: usize,
+}
+
+fn extract_locator(params: &Value) -> Result<LocatorRequest, (String, String)> {
+    let by = params.get("by").and_then(Value::as_str).ok_or_else(|| {
+        (
+            error_codes::INVALID_REQUEST.to_string(),
+            "browser_find requires a 'by' locator type".to_string(),
+        )
+    })?;
+    if !matches!(
+        by,
+        "role" | "text" | "label" | "placeholder" | "testId" | "title" | "alt" | "css"
+    ) {
+        return Err((
+            error_codes::INVALID_REQUEST.to_string(),
+            format!("unsupported locator type '{by}'"),
+        ));
+    }
+    let value = params
+        .get("value")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            (
+                error_codes::INVALID_REQUEST.to_string(),
+                "browser_find requires a non-empty 'value'".to_string(),
+            )
+        })?;
+    ensure_bounded(value, MAX_LOCATOR_VALUE_BYTES, "value")?;
+    let name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string);
+    if let Some(name) = name.as_deref() {
+        ensure_bounded(name, MAX_LOCATOR_VALUE_BYTES, "name")?;
+        if by != "role" {
+            return Err((
+                error_codes::INVALID_REQUEST.to_string(),
+                "locator 'name' is only supported with by='role'".to_string(),
+            ));
+        }
+    }
+    Ok(LocatorRequest {
+        by: by.to_string(),
+        value: value.to_string(),
+        name,
+        exact: params
+            .get("exact")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        include_hidden: params
+            .get("includeHidden")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        limit: params
+            .get("limit")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(10)
+            .clamp(1, MAX_LOCATOR_MATCHES),
+    })
+}
+
+fn parse_locator_payload(raw: String) -> Result<LocatorPayload, String> {
+    let decoded: String = serde_json::from_str(&raw).unwrap_or(raw);
+    serde_json::from_str(&decoded).map_err(|error| format!("failed to parse locator JSON: {error}"))
+}
+
+async fn collect_locator_matches(
+    webview: &Webview,
+    tab_id: i64,
+    generation: u64,
+    locator: &LocatorRequest,
+) -> Result<CollectedLocatorMatches, (String, String)> {
+    let query = LocatorQuery {
+        by: &locator.by,
+        value: &locator.value,
+        name: locator.name.as_deref(),
+        exact: locator.exact,
+        include_hidden: locator.include_hidden,
+        limit: locator.limit,
+    };
+    let root_script = build_find_js(generation, &format!("g{generation}-e"), &query);
+    let root_raw = execute_script(webview, &root_script)
+        .await
+        .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+    let mut root = parse_locator_payload(root_raw)
+        .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+    if let Some(error) = root.error.as_deref() {
+        return Err((
+            error_codes::INVALID_REQUEST.to_string(),
+            format!("locator failed: {error}"),
+        ));
+    }
+    let (frame_ids, frame_limit_reached) = get_frame_ids(webview)
+        .await
+        .unwrap_or_else(|_| (Vec::new(), false));
+    let root_frame_id = frame_ids.first().cloned().unwrap_or_default();
+    let mut targets = HashMap::new();
+    for item in &root.matches {
+        targets.insert(
+            item.ref_id.clone(),
+            RefFrameTarget {
+                frame_id: root_frame_id.clone(),
+                is_main: true,
+            },
+        );
+    }
+    let mut matches = std::mem::take(&mut root.matches);
+    let mut scanned = root.scanned;
+    let mut truncated = root.truncated;
+    let mut included_frames = 1usize;
+    let mut skipped_frames = usize::from(frame_limit_reached);
+
+    for (frame_index, frame_id) in frame_ids.iter().enumerate().skip(1) {
+        if matches.len() >= locator.limit {
+            truncated = true;
+            break;
+        }
+        let remaining = locator.limit - matches.len();
+        let frame_query = LocatorQuery {
+            limit: remaining,
+            ..query
+        };
+        let script = build_find_js(
+            generation,
+            &format!("g{generation}-f{frame_index}-e"),
+            &frame_query,
+        );
+        let payload = match evaluate_in_frame(webview, frame_id, &script)
+            .await
+            .and_then(parse_locator_payload)
+        {
+            Ok(payload) if payload.error.is_none() => payload,
+            _ => {
+                skipped_frames += 1;
+                continue;
+            }
+        };
+        included_frames += 1;
+        scanned = scanned.saturating_add(payload.scanned);
+        truncated |= payload.truncated;
+        for item in payload.matches {
+            targets.insert(
+                item.ref_id.clone(),
+                RefFrameTarget {
+                    frame_id: frame_id.clone(),
+                    is_main: false,
+                },
+            );
+            matches.push(item);
+        }
+    }
+    replace_ref_frame_targets(tab_id, targets);
+    Ok(CollectedLocatorMatches {
+        matches,
+        scanned,
+        truncated,
+        included_frames,
+        skipped_frames,
+    })
+}
+
 async fn collect_snapshot_payload(
     webview: &Webview,
     tab_id: i64,
@@ -1643,6 +2235,443 @@ async fn execute_ref_script(
     }
 }
 
+#[derive(Clone, Copy)]
+enum ActionabilityRequirement {
+    Click,
+    Focus,
+    Editable,
+}
+
+struct ActionableElement {
+    x: f64,
+    y: f64,
+    tag: String,
+    input_type: String,
+    checked: Option<bool>,
+    draggable: bool,
+}
+
+fn actionable_probe_script(ref_id: &str, generation: u64) -> String {
+    deep_ref_expression(
+        ref_id,
+        &format!(
+            r#"
+            if (!el || el.getAttribute('data-anbo-gen') !== "gen-{generation}") {{
+                return JSON.stringify({{ ok: false, error: 'stale_ref' }});
+            }}
+            el.scrollIntoView({{ block: 'center', inline: 'center' }});
+            const rect = el.getBoundingClientRect();
+            const style = getComputedStyle(el);
+            const visible = el.isConnected && rect.width > 0 && rect.height > 0 &&
+                style.display !== 'none' && style.visibility !== 'hidden' &&
+                style.visibility !== 'collapse' && Number(style.opacity || 1) > 0;
+            const enabled = !(el.disabled || el.getAttribute('aria-disabled') === 'true');
+            const editable = enabled && !el.readOnly && (
+                el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable
+            );
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            const root = el.getRootNode && el.getRootNode();
+            const hitSource = root && typeof root.elementFromPoint === 'function' ? root : document;
+            const hit = visible ? hitSource.elementFromPoint(x, y) : null;
+            let receives = false;
+            let cursor = hit;
+            while (cursor) {{
+                if (cursor === el) {{ receives = true; break; }}
+                cursor = cursor.parentNode || cursor.host || null;
+            }}
+            if (!receives && hit && el.contains) receives = el.contains(hit);
+            return JSON.stringify({{
+                ok: true,
+                visible,
+                enabled,
+                editable,
+                receives,
+                x,
+                y,
+                width: rect.width,
+                height: rect.height,
+                tag: el.tagName.toLowerCase(),
+                inputType: el instanceof HTMLInputElement ? String(el.type || '').toLowerCase() : '',
+                checked: typeof el.checked === 'boolean' ? el.checked : null,
+                draggable: el.draggable === true
+            }});"#
+        ),
+    )
+}
+
+async fn wait_for_actionable_ref(
+    webview: &Webview,
+    target: Option<&RefFrameTarget>,
+    ref_id: &str,
+    generation: u64,
+    requirement: ActionabilityRequirement,
+) -> Result<ActionableElement, (String, String)> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let script = actionable_probe_script(ref_id, generation);
+    let mut previous_rect: Option<(f64, f64, f64, f64)> = None;
+    loop {
+        let response = execute_ref_script(webview, target, &script)
+            .await
+            .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+        let decoded: String = serde_json::from_str(&response).unwrap_or(response);
+        let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+        if parsed.get("error").and_then(Value::as_str) == Some("stale_ref") {
+            return Err((
+                error_codes::STALE_REF.to_string(),
+                format!("element ref '{ref_id}' is stale or no longer valid"),
+            ));
+        }
+        let visible = parsed.get("visible").and_then(Value::as_bool) == Some(true);
+        let enabled = parsed.get("enabled").and_then(Value::as_bool) == Some(true);
+        let editable = parsed.get("editable").and_then(Value::as_bool) == Some(true);
+        let receives = parsed.get("receives").and_then(Value::as_bool) == Some(true);
+        let rect = (
+            parsed.get("x").and_then(Value::as_f64).unwrap_or_default(),
+            parsed.get("y").and_then(Value::as_f64).unwrap_or_default(),
+            parsed
+                .get("width")
+                .and_then(Value::as_f64)
+                .unwrap_or_default(),
+            parsed
+                .get("height")
+                .and_then(Value::as_f64)
+                .unwrap_or_default(),
+        );
+        let stable = previous_rect.is_some_and(|previous| {
+            (previous.0 - rect.0).abs() <= 0.5
+                && (previous.1 - rect.1).abs() <= 0.5
+                && (previous.2 - rect.2).abs() <= 0.5
+                && (previous.3 - rect.3).abs() <= 0.5
+        });
+        previous_rect = Some(rect);
+        let requirement_met = match requirement {
+            ActionabilityRequirement::Click => enabled && receives,
+            ActionabilityRequirement::Focus => enabled,
+            ActionabilityRequirement::Editable => editable && receives,
+        };
+        if visible && stable && requirement_met {
+            return Ok(ActionableElement {
+                x: rect.0,
+                y: rect.1,
+                tag: parsed
+                    .get("tag")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                input_type: parsed
+                    .get("inputType")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                checked: parsed.get("checked").and_then(Value::as_bool),
+                draggable: parsed.get("draggable").and_then(Value::as_bool) == Some(true),
+            });
+        }
+        let last_reason = if !visible {
+            "not visible"
+        } else if !enabled {
+            "disabled"
+        } else if matches!(requirement, ActionabilityRequirement::Editable) && !editable {
+            "not editable"
+        } else if matches!(
+            requirement,
+            ActionabilityRequirement::Click | ActionabilityRequirement::Editable
+        ) && !receives
+        {
+            "covered by another element"
+        } else {
+            "not stable"
+        };
+        if tokio::time::Instant::now() >= deadline {
+            return Err((
+                error_codes::TIMEOUT.to_string(),
+                format!("element ref '{ref_id}' did not become actionable: {last_reason}"),
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn dom_click_ref(
+    webview: &Webview,
+    target: Option<&RefFrameTarget>,
+    ref_id: &str,
+    generation: u64,
+    count: u8,
+) -> Result<(), (String, String)> {
+    let script = deep_ref_expression(
+        ref_id,
+        &format!(
+            r#"
+            if (!el || el.getAttribute('data-anbo-gen') !== "gen-{generation}") {{
+                return JSON.stringify({{ ok: false, error: 'stale_ref' }});
+            }}
+            el.focus({{ preventScroll: true }});
+            for (let index = 0; index < {count}; index++) el.click();
+            if ({count} === 2) {{
+                const rect = el.getBoundingClientRect();
+                el.dispatchEvent(new MouseEvent('dblclick', {{
+                    bubbles: true,
+                    cancelable: true,
+                    clientX: rect.left + rect.width / 2,
+                    clientY: rect.top + rect.height / 2,
+                    detail: 2,
+                    view: window
+                }}));
+            }}
+            return JSON.stringify({{ ok: true }});"#
+        ),
+    );
+    let response = execute_ref_script(webview, target, &script)
+        .await
+        .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+    let decoded: String = serde_json::from_str(&response).unwrap_or(response);
+    let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+    if parsed.get("ok").and_then(Value::as_bool) == Some(true) {
+        Ok(())
+    } else {
+        Err((
+            error_codes::STALE_REF.to_string(),
+            format!("element ref '{ref_id}' is stale or no longer valid"),
+        ))
+    }
+}
+
+async fn wait_for_checked_state(
+    webview: &Webview,
+    target: Option<&RefFrameTarget>,
+    ref_id: &str,
+    generation: u64,
+    expected: bool,
+) -> Result<bool, (String, String)> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let script = deep_ref_expression(
+        ref_id,
+        &format!(
+            r#"
+            if (!el || el.getAttribute('data-anbo-gen') !== "gen-{generation}") {{
+                return JSON.stringify({{ ok: false, error: 'stale_ref' }});
+            }}
+            return JSON.stringify({{ ok: true, checked: el.checked === true }});"#
+        ),
+    );
+    loop {
+        let response = execute_ref_script(webview, target, &script)
+            .await
+            .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+        let decoded: String = serde_json::from_str(&response).unwrap_or(response);
+        let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+        if parsed.get("error").and_then(Value::as_str) == Some("stale_ref") {
+            return Err((
+                error_codes::STALE_REF.to_string(),
+                format!("element ref '{ref_id}' changed before its checked state was verified"),
+            ));
+        }
+        let checked = parsed
+            .get("checked")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if checked == expected {
+            return Ok(checked);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err((
+                error_codes::TIMEOUT.to_string(),
+                format!("element ref '{ref_id}' did not become checked={expected}"),
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn install_dialog_capture(
+    webview: &Webview,
+    target: Option<&RefFrameTarget>,
+    ref_id: &str,
+    generation: u64,
+    accept: bool,
+    prompt_text: &str,
+) -> Result<(), (String, String)> {
+    let script = deep_ref_expression(
+        ref_id,
+        &format!(
+            r#"
+            if (!el || el.getAttribute('data-anbo-gen') !== "gen-{generation}") {{
+                return JSON.stringify({{ ok: false, error: 'stale_ref' }});
+            }}
+            const key = '__anboDialogCapture';
+            const previous = window[key];
+            if (previous && previous.originals) {{
+                window.alert = previous.originals.alert;
+                window.confirm = previous.originals.confirm;
+                window.prompt = previous.originals.prompt;
+            }}
+            const state = {{
+                originals: {{
+                    alert: window.alert,
+                    confirm: window.confirm,
+                    prompt: window.prompt
+                }},
+                result: null
+            }};
+            const record = (kind, message, defaultText) => {{
+                state.result = {{
+                    kind,
+                    message: String(message == null ? '' : message).slice(0, 1000),
+                    defaultText: String(defaultText == null ? '' : defaultText).slice(0, 500)
+                }};
+            }};
+            window[key] = state;
+            window.alert = message => {{ record('alert', message, ''); }};
+            window.confirm = message => {{
+                record('confirm', message, '');
+                return {accept};
+            }};
+            window.prompt = (message, defaultText = '') => {{
+                record('prompt', message, defaultText);
+                return {prompt_result};
+            }};
+            return JSON.stringify({{ ok: true }});"#,
+            prompt_result = if accept {
+                serde_json::to_string(prompt_text).unwrap()
+            } else {
+                "null".to_string()
+            }
+        ),
+    );
+    let response = execute_ref_script(webview, target, &script)
+        .await
+        .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+    let decoded: String = serde_json::from_str(&response).unwrap_or(response);
+    let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+    if parsed.get("ok").and_then(Value::as_bool) == Some(true) {
+        Ok(())
+    } else {
+        Err((
+            error_codes::STALE_REF.to_string(),
+            format!("element ref '{ref_id}' is stale or no longer valid"),
+        ))
+    }
+}
+
+async fn popup_url_for_ref(
+    webview: &Webview,
+    target: Option<&RefFrameTarget>,
+    ref_id: &str,
+    generation: u64,
+) -> Result<Option<String>, String> {
+    let script = deep_ref_expression(
+        ref_id,
+        &format!(
+            r#"
+            if (!el || el.getAttribute('data-anbo-gen') !== "gen-{generation}") return null;
+            const link = el.closest ? el.closest('a[href]') : null;
+            if (!link || String(link.target || '').toLowerCase() !== '_blank') return null;
+            return String(link.href || '');"#
+        ),
+    );
+    let response = execute_ref_script(webview, target, &script).await?;
+    let popup_url = serde_json::from_str::<Option<String>>(&response).unwrap_or(None);
+    Ok(popup_url.filter(|url| {
+        url::Url::parse(url)
+            .ok()
+            .is_some_and(|url| matches!(url.scheme(), "http" | "https"))
+    }))
+}
+
+async fn take_dialog_capture(
+    webview: &Webview,
+    target: Option<&RefFrameTarget>,
+) -> Result<Value, (String, String)> {
+    let script = r#"(function() {
+        const key = '__anboDialogCapture';
+        const state = window[key];
+        if (!state || !state.originals) {
+            return JSON.stringify({ ok: false, error: 'capture_missing' });
+        }
+        window.alert = state.originals.alert;
+        window.confirm = state.originals.confirm;
+        window.prompt = state.originals.prompt;
+        delete window[key];
+        return JSON.stringify({ ok: true, dialog: state.result });
+    })()"#;
+    let response = execute_ref_script(webview, target, script)
+        .await
+        .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+    let decoded: String = serde_json::from_str(&response).unwrap_or(response);
+    let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+    parsed.get("dialog").cloned().ok_or_else(|| {
+        (
+            error_codes::CDP_FAILED.to_string(),
+            "the triggered element did not open an alert, confirm, or prompt dialog".to_string(),
+        )
+    })
+}
+
+async fn dispatch_dom_drag(
+    webview: &Webview,
+    target: Option<&RefFrameTarget>,
+    source_ref: &str,
+    destination_ref: &str,
+    generation: u64,
+) -> Result<(), (String, String)> {
+    let source_json = serde_json::to_string(source_ref).unwrap();
+    let destination_json = serde_json::to_string(destination_ref).unwrap();
+    let script = format!(
+        r#"(function() {{
+            const generation = "gen-{generation}";
+            const findRef = refId => {{
+                const visit = root => {{
+                    if (!root || !root.querySelector) return null;
+                    const direct = root.querySelector(`[data-anbo-ref="${{CSS.escape(refId)}}"]`);
+                    if (direct) return direct;
+                    for (const element of root.querySelectorAll('*')) {{
+                        if (element.shadowRoot) {{
+                            const found = visit(element.shadowRoot);
+                            if (found) return found;
+                        }}
+                    }}
+                    return null;
+                }};
+                return visit(document);
+            }};
+            const source = findRef({source_json});
+            const destination = findRef({destination_json});
+            if (!source || !destination || source.getAttribute('data-anbo-gen') !== generation ||
+                destination.getAttribute('data-anbo-gen') !== generation) {{
+                return JSON.stringify({{ ok: false, error: 'stale_ref' }});
+            }}
+            const dataTransfer = new DataTransfer();
+            const fire = (element, type) => element.dispatchEvent(new DragEvent(type, {{
+                bubbles: true,
+                cancelable: true,
+                dataTransfer
+            }}));
+            source.focus({{ preventScroll: true }});
+            fire(source, 'dragstart');
+            fire(destination, 'dragenter');
+            fire(destination, 'dragover');
+            fire(destination, 'drop');
+            fire(source, 'dragend');
+            return JSON.stringify({{ ok: true }});
+        }})()"#
+    );
+    let response = execute_ref_script(webview, target, &script)
+        .await
+        .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+    let decoded: String = serde_json::from_str(&response).unwrap_or(response);
+    let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+    if parsed.get("ok").and_then(Value::as_bool) == Some(true) {
+        Ok(())
+    } else {
+        Err((
+            error_codes::STALE_REF.to_string(),
+            "drag source or target is stale".to_string(),
+        ))
+    }
+}
+
 async fn click_ref(
     webview: &Webview,
     tab_id: i64,
@@ -1652,70 +2681,19 @@ async fn click_ref(
     ensure_current_ref(ref_id, current_generation)?;
     let target = get_ref_frame_target(tab_id, ref_id);
     let frame_dom_click = target.as_ref().is_some_and(|target| !target.is_main);
-    let ref_json = serde_json::to_string(ref_id).unwrap();
-    let js = format!(
-        r#"(function() {{
-            const refId = {};
-            const el = document.querySelector(`[data-anbo-ref="${{CSS.escape(refId)}}"]`);
-            if (!el) return JSON.stringify({{ ok: false, error: "stale_ref" }});
-            const gen = el.getAttribute('data-anbo-gen');
-            if (gen !== "gen-{}") return JSON.stringify({{ ok: false, error: "stale_ref" }});
-            el.scrollIntoView({{ block: 'center', inline: 'center' }});
-            const rect = el.getBoundingClientRect();
-            if (rect.width <= 0 || rect.height <= 0) {{
-                return JSON.stringify({{ ok: false, error: "not_visible" }});
-            }}
-            el.focus({{ preventScroll: true }});
-            if ({}) {{
-                el.click();
-                return JSON.stringify({{ ok: true, domClick: true }});
-            }}
-            return JSON.stringify({{
-                ok: true,
-                x: rect.left + rect.width / 2,
-                y: rect.top + rect.height / 2
-            }});
-        }})();"#,
-        ref_json, current_generation, frame_dom_click
-    );
-    let response = execute_ref_script(webview, target.as_ref(), &js)
-        .await
-        .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
-    let decoded: String = serde_json::from_str(&response).unwrap_or(response);
-    let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
-    if parsed.get("ok").and_then(Value::as_bool) != Some(true) {
-        let error = parsed
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("stale_ref");
-        return if error == "stale_ref" {
-            Err((
-                error_codes::STALE_REF.to_string(),
-                format!("element ref '{ref_id}' is stale or no longer valid"),
-            ))
-        } else {
-            Err((
-                error_codes::INVALID_REQUEST.to_string(),
-                format!("element ref '{ref_id}' is not visible"),
-            ))
-        };
-    }
-    if parsed.get("domClick").and_then(Value::as_bool) == Some(true) {
+    let actionable = wait_for_actionable_ref(
+        webview,
+        target.as_ref(),
+        ref_id,
+        current_generation,
+        ActionabilityRequirement::Click,
+    )
+    .await?;
+    if frame_dom_click {
+        dom_click_ref(webview, target.as_ref(), ref_id, current_generation, 1).await?;
         return Ok("dom-frame");
     }
-    let x = parsed.get("x").and_then(Value::as_f64).ok_or_else(|| {
-        (
-            error_codes::CDP_FAILED.to_string(),
-            "click target omitted its horizontal coordinate".to_string(),
-        )
-    })?;
-    let y = parsed.get("y").and_then(Value::as_f64).ok_or_else(|| {
-        (
-            error_codes::CDP_FAILED.to_string(),
-            "click target omitted its vertical coordinate".to_string(),
-        )
-    })?;
-    dispatch_mouse_click(webview, x, y)
+    dispatch_mouse_click(webview, actionable.x, actionable.y, 1)
         .await
         .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
     Ok("devtools")
@@ -1745,6 +2723,234 @@ fn build_wait_for_text_js(text: &str) -> String {
         }})()"#,
         serde_json::to_string(text).unwrap()
     )
+}
+
+enum WaitCondition {
+    Text(String),
+    Url(String),
+    Load { state: String },
+    Ref { ref_id: String, state: String },
+}
+
+impl WaitCondition {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Text(_) => "text",
+            Self::Url(_) => "url",
+            Self::Load { .. } => "load",
+            Self::Ref { .. } => "ref",
+        }
+    }
+
+    fn state_label(&self) -> &str {
+        match self {
+            Self::Text(text) | Self::Url(text) => text,
+            Self::Load { state } => state,
+            Self::Ref { state, .. } => state,
+        }
+    }
+}
+
+fn extract_wait_condition(params: &Value) -> Result<WaitCondition, (String, String)> {
+    let inferred = if params.get("text").is_some() {
+        "text"
+    } else if params.get("url").is_some() {
+        "url"
+    } else if params.get("ref").is_some() {
+        "ref"
+    } else if params.get("loadState").is_some() {
+        "load"
+    } else {
+        ""
+    };
+    let condition = params
+        .get("condition")
+        .and_then(Value::as_str)
+        .unwrap_or(inferred);
+    match condition {
+        "text" => {
+            let text = params
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    (
+                        error_codes::INVALID_REQUEST.to_string(),
+                        "text wait requires a non-empty 'text'".to_string(),
+                    )
+                })?;
+            ensure_bounded(text, MAX_WAIT_TEXT_BYTES, "text")?;
+            Ok(WaitCondition::Text(text.to_string()))
+        }
+        "url" => {
+            let url = params
+                .get("url")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    (
+                        error_codes::INVALID_REQUEST.to_string(),
+                        "URL wait requires a non-empty 'url'".to_string(),
+                    )
+                })?;
+            ensure_bounded(url, MAX_URL_BYTES, "url")?;
+            Ok(WaitCondition::Url(url.to_string()))
+        }
+        "load" => {
+            let state = params
+                .get("loadState")
+                .and_then(Value::as_str)
+                .unwrap_or("complete");
+            if !matches!(state, "interactive" | "complete" | "networkIdle") {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    format!("unsupported load state '{state}'"),
+                ));
+            }
+            Ok(WaitCondition::Load {
+                state: state.to_string(),
+            })
+        }
+        "ref" => {
+            let ref_id = extract_ref(params)?;
+            let state = params
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("visible");
+            if !matches!(
+                state,
+                "attached"
+                    | "detached"
+                    | "visible"
+                    | "hidden"
+                    | "enabled"
+                    | "disabled"
+                    | "checked"
+                    | "unchecked"
+            ) {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    format!("unsupported ref state '{state}'"),
+                ));
+            }
+            Ok(WaitCondition::Ref {
+                ref_id,
+                state: state.to_string(),
+            })
+        }
+        _ => Err((
+            error_codes::INVALID_REQUEST.to_string(),
+            "browser_wait requires text, url, loadState, or ref/state".to_string(),
+        )),
+    }
+}
+
+fn glob_matches(pattern: &str, value: &str) -> bool {
+    if !pattern.contains('*') {
+        return pattern == value;
+    }
+    let starts_anchored = !pattern.starts_with('*');
+    let ends_anchored = !pattern.ends_with('*');
+    let parts = pattern
+        .split('*')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        return true;
+    }
+    let mut offset = 0usize;
+    for (index, part) in parts.iter().enumerate() {
+        let Some(found) = value[offset..].find(part) else {
+            return false;
+        };
+        if index == 0 && starts_anchored && found != 0 {
+            return false;
+        }
+        offset += found + part.len();
+    }
+    !ends_anchored || value.ends_with(parts.last().copied().unwrap_or_default())
+}
+
+fn build_ref_state_js(ref_id: &str, generation: u64, state: &str) -> String {
+    deep_ref_expression(
+        ref_id,
+        &format!(
+            r#"
+            const current = el && el.getAttribute('data-anbo-gen') === "gen-{generation}" ? el : null;
+            if ({state} === 'detached') return !current || !current.isConnected;
+            if ({state} === 'hidden') {{
+                if (!current || !current.isConnected) return true;
+                const rect = current.getBoundingClientRect();
+                const style = getComputedStyle(current);
+                return rect.width <= 0 || rect.height <= 0 || style.display === 'none' ||
+                    style.visibility === 'hidden' || style.visibility === 'collapse' || Number(style.opacity || 1) <= 0;
+            }}
+            if (!current || !current.isConnected) return false;
+            const rect = current.getBoundingClientRect();
+            const style = getComputedStyle(current);
+            const visible = rect.width > 0 && rect.height > 0 && style.display !== 'none' &&
+                style.visibility !== 'hidden' && style.visibility !== 'collapse' && Number(style.opacity || 1) > 0;
+            const enabled = !(current.disabled || current.getAttribute('aria-disabled') === 'true');
+            if ({state} === 'attached') return true;
+            if ({state} === 'visible') return visible;
+            if ({state} === 'enabled') return enabled;
+            if ({state} === 'disabled') return !enabled;
+            if ({state} === 'checked') return current.checked === true || current.getAttribute('aria-checked') === 'true';
+            if ({state} === 'unchecked') return current.checked === false || current.getAttribute('aria-checked') === 'false';
+            return false;"#,
+            state = serde_json::to_string(state).unwrap()
+        ),
+    )
+}
+
+async fn wait_condition_matches(
+    webview: &Webview,
+    tab_id: i64,
+    condition: &WaitCondition,
+    deadline: tokio::time::Instant,
+    poll_timeout: Duration,
+) -> Result<bool, (String, String)> {
+    match condition {
+        WaitCondition::Text(text) => {
+            let script = build_wait_for_text_js(text);
+            let main = execute_script_with_timeout(webview, &script, poll_timeout)
+                .await
+                .unwrap_or_default();
+            if main.trim() == "true" {
+                Ok(true)
+            } else {
+                Ok(wait_text_in_child_frames(webview, &script, deadline).await)
+            }
+        }
+        WaitCondition::Url(pattern) => {
+            let url = webview.url().map(|url| url.to_string()).unwrap_or_default();
+            Ok(glob_matches(pattern, &url))
+        }
+        WaitCondition::Load { state } => {
+            let ready = execute_script_with_timeout(webview, "document.readyState", poll_timeout)
+                .await
+                .unwrap_or_default();
+            let ready = ready.trim_matches('"');
+            Ok(match state.as_str() {
+                "interactive" => matches!(ready, "interactive" | "complete"),
+                "complete" => ready == "complete",
+                "networkIdle" => ready == "complete" && active_loading(tab_id) == Some(false),
+                _ => false,
+            })
+        }
+        WaitCondition::Ref { ref_id, state } => {
+            let generation = get_current_generation(tab_id);
+            ensure_current_ref(ref_id, generation)?;
+            let target = get_ref_frame_target(tab_id, ref_id);
+            let script = build_ref_state_js(ref_id, generation, state);
+            let result = execute_ref_script(webview, target.as_ref(), &script)
+                .await
+                .unwrap_or_default();
+            Ok(result.trim() == "true")
+        }
+    }
 }
 
 async fn wait_text_in_child_frames(
@@ -1796,7 +3002,7 @@ fn decode_screenshot_response(response: &str) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("invalid screenshot image data: {error}"))
 }
 
-fn key_event_params(event_type: &str, key: &str) -> Value {
+fn key_event_params(event_type: &str, key: &str, modifiers: u8) -> Value {
     let (key_name, code, virtual_key, text, shift) = match key {
         "Enter" => (
             "Enter".to_string(),
@@ -1913,9 +3119,9 @@ fn key_event_params(event_type: &str, key: &str) -> Value {
         "windowsVirtualKeyCode": virtual_key,
         "nativeVirtualKeyCode": virtual_key
     });
-    if shift {
-        // CDP modifier bitmask: Alt=1, Ctrl=2, Meta=4, Shift=8.
-        params["modifiers"] = Value::from(8);
+    let modifiers = modifiers | if shift { 8 } else { 0 };
+    if modifiers != 0 {
+        params["modifiers"] = Value::from(modifiers);
     }
     if event_type != "keyUp" {
         if let Some(text) = text {
@@ -1926,19 +3132,24 @@ fn key_event_params(event_type: &str, key: &str) -> Value {
     params
 }
 
-fn mouse_event_params(event_type: &str, x: f64, y: f64, pressed: bool) -> Value {
+fn mouse_event_params(event_type: &str, x: f64, y: f64, pressed: bool, click_count: u8) -> Value {
     json!({
         "type": event_type,
         "x": x,
         "y": y,
         "button": if event_type == "mouseMoved" { "none" } else { "left" },
         "buttons": if pressed { 1 } else { 0 },
-        "clickCount": if event_type == "mouseMoved" { 0 } else { 1 },
+        "clickCount": if event_type == "mouseMoved" { 0 } else { click_count },
         "pointerType": "mouse"
     })
 }
 
-async fn dispatch_mouse_click(webview: &Webview, x: f64, y: f64) -> Result<(), String> {
+async fn dispatch_mouse_click(
+    webview: &Webview,
+    x: f64,
+    y: f64,
+    click_count: u8,
+) -> Result<(), String> {
     call_devtools_with_retry(
         webview,
         "Emulation.setFocusEmulationEnabled",
@@ -1946,32 +3157,89 @@ async fn dispatch_mouse_click(webview: &Webview, x: f64, y: f64) -> Result<(), S
         2,
     )
     .await?;
-    let moved = mouse_event_params("mouseMoved", x, y, false).to_string();
+    let moved = mouse_event_params("mouseMoved", x, y, false, 0).to_string();
     call_devtools_with_retry(webview, "Input.dispatchMouseEvent", &moved, 2).await?;
-    for (event_type, pressed) in [("mousePressed", true), ("mouseReleased", false)] {
-        let params = mouse_event_params(event_type, x, y, pressed).to_string();
-        if let Err(error) = call_devtools_protocol_method(
-            webview,
-            "Input.dispatchMouseEvent",
-            &params,
-            Duration::from_secs(5),
-        )
-        .await
-        {
-            if event_type == "mousePressed" {
-                let release = mouse_event_params("mouseReleased", x, y, false).to_string();
-                let _ = call_devtools_protocol_method(
-                    webview,
-                    "Input.dispatchMouseEvent",
-                    &release,
-                    SCRIPT_POLL_TIMEOUT,
-                )
-                .await;
+    for count in 1..=click_count.max(1) {
+        for (event_type, pressed) in [("mousePressed", true), ("mouseReleased", false)] {
+            let params = mouse_event_params(event_type, x, y, pressed, count).to_string();
+            if let Err(error) = call_devtools_protocol_method(
+                webview,
+                "Input.dispatchMouseEvent",
+                &params,
+                Duration::from_secs(5),
+            )
+            .await
+            {
+                if event_type == "mousePressed" {
+                    let release =
+                        mouse_event_params("mouseReleased", x, y, false, count).to_string();
+                    let _ = call_devtools_protocol_method(
+                        webview,
+                        "Input.dispatchMouseEvent",
+                        &release,
+                        SCRIPT_POLL_TIMEOUT,
+                    )
+                    .await;
+                }
+                return Err(error);
             }
-            return Err(error);
         }
     }
     Ok(())
+}
+
+async fn dispatch_mouse_drag(
+    webview: &Webview,
+    source_x: f64,
+    source_y: f64,
+    target_x: f64,
+    target_y: f64,
+) -> Result<(), String> {
+    call_devtools_with_retry(
+        webview,
+        "Emulation.setFocusEmulationEnabled",
+        r#"{"enabled":true}"#,
+        2,
+    )
+    .await?;
+    let start = mouse_event_params("mouseMoved", source_x, source_y, false, 0).to_string();
+    call_devtools_with_retry(webview, "Input.dispatchMouseEvent", &start, 2).await?;
+    let press = mouse_event_params("mousePressed", source_x, source_y, true, 1).to_string();
+    call_devtools_protocol_method(
+        webview,
+        "Input.dispatchMouseEvent",
+        &press,
+        Duration::from_secs(5),
+    )
+    .await?;
+    let result = async {
+        for step in 1..=8 {
+            let progress = f64::from(step) / 8.0;
+            let x = source_x + (target_x - source_x) * progress;
+            let y = source_y + (target_y - source_y) * progress;
+            let moved = mouse_event_params("mouseMoved", x, y, true, 0).to_string();
+            call_devtools_protocol_method(
+                webview,
+                "Input.dispatchMouseEvent",
+                &moved,
+                SCRIPT_POLL_TIMEOUT,
+            )
+            .await?;
+            tokio::time::sleep(Duration::from_millis(16)).await;
+        }
+        Ok::<(), String>(())
+    }
+    .await;
+    let release = mouse_event_params("mouseReleased", target_x, target_y, false, 1).to_string();
+    let release_result = call_devtools_protocol_method(
+        webview,
+        "Input.dispatchMouseEvent",
+        &release,
+        Duration::from_secs(5),
+    )
+    .await;
+    result?;
+    release_result.map(|_| ())
 }
 
 async fn call_devtools_with_retry(
@@ -2004,7 +3272,7 @@ async fn dispatch_key(webview: &Webview, key: &str) -> Result<(), String> {
         2,
     )
     .await?;
-    let down = key_event_params("keyDown", key).to_string();
+    let down = key_event_params("keyDown", key, 0).to_string();
     call_devtools_protocol_method(
         webview,
         "Input.dispatchKeyEvent",
@@ -2012,10 +3280,88 @@ async fn dispatch_key(webview: &Webview, key: &str) -> Result<(), String> {
         SCRIPT_POLL_TIMEOUT,
     )
     .await?;
-    let up = key_event_params("keyUp", key).to_string();
+    let up = key_event_params("keyUp", key, 0).to_string();
     call_devtools_protocol_method(webview, "Input.dispatchKeyEvent", &up, SCRIPT_POLL_TIMEOUT)
         .await?;
     Ok(())
+}
+
+async fn dispatch_key_action(
+    webview: &Webview,
+    key: &str,
+    action: &str,
+    modifiers: u8,
+) -> Result<(), String> {
+    call_devtools_with_retry(
+        webview,
+        "Emulation.setFocusEmulationEnabled",
+        r#"{"enabled":true}"#,
+        2,
+    )
+    .await?;
+    if matches!(action, "press" | "down") {
+        let down = key_event_params("keyDown", key, modifiers).to_string();
+        call_devtools_protocol_method(
+            webview,
+            "Input.dispatchKeyEvent",
+            &down,
+            SCRIPT_POLL_TIMEOUT,
+        )
+        .await?;
+    }
+    if matches!(action, "press" | "up") {
+        let up = key_event_params("keyUp", key, modifiers).to_string();
+        call_devtools_protocol_method(webview, "Input.dispatchKeyEvent", &up, SCRIPT_POLL_TIMEOUT)
+            .await?;
+    }
+    Ok(())
+}
+
+fn extract_key_modifiers(params: &Value) -> Result<u8, (String, String)> {
+    let Some(modifiers) = params.get("modifiers") else {
+        return Ok(0);
+    };
+    let values = modifiers.as_array().ok_or_else(|| {
+        (
+            error_codes::INVALID_REQUEST.to_string(),
+            "'modifiers' must be an array".to_string(),
+        )
+    })?;
+    if values.len() > 4 {
+        return Err((
+            error_codes::INVALID_REQUEST.to_string(),
+            "'modifiers' accepts at most four values".to_string(),
+        ));
+    }
+    let mut mask = 0u8;
+    for value in values {
+        let name = value.as_str().ok_or_else(|| {
+            (
+                error_codes::INVALID_REQUEST.to_string(),
+                "every modifier must be a string".to_string(),
+            )
+        })?;
+        mask |= match name {
+            "Alt" => 1,
+            "Control" => 2,
+            "Meta" => 4,
+            "Shift" => 8,
+            _ => {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    format!("unsupported keyboard modifier '{name}'"),
+                ));
+            }
+        };
+    }
+    Ok(mask)
+}
+
+fn modifier_names(mask: u8) -> Vec<&'static str> {
+    [(1, "Alt"), (2, "Control"), (4, "Meta"), (8, "Shift")]
+        .into_iter()
+        .filter_map(|(bit, name)| (mask & bit != 0).then_some(name))
+        .collect()
 }
 
 async fn current_url(webview: &Webview) -> Result<String, String> {
@@ -2381,6 +3727,18 @@ fn extract_ref(params: &Value) -> Result<String, (String, String)> {
     Ok(ref_id.to_string())
 }
 
+fn extract_named_ref(params: &Value, field: &str) -> Result<String, (String, String)> {
+    let ref_id = params.get(field).and_then(Value::as_str).ok_or_else(|| {
+        (
+            error_codes::INVALID_REQUEST.to_string(),
+            format!("missing or invalid '{field}' parameter"),
+        )
+    })?;
+    ensure_bounded(ref_id, MAX_REF_BYTES, field)?;
+    parse_ref_generation(ref_id).map_err(|_| invalid_ref_error())?;
+    Ok(ref_id.to_string())
+}
+
 fn parse_ref_generation(ref_id: &str) -> Result<u64, ()> {
     let rest = ref_id.strip_prefix('g').ok_or(())?;
     let (generation, suffix) = rest.split_once('-').ok_or(())?;
@@ -2541,14 +3899,14 @@ mod tests {
 
     #[test]
     fn printable_punctuation_uses_windows_keyboard_codes_instead_of_control_keys() {
-        let period = key_event_params("keyDown", ".");
+        let period = key_event_params("keyDown", ".", 0);
         assert_eq!(period["key"], ".");
         assert_eq!(period["code"], "Period");
         assert_eq!(period["windowsVirtualKeyCode"], 190);
         assert_eq!(period["text"], ".");
         assert_ne!(period["windowsVirtualKeyCode"], 46);
 
-        let at = key_event_params("keyDown", "@");
+        let at = key_event_params("keyDown", "@", 0);
         assert_eq!(at["code"], "Digit2");
         assert_eq!(at["windowsVirtualKeyCode"], 50);
         assert_eq!(at["modifiers"], 8);
@@ -2657,31 +4015,103 @@ mod tests {
 
     #[test]
     fn key_event_uses_browser_virtual_key_metadata() {
-        let enter = key_event_params("keyDown", "Enter");
+        let enter = key_event_params("keyDown", "Enter", 0);
         assert_eq!(enter["windowsVirtualKeyCode"], 13);
         assert_eq!(enter["text"], "\r");
-        let enter_up = key_event_params("keyUp", "Enter");
+        let enter_up = key_event_params("keyUp", "Enter", 0);
         assert!(enter_up.get("text").is_none());
-        let letter = key_event_params("keyDown", "a");
+        let letter = key_event_params("keyDown", "a", 0);
         assert_eq!(letter["code"], "KeyA");
         assert_eq!(letter["text"], "a");
     }
 
     #[test]
     fn mouse_click_uses_a_pressed_button_only_for_mouse_down() {
-        let moved = mouse_event_params("mouseMoved", 12.5, 18.0, false);
+        let moved = mouse_event_params("mouseMoved", 12.5, 18.0, false, 0);
         assert_eq!(moved["button"], "none");
         assert_eq!(moved["buttons"], 0);
         assert_eq!(moved["clickCount"], 0);
 
-        let pressed = mouse_event_params("mousePressed", 12.5, 18.0, true);
+        let pressed = mouse_event_params("mousePressed", 12.5, 18.0, true, 1);
         assert_eq!(pressed["button"], "left");
         assert_eq!(pressed["buttons"], 1);
         assert_eq!(pressed["clickCount"], 1);
 
-        let released = mouse_event_params("mouseReleased", 12.5, 18.0, false);
+        let released = mouse_event_params("mouseReleased", 12.5, 18.0, false, 1);
         assert_eq!(released["button"], "left");
         assert_eq!(released["buttons"], 0);
         assert_eq!(released["clickCount"], 1);
+    }
+
+    #[test]
+    fn semantic_locator_validates_role_name_filters() {
+        let locator = extract_locator(&json!({
+            "by": "role",
+            "value": "button",
+            "name": "Save"
+        }))
+        .unwrap();
+        assert_eq!(locator.by, "role");
+        assert_eq!(locator.name.as_deref(), Some("Save"));
+
+        let error = extract_locator(&json!({
+            "by": "text",
+            "value": "Save",
+            "name": "button"
+        }))
+        .unwrap_err();
+        assert_eq!(error.0, error_codes::INVALID_REQUEST);
+    }
+
+    #[test]
+    fn wait_conditions_remain_backward_compatible_and_support_richer_states() {
+        assert!(matches!(
+            extract_wait_condition(&json!({ "text": "Dashboard" })).unwrap(),
+            WaitCondition::Text(text) if text == "Dashboard"
+        ));
+        assert!(matches!(
+            extract_wait_condition(&json!({
+                "condition": "load",
+                "loadState": "networkIdle"
+            }))
+            .unwrap(),
+            WaitCondition::Load { state } if state == "networkIdle"
+        ));
+        assert!(matches!(
+            extract_wait_condition(&json!({
+                "condition": "ref",
+                "ref": "g2-e4",
+                "state": "checked"
+            }))
+            .unwrap(),
+            WaitCondition::Ref { ref_id, state }
+                if ref_id == "g2-e4" && state == "checked"
+        ));
+    }
+
+    #[test]
+    fn url_wait_globs_are_anchored_at_non_wildcard_edges() {
+        assert!(glob_matches(
+            "https://example.com/*/done",
+            "https://example.com/jobs/42/done"
+        ));
+        assert!(!glob_matches(
+            "https://example.com/*/done",
+            "prefix/https://example.com/jobs/42/done"
+        ));
+        assert!(!glob_matches(
+            "https://example.com/*/done",
+            "https://example.com/jobs/42/done/extra"
+        ));
+    }
+
+    #[test]
+    fn keyboard_modifiers_are_deduplicated_and_bounded() {
+        let modifiers = extract_key_modifiers(&json!({
+            "modifiers": ["Control", "Shift", "Control"]
+        }))
+        .unwrap();
+        assert_eq!(modifier_names(modifiers), ["Control", "Shift"]);
+        assert!(extract_key_modifiers(&json!({ "modifiers": ["Hyper"] })).is_err());
     }
 }

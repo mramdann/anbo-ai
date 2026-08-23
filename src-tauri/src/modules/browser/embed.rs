@@ -33,6 +33,7 @@ use windows::Win32::{
 };
 
 const BROWSER_NAV_EVENT: &str = "anbo:browser-nav";
+pub(crate) const BROWSER_POPUP_REQUEST_EVENT: &str = "anbo:browser-popup-request";
 const MAX_ACTIVE_EMBEDS: usize = 256;
 const MAX_CLOSED_EMBEDS: usize = 16 * 1024;
 const MAX_RELEASED_OWNERS: usize = 32 * 1024;
@@ -52,6 +53,13 @@ struct BrowserNavEvent {
     url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct BrowserPopupRequest {
+    #[serde(rename = "sourceTabId")]
+    source_tab_id: i64,
+    url: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -355,7 +363,6 @@ fn spawn_browser_child(
     let title_app_url = app_url;
     let navigation_app = app.clone();
     let popup_app = app.clone();
-    let popup_label = embed_label(tab_id);
     let title_app = app.clone();
     let browser_data_dir = super::data::profile_dir(app)?;
     let navigation_local_root = local_root.clone();
@@ -368,7 +375,6 @@ fn spawn_browser_child(
         .get(&tab_id)
         .map(|entry| entry.loading.clone())
         .ok_or_else(|| "browser lifecycle state is unavailable".to_string())?;
-    let popup_loading = loading.clone();
     let event_loading = loading;
     let builder = WebviewBuilder::new(embed_label(tab_id), WebviewUrl::External(target))
         .data_directory(browser_data_dir)
@@ -443,13 +449,14 @@ fn spawn_browser_child(
                 popup_app_url.as_ref(),
                 root.as_deref().and_then(Option::as_deref),
             ) {
-                if let Some(webview) = popup_app.get_webview(&popup_label) {
-                    popup_loading.store(true, Ordering::Release);
-                    let _ = webview.navigate(target);
-                }
+                let _ = popup_app.emit(
+                    BROWSER_POPUP_REQUEST_EVENT,
+                    BrowserPopupRequest {
+                        source_tab_id: tab_id,
+                        url: target.to_string(),
+                    },
+                );
             }
-            // Native popup windows have no Anbo tab owner. Keep the request in
-            // the registered tab instead of creating an unmanaged webview.
             NewWindowResponse::Deny
         })
         .on_page_load(move |_webview, payload| {
