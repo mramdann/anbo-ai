@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.18.0](https://github.com/mramdann/anbo-ai/compare/v0.17.3...v0.18.0) (2026-08-24)
+
+
+### Features
+
+* add workspace-safe browser file automation ([9fbc11c](https://github.com/mramdann/anbo-ai/commit/9fbc11c5a175494489b9f287133ea22ed7991102))
+* **browser:** expand automation primitives ([f6d165a](https://github.com/mramdann/anbo-ai/commit/f6d165aca64a85884c2b994b151dc6474ad7753a))
+* require trusted Windows release signing ([0adbd44](https://github.com/mramdann/anbo-ai/commit/0adbd44f33658c66cb9ef3da69410eaa36b5532a))
+
+
+### Bug Fixes
+
+* **agents:** adopt manually launched cli sessions ([07bc5c1](https://github.com/mramdann/anbo-ai/commit/07bc5c1c3bcc7a8c77fd6e905cedf7df4352464f))
+* **agents:** honor completed repaint boundaries ([ac0a5f3](https://github.com/mramdann/anbo-ai/commit/ac0a5f353a22dd962ad3c424ad3b51575af67dca))
+* **agents:** preserve manually resumed sessions ([20b77bd](https://github.com/mramdann/anbo-ai/commit/20b77bd11931ad3340c7383ed7b47dad2e15a05f))
+* **agents:** settle completed hookless turns ([534848d](https://github.com/mramdann/anbo-ai/commit/534848d6950079629ceaa22335c200e89cd9e53b))
+* **browser:** harden navigation and frame automation ([ee3912a](https://github.com/mramdann/anbo-ai/commit/ee3912ab6b9f85f2d7d25590a8e175bfc28e2b6c))
+* **browser:** sanitize download names across hosts ([b31ed0a](https://github.com/mramdann/anbo-ai/commit/b31ed0a53d2bd7a9cf0d58501714d62c07d32b63))
+* improve live agent status detection ([faabff7](https://github.com/mramdann/anbo-ai/commit/faabff7fcbdcae37530227d078d80c1d738f066b))
+
+
+### Performance Improvements
+
+* **browser:** improve automation responsiveness ([519bfab](https://github.com/mramdann/anbo-ai/commit/519bfab80ff20893009f0f9519d64be084279767))
+
 ## [0.17.3](https://github.com/mramdann/anbo-ai/compare/v0.17.2...v0.17.3) (2026-08-21)
 
 
