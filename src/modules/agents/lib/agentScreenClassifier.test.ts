@@ -132,6 +132,15 @@ describe("classifyAgentScreen", () => {
     ).toBe("ready");
   });
 
+  it("uses a newer completion boundary when repaint merges the final prompt", () => {
+    expect(
+      classifyAgentScreen(
+        "claude",
+        "Claude Code\n\u276f request\nesc to interrupt\nThought for 6s\nanswer\nCrunched for 4s\nmanual mode on · ? for shortcuts",
+      ),
+    ).toBe("ready");
+  });
+
   it("settles Codex and Antigravity after their completion boundary", () => {
     expect(
       classifyAgentScreen(

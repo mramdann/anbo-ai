@@ -149,6 +149,10 @@ export function classifyAgentScreen(
   if (attentionAt >= readyAt && attentionAt >= workingAt && attentionAt >= 0) {
     return "attention";
   }
+  // A TUI repaint can erase or merge the final prompt glyph while leaving a
+  // completed-turn summary intact. When that boundary is newer than every
+  // working marker, stale spinner rows must not keep the agent busy forever.
+  if (settledAt > workingAt) return "ready";
   if (
     liveWorkingAt >= 0 &&
     liveWorkingAt > attentionAt &&
