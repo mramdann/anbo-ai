@@ -110,9 +110,13 @@ fn validate_preferred_file_name(value: &str) -> Result<(), String> {
 }
 
 fn safe_default_file_name(destination: &Path) -> String {
-    let raw = destination
-        .file_name()
-        .and_then(|name| name.to_str())
+    // WebView may report a Windows-style destination even when this helper is
+    // exercised on another host (for example in Linux/macOS CI). Treat both
+    // separators as path boundaries before sanitizing the basename.
+    let destination_text = destination.to_string_lossy();
+    let raw = destination_text
+        .rsplit(['/', '\\'])
+        .find(|segment| !segment.is_empty())
         .unwrap_or("download.bin");
     let mut output = raw
         .chars()
