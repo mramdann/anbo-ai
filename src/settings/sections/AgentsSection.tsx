@@ -7,6 +7,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { AGENT_ICONS } from "@/modules/ai/components/AgentSwitcher";
@@ -26,7 +27,12 @@ import {
   useSnippetsStore,
 } from "@/modules/ai/store/snippetsStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { setCustomInstructions } from "@/modules/settings/store";
+import {
+  setAgentNotifications,
+  setCustomInstructions,
+} from "@/modules/settings/store";
+import { SettingRow } from "@/settings/components/SettingRow";
+import { TerminalAgentsSettings } from "@/settings/components/TerminalAgentsSettings";
 import {
   Add01Icon,
   CheckmarkCircle02Icon,
@@ -49,6 +55,7 @@ const ICON_OPTIONS: AgentIconId[] = [
 
 export function AgentsSection() {
   const customInstructions = usePreferencesStore((s) => s.customInstructions);
+  const agentNotifications = usePreferencesStore((s) => s.agentNotifications);
   const customAgents = useAgentsStore((s) => s.customAgents);
   const activeAgentId = useAgentsStore((s) => s.activeId);
   const setActiveAgentId = useAgentsStore((s) => s.setActiveId);
@@ -73,8 +80,22 @@ export function AgentsSection() {
     <div className="flex flex-col gap-7">
       <SectionHeader
         title="Agents"
-        description="Personas and snippets the AI uses. Switch agents from the input bar."
+        description="AI personas, CLI launchers, notifications, and reusable snippets."
       />
+
+      <section className="flex flex-col gap-2">
+        <Label>Agent runtime</Label>
+        <SettingRow
+          title="Coding agent notifications"
+          description="Alert when a terminal coding agent needs your input or finishes. Desktop notification when Anbo is unfocused, in-app otherwise."
+        >
+          <Switch
+            checked={agentNotifications}
+            onCheckedChange={(value) => void setAgentNotifications(value)}
+          />
+        </SettingRow>
+        <TerminalAgentsSettings />
+      </section>
 
       <CustomInstructionsBlock value={customInstructions} />
 
