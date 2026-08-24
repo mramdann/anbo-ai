@@ -87,35 +87,43 @@ export function classifyAgentScreen(
   ]);
   let readyAt = -1;
   let openCodeCompletionAt = -1;
+  let settledAt = -1;
 
   switch (normalizedAgent(agent)) {
     case "claude":
       if (/(?:shortcuts|manual mode|Claude Code)/i.test(screen)) {
         readyAt = lastPatternIndex(screen, /(?:\u276f|>)(?!\s*\d+\.)[^\n]*/u);
       }
+      // Claude leaves the previous "esc to interrupt" row in scrollback after
+      // returning to its prompt. A completed-turn summary after that row is
+      // the reliable boundary between stale spinner text and live work.
+      settledAt = lastPatternIndex(
+        screen,
+        /(?:baked|brewed|cooked|crunched|worked) for \d+s/i,
+      );
       break;
     case "codex":
       if (/(?:gpt-|OpenAI Codex|\/model to change)/i.test(screen)) {
         readyAt = lastPatternIndex(screen, /(?:\u203a|>)(?!\s*\d+\.)[^\n]*/u);
       }
+      settledAt = lastPatternIndex(screen, /worked for \d+s/i);
       break;
     case "antigravity":
       if (/\? for shortcuts/i.test(screen)) {
         readyAt = screen.lastIndexOf(">");
       }
+      settledAt = lastPatternIndex(screen, /\? for shortcuts/i);
       break;
     case "opencode":
       readyAt = Math.max(
         lastPatternIndex(screen, /ctrl\+p commands/i),
-        lastPatternIndex(
-          screen,
-          /[·•]\s*(?:\d+m\s*)?\d+(?:\.\d+)?s\b/i,
-        ),
+        lastPatternIndex(screen, /[·•]\s*(?:\d+m\s*)?\d+(?:\.\d+)?s\b/i),
       );
       openCodeCompletionAt = lastPatternIndex(
         screen,
         /(?:\u00b7|\u2022|\u00c2\u00b7|\u00e2\u20ac\u00a2)\s*(?:\d+m\s*)?\d+(?:\.\d+)?s\b/i,
       );
+      settledAt = openCodeCompletionAt;
       break;
     case "pi":
       if (/(?:pi coding agent|for shortcuts|session)/i.test(screen)) {
@@ -144,8 +152,7 @@ export function classifyAgentScreen(
   if (
     liveWorkingAt >= 0 &&
     liveWorkingAt > attentionAt &&
-    (normalizedAgent(agent) !== "opencode" ||
-      liveWorkingAt > openCodeCompletionAt) &&
+    liveWorkingAt > settledAt &&
     screen.length - liveWorkingAt <= 2_400
   ) {
     return "working";

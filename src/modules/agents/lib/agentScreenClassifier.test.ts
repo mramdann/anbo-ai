@@ -114,6 +114,39 @@ describe("classifyAgentScreen", () => {
     ).toBe("working");
   });
 
+  it("settles Claude after a completed turn even when the interrupt row remains", () => {
+    expect(
+      classifyAgentScreen(
+        "claude",
+        [
+          "Claude Code v2.1.241",
+          "\u276f production test",
+          "Churning... esc to interrupt",
+          "Thought for 6s",
+          "ANBO_PROD_E2E_OK",
+          "Baked for 6s",
+          "\u276f ",
+          "manual mode on · ? for shortcuts",
+        ].join("\n"),
+      ),
+    ).toBe("ready");
+  });
+
+  it("settles Codex and Antigravity after their completion boundary", () => {
+    expect(
+      classifyAgentScreen(
+        "codex",
+        "OpenAI Codex\nWorking (3s · esc to interrupt)\nanswer\nWorked for 4s\n› \ngpt-5.6-sol high",
+      ),
+    ).toBe("ready");
+    expect(
+      classifyAgentScreen(
+        "antigravity",
+        "Antigravity CLI\n> request\nGenerating...\nanswer\n>\n? for shortcuts",
+      ),
+    ).toBe("ready");
+  });
+
   it.each([
     [
       "codex",
