@@ -108,6 +108,7 @@ import {
   useSourceControlContext,
 } from "@/modules/source-control";
 import {
+  authorizeWorkspaceRoot,
   flushSpacePersistenceNow,
   newSpaceDefaults,
   SpaceSwitcher,
@@ -1923,18 +1924,32 @@ export default function App() {
     return meta.id;
   }, [workspaceEnv, setActiveSpaceForNewTabs]);
 
-  // Landing → user pilih folder pertama. Bikin space + warm tab di dir itu
-  // (pty_open auto-authorize cwd → tak perlu authorize terpisah).
   const handlePickFolder = useCallback(
-    (dir: string, name: string) => {
-      const { create, setActive } = useSpaces.getState();
-      const meta = create({ name, root: dir, env: workspaceEnv });
-      setActiveSpaceForNewTabs(meta.id);
-      setActive(meta.id);
-      // Don't auto-open a terminal: clear the eager tab → workspace welcome.
-      // markBooted is safe: warming finds no tab (activeId=-1) → nothing spawns.
-      clearTabs();
-      markBooted();
+    async (dir: string, name: string) => {
+      try {
+        await authorizeWorkspaceRoot({
+          path: dir,
+          workspace: workspaceEnv,
+          authorize: native.workspaceAuthorize,
+          commit: (authorizedRoot) => {
+            const { create, setActive } = useSpaces.getState();
+            const meta = create({
+              name,
+              root: authorizedRoot,
+              env: workspaceEnv,
+            });
+            setActiveSpaceForNewTabs(meta.id);
+            setActive(meta.id);
+            clearTabs();
+            markBooted();
+          },
+        });
+      } catch (error) {
+        console.error("[anbo] workspace authorization failed:", error);
+        toast.error("Could not open workspace", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
     },
     [workspaceEnv, setActiveSpaceForNewTabs, clearTabs, markBooted],
   );
@@ -1942,15 +1957,28 @@ export default function App() {
   const handleUseHome = useCallback(() => {
     if (!home) return;
     const defaultName = home.replace(/\/+$/, "").split("/").pop() || "Home";
-    handlePickFolder(home, defaultName);
+    void handlePickFolder(home, defaultName);
   }, [home, handlePickFolder]);
 
   const handleConfigureActiveSpace = useCallback(
-    (dir: string, name: string) => {
-      const { activeId, setRoot } = useSpaces.getState();
+    async (dir: string, name: string) => {
+      const { activeId, spaces, setRoot } = useSpaces.getState();
       if (!activeId) return;
-      setRoot(activeId, dir, name);
-      void native.workspaceAuthorize(dir).catch(() => {});
+      const target = spaces.find((space) => space.id === activeId);
+      if (!target) return;
+      try {
+        await authorizeWorkspaceRoot({
+          path: dir,
+          workspace: target.env,
+          authorize: native.workspaceAuthorize,
+          commit: (authorizedRoot) => setRoot(activeId, authorizedRoot, name),
+        });
+      } catch (error) {
+        console.error("[anbo] workspace authorization failed:", error);
+        toast.error("Could not open workspace", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
     },
     [],
   );
@@ -1958,7 +1986,7 @@ export default function App() {
   const handleUseHomeForActiveSpace = useCallback(() => {
     if (!home) return;
     const defaultName = home.replace(/\/+$/, "").split("/").pop() || "Home";
-    handleConfigureActiveSpace(home, defaultName);
+    void handleConfigureActiveSpace(home, defaultName);
   }, [home, handleConfigureActiveSpace]);
 
   const handleDeleteSpace = useCallback(

@@ -1,4 +1,5 @@
 export { newSpaceDefaults } from "./lib/activeSpace";
+export { authorizeWorkspaceRoot } from "./lib/workspaceAuthorization";
 export type { SpaceMeta } from "./lib/store";
 export {
   flushSpacePersistenceNow,
