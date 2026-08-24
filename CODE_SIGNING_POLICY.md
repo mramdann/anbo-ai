@@ -1,12 +1,14 @@
-# Code signing policy
+# Code signing and release integrity policy
 
-Free code signing provided by SignPath.io, certificate by SignPath Foundation.
+Trusted signing, when enabled, is provided by SignPath.io with a certificate by SignPath Foundation.
 
 ## Scope
 
-Only Windows release installers built from this public repository by the protected GitHub Actions release workflow are eligible for production signing. The workflow verifies the exact release commit, requires the full CI suite to pass, submits the GitHub-hosted build artifact to SignPath, verifies the returned Authenticode signature, and binds the Tauri updater signature to that exact signed installer before publication.
+Only Windows release installers built from this public repository by the protected GitHub Actions release workflow are eligible for publication. The workflow verifies the exact release commit, requires the full CI suite to pass, binds the Tauri updater signature to the exact installer, verifies its SHA-256 digest, smoke-tests the packaged application, and publishes the completed draft atomically.
 
-Unsigned production installers must not be published. Historical releases created before this policy may be unsigned.
+When `SIGNPATH_ENABLED=true`, the workflow additionally submits the GitHub-hosted artifact to SignPath, requires a valid returned Authenticode signature, and regenerates the Tauri updater signature against that signed installer before publication. This is the preferred production path.
+
+When SignPath production provisioning is unavailable, `SIGNPATH_ENABLED=false` selects an explicit unsigned fallback. The same CI, exact-SHA, updater-signature, digest, packaged-smoke, manifest, and atomic-publication gates remain mandatory, but Windows may display `Publisher: Unknown` or a SmartScreen warning. Switching the variable to `true` automatically restores the trusted Authenticode path without another workflow change.
 
 ## Team roles
 
@@ -26,4 +28,4 @@ Get-AuthenticodeSignature .\Anbo_*_x64-setup.exe |
   Select-Object Status, StatusMessage, SignerCertificate
 ```
 
-The status must be `Valid`. The release workflow also verifies the SHA-256 digest of the signed installer again immediately before making the draft public.
+For a SignPath release, the status must be `Valid`. For an explicitly unsigned fallback, `NotSigned` is expected. In both modes the release workflow verifies the SHA-256 digest and Tauri updater signature metadata again immediately before making the draft public.

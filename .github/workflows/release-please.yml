@@ -64,6 +64,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_SHA: ${{ github.sha }}
+          SIGNPATH_ENABLED: ${{ vars.SIGNPATH_ENABLED || 'false' }}
         run: |
           set -euo pipefail
           VERSION=$(node -p "require('./package.json').version")
@@ -80,12 +81,21 @@ jobs:
             found { print }
           ' CHANGELOG.md > release-notes.md
           test -s release-notes.md
-          cat >> release-notes.md <<'EOF'
+          if [ "$SIGNPATH_ENABLED" = "true" ]; then
+            cat >> release-notes.md <<'EOF'
 
           ## Code signing
 
-          Free code signing provided by SignPath.io, certificate by SignPath Foundation. See the [Anbo code signing policy](https://github.com/mramdann/anbo-ai/blob/main/CODE_SIGNING_POLICY.md).
+          Authenticode signing is provided by SignPath.io, certificate by SignPath Foundation. See the [Anbo code signing policy](https://github.com/mramdann/anbo-ai/blob/main/CODE_SIGNING_POLICY.md).
           EOF
+          else
+            cat >> release-notes.md <<'EOF'
+
+          ## Code signing
+
+          This release is protected by the Tauri updater signature and exact-artifact SHA-256 verification, but the Windows installer is not Authenticode-signed. Windows may display `Publisher: Unknown` or a SmartScreen warning. See the [Anbo code signing policy](https://github.com/mramdann/anbo-ai/blob/main/CODE_SIGNING_POLICY.md).
+          EOF
+          fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
