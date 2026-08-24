@@ -47,8 +47,14 @@ enum Status {
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Transition {
-    Started { agent: String },
-    Session { agent: String, session_id: String },
+    Started {
+        agent: String,
+        session_id: Option<String>,
+    },
+    Session {
+        agent: String,
+        session_id: String,
+    },
     Ready,
     Working,
     Attention,
@@ -68,11 +74,11 @@ pub struct AgentSignal {
 impl Transition {
     pub fn into_signal(self, id: u32) -> AgentSignal {
         match self {
-            Transition::Started { agent } => AgentSignal {
+            Transition::Started { agent, session_id } => AgentSignal {
                 id,
                 kind: "started",
                 agent: Some(agent),
-                session_id: None,
+                session_id,
             },
             Transition::Session { agent, session_id } => AgentSignal {
                 id,
@@ -283,9 +289,10 @@ impl AgentDetector {
                 }
                 let cmd = pt.strip_prefix(b"C;").unwrap_or(b"");
                 if let Some(agent) = self.match_agent(cmd) {
+                    let session_id = Self::resume_session_id(&agent, cmd);
                     self.armed = true;
                     self.status = Status::Working;
-                    emit(Transition::Started { agent });
+                    emit(Transition::Started { agent, session_id });
                 }
             }
             Some(b'D') if self.armed => {
@@ -302,6 +309,7 @@ impl AgentDetector {
             self.status = Status::Working;
             emit(Transition::Started {
                 agent: agent.to_string(),
+                session_id: None,
             });
         }
     }
@@ -341,6 +349,41 @@ impl AgentDetector {
         }
         None
     }
+
+    fn resume_session_id(agent: &str, cmd: &[u8]) -> Option<String> {
+        let cmd = std::str::from_utf8(cmd).ok()?;
+        let tokens: Vec<&str> = cmd
+            .split_whitespace()
+            .map(|token| token.trim_matches(['\'', '"', ';']))
+            .collect();
+        let selectors: &[&str] = match agent {
+            "claude" => &["--resume", "--session-id"],
+            "opencode" => &["--session", "-s"],
+            "antigravity" => &["--conversation", "-c"],
+            _ => &[],
+        };
+
+        for (index, token) in tokens.iter().enumerate() {
+            if agent == "codex" && *token == "resume" {
+                let candidate = *tokens.get(index + 1)?;
+                return valid_session_id(agent, candidate).then(|| candidate.to_string());
+            }
+            for selector in selectors {
+                if *token == *selector {
+                    let candidate = *tokens.get(index + 1)?;
+                    if valid_session_id(agent, candidate) {
+                        return Some(candidate.to_string());
+                    }
+                }
+                if let Some(candidate) = token.strip_prefix(&format!("{selector}=")) {
+                    if valid_session_id(agent, candidate) {
+                        return Some(candidate.to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -363,6 +406,14 @@ mod tests {
     fn started(agent: &str) -> Transition {
         Transition::Started {
             agent: agent.into(),
+            session_id: None,
+        }
+    }
+
+    fn started_session(agent: &str, session_id: &str) -> Transition {
+        Transition::Started {
+            agent: agent.into(),
+            session_id: Some(session_id.into()),
         }
     }
 
@@ -372,6 +423,38 @@ mod tests {
         assert_eq!(
             run(&mut d, &osc("133;C;claude -p hello")),
             vec![started("claude")]
+        );
+    }
+
+    #[test]
+    fn captures_exact_session_from_manual_resume_commands() {
+        let uuid = "01a02fbc-ed2d-72b3-9111-0e1395a678bb";
+        let opencode = "ses_fd03c6167ffeYZs4Zyi98zkY9T";
+        for (command, agent, session_id) in [
+            (format!("claude --resume {uuid}"), "claude", uuid),
+            (format!("codex --yolo resume {uuid}"), "codex", uuid),
+            (
+                format!("opencode --session {opencode}"),
+                "opencode",
+                opencode,
+            ),
+            (format!("agy --conversation={uuid}"), "antigravity", uuid),
+            (format!("agy -c {uuid}"), "antigravity", uuid),
+        ] {
+            let mut detector = AgentDetector::new();
+            assert_eq!(
+                run(&mut detector, &osc(&format!("133;C;{command}"))),
+                vec![started_session(agent, session_id)],
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_invalid_session_selectors_on_agent_commands() {
+        let mut detector = AgentDetector::new();
+        assert_eq!(
+            run(&mut detector, &osc("133;C;claude --resume newest")),
+            vec![started("claude")],
         );
     }
 

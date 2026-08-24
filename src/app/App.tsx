@@ -223,7 +223,8 @@ export default function App() {
     newAgentTab,
     newAgentTabs,
     pinAgentResumeSession,
-    clearAgentResume,
+    deactivateAgentResume,
+    rearmAgentResume,
     newPrivateTab,
     openFileTab,
     pinTab,
@@ -831,12 +832,50 @@ export default function App() {
   const resumedAgentLeavesRef = useRef(new Set<number>());
   const agentDiscoveryLeavesRef = useRef(new Set<number>());
   const requestedAgentDiscoveryLeavesRef = useRef(new Set<number>());
+  const agentDiscoveryGenerationRef = useRef(new Map<number, number>());
   const agentRecoveryRunningRef = useRef(false);
   const [agentDiscoveryRetry, setAgentDiscoveryRetry] = useState(0);
+  const handleAgentStarted = useCallback(
+    (leafId: number, agent: string, sessionId?: string) => {
+      if (resumedAgentLeavesRef.current.has(leafId)) return;
+      const tracked = tabsRef.current.some(
+        (tab) =>
+          tab.kind === "terminal" &&
+          collectAgentResumeLeaves(tab.paneTree).some(
+            (leaf) => leaf.id === leafId && leaf.resume.agent === agent,
+          ),
+      );
+      if (!tracked) return;
+      const generation =
+        (agentDiscoveryGenerationRef.current.get(leafId) ?? 0) + 1;
+      agentDiscoveryGenerationRef.current.set(leafId, generation);
+      rearmAgentResume(leafId, agent, Math.max(0, Date.now() - 2_000));
+      if (sessionId) {
+        pinAgentResumeSession(leafId, sessionId);
+        requestedAgentDiscoveryLeavesRef.current.delete(leafId);
+        return;
+      }
+      requestedAgentDiscoveryLeavesRef.current.add(leafId);
+      setAgentDiscoveryRetry((value) => value + 1);
+    },
+    [pinAgentResumeSession, rearmAgentResume],
+  );
   const handleAgentSettled = useCallback((leafId: number) => {
     requestedAgentDiscoveryLeavesRef.current.add(leafId);
     setAgentDiscoveryRetry((value) => value + 1);
   }, []);
+  const handleAgentExited = useCallback(
+    (leafId: number) => {
+      resumedAgentLeavesRef.current.delete(leafId);
+      requestedAgentDiscoveryLeavesRef.current.delete(leafId);
+      agentDiscoveryGenerationRef.current.set(
+        leafId,
+        (agentDiscoveryGenerationRef.current.get(leafId) ?? 0) + 1,
+      );
+      deactivateAgentResume(leafId);
+    },
+    [deactivateAgentResume],
+  );
   useEffect(() => {
     const mcpPromises = new Map<string, Promise<boolean>>();
     let resumeDelay = 0;
@@ -937,6 +976,7 @@ export default function App() {
           leaf,
           root: space.root as string,
           workspace: space.env,
+          generation: agentDiscoveryGenerationRef.current.get(leaf.id) ?? 0,
         }));
       })
       .filter(
@@ -966,7 +1006,7 @@ export default function App() {
             claimedByAgent.set(leaf.resume.agent, claimed);
           }
         }
-        for (const { leaf, root, workspace } of recoverable) {
+        for (const { leaf, root, workspace, generation } of recoverable) {
           agentDiscoveryLeavesRef.current.add(leaf.id);
           try {
             const claimed =
@@ -978,7 +1018,10 @@ export default function App() {
               claimed,
               workspace,
             });
-            if (sessionId) {
+            if (
+              sessionId &&
+              agentDiscoveryGenerationRef.current.get(leaf.id) === generation
+            ) {
               claimed.add(sessionId);
               claimedByAgent.set(leaf.resume.agent, claimed);
               pinAgentResumeSession(leaf.id, sessionId);
@@ -2365,8 +2408,9 @@ export default function App() {
                 spaces={spaceEnvironments}
                 activeId={activeId}
                 onActivate={onActivateAgent}
+                onStarted={handleAgentStarted}
                 onSettled={handleAgentSettled}
-                onExit={clearAgentResume}
+                onExit={handleAgentExited}
               />
               <Toaster position="bottom-right" />
 

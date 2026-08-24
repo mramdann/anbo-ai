@@ -7,7 +7,7 @@ import {
 import type { AgentInstanceCount } from "@/modules/agents/lib/launcher";
 import type { PersistedAgentResume } from "@/modules/agents/lib/resume";
 import {
-  clearLeafAgentResume,
+  deactivateLeafAgentResume,
   findLeafCwd,
   hasLeaf,
   insertNodeBeside,
@@ -17,6 +17,7 @@ import {
   type PaneDirection,
   type PaneNode,
   pinLeafAgentResumeSession,
+  rearmLeafAgentResume,
   removeLeaf,
   type SplitDir,
   setLeafCwd as setLeafCwdInTree,
@@ -777,17 +778,37 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [],
   );
 
-  const clearAgentResume = useCallback((leafId: number) => {
+  const deactivateAgentResume = useCallback((leafId: number) => {
     setTabs((current) =>
       current.map((tab) => {
         if (tab.kind !== "terminal" || !hasLeaf(tab.paneTree, leafId)) {
           return tab;
         }
-        const paneTree = clearLeafAgentResume(tab.paneTree, leafId);
+        const paneTree = deactivateLeafAgentResume(tab.paneTree, leafId);
         return paneTree === tab.paneTree ? tab : { ...tab, paneTree };
       }),
     );
   }, []);
+
+  const rearmAgentResume = useCallback(
+    (leafId: number, agent: string, discoveryStartedAt: number) => {
+      setTabs((current) =>
+        current.map((tab) => {
+          if (tab.kind !== "terminal" || !hasLeaf(tab.paneTree, leafId)) {
+            return tab;
+          }
+          const paneTree = rearmLeafAgentResume(
+            tab.paneTree,
+            leafId,
+            agent,
+            discoveryStartedAt,
+          );
+          return paneTree === tab.paneTree ? tab : { ...tab, paneTree };
+        }),
+      );
+    },
+    [],
+  );
 
   const newPrivateTab = useCallback((cwd?: string) => {
     const tabId = nextIdRef.current++;
@@ -1593,7 +1614,8 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     newAgentTab,
     newAgentTabs,
     pinAgentResumeSession,
-    clearAgentResume,
+    deactivateAgentResume,
+    rearmAgentResume,
     newPrivateTab,
     openFileTab,
     pinTab,

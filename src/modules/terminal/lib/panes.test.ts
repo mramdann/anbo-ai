@@ -1,9 +1,10 @@
 import {
-  clearLeafAgentResume,
+  deactivateLeafAgentResume,
   firstLeafSlotId,
   leafIds,
   type PaneNode,
   pinLeafAgentResumeSession,
+  rearmLeafAgentResume,
   swapLeafInDirection,
 } from "@/modules/terminal/lib/panes";
 import { describe, expect, it } from "vitest";
@@ -32,7 +33,7 @@ describe("pinLeafAgentResumeSession", () => {
     });
   });
 
-  it("removes resume metadata when the agent process exits", () => {
+  it("keeps a dormant descriptor but drops the stale session on exit", () => {
     const tree: PaneNode = {
       kind: "leaf",
       id: 1,
@@ -46,11 +47,40 @@ describe("pinLeafAgentResumeSession", () => {
       },
     };
 
-    expect(clearLeafAgentResume(tree, 1)).toEqual({
+    expect(deactivateLeafAgentResume(tree, 1)).toEqual({
       kind: "leaf",
       id: 1,
       cwd: "C:/work",
+      agentResume: {
+        agent: "claude",
+        command: "claude",
+        armed: false,
+      },
     });
+  });
+
+  it("rearms discovery when the same agent is launched manually", () => {
+    const tree: PaneNode = {
+      kind: "leaf",
+      id: 1,
+      agentResume: {
+        agent: "codex",
+        command: "codex --model test",
+        armed: false,
+      },
+    };
+
+    expect(rearmLeafAgentResume(tree, 1, "codex", 1234)).toEqual({
+      kind: "leaf",
+      id: 1,
+      agentResume: {
+        agent: "codex",
+        command: "codex --model test",
+        armed: false,
+        discoveryStartedAt: 1234,
+      },
+    });
+    expect(rearmLeafAgentResume(tree, 1, "claude", 1234)).toBe(tree);
   });
 });
 

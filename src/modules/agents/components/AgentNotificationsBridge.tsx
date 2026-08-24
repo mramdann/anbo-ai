@@ -24,6 +24,7 @@ import { useAgentStore } from "../store/agentStore";
 import { useManagedAgentsStore } from "../store/managedAgentsStore";
 
 type Activate = (tabId: number, leafId: number) => void;
+type Started = (leafId: number, agent: string, sessionId?: string) => void;
 type Settled = (leafId: number, agent: string) => void;
 type Exit = (leafId: number) => void;
 type Ctx = {
@@ -32,6 +33,7 @@ type Ctx = {
   activeId: number;
   focused: boolean;
   onActivate: Activate;
+  onStarted: Started;
   onSettled: Settled;
   onExit: Exit;
 };
@@ -139,6 +141,7 @@ function handleLifecycleSignal(
       if (!observer.has(leafId)) {
         applyObserved(observer.start(leafId, sig.id, agent), ctx);
       }
+      ctx.onStarted(leafId, agent, sig.sessionId);
       return;
     }
     case "exited":
@@ -160,6 +163,7 @@ export function AgentNotificationsBridge({
   spaces,
   activeId,
   onActivate,
+  onStarted,
   onSettled,
   onExit,
 }: {
@@ -167,6 +171,7 @@ export function AgentNotificationsBridge({
   spaces: Array<{ id: string; name: string }>;
   activeId: number;
   onActivate: Activate;
+  onStarted: Started;
   onSettled: Settled;
   onExit: Exit;
 }) {
@@ -178,6 +183,7 @@ export function AgentNotificationsBridge({
     activeId,
     focused,
     onActivate,
+    onStarted,
     onSettled,
     onExit,
   });
@@ -187,6 +193,7 @@ export function AgentNotificationsBridge({
     activeId,
     focused,
     onActivate,
+    onStarted,
     onSettled,
     onExit,
   };

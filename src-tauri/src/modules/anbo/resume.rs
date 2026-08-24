@@ -127,7 +127,7 @@ fn is_uuid(s: &str) -> bool {
         .all(|(p, &l)| p.len() == l && p.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
-/// Cari UUID claude yg DIBUAT di `cwd` setelah `since_ts` (epoch ms) & belum di-claim
+/// Cari UUID claude yg aktif di `cwd` setelah `since_ts` (epoch ms) & belum di-claim
 /// (port findClaudeSession opencode-discover.ts:72). Sumber: file `<uuid>.jsonl` di
 /// folder project claude (birthtime = saat sesi dibuat). Return UUID TERBARU yang
 /// cocok, atau None (→ pemanggil fallback `--continue`, never-worse).
@@ -151,19 +151,7 @@ pub fn find_claude_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>) 
             Ok(m) => m,
             Err(_) => continue,
         };
-        // birthtime = saat sesi dibuat (presisi utk filter since_ts); fallback mtime.
-        let ts = meta
-            .created()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as u64)
-            .or_else(|| {
-                meta.modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_millis() as u64)
-            });
-        let ts = match ts {
+        let ts = match metadata_activity_ms(&meta) {
             Some(t) => t,
             None => continue,
         };
@@ -212,15 +200,24 @@ fn normalize_cwd_text(path: &str) -> String {
     }
 }
 
-fn session_created_ms(path: &Path) -> Option<u64> {
-    let metadata = path.metadata().ok()?;
-    metadata
-        .created()
-        .ok()
-        .or_else(|| metadata.modified().ok())?
+fn system_time_ms(value: std::time::SystemTime) -> Option<u64> {
+    value
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .map(|duration| duration.as_millis() as u64)
+}
+
+fn metadata_activity_ms(metadata: &std::fs::Metadata) -> Option<u64> {
+    [metadata.created().ok(), metadata.modified().ok()]
+        .into_iter()
+        .flatten()
+        .filter_map(system_time_ms)
+        .max()
+}
+
+fn session_activity_ms(path: &Path) -> Option<u64> {
+    let metadata = path.metadata().ok()?;
+    metadata_activity_ms(&metadata)
 }
 
 fn codex_session_meta(path: &Path) -> Option<(String, String)> {
@@ -280,7 +277,7 @@ pub fn find_codex_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>) -
     let mut best: Option<(String, u64)> = None;
 
     for path in codex_session_files(&codex_sessions_dir()) {
-        let Some(created_ms) = session_created_ms(&path) else {
+        let Some(created_ms) = session_activity_ms(&path) else {
             continue;
         };
         if created_ms < since_ts {
@@ -353,39 +350,147 @@ fn plain_log_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     line.get(start..)?.split_whitespace().next()
 }
 
+fn rfc3339_utc_ms(value: &str) -> Option<u64> {
+    let bytes = value.as_bytes();
+    if bytes.len() < 20
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+        || *bytes.last()? != b'Z'
+    {
+        return None;
+    }
+    let parse = |start: usize, end: usize| value.get(start..end)?.parse::<i64>().ok();
+    let year = parse(0, 4)?;
+    let month = parse(5, 7)?;
+    let day = parse(8, 10)?;
+    let hour = parse(11, 13)?;
+    let minute = parse(14, 16)?;
+    let second = parse(17, 19)?;
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let month_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if !(1..=12).contains(&month)
+        || day < 1
+        || day > month_days[(month - 1) as usize]
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=59).contains(&second)
+    {
+        return None;
+    }
+    let adjusted_year = year - if month <= 2 { 1 } else { 0 };
+    let era = if adjusted_year >= 0 {
+        adjusted_year
+    } else {
+        adjusted_year - 399
+    } / 400;
+    let year_of_era = adjusted_year - era * 400;
+    let shifted_month = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    if days < 0 {
+        return None;
+    }
+    let fraction = value.get(19..bytes.len() - 1)?;
+    let milliseconds = if fraction.is_empty() {
+        0
+    } else {
+        let digits = fraction.strip_prefix('.')?;
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let mut padded = digits.chars().take(3).collect::<String>();
+        while padded.len() < 3 {
+            padded.push('0');
+        }
+        padded.parse::<i64>().ok()?
+    };
+    let seconds = days * 86_400 + hour * 3_600 + minute * 60 + second;
+    u64::try_from(seconds * 1_000 + milliseconds).ok()
+}
+
+fn opencode_log_timestamp_ms(line: &str) -> Option<u64> {
+    rfc3339_utc_ms(plain_log_field(line, "timestamp=")?)
+}
+
 fn find_opencode_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>) -> Option<String> {
     let expected = normalized_cwd(cwd);
-    let log = read_file_tail(&opencode_log_path(), SESSION_LOG_TAIL_MAX_BYTES)?;
-    let mut best: Option<(String, u64)> = None;
-    for line in log.lines() {
-        if !line.contains("message=created id=ses_") {
-            continue;
-        }
-        let Some(id) = plain_log_field(line, " id=") else {
+    let path = opencode_log_path();
+    if session_activity_ms(&path)? < since_ts {
+        return None;
+    }
+    let log = read_file_tail(&path, SESSION_LOG_TAIL_MAX_BYTES)?;
+    let lines: Vec<&str> = log.lines().collect();
+    let mut newest_matching_run: Option<(usize, String)> = None;
+    for (index, line) in lines.iter().enumerate() {
+        let Some(timestamp) = opencode_log_timestamp_ms(line) else {
             continue;
         };
-        if claimed.contains(id) {
+        if timestamp < since_ts {
             continue;
         }
+        let Some(run) = plain_log_field(line, "run=") else {
+            continue;
+        };
         let Some(directory) = quoted_log_field(line, " directory=\"") else {
             continue;
         };
-        if normalized_cwd(&directory) != expected {
-            continue;
-        }
-        let Some(created) =
-            plain_log_field(line, " time.created=").and_then(|value| value.parse::<u64>().ok())
-        else {
-            continue;
-        };
-        if created < since_ts {
-            continue;
-        }
-        if best.as_ref().is_none_or(|(_, ts)| created > *ts) {
-            best = Some((id.to_string(), created));
+        let normalized = normalized_cwd(&directory);
+        if normalized == expected {
+            newest_matching_run = Some((index, run.to_string()));
         }
     }
-    best.map(|(id, _)| id)
+
+    if let Some((_, run)) = newest_matching_run {
+        let candidate = lines.iter().rev().find_map(|line| {
+            if opencode_log_timestamp_ms(line).is_none_or(|timestamp| timestamp < since_ts)
+                || plain_log_field(line, "run=") != Some(run.as_str())
+            {
+                return None;
+            }
+            let id =
+                plain_log_field(line, "session.id=").or_else(|| plain_log_field(line, " id="))?;
+            (is_valid_opencode_session_id(id) && !claimed.contains(id)).then(|| id.to_string())
+        });
+        if candidate.is_some() {
+            return candidate;
+        }
+    }
+
+    lines.iter().rev().find_map(|line| {
+        let id = plain_log_field(line, " id=")?;
+        let directory = quoted_log_field(line, " directory=\"")?;
+        let created = plain_log_field(line, " time.created=")?
+            .parse::<u64>()
+            .ok()?;
+        (created >= since_ts
+            && normalized_cwd(&directory) == expected
+            && is_valid_opencode_session_id(id)
+            && !claimed.contains(id))
+        .then(|| id.to_string())
+    })
+}
+
+fn is_valid_opencode_session_id(value: &str) -> bool {
+    value
+        .strip_prefix("ses_")
+        .is_some_and(|tail| !tail.is_empty() && tail.chars().all(|c| c.is_ascii_alphanumeric()))
 }
 
 fn bytes_contain(haystack: &[u8], needle: &[u8]) -> bool {
@@ -418,7 +523,7 @@ fn find_antigravity_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>)
         if !is_uuid(id) || claimed.contains(id) {
             continue;
         }
-        let Some(created) = session_created_ms(&path) else {
+        let Some(created) = session_activity_ms(&path) else {
             continue;
         };
         let Ok(metadata) = path.metadata() else {
@@ -462,7 +567,7 @@ fn find_pi_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>) -> Optio
     let expected = normalized_cwd(cwd);
     let mut best: Option<(String, u64)> = None;
     for path in codex_session_files(&pi_sessions_dir()) {
-        let Some(created) = session_created_ms(&path) else {
+        let Some(created) = session_activity_ms(&path) else {
             continue;
         };
         if created < since_ts {
@@ -511,7 +616,7 @@ pub fn anbo_find_agent_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -529,6 +634,14 @@ mod tests {
         assert!(!is_uuid("not-a-uuid"));
         assert!(!is_uuid("a1b2c3d4-e5f6-7890")); // terlalu pendek
         assert!(!is_uuid("a1b2c3d4-e5f6-7890-abcd-ef1234567890-extra"));
+    }
+
+    #[test]
+    fn parses_opencode_log_timestamps_without_timezone_ambiguity() {
+        assert_eq!(rfc3339_utc_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(rfc3339_utc_ms("1970-01-02T00:00:00.125Z"), Some(86_400_125));
+        assert!(rfc3339_utc_ms("2026-02-30T00:00:00Z").is_none());
+        assert!(rfc3339_utc_ms("2026-08-24T00:00:00+07:00").is_none());
     }
 
     #[test]
@@ -639,6 +752,20 @@ mod tests {
             "since_ts masa depan → tak ada yg eligible"
         );
 
+        let resumed_since = now_ms();
+        thread::sleep(Duration::from_millis(20));
+        OpenOptions::new()
+            .append(true)
+            .open(proj.join(format!("{old_id}.jsonl")))
+            .unwrap()
+            .write_all(b"{\"type\":\"resume\"}\n")
+            .unwrap();
+        assert_eq!(
+            find_claude_session(&cwd, resumed_since, &HashSet::new()).as_deref(),
+            Some(old_id),
+            "a resumed existing Claude session must win by recent activity"
+        );
+
         std::env::remove_var("ANBO_CLAUDE_PROJECTS");
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -694,6 +821,20 @@ mod tests {
         )
         .is_none());
 
+        let resumed_since = now_ms();
+        thread::sleep(Duration::from_millis(20));
+        OpenOptions::new()
+            .append(true)
+            .open(sessions.join(format!("rollout-old-{old_id}.jsonl")))
+            .unwrap()
+            .write_all(b"{\"type\":\"turn_context\"}\n")
+            .unwrap();
+        assert_eq!(
+            find_codex_session(&cwd.to_string_lossy(), resumed_since, &HashSet::new(),).as_deref(),
+            Some(old_id),
+            "a resumed existing Codex session must win by recent activity"
+        );
+
         std::env::remove_var("ANBO_CODEX_SESSIONS");
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -722,6 +863,26 @@ mod tests {
             Some(opencode_id)
         );
 
+        let opencode_resumed_since = now_ms();
+        thread::sleep(Duration::from_millis(20));
+        let mut opencode = OpenOptions::new().append(true).open(&opencode_log).unwrap();
+        writeln!(
+            opencode,
+            "timestamp=2099-08-24T00:00:00Z level=INFO run=manual message=\"creating instance\" directory=\"{escaped_cwd}\""
+        )
+        .unwrap();
+        writeln!(
+            opencode,
+            "timestamp=2099-08-24T00:00:01Z level=INFO run=manual message=process session.id={opencode_id}"
+        )
+        .unwrap();
+        drop(opencode);
+        assert_eq!(
+            find_opencode_session(&cwd_text, opencode_resumed_since, &HashSet::new()).as_deref(),
+            Some(opencode_id),
+            "a resumed OpenCode run must expose its existing session id"
+        );
+
         let antigravity_dir = tmp.join("antigravity");
         fs::create_dir_all(&antigravity_dir).unwrap();
         let antigravity_id = "11111111-2222-4333-8444-555555555555";
@@ -737,6 +898,20 @@ mod tests {
         assert_eq!(
             find_antigravity_session(&cwd_text, 0, &HashSet::new()).as_deref(),
             Some(antigravity_id)
+        );
+        let antigravity_resumed_since = now_ms();
+        thread::sleep(Duration::from_millis(20));
+        OpenOptions::new()
+            .append(true)
+            .open(antigravity_dir.join(format!("{antigravity_id}.db")))
+            .unwrap()
+            .write_all(b"resume")
+            .unwrap();
+        assert_eq!(
+            find_antigravity_session(&cwd_text, antigravity_resumed_since, &HashSet::new(),)
+                .as_deref(),
+            Some(antigravity_id),
+            "a resumed Antigravity conversation must win by recent activity"
         );
 
         let pi_dir = tmp.join("pi").join("project");
@@ -756,6 +931,19 @@ mod tests {
         assert_eq!(
             find_pi_session(&cwd_text, 0, &HashSet::new()).as_deref(),
             Some(pi_id)
+        );
+        let pi_resumed_since = now_ms();
+        thread::sleep(Duration::from_millis(20));
+        OpenOptions::new()
+            .append(true)
+            .open(pi_dir.join(format!("session_{pi_id}.jsonl")))
+            .unwrap()
+            .write_all(b"{}\n")
+            .unwrap();
+        assert_eq!(
+            find_pi_session(&cwd_text, pi_resumed_since, &HashSet::new()).as_deref(),
+            Some(pi_id),
+            "a resumed Pi session must win by recent activity"
         );
 
         std::env::remove_var("ANBO_OPENCODE_LOG");
