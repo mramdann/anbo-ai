@@ -3,6 +3,7 @@ import {
   buildAgentLaunchCommand,
   buildAgentResumeCommand,
   createAgentResumeStates,
+  createManualAgentResumeState,
   normalizePersistedAgentResume,
   shouldPinAgentSession,
 } from "./resume";
@@ -18,6 +19,26 @@ describe("agent resume commands", () => {
   it("does not pin unsupported agent session ids", () => {
     expect(shouldPinAgentSession("grok")).toBe(false);
     expect(shouldPinAgentSession("custom:aider")).toBe(false);
+  });
+
+  it.each([
+    ["claude", "claude"],
+    ["codex", "codex"],
+    ["antigravity", "agy"],
+    ["opencode", "opencode"],
+  ] as const)("adopts manually launched %s sessions", (agent, command) => {
+    expect(createManualAgentResumeState(agent, 1234)).toEqual({
+      agent,
+      command,
+      armed: false,
+      discoveryStartedAt: 1234,
+    });
+  });
+
+  it("does not adopt unrequested manual agent families", () => {
+    expect(createManualAgentResumeState("pi", 1234)).toBeUndefined();
+    expect(createManualAgentResumeState("grok", 1234)).toBeUndefined();
+    expect(createManualAgentResumeState("custom:aider", 1234)).toBeUndefined();
   });
 
   it.each([

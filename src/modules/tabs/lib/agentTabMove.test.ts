@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  adoptDetectedAgentIdentity,
   createAgentTerminalTabs,
   moveTabIntoSpace,
   type Tab,
@@ -52,6 +53,66 @@ describe("agent tab cross-space moves", () => {
 });
 
 describe("agent tab creation", () => {
+  it("assigns a detected manual agent its canonical name and icon", () => {
+    const plain: TerminalTab = {
+      id: 1,
+      kind: "terminal",
+      spaceId: "a",
+      title: "workspace",
+      cwd: "/workspace",
+      paneTree: { kind: "leaf", id: 101, cwd: "/workspace" },
+      activeLeafId: 101,
+    };
+
+    expect(
+      adoptDetectedAgentIdentity([plain], 101, {
+        launcherId: "claude",
+        icon: "claude",
+        label: "Claude",
+      })[0],
+    ).toMatchObject({
+      title: "Claude",
+      agent: {
+        launcherId: "claude",
+        icon: "claude",
+        label: "Claude",
+        name: "Claude",
+      },
+    });
+  });
+
+  it("allocates a unique alias and preserves private or managed tabs", () => {
+    const occupied = agentTab(1, "a", "Claude");
+    const identity = {
+      launcherId: "claude" as const,
+      icon: "claude" as const,
+      label: "Claude",
+    };
+    const plain: TerminalTab = {
+      id: 2,
+      kind: "terminal",
+      spaceId: "a",
+      title: "workspace",
+      paneTree: { kind: "leaf", id: 102 },
+      activeLeafId: 102,
+    };
+    const adopted = adoptDetectedAgentIdentity(
+      [occupied, plain],
+      102,
+      identity,
+    )[1] as TerminalTab;
+    expect(adopted.agent?.name).not.toBe("Claude");
+    expect(adopted.agent?.name.length).toBeLessThanOrEqual(7);
+
+    const privateTab = { ...plain, private: true };
+    expect(adoptDetectedAgentIdentity([privateTab], 102, identity)).toEqual([
+      privateTab,
+    ]);
+    expect(adoptDetectedAgentIdentity([occupied], 101, identity)).toEqual([
+      occupied,
+    ]);
+  });
+
   it("creates one independent single-leaf tab per requested instance", () => {
     const tabs = createAgentTerminalTabs({
       spaceId: "a",

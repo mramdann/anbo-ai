@@ -30,6 +30,7 @@ export {
   buildAgentResumeCommand,
   collectAgentResumeLeaves,
   createAgentResumeStates,
+  createManualAgentResumeState,
   normalizePersistedAgentResume,
   type PersistedAgentResume,
   shouldPinAgentSession,

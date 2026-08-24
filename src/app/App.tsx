@@ -23,6 +23,7 @@ import {
   collectAgentResumeLeaves,
   configuredAgentLaunchRequest,
   createAgentResumeStates,
+  createManualAgentResumeState,
   findAgentLauncher,
   isMcpAgentId,
   MAX_PARALLEL_OPENCODE_AGENTS,
@@ -225,6 +226,8 @@ export default function App() {
     pinAgentResumeSession,
     deactivateAgentResume,
     rearmAgentResume,
+    adoptAgentResume,
+    adoptAgentIdentity,
     newPrivateTab,
     openFileTab,
     pinTab,
@@ -837,19 +840,43 @@ export default function App() {
   const [agentDiscoveryRetry, setAgentDiscoveryRetry] = useState(0);
   const handleAgentStarted = useCallback(
     (leafId: number, agent: string, sessionId?: string) => {
-      if (resumedAgentLeavesRef.current.has(leafId)) return;
-      const tracked = tabsRef.current.some(
+      const target = tabsRef.current.find(
         (tab) =>
           tab.kind === "terminal" &&
-          collectAgentResumeLeaves(tab.paneTree).some(
-            (leaf) => leaf.id === leafId && leaf.resume.agent === agent,
-          ),
+          !tab.private &&
+          hasLeaf(tab.paneTree, leafId),
       );
-      if (!tracked) return;
+      if (target?.kind !== "terminal") return;
+      const existing = tabsRef.current
+        .filter((tab) => tab.kind === "terminal")
+        .flatMap((tab) => collectAgentResumeLeaves(tab.paneTree))
+        .find((leaf) => leaf.id === leafId);
+      if (existing && existing.resume.agent !== agent) return;
+      const discoveryStartedAt = Math.max(0, Date.now() - 2_000);
+      const manualResume = createManualAgentResumeState(
+        agent,
+        discoveryStartedAt,
+      );
+      if (!existing && (!manualResume || target.agent)) return;
+      if (manualResume) {
+        const launcher = findAgentLauncher(manualResume.agent);
+        if (launcher) {
+          adoptAgentIdentity(leafId, {
+            launcherId: launcher.id,
+            icon: launcher.icon,
+            label: launcher.label,
+          });
+        }
+      }
+      if (resumedAgentLeavesRef.current.has(leafId)) return;
       const generation =
         (agentDiscoveryGenerationRef.current.get(leafId) ?? 0) + 1;
       agentDiscoveryGenerationRef.current.set(leafId, generation);
-      rearmAgentResume(leafId, agent, Math.max(0, Date.now() - 2_000));
+      if (existing) {
+        rearmAgentResume(leafId, agent, discoveryStartedAt);
+      } else if (manualResume) {
+        adoptAgentResume(leafId, manualResume);
+      }
       if (sessionId) {
         pinAgentResumeSession(leafId, sessionId);
         requestedAgentDiscoveryLeavesRef.current.delete(leafId);
@@ -858,7 +885,12 @@ export default function App() {
       requestedAgentDiscoveryLeavesRef.current.add(leafId);
       setAgentDiscoveryRetry((value) => value + 1);
     },
-    [pinAgentResumeSession, rearmAgentResume],
+    [
+      adoptAgentIdentity,
+      adoptAgentResume,
+      pinAgentResumeSession,
+      rearmAgentResume,
+    ],
   );
   const handleAgentSettled = useCallback((leafId: number) => {
     requestedAgentDiscoveryLeavesRef.current.add(leafId);

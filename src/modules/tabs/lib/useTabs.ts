@@ -5,8 +5,12 @@ import {
   allocateAgentTabNames,
 } from "@/modules/agents/lib/agentTabName";
 import type { AgentInstanceCount } from "@/modules/agents/lib/launcher";
-import type { PersistedAgentResume } from "@/modules/agents/lib/resume";
+import type {
+  AgentResumeState,
+  PersistedAgentResume,
+} from "@/modules/agents/lib/resume";
 import {
+  adoptLeafAgentResume,
   deactivateLeafAgentResume,
   findLeafCwd,
   hasLeaf,
@@ -271,6 +275,32 @@ export function createAgentTerminalTabs({
         },
         activeLeafId: agentLeafIds[index],
       }) satisfies TerminalTab,
+  );
+}
+
+export function adoptDetectedAgentIdentity(
+  tabs: Tab[],
+  leafId: number,
+  agent: AgentTabNameRequest,
+): Tab[] {
+  const target = tabs.find(
+    (tab) =>
+      tab.kind === "terminal" &&
+      !tab.private &&
+      !tab.agent &&
+      hasLeaf(tab.paneTree, leafId),
+  );
+  if (target?.kind !== "terminal") return tabs;
+  const occupied = occupiedNamesInSpace(tabs, target.spaceId, target.id);
+  const [name] = allocateAgentTabNames(agent, 1, occupied);
+  return tabs.map((tab) =>
+    tab.id === target.id
+      ? {
+          ...target,
+          title: name,
+          agent: { ...agent, name },
+        }
+      : tab,
   );
 }
 
@@ -806,6 +836,28 @@ export function useTabs(initial?: Partial<TerminalTab>) {
           return paneTree === tab.paneTree ? tab : { ...tab, paneTree };
         }),
       );
+    },
+    [],
+  );
+
+  const adoptAgentResume = useCallback(
+    (leafId: number, resume: AgentResumeState) => {
+      setTabs((current) =>
+        current.map((tab) => {
+          if (tab.kind !== "terminal" || !hasLeaf(tab.paneTree, leafId)) {
+            return tab;
+          }
+          const paneTree = adoptLeafAgentResume(tab.paneTree, leafId, resume);
+          return paneTree === tab.paneTree ? tab : { ...tab, paneTree };
+        }),
+      );
+    },
+    [],
+  );
+
+  const adoptAgentIdentity = useCallback(
+    (leafId: number, agent: AgentTabNameRequest) => {
+      setTabs((current) => adoptDetectedAgentIdentity(current, leafId, agent));
     },
     [],
   );
@@ -1616,6 +1668,8 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     pinAgentResumeSession,
     deactivateAgentResume,
     rearmAgentResume,
+    adoptAgentResume,
+    adoptAgentIdentity,
     newPrivateTab,
     openFileTab,
     pinTab,

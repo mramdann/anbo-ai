@@ -97,6 +97,34 @@ export function shouldPinAgentSession(
   return isResumableAgentId(agent);
 }
 
+export function createManualAgentResumeState(
+  agent: string,
+  discoveryStartedAt: number,
+): AgentResumeState | undefined {
+  let resumableAgent: ResumableAgentId;
+  let command: string;
+  switch (agent) {
+    case "claude":
+    case "codex":
+    case "opencode":
+      resumableAgent = agent;
+      command = agent;
+      break;
+    case "antigravity":
+      resumableAgent = agent;
+      command = "agy";
+      break;
+    default:
+      return undefined;
+  }
+  return {
+    agent: resumableAgent,
+    command,
+    armed: false,
+    discoveryStartedAt,
+  };
+}
+
 export function normalizePersistedAgentResume(
   value: unknown,
 ): PersistedAgentResume | undefined {

@@ -1,4 +1,5 @@
 import {
+  adoptLeafAgentResume,
   deactivateLeafAgentResume,
   firstLeafSlotId,
   leafIds,
@@ -10,6 +11,42 @@ import {
 import { describe, expect, it } from "vitest";
 
 describe("pinLeafAgentResumeSession", () => {
+  it("adopts a manually launched agent only on an untracked terminal leaf", () => {
+    const tree: PaneNode = { kind: "leaf", id: 1, cwd: "C:/work" };
+    const resume = {
+      agent: "claude" as const,
+      command: "claude",
+      armed: false,
+      discoveryStartedAt: 1234,
+    };
+
+    expect(adoptLeafAgentResume(tree, 1, resume)).toEqual({
+      ...tree,
+      agentResume: resume,
+    });
+  });
+
+  it("does not replace an existing launcher resume identity", () => {
+    const tree: PaneNode = {
+      kind: "leaf",
+      id: 1,
+      agentResume: {
+        agent: "codex",
+        command: "codex --model test",
+        armed: false,
+      },
+    };
+
+    expect(
+      adoptLeafAgentResume(tree, 1, {
+        agent: "claude",
+        command: "claude",
+        armed: false,
+        discoveryStartedAt: 1234,
+      }),
+    ).toBe(tree);
+  });
+
   it("pins a discovered session id and arms the selected leaf", () => {
     const tree: PaneNode = {
       kind: "leaf",
