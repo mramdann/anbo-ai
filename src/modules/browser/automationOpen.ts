@@ -59,6 +59,7 @@ export type BrowserTabMetadata = {
   automationActive: boolean;
   automationMethod: string | null;
   loading: boolean;
+  pendingUrl: string | null;
 };
 
 type BrowserOpenHandler = (request: BrowserOpenRequest) => void;

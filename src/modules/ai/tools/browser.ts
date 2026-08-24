@@ -68,7 +68,9 @@ export function buildBrowserTools(ctx: ToolContext) {
         name: z
           .string()
           .optional()
-          .describe("Optional accessible name when locating by role."),
+          .describe(
+            "Optional computed accessible name when locating by role. aria-label, aria-labelledby, an associated label, alt, or title can take precedence over visible text.",
+          ),
         exact: z.boolean().default(false),
         includeHidden: z.boolean().default(false),
         limit: z.number().int().min(1).max(20).default(10),
@@ -262,19 +264,33 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_press_key: tool({
       description:
-        "Press a keyboard key (e.g. Enter, Escape, ArrowDown, Tab) on the active browser page.",
+        "Press a keyboard key on the active browser page. Enter observation runs without blocking stop, navigation, or other tab actions.",
       inputSchema: z.object({
         key: z
           .string()
           .describe(
             "The key name to simulate, e.g. 'Enter', 'Escape', 'ArrowDown', 'Tab', 'Space'.",
           ),
+        observationTimeout: z
+          .number()
+          .int()
+          .min(0)
+          .max(10_000)
+          .default(3_000)
+          .describe(
+            "Milliseconds to observe submit or navigation after Enter. Ignored for other keys.",
+          ),
       }),
-      execute: async ({ key }) => {
+      execute: async ({ key, observationTimeout }) => {
         try {
           const tabId = activeBrowserTabId(ctx);
           const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({ action: "press_key", tabId, key }),
+            requestJson: JSON.stringify({
+              action: "press_key",
+              tabId,
+              key,
+              observationTimeout,
+            }),
           });
           return { status: "ok", result: res };
         } catch (error) {
@@ -423,7 +439,7 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_console_logs: tool({
       description:
-        "Retrieve recent console.error and console.log entries from the active browser page.",
+        "Retrieve bounded console messages, uncaught runtime errors, and unhandled promise rejections from the active browser page and accessible frames.",
       inputSchema: z.object({}),
       execute: async () => {
         try {
@@ -494,7 +510,7 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_hover: tool({
       description:
-        "Hover over an interactive element by ref to trigger menus, tooltips, or hover-only UI.",
+        "Hover over an actionable element by ref using real pointer movement, with CSS pseudo-state verification for main-document targets.",
       inputSchema: z.object({
         ref: z.string().describe("Latest browser_snapshot ref, e.g. g3-e12."),
       }),

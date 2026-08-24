@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tauri::webview::{Color, DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder};
@@ -91,6 +91,8 @@ struct ActiveEmbed {
     owner_id: String,
     local_root: Arc<Mutex<Option<PathBuf>>>,
     loading: Arc<AtomicBool>,
+    pending_url: Arc<Mutex<Option<String>>>,
+    navigation_generation: Arc<AtomicU64>,
 }
 
 static CLOSED_EMBEDS: OnceLock<Mutex<HashSet<EmbedKey>>> = OnceLock::new();
@@ -164,11 +166,45 @@ pub fn active_loading(tab_id: i64) -> Option<bool> {
         .map(|entry| entry.loading.load(Ordering::Acquire))
 }
 
+pub fn active_pending_url(tab_id: i64) -> Option<String> {
+    let pending = active_embeds()
+        .lock()
+        .ok()?
+        .get(&tab_id)?
+        .pending_url
+        .clone();
+    let resolved = pending.lock().ok()?.clone();
+    resolved
+}
+
+pub fn active_navigation_generation(tab_id: i64) -> Option<u64> {
+    active_embeds()
+        .lock()
+        .ok()?
+        .get(&tab_id)
+        .map(|entry| entry.navigation_generation.load(Ordering::Acquire))
+}
+
+pub fn set_active_pending_url(tab_id: i64, pending_url: Option<String>) {
+    let pending = active_embeds()
+        .lock()
+        .ok()
+        .and_then(|active| active.get(&tab_id).map(|entry| entry.pending_url.clone()));
+    if let Some(pending) = pending {
+        if let Ok(mut current) = pending.lock() {
+            *current = pending_url;
+        }
+    }
+}
+
 pub fn set_active_loading(tab_id: i64, loading: bool) {
     if let Ok(active) = active_embeds().lock() {
         if let Some(entry) = active.get(&tab_id) {
             entry.loading.store(loading, Ordering::Release);
         }
+    }
+    if !loading {
+        set_active_pending_url(tab_id, None);
     }
 }
 
@@ -376,6 +412,18 @@ fn spawn_browser_child(
         .map(|entry| entry.loading.clone())
         .ok_or_else(|| "browser lifecycle state is unavailable".to_string())?;
     let event_loading = loading;
+    let event_pending_url = active_embeds()
+        .lock()
+        .map_err(|_| "browser lifecycle state is unavailable".to_string())?
+        .get(&tab_id)
+        .map(|entry| entry.pending_url.clone())
+        .ok_or_else(|| "browser lifecycle state is unavailable".to_string())?;
+    let event_navigation_generation = active_embeds()
+        .lock()
+        .map_err(|_| "browser lifecycle state is unavailable".to_string())?
+        .get(&tab_id)
+        .map(|entry| entry.navigation_generation.clone())
+        .ok_or_else(|| "browser lifecycle state is unavailable".to_string())?;
     let builder = WebviewBuilder::new(embed_label(tab_id), WebviewUrl::External(target))
         .data_directory(browser_data_dir)
         // Opaque background so a not-yet-painted webview (new tab, mid-load) shows
@@ -400,6 +448,11 @@ fn spawn_browser_child(
             const safeStringify = (arg) => {
                 try {
                     if (arg === null || typeof arg !== 'object') return String(arg).slice(0, 2000);
+                    if (arg instanceof Error) {
+                        return `${String(arg.name || 'Error')}: ${String(arg.message || '').slice(0, 1500)}${
+                            arg.stack ? `\n${String(arg.stack).slice(0, 2000)}` : ''
+                        }`.slice(0, 2000);
+                    }
                     const result = {};
                     for (const key of Object.keys(arg).slice(0, 20)) {
                         const value = arg[key];
@@ -411,20 +464,35 @@ fn spawn_browser_child(
                     return JSON.stringify(result).slice(0, 2000);
                 } catch (e) { return Object.prototype.toString.call(arg).slice(0, 2000); }
             };
-            const origLog = console.log;
-            console.log = function(...args) {
-                anboLogs.push({ level: 'info', msg: args.slice(0, 20).map(safeStringify).join(' ').slice(0, 4000), ts: Date.now() });
+            const recordAnboLog = (level, message) => {
+                anboLogs.push({
+                    level: String(level || 'info').slice(0, 16),
+                    msg: String(message || '').slice(0, 4000),
+                    ts: Date.now()
+                });
                 if (anboLogs.length > 50) anboLogs.shift();
                 syncAnboLogs();
+            };
+            const origLog = console.log;
+            console.log = function(...args) {
+                recordAnboLog('info', args.slice(0, 20).map(safeStringify).join(' '));
                 origLog.apply(console, args);
             };
             const origErr = console.error;
             console.error = function(...args) {
-                anboLogs.push({ level: 'error', msg: args.slice(0, 20).map(safeStringify).join(' ').slice(0, 4000), ts: Date.now() });
-                if (anboLogs.length > 50) anboLogs.shift();
-                syncAnboLogs();
+                recordAnboLog('error', args.slice(0, 20).map(safeStringify).join(' '));
                 origErr.apply(console, args);
             };
+            window.addEventListener('error', event => {
+                const location = event.filename
+                    ? ` at ${String(event.filename).slice(0, 1000)}:${Number(event.lineno) || 0}:${Number(event.colno) || 0}`
+                    : '';
+                const message = String(event.message || 'runtime error').slice(0, 3000);
+                recordAnboLog('error', `${message.startsWith('Uncaught') ? '' : 'Uncaught '}${message}${location}`);
+            });
+            window.addEventListener('unhandledrejection', event => {
+                recordAnboLog('error', `Unhandled promise rejection: ${safeStringify(event.reason)}`);
+            });
             syncAnboLogs();
             })();
             "#,
@@ -474,10 +542,17 @@ fn spawn_browser_child(
             let kind = match payload.event() {
                 PageLoadEvent::Started => {
                     event_loading.store(true, Ordering::Release);
+                    event_navigation_generation.fetch_add(1, Ordering::AcqRel);
+                    if let Ok(mut pending_url) = event_pending_url.lock() {
+                        *pending_url = Some(payload.url().to_string());
+                    }
                     "navigated"
                 }
                 PageLoadEvent::Finished => {
                     event_loading.store(false, Ordering::Release);
+                    if let Ok(mut pending_url) = event_pending_url.lock() {
+                        *pending_url = None;
+                    }
                     "loaded"
                 }
             };
@@ -1050,6 +1125,16 @@ pub async fn browser_embed_update(
         .filter(|entry| entry.instance_id == instance_id && entry.owner_id == owner_id)
         .map(|entry| entry.loading.clone())
         .unwrap_or_else(|| Arc::new(AtomicBool::new(true)));
+    let pending_url = active
+        .get(&tab_id)
+        .filter(|entry| entry.instance_id == instance_id && entry.owner_id == owner_id)
+        .map(|entry| entry.pending_url.clone())
+        .unwrap_or_else(|| Arc::new(Mutex::new(None)));
+    let navigation_generation = active
+        .get(&tab_id)
+        .filter(|entry| entry.instance_id == instance_id && entry.owner_id == owner_id)
+        .map(|entry| entry.navigation_generation.clone())
+        .unwrap_or_else(|| Arc::new(AtomicU64::new(0)));
     *local_root
         .lock()
         .map_err(|_| "browser local-file policy is unavailable".to_string())? = resolved_local_root;
@@ -1060,6 +1145,8 @@ pub async fn browser_embed_update(
             owner_id: owner_id.clone(),
             local_root: local_root.clone(),
             loading: loading.clone(),
+            pending_url: pending_url.clone(),
+            navigation_generation,
         },
     );
     drop(active);
@@ -1079,9 +1166,16 @@ pub async fn browser_embed_update(
             let current = webview.url().map_err(|error| error.to_string())?;
             if current != target {
                 loading.store(true, Ordering::Release);
-                webview
-                    .navigate(target)
-                    .map_err(|error| error.to_string())?;
+                if let Ok(mut pending) = pending_url.lock() {
+                    *pending = Some(target.to_string());
+                }
+                if let Err(error) = webview.navigate(target) {
+                    loading.store(false, Ordering::Release);
+                    if let Ok(mut pending) = pending_url.lock() {
+                        *pending = None;
+                    }
+                    return Err(error.to_string());
+                }
             }
         }
         webview
@@ -1147,9 +1241,11 @@ pub async fn browser_embed_navigate(
     };
     if let Some(webview) = webview {
         set_active_loading(tab_id, true);
-        webview
-            .navigate(target)
-            .map_err(|error| error.to_string())?;
+        set_active_pending_url(tab_id, Some(target.to_string()));
+        if let Err(error) = webview.navigate(target) {
+            set_active_loading(tab_id, false);
+            return Err(error.to_string());
+        }
     }
     Ok(())
 }
@@ -1182,7 +1278,15 @@ pub async fn browser_embed_dispatch(
     };
     if action == "reload" {
         set_active_loading(tab_id, true);
-        return webview.reload().map_err(|error| error.to_string());
+        set_active_pending_url(
+            tab_id,
+            webview.url().ok().map(|current| current.to_string()),
+        );
+        if let Err(error) = webview.reload() {
+            set_active_loading(tab_id, false);
+            return Err(error.to_string());
+        }
+        return Ok(());
     }
     let script = match action.as_str() {
         "back" => "history.back()",
@@ -1195,7 +1299,11 @@ pub async fn browser_embed_dispatch(
     } else {
         set_active_loading(tab_id, true);
     }
-    webview.eval(script).map_err(|error| error.to_string())
+    if let Err(error) = webview.eval(script) {
+        set_active_loading(tab_id, false);
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]

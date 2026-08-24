@@ -187,7 +187,10 @@ describe("AI browser tools", () => {
   });
 
   it("handles key press actions on the active preview", async () => {
-    await run("browser_press_key", { key: "Enter" });
+    await run("browser_press_key", {
+      key: "Enter",
+      observationTimeout: 750,
+    });
 
     expect(invokeMock).toHaveBeenCalledWith(
       "browser_automation_handle_action",
@@ -196,6 +199,7 @@ describe("AI browser tools", () => {
           action: "press_key",
           tabId: 42,
           key: "Enter",
+          observationTimeout: 750,
         }),
       },
     );

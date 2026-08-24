@@ -1367,6 +1367,7 @@ export default function App() {
             automationActive: automationMethod !== null,
             automationMethod,
             loading: tab.loading === true,
+            pendingUrl: null,
           },
         ];
       });
