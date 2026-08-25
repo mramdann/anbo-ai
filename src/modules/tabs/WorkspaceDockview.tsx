@@ -353,6 +353,15 @@ function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
         </DropdownMenu>
       ) : null}
 
+      <NewTabMenu
+        onNew={context.onNew}
+        onNewBlock={context.onNewBlock}
+        onNewPrivate={context.onNewPrivate}
+        onNewBrowser={context.onNewBrowser}
+        onNewEditor={context.onNewEditor}
+        onNewGitGraph={context.onNewGitGraph}
+        onLaunchAgents={context.onLaunchAgents}
+      />
       <Button
         type="button"
         variant="ghost"
@@ -372,15 +381,6 @@ function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
           strokeWidth={1.8}
         />
       </Button>
-      <NewTabMenu
-        onNew={context.onNew}
-        onNewBlock={context.onNewBlock}
-        onNewPrivate={context.onNewPrivate}
-        onNewBrowser={context.onNewBrowser}
-        onNewEditor={context.onNewEditor}
-        onNewGitGraph={context.onNewGitGraph}
-        onLaunchAgents={context.onLaunchAgents}
-      />
     </div>
   );
 }
