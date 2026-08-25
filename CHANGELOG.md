@@ -12,6 +12,12 @@
 
 * **settings:** keep agent controls within bundle budget ([2c42cab](https://github.com/mramdann/anbo-ai/commit/2c42cab7a472cfc833d3fb7c1b59199e62ce4812))
 
+
+### User Interface
+
+* **settings:** group coding agent notifications and CLI configuration in the Agents tab ([e4a8cae](https://github.com/mramdann/anbo-ai/commit/e4a8cae))
+* **settings:** move browser automation controls into Agent runtime ([c32c9a1](https://github.com/mramdann/anbo-ai/commit/c32c9a1))
+
 ## [0.18.0](https://github.com/mramdann/anbo-ai/compare/v0.17.3...v0.18.0) (2026-08-24)
 
 
