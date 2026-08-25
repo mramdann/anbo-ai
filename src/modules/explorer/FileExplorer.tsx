@@ -6,6 +6,12 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { cn } from "@/lib/utils";
+import type { GitStatusSnapshot } from "@/modules/ai/lib/native";
+import { isBrowserPreviewablePath } from "@/modules/browser";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import { useGlobalShortcuts } from "@/modules/shortcuts";
+import type { TerminalPathDropTarget } from "@/modules/terminal";
 import {
   FileAddIcon,
   Folder01Icon,
@@ -25,27 +31,21 @@ import {
   useRef,
   useState,
 } from "react";
-import { cn } from "@/lib/utils";
 import { ExplorerSearch, type ExplorerSearchHandle } from "./ExplorerSearch";
-import { EntryRow, PendingRow, StatusRow, type RowActions } from "./TreeRow";
 import { InlineInput } from "./InlineInput";
 import {
   copyToClipboard,
   relativePath,
   revealInFinder,
 } from "./lib/contextActions";
+import type { GitStatusCode } from "./lib/gitStatusUtils";
 import { fileIconUrl, folderIconUrl } from "./lib/iconResolver";
 import { COMPACT_CONTENT, COMPACT_ITEM } from "./lib/menuItemClass";
 import { useExplorerDnd } from "./lib/useExplorerDnd";
 import { useExplorerFileDrop } from "./lib/useExplorerFileDrop";
 import { useFileTree } from "./lib/useFileTree";
 import { useGitStatus } from "./lib/useGitStatus";
-import type { GitStatusCode } from "./lib/gitStatusUtils";
-import { isBrowserPreviewablePath } from "@/modules/browser";
-import { useGlobalShortcuts } from "@/modules/shortcuts";
-import { usePreferencesStore } from "@/modules/settings/preferences";
-import type { GitStatusSnapshot } from "@/modules/ai/lib/native";
-import type { TerminalPathDropTarget } from "@/modules/terminal";
+import { EntryRow, PendingRow, type RowActions, StatusRow, TreeIcon } from "./TreeRow";
 
 export type FileExplorerHandle = {
   focus: () => void;
@@ -89,9 +89,15 @@ type Row =
       gitStatusCode: GitStatusCode | null;
     }
   | { kind: "pending"; key: string; depth: number; pendingKind: "file" | "dir" }
-  | { kind: "status"; key: string; depth: number; tone: "muted" | "error"; message: string };
+  | {
+      kind: "status";
+      key: string;
+      depth: number;
+      tone: "muted" | "error";
+      message: string;
+    };
 
-const ROW_HEIGHT = 24;
+const ROW_HEIGHT = 22;
 const OVERSCAN = 8;
 
 function basename(path: string): string {
@@ -215,7 +221,11 @@ export const FileExplorer = memo(
     const scrollRef = useRef<HTMLDivElement>(null);
 
     const { rows, entryIndexByPath } = useMemo(() => {
-      if (!rootPath) return { rows: [] as Row[], entryIndexByPath: new Map<string, number>() };
+      if (!rootPath)
+        return {
+          rows: [] as Row[],
+          entryIndexByPath: new Map<string, number>(),
+        };
       return buildRows(rootPath, tree, lookupGitStatus);
       // `tree` is intentionally omitted: its identity changes every render, but
       // the listed fields are the only inputs buildRows actually reads.
@@ -280,7 +290,8 @@ export const FileExplorer = memo(
     });
 
     const dropTargetDir = dnd.dropTargetDir ?? fileDrop.externalTargetDir;
-    const rootIsDropTarget = dropTargetDir != null && dropTargetDir === rootPath;
+    const rootIsDropTarget =
+      dropTargetDir != null && dropTargetDir === rootPath;
     useEffect(() => {
       if (!dropTargetDir || dropTargetDir === rootPath) return;
       if (tree.expanded.has(dropTargetDir)) return;
@@ -313,7 +324,10 @@ export const FileExplorer = memo(
 
     const lastSyncedActivePathRef = useRef<string | null>(null);
     useEffect(() => {
-      if (!activeFilePath || activeFilePath === lastSyncedActivePathRef.current) {
+      if (
+        !activeFilePath ||
+        activeFilePath === lastSyncedActivePathRef.current
+      ) {
         return;
       }
       if (!entryIndexByPath.has(activeFilePath)) return;
@@ -485,7 +499,11 @@ export const FileExplorer = memo(
           );
         case "status":
           return (
-            <StatusRow depth={row.depth} message={row.message} tone={row.tone} />
+            <StatusRow
+              depth={row.depth}
+              message={row.message}
+              tone={row.tone}
+            />
           );
       }
     };
@@ -499,17 +517,15 @@ export const FileExplorer = memo(
       >
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border/60 px-2">
           <span
-            className="flex flex-1 items-center truncate text-xs font-medium text-foreground/80"
+            className="flex flex-1 min-w-0 items-center gap-1.5 truncate text-xs font-medium text-foreground/80"
             title={rootPath}
           >
             <img
               src={folderIconUrl(basename(rootPath), false)}
               alt=""
-              height={15}
-              width={15}
-              className="mx-1.5"
+              className="size-4 shrink-0 object-contain"
             />
-            {basename(rootPath)}
+            <span className="truncate">{basename(rootPath)}</span>
           </span>
 
           <Button
@@ -575,7 +591,7 @@ export const FileExplorer = memo(
                 ref={scrollRef}
                 data-explorer-drop=""
                 className={cn(
-                  "min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]",
+                  "panel-scrollbar min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]",
                   rootIsDropTarget &&
                     "rounded-sm ring-1 ring-inset ring-primary/50",
                 )}
@@ -600,18 +616,17 @@ export const FileExplorer = memo(
               >
                 {pendingAtRoot ? (
                   <div
-                    className="flex h-6 w-full min-w-0 items-center gap-2 px-1.5 text-[13px]"
+                    className="flex h-[22px] w-full min-w-0 items-center gap-1.5 px-1.5 text-[13px]"
                     style={{ paddingLeft: 6 }}
                   >
                     <span className="size-3.5 shrink-0" />
-                    <img
+                    <TreeIcon
                       src={
                         pendingAtRoot.kind === "dir"
                           ? folderIconUrl("", false)
                           : fileIconUrl("untitled")
                       }
-                      alt=""
-                      className="size-4 shrink-0 opacity-70"
+                      muted
                     />
                     <InlineInput
                       initial=""
@@ -743,7 +758,9 @@ export const FileExplorer = memo(
                   <ContextMenuItem
                     className={COMPACT_ITEM}
                     onSelect={() =>
-                      void copyToClipboard(relativePath(rootPath, menuTarget.path))
+                      void copyToClipboard(
+                        relativePath(rootPath, menuTarget.path),
+                      )
                     }
                   >
                     Copy Relative Path

@@ -726,6 +726,31 @@ html *::-webkit-scrollbar {
   display: none;
 }
 
+.panel-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--foreground) 28%, transparent)
+    transparent;
+}
+
+.panel-scrollbar::-webkit-scrollbar {
+  display: block;
+  width: 3px;
+  height: 0;
+}
+
+.panel-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.panel-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--foreground) 28%, transparent);
+}
+
+.panel-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--foreground) 48%, transparent);
+}
+
 /* Motion tokens. Reduced-motion zeroes the durations as a global snap. */
 :root {
   --dur-fast: 160ms;

@@ -23,7 +23,7 @@ import {
   useState,
 } from "react";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { fileIconUrl } from "./lib/iconResolver";
+import { fileIconUrl, folderIconUrl } from "./lib/iconResolver";
 import { copyToClipboard, revealInFinder } from "./lib/contextActions";
 import { COMPACT_CONTENT, COMPACT_ITEM } from "./lib/menuItemClass";
 import { cn } from "@/lib/utils";
@@ -240,7 +240,9 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
               </div>
             ) : (
               results.map((hit, index) => {
-                const url = hit.is_dir ? null : fileIconUrl(hit.name);
+                const url = hit.is_dir
+                  ? folderIconUrl(hit.name, false)
+                  : fileIconUrl(hit.name);
                 const isSelected = index === selectedIndex;
                 return (
                   <ContextMenu key={hit.path}>
@@ -260,16 +262,18 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
                         )}
                         title={hit.path}
                       >
-                        {url ? (
-                          <img src={url} alt="" className="size-3.5 shrink-0" />
-                        ) : (
-                          <HugeiconsIcon
-                            icon={Folder01Icon}
-                            size={13}
-                            strokeWidth={1.75}
-                            className="shrink-0 text-muted-foreground"
-                          />
-                        )}
+                        <span className="flex size-4 shrink-0 items-center justify-center">
+                          {url ? (
+                            <img src={url} alt="" className="size-4 shrink-0 object-contain" />
+                          ) : (
+                            <HugeiconsIcon
+                              icon={Folder01Icon}
+                              size={14}
+                              strokeWidth={1.75}
+                              className="shrink-0 text-muted-foreground"
+                            />
+                          )}
+                        </span>
                         <span className="truncate">{hit.name}</span>
                         <span className="ml-auto truncate text-[10px] text-muted-foreground">
                           {hit.rel}

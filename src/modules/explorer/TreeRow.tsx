@@ -31,6 +31,31 @@ export type EntryRowProps = {
   gitignored?: boolean;
 };
 
+export function TreeIcon({
+  src,
+  muted = false,
+}: {
+  src: string;
+  isDir?: boolean;
+  expanded?: boolean;
+  muted?: boolean;
+}) {
+  return (
+    <span className="flex size-4 shrink-0 items-center justify-center">
+      {src ? (
+        <img
+          src={src}
+          alt=""
+          className={cn(
+            "size-4 shrink-0 object-contain",
+            muted && "opacity-70",
+          )}
+        />
+      ) : null}
+    </span>
+  );
+}
+
 function EntryRowImpl(props: EntryRowProps) {
   const {
     path,
@@ -55,15 +80,11 @@ function EntryRowImpl(props: EntryRowProps) {
   if (isRenaming) {
     return (
       <div
-        className="flex h-6 w-full min-w-0 items-center gap-2 px-1.5 text-[13px]"
+        className="flex h-[22px] w-full min-w-0 items-center gap-1.5 px-1.5 text-[13px]"
         style={{ paddingLeft }}
       >
         <span className="size-3.5 shrink-0" />
-        {iconUrl ? (
-          <img src={iconUrl} alt="" className="size-4 shrink-0" />
-        ) : (
-          <span className="size-4 shrink-0" />
-        )}
+        <TreeIcon src={iconUrl} isDir={isDir} expanded={isExpanded} />
         <InlineInput
           initial={name}
           onCommit={actions.commitRename}
@@ -87,7 +108,7 @@ function EntryRowImpl(props: EntryRowProps) {
       onClick={handleClick}
       onDoubleClick={() => !isDir && actions.beginRename(path)}
       className={cn(
-        "group flex h-6 w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm px-1.5 text-left text-[13px] transition-colors hover:bg-accent/70",
+        "group flex h-[22px] w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-sm px-1.5 text-left text-[13px] transition-colors hover:bg-accent/70",
         isSelected
           ? "bg-accent text-foreground"
           : gitignored
@@ -107,14 +128,10 @@ function EntryRowImpl(props: EntryRowProps) {
           />
         ) : null}
       </span>
-      {iconUrl ? (
-        <img src={iconUrl} alt="" className="size-4 shrink-0" />
-      ) : (
-        <span className="size-4 shrink-0" />
-      )}
+      <TreeIcon src={iconUrl} isDir={isDir} expanded={isExpanded} />
       <span
         className={cn(
-          "min-w-0 flex-1 truncate",
+          "min-w-0 flex-1 truncate leading-none",
           !isSelected &&
             !gitignored &&
             gitStatusCode &&
@@ -144,16 +161,16 @@ export function PendingRow({
 }: PendingRowProps) {
   return (
     <div
-      className="flex h-6 w-full min-w-0 items-center gap-2 px-1.5 text-[13px]"
+      className="flex h-[22px] w-full min-w-0 items-center gap-1.5 px-1.5 text-[13px]"
       style={{ paddingLeft: 6 + depth * 12 }}
     >
       <span className="size-3.5 shrink-0" />
-      <img
+      <TreeIcon
         src={
           kind === "dir" ? folderIconUrl("", false) : fileIconUrl("untitled")
         }
-        alt=""
-        className="size-4 shrink-0 opacity-70"
+        isDir={kind === "dir"}
+        muted
       />
       <InlineInput
         initial=""
@@ -177,7 +194,7 @@ export function StatusRow({
   return (
     <div
       className={cn(
-        "h-6 truncate px-2 text-[11px] leading-6",
+        "h-[22px] truncate px-2 text-[11px] leading-[22px]",
         tone === "error" ? "text-destructive" : "text-muted-foreground",
       )}
       style={{ paddingLeft: 6 + depth * 12 + 18 }}

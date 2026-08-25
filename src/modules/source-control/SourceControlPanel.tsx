@@ -917,7 +917,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
               >
                 <div
                   ref={scrollRef}
-                  className="h-full overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]"
+                  className="panel-scrollbar h-full overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]"
                 >
                   <div
                     style={{

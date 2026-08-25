@@ -1,0 +1,287 @@
+import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { readFileSync, writeFileSync } from "node:fs";
+
+const require = createRequire(import.meta.url);
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const themePackage = require.resolve("material-icon-theme/package.json");
+const theme = JSON.parse(
+  readFileSync(resolve(dirname(themePackage), "dist/material-icons.json"), "utf8"),
+);
+const iconify = require("@iconify-json/material-icon-theme/icons.json");
+
+const commonFileExtensions = [
+  "astro",
+  "bat",
+  "bash",
+  "c",
+  "cjs",
+  "clj",
+  "cljs",
+  "conf",
+  "cpp",
+  "cs",
+  "css",
+  "csv",
+  "dart",
+  "dockerfile",
+  "env",
+  "erl",
+  "ex",
+  "exs",
+  "fs",
+  "fsx",
+  "gif",
+  "go",
+  "gql",
+  "gradle",
+  "graphql",
+  "gz",
+  "h",
+  "hpp",
+  "hrl",
+  "htm",
+  "html",
+  "ico",
+  "ini",
+  "java",
+  "jpeg",
+  "jpg",
+  "js",
+  "json",
+  "jsonc",
+  "jsx",
+  "kt",
+  "kts",
+  "less",
+  "lock",
+  "log",
+  "lua",
+  "md",
+  "mdx",
+  "mjs",
+  "php",
+  "png",
+  "prisma",
+  "properties",
+  "proto",
+  "ps1",
+  "py",
+  "r",
+  "rb",
+  "rs",
+  "sass",
+  "scala",
+  "scss",
+  "sh",
+  "sol",
+  "sql",
+  "svelte",
+  "svg",
+  "swift",
+  "tar",
+  "toml",
+  "ts",
+  "tsx",
+  "txt",
+  "vue",
+  "wasm",
+  "webp",
+  "xml",
+  "yaml",
+  "yml",
+  "zsh",
+];
+
+const commonFileNames = [
+  ".dockerignore",
+  ".editorconfig",
+  ".env",
+  ".env.example",
+  ".gitattributes",
+  ".gitignore",
+  ".npmrc",
+  ".prettierignore",
+  "biome.json",
+  "bun.lock",
+  "cargo.lock",
+  "cargo.toml",
+  "changelog.md",
+  "code_of_conduct.md",
+  "docker-compose.yml",
+  "dockerfile",
+  "eslint.config.js",
+  "license",
+  "package-lock.json",
+  "package.json",
+  "pnpm-lock.yaml",
+  "readme.md",
+  "tailwind.config.js",
+  "tsconfig.json",
+  "vite.config.ts",
+  "yarn.lock",
+];
+
+const commonFolderNames = [
+  ".agents",
+  ".anbo",
+  ".claude",
+  ".codex",
+  ".gemini",
+  ".git",
+  ".github",
+  ".opencode",
+  ".vscode",
+  "__tests__",
+  "api",
+  "app",
+  "apps",
+  "assets",
+  "audio",
+  "backend",
+  "bin",
+  "build",
+  "cache",
+  "client",
+  "cmd",
+  "components",
+  "config",
+  "controllers",
+  "core",
+  "coverage",
+  "css",
+  "database",
+  "desktop",
+  "dist",
+  "docs",
+  "features",
+  "fonts",
+  "frontend",
+  "hooks",
+  "icons",
+  "images",
+  "internal",
+  "lib",
+  "libs",
+  "logs",
+  "migrations",
+  "mobile",
+  "models",
+  "node_modules",
+  "out",
+  "packages",
+  "pages",
+  "public",
+  "project",
+  "resources",
+  "routes",
+  "scripts",
+  "server",
+  "shared",
+  "src",
+  "src-tauri",
+  "store",
+  "styles",
+  "target",
+  "temp",
+  "test",
+  "tests",
+  "tmp",
+  "types",
+  "utils",
+  "vendor",
+  "video",
+  "views",
+];
+
+function iconSlug(definition) {
+  const iconPath = theme.iconDefinitions[definition]?.iconPath;
+  if (!iconPath) return null;
+  return iconPath.split("/").at(-1)?.replace(/\.svg$/i, "").replaceAll("_", "-") ?? null;
+}
+
+const selected = new Set(["document", "folder-base", "folder-base-open"]);
+for (const extension of commonFileExtensions) {
+  const slug = iconSlug(theme.fileExtensions[extension]);
+  if (slug) selected.add(slug);
+}
+for (const name of commonFileNames) {
+  const slug = iconSlug(theme.fileNames[name]);
+  if (slug) selected.add(slug);
+}
+for (const name of commonFolderNames) {
+  for (const map of [theme.folderNames, theme.folderNamesExpanded]) {
+    const slug = iconSlug(map[name]);
+    if (slug) selected.add(slug);
+  }
+}
+
+const icons = Object.fromEntries(
+  [...selected]
+    .sort()
+    .flatMap((slug) => {
+      const icon = iconify.icons[slug];
+      if (!icon) return [];
+      const item = { ...icon };
+      for (const [name, def] of Object.entries(theme.iconDefinitions)) {
+        if (iconSlug(name) === slug && def.iconPath) {
+          const svgPath = resolve(dirname(themePackage), "dist", def.iconPath);
+          try {
+            const svgContent = readFileSync(svgPath, "utf8");
+            const match = svgContent.match(
+              /viewBox="([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)"/,
+            );
+            if (match) {
+              const left = Number(match[1]);
+              const top = Number(match[2]);
+              const width = Number(match[3]);
+              const height = Number(match[4]);
+              if (left !== 0) item.left = left;
+              if (top !== 0) item.top = top;
+              item.width = width;
+              item.height = height;
+            }
+          } catch {}
+          break;
+        }
+      }
+      return [[slug, item]];
+    }),
+);
+
+function filteredMap(source) {
+  return Object.fromEntries(
+    Object.entries(source)
+      .map(([key, definition]) => [key, iconSlug(definition)])
+      .filter((entry) => entry[1] && icons[entry[1]])
+      .sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+const output = `/* Generated by scripts/generate-material-icon-set.mjs. */
+export const materialIconSet = ${JSON.stringify(
+  {
+    width: iconify.width ?? 24,
+    height: iconify.height ?? 24,
+    icons,
+  },
+  null,
+  2,
+)} as const;
+
+export const materialFileNames: Record<string, string> = ${JSON.stringify(filteredMap(theme.fileNames), null, 2)};
+
+export const materialFileExtensions: Record<string, string> = ${JSON.stringify(filteredMap(theme.fileExtensions), null, 2)};
+
+export const materialLanguageIds: Record<string, string> = ${JSON.stringify(filteredMap(theme.languageIds), null, 2)};
+
+export const materialFolderNames: Record<string, string> = ${JSON.stringify(filteredMap(theme.folderNames), null, 2)};
+
+export const materialFolderNamesExpanded: Record<string, string> = ${JSON.stringify(filteredMap(theme.folderNamesExpanded), null, 2)};
+`;
+
+writeFileSync(
+  resolve(projectRoot, "src/modules/explorer/lib/materialIconSet.ts"),
+  output,
+);
