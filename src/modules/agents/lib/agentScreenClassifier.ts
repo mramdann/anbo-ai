@@ -18,7 +18,7 @@ const ATTENTION_PATTERNS = [
 ];
 
 const WORKING_PATTERNS = [
-  /esc to interrupt/i,
+  /esc\s*to\s*interrupt/i,
   /esc\s+interrup/i,
   /working \(\d+s/i,
   /(?:^|\n)\s*(?:[*•]\s*)?working\.{2,}/i,
@@ -27,7 +27,9 @@ const WORKING_PATTERNS = [
   /(?:^|\n)\s*[*] (?:build|plan|explore)\b/i,
   /(?:^|\n)\s*(?:running|searching|fetching|thinking)\.{3}/i,
   /generating\.{0,3}/i,
+  /loading\.{0,3}/i,
   /waiting\.{0,3}/i,
+  /\b(?:accomplishing|unfurling|churning|brewing|thinking|working|running|searching|fetching|generating|loading|waiting)(?:\.{3}|\u2026)/i,
 ];
 
 // These markers are transient controls rendered by a live TUI. Several CLIs
@@ -35,13 +37,20 @@ const WORKING_PATTERNS = [
 // decide that the newer-looking prompt means the turn has settled. Completed
 // summaries such as "Thought for 12s" intentionally do not belong here.
 const LIVE_WORKING_PATTERNS = [
-  /esc to interrupt/i,
+  /esc\s*to\s*interrupt/i,
   /esc\s+interrup/i,
   /working \(\d+s[^\n]*(?:interrupt|esc)/i,
   /(?:^|\n)\s*(?:[*•]\s*)?working\.{2,}/i,
   /(?:^|\n)\s*(?:running|searching|fetching|thinking)\.{3}/i,
   /generating\.{0,3}/i,
+  /loading\.{0,3}/i,
   /waiting\.{0,3}/i,
+  /\b(?:accomplishing|unfurling|churning|brewing|thinking|working|running|searching|fetching|generating|loading|waiting)(?:\.{3}|\u2026)/i,
+];
+
+const ANTIGRAVITY_BACKGROUND_TASK_PATTERNS = [
+  /(?:^|\n)\s*[*●]\s*\[\d{1,2}:\d{2}:\d{2}\][^\n]*\brunning\b/i,
+  /\b\d+\s+task\(s\)[^\n]*\/tasks\b/i,
 ];
 
 function tail(value: string): string {
@@ -76,9 +85,14 @@ export function classifyAgentScreen(
 ): AgentScreenState {
   if (!buffer) return null;
   const screen = tail(buffer);
+  const agentKind = normalizedAgent(agent);
   const attentionAt = lastAnyIndex(screen, ATTENTION_PATTERNS);
   const workingAt = lastAnyIndex(screen, WORKING_PATTERNS);
   const liveWorkingAt = lastAnyIndex(screen, LIVE_WORKING_PATTERNS);
+  const antigravityBackgroundTaskAt = lastAnyIndex(
+    screen,
+    ANTIGRAVITY_BACKGROUND_TASK_PATTERNS,
+  );
   const resolvedAttentionAt = lastAnyIndex(screen, [
     /user\s*answered/i,
     /permission\s+(?:granted|approved)/i,
@@ -89,9 +103,13 @@ export function classifyAgentScreen(
   let openCodeCompletionAt = -1;
   let settledAt = -1;
 
-  switch (normalizedAgent(agent)) {
+  switch (agentKind) {
     case "claude":
-      if (/(?:shortcuts|manual mode|Claude Code)/i.test(screen)) {
+      if (
+        /(?:shortcuts|manual\s*mode|Claude\s*Code|bypass\s*permissions\s*on|for\s*agents)/i.test(
+          screen,
+        )
+      ) {
         readyAt = lastPatternIndex(screen, /(?:\u276f|>)(?!\s*\d+\.)[^\n]*/u);
       }
       // Claude leaves the previous "esc to interrupt" row in scrollback after
@@ -149,10 +167,30 @@ export function classifyAgentScreen(
   if (attentionAt >= readyAt && attentionAt >= workingAt && attentionAt >= 0) {
     return "attention";
   }
+  // Antigravity restores its normal prompt while a background tool is still
+  // running. Its live task footer is the authoritative state in that layout;
+  // the mounted `? for shortcuts` row is not a completion boundary.
+  if (agentKind === "antigravity" && antigravityBackgroundTaskAt >= 0) {
+    return "working";
+  }
   // A TUI repaint can erase or merge the final prompt glyph while leaving a
   // completed-turn summary intact. When that boundary is newer than every
   // working marker, stale spinner rows must not keep the agent busy forever.
   if (settledAt > workingAt) return "ready";
+  // Claude keeps its input prompt mounted below live progress. In that layout
+  // a fresh `Thought for ...` row is older on-screen than the prompt even
+  // though the turn is still running. Claude always paints one of the settled
+  // summaries above when a normal turn actually completes, so progress newer
+  // than the last summary must win over the persistent prompt. Without this,
+  // every repaint can alternate working -> finished and flood notifications.
+  if (
+    agentKind === "claude" &&
+    workingAt >= 0 &&
+    workingAt > settledAt &&
+    screen.length - workingAt <= 2_400
+  ) {
+    return "working";
+  }
   if (
     liveWorkingAt >= 0 &&
     liveWorkingAt > attentionAt &&

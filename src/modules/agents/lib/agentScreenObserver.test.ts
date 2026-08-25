@@ -42,6 +42,24 @@ describe("AgentScreenObserver", () => {
     expect(observer.poll(() => ready, 2_700)[0]?.kind).toBe("finished");
   });
 
+  it("gives Antigravity time to start before treating its mounted prompt as finished", () => {
+    const observer = new AgentScreenObserver();
+    const antigravityReady =
+      "Antigravity CLI\n>\n? for shortcuts\nGemini 3.7 Flash · high";
+    observer.start(10, 20, "antigravity");
+    observer.poll(() => antigravityReady, 0);
+    observer.poll(() => antigravityReady, 100);
+    observer.input(10, "\r", 200);
+
+    observer.poll(() => antigravityReady, 300);
+    expect(observer.poll(() => antigravityReady, 400)).toEqual([]);
+    expect(observer.poll(() => antigravityReady, 1_300)).toEqual([]);
+    expect(observer.poll(() => antigravityReady, 11_200)).toEqual([]);
+    expect(observer.poll(() => antigravityReady, 11_300)[0]?.kind).toBe(
+      "finished",
+    );
+  });
+
   it("does not let a persistent ready prompt overwrite a new working turn", () => {
     const observer = new AgentScreenObserver();
     observer.start(10, 20, "codex");
@@ -59,5 +77,44 @@ describe("AgentScreenObserver", () => {
 
     expect(observer.poll(() => ready, 2_000)).toEqual([]);
     expect(observer.poll(() => ready, 2_200)[0]?.kind).toBe("finished");
+  });
+
+  it("does not emit repeated Claude finishes while thought progress is live", () => {
+    const observer = new AgentScreenObserver();
+    const claudeReady =
+      "Claude Code\n\u276f \nmanual mode on Â· ? for shortcuts";
+    observer.start(10, 20, "claude");
+    observer.poll(() => claudeReady, 0);
+    observer.poll(() => claudeReady, 100);
+    observer.input(10, "\r", 200);
+
+    const active = [
+      "Claude Code",
+      "\u276f previous request",
+      "answer",
+      "Brewed for 4s",
+      "\u276f long running request",
+      "Thought for 6s",
+      "Web Search(latest information)",
+      "Thought for 9s",
+      "\u276f ",
+      "manual mode on Â· ? for shortcuts",
+    ].join("\n");
+    expect(observer.poll(() => active, 1_400)).toEqual([]);
+    expect(observer.poll(() => active, 1_600)).toEqual([]);
+    expect(observer.poll(() => active, 4_000)).toEqual([]);
+    expect(observer.poll(() => active, 6_000)).toEqual([]);
+
+    const settled = `${active}\nfinal answer\nBrewed for 10s`;
+    expect(observer.poll(() => settled, 6_200)).toEqual([]);
+    expect(observer.poll(() => settled, 6_400)[0]?.kind).toBe("finished");
+
+    // Repainting the same completed turn as active and settled again must not
+    // retain another finished notification without new terminal input.
+    expect(observer.poll(() => active, 6_600)).toEqual([]);
+    expect(observer.poll(() => active, 6_800)[0]?.kind).toBe("working");
+    expect(observer.poll(() => settled, 7_000)).toEqual([]);
+    expect(observer.poll(() => settled, 7_200)).toEqual([]);
+    expect(observer.poll(() => settled, 8_800)[0]?.kind).toBe("ready");
   });
 });

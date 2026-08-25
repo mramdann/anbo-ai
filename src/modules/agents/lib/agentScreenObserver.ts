@@ -24,11 +24,21 @@ type Entry = {
   workingUntil: number;
   readySince: number | null;
   sawWorkingForTurn: boolean;
+  turn: number;
+  finishedTurn: number;
 };
 
 const STABLE_POLLS = 2;
 const MIN_WORKING_MS = 1_000;
 const READY_WITHOUT_PROGRESS_MS = 1_500;
+const ANTIGRAVITY_READY_WITHOUT_PROGRESS_MS = 10_000;
+
+function readyWithoutProgressMs(agent: string): number {
+  const normalized = agent.replace(/^custom:/, "").toLowerCase();
+  return normalized === "antigravity" || normalized === "agy"
+    ? ANTIGRAVITY_READY_WITHOUT_PROGRESS_MS
+    : READY_WITHOUT_PROGRESS_MS;
+}
 
 export class AgentScreenObserver {
   private readonly entries = new Map<number, Entry>();
@@ -46,6 +56,8 @@ export class AgentScreenObserver {
       workingUntil: 0,
       readySince: null,
       sawWorkingForTurn: false,
+      turn: 0,
+      finishedTurn: -1,
     });
     return { leafId, ptyId, agent, kind: "working" };
   }
@@ -67,6 +79,7 @@ export class AgentScreenObserver {
     if (!entry || !/[\r\n]/.test(data)) return null;
     const wasAttention = entry.phase === "attention";
     entry.hasTurn = true;
+    entry.turn += 1;
     entry.workingUntil = now + MIN_WORKING_MS;
     entry.candidate = null;
     entry.stablePolls = 0;
@@ -117,7 +130,9 @@ export class AgentScreenObserver {
       if (candidate !== "ready" || now < entry.workingUntil) continue;
       if (entry.hasTurn && !entry.sawWorkingForTurn) {
         entry.readySince ??= now;
-        if (now - entry.readySince < READY_WITHOUT_PROGRESS_MS) continue;
+        if (now - entry.readySince < readyWithoutProgressMs(entry.agent)) {
+          continue;
+        }
       }
       if (entry.phase === "ready") continue;
       entry.phase = "ready";
@@ -131,7 +146,15 @@ export class AgentScreenObserver {
         entry.settledOnce = true;
         entry.readySince = null;
         entry.sawWorkingForTurn = false;
-        signals.push(this.signal(entry, "finished"));
+        if (entry.finishedTurn === entry.turn) {
+          // A TUI repaint can briefly look active again after the same turn
+          // already settled. Keep the UI ready without retaining another
+          // finished notification for a turn that received no new input.
+          signals.push(this.signal(entry, "ready"));
+        } else {
+          entry.finishedTurn = entry.turn;
+          signals.push(this.signal(entry, "finished"));
+        }
       } else {
         signals.push(this.signal(entry, "ready"));
       }

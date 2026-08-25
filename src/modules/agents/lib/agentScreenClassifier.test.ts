@@ -36,6 +36,15 @@ describe("classifyAgentScreen", () => {
     expect(classifyAgentScreen("custom:qwen", "qwen\n> ")).toBeNull();
   });
 
+  it("detects Claude when its compact TUI removes spaces from the header", () => {
+    expect(
+      classifyAgentScreen(
+        "claude",
+        "ClaudeCodev2.1.245\nag/gemini-pro-agent\n\u276f \nbypasspermissionson (shift+tabtocycle) \u00b7 \u2190foragents",
+      ),
+    ).toBe("ready");
+  });
+
   it("keeps OpenCode working while its TUI spinner is repainting", () => {
     expect(
       classifyAgentScreen(
@@ -77,6 +86,44 @@ describe("classifyAgentScreen", () => {
       classifyAgentScreen(
         "antigravity",
         "Antigravity CLI\n> carikan berita\nWorking...\n>\nesc to cancel\nGemini 3.7 Flash · high",
+      ),
+    ).toBe("working");
+  });
+
+  it("treats Antigravity Loading plus its mounted prompt as active work", () => {
+    expect(
+      classifyAgentScreen(
+        "antigravity",
+        [
+          "Antigravity CLI",
+          "> long running request",
+          "Bash(powershell -Command Start-Sleep -Seconds 20)",
+          "Perintah sedang berjalan di latar belakang.",
+          "Loading...",
+          ">",
+          "esc to cancel",
+          "Gemini 3.7 Flash · high",
+        ].join("\n"),
+      ),
+    ).toBe("working");
+  });
+
+  it("keeps Antigravity working while its restored prompt shows a background task", () => {
+    expect(
+      classifyAgentScreen(
+        "antigravity",
+        [
+          "Antigravity CLI",
+          "> run a long command",
+          'Bash(powershell -Command "Start-Sleep -Seconds 20")',
+          "Perintah sedang dijalankan di latar belakang.",
+          "────────────────────────────────────────",
+          ">",
+          "────────────────────────────────────────",
+          '  ● [15:32:02] powershell -Command "Start-Sleep -Seconds 20" running',
+          "────────────────────────────────────────",
+          "? for shortcuts · Gemini 3.7 Flash · high · 1 task(s) · /tasks",
+        ].join("\n"),
       ),
     ).toBe("working");
   });
@@ -130,6 +177,42 @@ describe("classifyAgentScreen", () => {
         ].join("\n"),
       ),
     ).toBe("ready");
+  });
+
+  it("keeps Claude working when fresh thought progress is above its mounted prompt", () => {
+    expect(
+      classifyAgentScreen(
+        "claude",
+        [
+          "Claude Code v2.1.241",
+          "\u276f previous request",
+          "answer",
+          "Brewed for 4s",
+          "\u276f long running request",
+          "Thought for 6s",
+          "Web Search(latest information)",
+          "Thought for 9s",
+          "\u276f ",
+          "manual mode on Â· ? for shortcuts",
+        ].join("\n"),
+      ),
+    ).toBe("working");
+  });
+
+  it("keeps compact Claude TUI progress with Unicode ellipsis working", () => {
+    expect(
+      classifyAgentScreen(
+        "claude",
+        [
+          "ClaudeCodev2.1.245",
+          "\u276f long running request",
+          "Bash(powershell -Command Start-Sleep -Seconds 15)",
+          "Unfurling\u2026 (12s · 32 tokens)",
+          "\u276f ",
+          "bypasspermissionson (shift+tabtocycle) · esctointerrupt · \u21901agent",
+        ].join("\n"),
+      ),
+    ).toBe("working");
   });
 
   it("uses a newer completion boundary when repaint merges the final prompt", () => {
