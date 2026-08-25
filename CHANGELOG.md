@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.19.0](https://github.com/mramdann/anbo-ai/compare/v0.18.2...v0.19.0) (2026-08-25)
+
+
+### Features
+
+* **ui:** refine explorer and sidebar navigation ([fe08862](https://github.com/mramdann/anbo-ai/commit/fe0886214004a7f2024abe1dec99f096368bca9e))
+
+
+### Bug Fixes
+
+* **agent:** prevent duplicate delegated input ([e62be65](https://github.com/mramdann/anbo-ai/commit/e62be65687e94134fe5da091656cb299e3998b48))
+* **tabs:** place fullscreen control last ([f2c21b2](https://github.com/mramdann/anbo-ai/commit/f2c21b2dab24c0dc2744e1b7e228610bd8637299))
+
 ## [0.18.2](https://github.com/mramdann/anbo-ai/compare/v0.18.1...v0.18.2) (2026-08-25)
 
 
