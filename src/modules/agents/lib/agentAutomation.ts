@@ -6,21 +6,21 @@ import type {
 import { redactSensitive } from "@/modules/ai/lib/redact";
 import type { SpaceMeta } from "@/modules/spaces/lib/store";
 import type { Tab, TerminalTab } from "@/modules/tabs";
-import { isAgentScreenReady } from "./agentScreenClassifier";
 import type {
   AgentAutomationRequest,
   AgentAutomationResponse,
 } from "./agentAutomationProtocol";
 import { agentIdFor } from "./agentIdentity";
+import { isAgentScreenReady } from "./agentScreenClassifier";
 
-export {
-  AGENT_REQUEST_EVENT,
-  AGENT_RESPONSE_EVENT,
-} from "./agentAutomationProtocol";
 export type {
   AgentAutomationMethod,
   AgentAutomationRequest,
   AgentAutomationResponse,
+} from "./agentAutomationProtocol";
+export {
+  AGENT_REQUEST_EVENT,
+  AGENT_RESPONSE_EVENT,
 } from "./agentAutomationProtocol";
 export { agentIdFor } from "./agentIdentity";
 
@@ -275,6 +275,7 @@ export async function submitAgentMessage(
   message: string,
   verifyInput = false,
   submitDelayMs = SUBMIT_DELAY_MS,
+  inputReadyTimeoutMs = INPUT_READY_TIMEOUT_MS,
 ): Promise<boolean> {
   const before = verifyInput ? getBuffer(leafId) : null;
   if (!write(leafId, message)) return false;
@@ -287,7 +288,7 @@ export async function submitAgentMessage(
         )
         .replace(/[\s\u0000-\u001f\u007f]+/g, "");
     const needle = compactEcho(message).slice(-120);
-    const deadline = Date.now() + INPUT_READY_TIMEOUT_MS;
+    const deadline = Date.now() + inputReadyTimeoutMs;
     let observed = false;
     while (Date.now() < deadline) {
       await new Promise<void>((resolve) =>
@@ -304,6 +305,7 @@ export async function submitAgentMessage(
       }
     }
     if (!observed) {
+      write(leafId, "\x03");
       return false;
     }
   } else {
@@ -731,6 +733,14 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         `${current.agent.name} did not reach a stable input prompt before timeout`,
       );
     }
+    if (deduplicationKey) {
+      messageIds.set(deduplicationKey, Date.now());
+      while (messageIds.size > MAX_DEDUPLICATION_KEYS) {
+        const oldest = messageIds.keys().next().value;
+        if (oldest === undefined) break;
+        messageIds.delete(oldest);
+      }
+    }
     const submitted = await submitAgentMessage(
       deps.write,
       deps.getBuffer,
@@ -739,11 +749,12 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       !isAntigravity &&
         (acceptsInitialSpawnMessage || normalizedCli === "codex"),
       isAntigravity ? ANTIGRAVITY_SUBMIT_DELAY_MS : SUBMIT_DELAY_MS,
+      timeout,
     );
     if (!submitted) {
       return error(
         "agent_not_ready",
-        `${current.agent.name} did not render the input before timeout; retry after the CLI reaches its prompt`,
+        `${current.agent.name} input cancelled`,
       );
     }
     initialSpawnLeaves.delete(current.leafId);
@@ -755,14 +766,6 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       const oldest = sendAcknowledgements.keys().next().value;
       if (oldest === undefined) break;
       sendAcknowledgements.delete(oldest);
-    }
-    if (deduplicationKey) {
-      messageIds.set(deduplicationKey, Date.now());
-      while (messageIds.size > MAX_DEDUPLICATION_KEYS) {
-        const oldest = messageIds.keys().next().value;
-        if (oldest === undefined) break;
-        messageIds.delete(oldest);
-      }
     }
     return {
       result: {

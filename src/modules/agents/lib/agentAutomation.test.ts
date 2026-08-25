@@ -440,6 +440,63 @@ describe("agent messages", () => {
     service.dispose();
   });
 
+  it("cancels unverified input and reserves its message id before a retry", async () => {
+    vi.useFakeTimers();
+    const message = "delegate this task once";
+    const writes: string[] = [];
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab()] as Tab[],
+      getSpaces: () => [space()],
+      getSessions: () => ({
+        101: session({ agent: "codex", name: "Spica" }),
+      }),
+      getActiveTabId: () => null,
+      getBuffer: () =>
+        "OpenAI Codex\nmodel: gpt-5.6-sol /model to change\n\nâ€º Ask Codex to do anything",
+      write: (_leafId, data) => {
+        writes.push(data);
+        return true;
+      },
+      spawn: () => null,
+      subscribeSessions: () => () => {},
+    });
+
+    const first = service.handle({
+      requestId: "unverified-first",
+      method: "agent_send",
+      params: {
+        workspace: "space-a",
+        agentId: "spica-codex:10",
+        message,
+        messageId: "delegate-once",
+        timeout: 100,
+        waitForReady: false,
+      },
+    });
+    await vi.advanceTimersByTimeAsync(125);
+    await expect(first).resolves.toMatchObject({
+      error: { code: "agent_not_ready" },
+    });
+    expect(writes).toEqual([message, "\x03"]);
+
+    await expect(
+      service.handle({
+        requestId: "unverified-retry",
+        method: "agent_send",
+        params: {
+          workspace: "space-a",
+          agentId: "spica-codex:10",
+          message,
+          messageId: "delegate-once",
+          timeout: 100,
+          waitForReady: false,
+        },
+      }),
+    ).resolves.toMatchObject({ error: { code: "duplicate_message" } });
+    expect(writes).toEqual([message, "\x03"]);
+    service.dispose();
+  });
+
   it("accepts the next message after terminal output acknowledges a fast turn", async () => {
     vi.useFakeTimers();
     let buffer = "Claude Code\nmanual mode on\nâ¯ ";
@@ -678,8 +735,7 @@ describe("agent spawning", () => {
     vi.useFakeTimers();
     let tabs: Tab[] = [];
     let sessions: Record<number, AgentSession> = {};
-    let buffer =
-      "Antigravity CLI\nSigning in...\nPS C:\\work\\alpha>";
+    let buffer = "Antigravity CLI\nSigning in...\nPS C:\\work\\alpha>";
     const writes: Array<[number, string]> = [];
     const service = createAgentAutomationService({
       getTabs: () => tabs,
