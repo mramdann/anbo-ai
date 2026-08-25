@@ -114,7 +114,7 @@ describe("AgentScreenObserver", () => {
     expect(observer.poll(() => active, 6_600)).toEqual([]);
     expect(observer.poll(() => active, 6_800)[0]?.kind).toBe("working");
     expect(observer.poll(() => settled, 7_000)).toEqual([]);
-    expect(observer.poll(() => settled, 7_200)).toEqual([]);
-    expect(observer.poll(() => settled, 8_800)[0]?.kind).toBe("ready");
+    expect(observer.poll(() => settled, 7_200)[0]?.kind).toBe("ready");
+    expect(observer.poll(() => settled, 8_800)).toEqual([]);
   });
 });

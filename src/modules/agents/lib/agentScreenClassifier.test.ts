@@ -199,7 +199,7 @@ describe("classifyAgentScreen", () => {
     ).toBe("working");
   });
 
-  it("keeps compact Claude TUI progress with Unicode ellipsis working", () => {
+  it("keeps compact Claude TUI progress footer working", () => {
     expect(
       classifyAgentScreen(
         "claude",
