@@ -29,6 +29,7 @@ import {
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   setAgentNotifications,
+  setBrowserAutomationEnabled,
   setCustomInstructions,
 } from "@/modules/settings/store";
 import { SettingRow } from "@/settings/components/SettingRow";
@@ -56,6 +57,9 @@ const ICON_OPTIONS: AgentIconId[] = [
 export function AgentsSection() {
   const customInstructions = usePreferencesStore((s) => s.customInstructions);
   const agentNotifications = usePreferencesStore((s) => s.agentNotifications);
+  const browserAutomationEnabled = usePreferencesStore(
+    (s) => s.browserAutomationEnabled,
+  );
   const customAgents = useAgentsStore((s) => s.customAgents);
   const activeAgentId = useAgentsStore((s) => s.activeId);
   const setActiveAgentId = useAgentsStore((s) => s.setActiveId);
@@ -92,6 +96,19 @@ export function AgentsSection() {
           <Switch
             checked={agentNotifications}
             onCheckedChange={(value) => void setAgentNotifications(value)}
+          />
+        </SettingRow>
+        <SettingRow
+          title="Browser automation"
+          description="Allow agents connected through Anbo MCP to control native browser tabs. Available on Windows only."
+        >
+          <Switch
+            checked={browserAutomationEnabled}
+            onCheckedChange={(value) =>
+              void setBrowserAutomationEnabled(value).catch((error) => {
+                console.error("browser automation toggle failed", error);
+              })
+            }
           />
         </SettingRow>
         <TerminalAgentsSettings />
