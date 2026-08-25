@@ -84,14 +84,14 @@ export function AgentsSection() {
     <div className="flex flex-col gap-7">
       <SectionHeader
         title="Agents"
-        description="AI personas, CLI launchers, notifications, and reusable snippets."
+        description="Configure AI personas, CLI tools, notifications, and snippets."
       />
 
       <section className="flex flex-col gap-2">
         <Label>Agent runtime</Label>
         <SettingRow
           title="Coding agent notifications"
-          description="Alert when a terminal coding agent needs your input or finishes. Desktop notification when Anbo is unfocused, in-app otherwise."
+          description="Alert when a terminal agent needs input or finishes."
         >
           <Switch
             checked={agentNotifications}
@@ -100,7 +100,7 @@ export function AgentsSection() {
         </SettingRow>
         <SettingRow
           title="Browser automation"
-          description="Allow agents connected through Anbo MCP to control native browser tabs. Available on Windows only."
+          description="Allow agents through Anbo MCP to control native browser tabs. Windows only."
         >
           <Switch
             checked={browserAutomationEnabled}

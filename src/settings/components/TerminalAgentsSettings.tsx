@@ -84,11 +84,11 @@ export function TerminalAgentsSettings() {
           <div className="min-w-0">
             <div className="text-[12.5px] font-medium">AI agents CLI</div>
             <div className="text-[10.5px] text-muted-foreground">
-              Commands available from the New Tab agent launcher.
+              Commands shown in the New Tab launcher.
             </div>
           </div>
           <span className="flex shrink-0 items-center gap-2 text-[10.5px] text-muted-foreground">
-            {count} {count === 1 ? "agent" : "agents"}
+            {count} agents
             <HugeiconsIcon
               icon={ArrowDown01Icon}
               size={13}
@@ -104,7 +104,7 @@ export function TerminalAgentsSettings() {
       <CollapsibleContent className="anbo-collapsible-content">
         <div className="flex items-center justify-between gap-3 border-b border-border/60 px-3 py-2">
           <p className="text-[10.5px] leading-relaxed text-muted-foreground">
-            Edit built-in start commands or add another command-line agent.
+            Edit built-in commands or add a CLI agent.
           </p>
           <Button
             type="button"
