@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.18.1](https://github.com/mramdann/anbo-ai/compare/v0.18.0...v0.18.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* **workspace:** authorize roots before activation ([e3be4e3](https://github.com/mramdann/anbo-ai/commit/e3be4e35ecd156c24aebd404a89b350fb1a84082))
+
+
+### Performance Improvements
+
+* **settings:** keep agent controls within bundle budget ([2c42cab](https://github.com/mramdann/anbo-ai/commit/2c42cab7a472cfc833d3fb7c1b59199e62ce4812))
+
 ## [0.18.0](https://github.com/mramdann/anbo-ai/compare/v0.17.3...v0.18.0) (2026-08-24)
 
 
