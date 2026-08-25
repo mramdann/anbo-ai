@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.18.2](https://github.com/mramdann/anbo-ai/compare/v0.18.1...v0.18.2) (2026-08-25)
+
+
+### Bug Fixes
+
+* **agents:** prevent premature completion alerts ([47a815e](https://github.com/mramdann/anbo-ai/commit/47a815e150ae31c4497441ec8baf626fc8729022))
+
+
+### Performance Improvements
+
+* **agents:** keep status detection within budget ([76793a1](https://github.com/mramdann/anbo-ai/commit/76793a1e4d16e5dbe76fa217ec2ed046223b59bc))
+
 ## [0.18.1](https://github.com/mramdann/anbo-ai/compare/v0.18.0...v0.18.1) (2026-08-25)
 
 

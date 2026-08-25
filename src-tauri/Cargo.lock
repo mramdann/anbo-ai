@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "anbo"
-version = "0.18.1" # x-release-please-version
+version = "0.18.2" # x-release-please-version
 dependencies = [
  "base64 0.23.1",
  "bytes",
