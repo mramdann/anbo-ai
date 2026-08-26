@@ -6,6 +6,7 @@ import {
   type PaneNode,
   pinLeafAgentResumeSession,
   rearmLeafAgentResume,
+  replaceLeafAgentResume,
   swapLeafInDirection,
 } from "@/modules/terminal/lib/panes";
 import { describe, expect, it } from "vitest";
@@ -45,6 +46,31 @@ describe("pinLeafAgentResumeSession", () => {
         discoveryStartedAt: 1234,
       }),
     ).toBe(tree);
+  });
+
+  it("replaces stale resume metadata when a different CLI starts", () => {
+    const tree: PaneNode = {
+      kind: "leaf",
+      id: 1,
+      agentResume: {
+        agent: "claude",
+        command: "claude",
+        armed: true,
+        sessionId: "00000000-0000-4000-8000-000000000001",
+      },
+    };
+    const codexResume = {
+      agent: "codex" as const,
+      command: "codex",
+      armed: false,
+      discoveryStartedAt: 1234,
+    };
+
+    expect(replaceLeafAgentResume(tree, 1, codexResume)).toEqual({
+      kind: "leaf",
+      id: 1,
+      agentResume: codexResume,
+    });
   });
 
   it("pins a discovered session id and arms the selected leaf", () => {

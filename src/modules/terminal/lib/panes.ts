@@ -159,6 +159,29 @@ export function adoptLeafAgentResume(
 }
 
 /**
+ * Replace the resume descriptor when a terminal leaf starts a different CLI
+ * family after its previous agent has exited. Unlike adoption, this
+ * intentionally drops the previous agent's session metadata.
+ */
+export function replaceLeafAgentResume(
+  n: PaneNode,
+  id: PaneId,
+  resume: AgentResumeState,
+): PaneNode {
+  if (isLeaf(n)) {
+    if (n.id !== id) return n;
+    return { ...n, agentResume: resume };
+  }
+  let changed = false;
+  const children = n.children.map((child) => {
+    const next = replaceLeafAgentResume(child, id, resume);
+    if (next !== child) changed = true;
+    return next;
+  });
+  return changed ? { ...n, children } : n;
+}
+
+/**
  * Insert a new leaf next to `targetId` in direction `dir`.
  *
  * If the target's enclosing split already runs in `dir`, the new leaf is

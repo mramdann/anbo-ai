@@ -228,6 +228,7 @@ export default function App() {
     deactivateAgentResume,
     rearmAgentResume,
     adoptAgentResume,
+    replaceAgentResume,
     adoptAgentIdentity,
     newPrivateTab,
     openFileTab,
@@ -852,13 +853,19 @@ export default function App() {
         .filter((tab) => tab.kind === "terminal")
         .flatMap((tab) => collectAgentResumeLeaves(tab.paneTree))
         .find((leaf) => leaf.id === leafId);
-      if (existing && existing.resume.agent !== agent) return;
       const discoveryStartedAt = Math.max(0, Date.now() - 2_000);
       const manualResume = createManualAgentResumeState(
         agent,
         discoveryStartedAt,
       );
-      if (!existing && (!manualResume || target.agent)) return;
+      if (!manualResume) return;
+      const changesAgentFamily =
+        (existing !== undefined && existing.resume.agent !== agent) ||
+        (target.agent !== undefined && target.agent.launcherId !== agent);
+      if (changesAgentFamily) {
+        resumedAgentLeavesRef.current.delete(leafId);
+        requestedAgentDiscoveryLeavesRef.current.delete(leafId);
+      }
       if (manualResume) {
         const launcher = findAgentLauncher(manualResume.agent);
         if (launcher) {
@@ -873,9 +880,11 @@ export default function App() {
       const generation =
         (agentDiscoveryGenerationRef.current.get(leafId) ?? 0) + 1;
       agentDiscoveryGenerationRef.current.set(leafId, generation);
-      if (existing) {
+      if (existing?.resume.agent === agent) {
         rearmAgentResume(leafId, agent, discoveryStartedAt);
-      } else if (manualResume) {
+      } else if (changesAgentFamily) {
+        replaceAgentResume(leafId, manualResume);
+      } else {
         adoptAgentResume(leafId, manualResume);
       }
       if (sessionId) {
@@ -891,6 +900,7 @@ export default function App() {
       adoptAgentResume,
       pinAgentResumeSession,
       rearmAgentResume,
+      replaceAgentResume,
     ],
   );
   const handleAgentSettled = useCallback((leafId: number) => {

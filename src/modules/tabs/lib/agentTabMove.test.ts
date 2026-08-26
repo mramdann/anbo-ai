@@ -113,6 +113,25 @@ describe("agent tab creation", () => {
     ]);
   });
 
+  it("replaces the callsign and icon when the same leaf starts another CLI", () => {
+    const claude = agentTab(1, "a", "Claude");
+    const [transitioned] = adoptDetectedAgentIdentity([claude], 101, {
+      launcherId: "codex",
+      icon: "codex",
+      label: "Codex",
+    });
+
+    expect(transitioned).toMatchObject({
+      title: "Codex",
+      agent: {
+        launcherId: "codex",
+        icon: "codex",
+        label: "Codex",
+        name: "Codex",
+      },
+    });
+  });
+
   it("creates one independent single-leaf tab per requested instance", () => {
     const tabs = createAgentTerminalTabs({
       spaceId: "a",

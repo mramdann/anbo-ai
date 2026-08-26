@@ -23,6 +23,7 @@ import {
   pinLeafAgentResumeSession,
   rearmLeafAgentResume,
   removeLeaf,
+  replaceLeafAgentResume,
   type SplitDir,
   setLeafCwd as setLeafCwdInTree,
   siblingLeafOf,
@@ -285,12 +286,10 @@ export function adoptDetectedAgentIdentity(
 ): Tab[] {
   const target = tabs.find(
     (tab) =>
-      tab.kind === "terminal" &&
-      !tab.private &&
-      !tab.agent &&
-      hasLeaf(tab.paneTree, leafId),
+      tab.kind === "terminal" && !tab.private && hasLeaf(tab.paneTree, leafId),
   );
   if (target?.kind !== "terminal") return tabs;
+  if (target.agent?.launcherId === agent.launcherId) return tabs;
   const occupied = occupiedNamesInSpace(tabs, target.spaceId, target.id);
   const [name] = allocateAgentTabNames(agent, 1, occupied);
   return tabs.map((tab) =>
@@ -848,6 +847,21 @@ export function useTabs(initial?: Partial<TerminalTab>) {
             return tab;
           }
           const paneTree = adoptLeafAgentResume(tab.paneTree, leafId, resume);
+          return paneTree === tab.paneTree ? tab : { ...tab, paneTree };
+        }),
+      );
+    },
+    [],
+  );
+
+  const replaceAgentResume = useCallback(
+    (leafId: number, resume: AgentResumeState) => {
+      setTabs((current) =>
+        current.map((tab) => {
+          if (tab.kind !== "terminal" || !hasLeaf(tab.paneTree, leafId)) {
+            return tab;
+          }
+          const paneTree = replaceLeafAgentResume(tab.paneTree, leafId, resume);
           return paneTree === tab.paneTree ? tab : { ...tab, paneTree };
         }),
       );
@@ -1669,6 +1683,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     deactivateAgentResume,
     rearmAgentResume,
     adoptAgentResume,
+    replaceAgentResume,
     adoptAgentIdentity,
     newPrivateTab,
     openFileTab,
