@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.19.1](https://github.com/mramdann/anbo-ai/compare/v0.19.0...v0.19.1) (2026-08-26)
+
+
+### Bug Fixes
+
+* **agent:** replace stale identity when CLI changes ([52ed6c0](https://github.com/mramdann/anbo-ai/commit/52ed6c0721aaadb9eff6f12408fc75c26442c3e4))
+* **spaces:** preserve explicit disclosure state ([f290b11](https://github.com/mramdann/anbo-ai/commit/f290b116cd9e1cb97f7ef480ae4cb744074ebb4d))
+* **spaces:** show scrollbar for overflowing workspace list ([0724513](https://github.com/mramdann/anbo-ai/commit/0724513f61a123717666300828572b521efec5fd))
+* **terminal:** repair parked renderer on reveal ([7b93b6f](https://github.com/mramdann/anbo-ai/commit/7b93b6fef4cb2b9ea9e767dac1939acdd4f30942))
+* **window:** stabilize restore after display changes ([5d97513](https://github.com/mramdann/anbo-ai/commit/5d97513074f791284cc2c4faac12b2a348501b55))
+
 ## [0.19.0](https://github.com/mramdann/anbo-ai/compare/v0.18.2...v0.19.0) (2026-08-25)
 
 
