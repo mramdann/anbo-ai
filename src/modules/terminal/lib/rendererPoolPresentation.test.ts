@@ -18,4 +18,10 @@ describe("terminal window restore", () => {
     expect(source).toContain("bridge?.kickPty");
     expect(source).toContain("slot.term.refresh");
   });
+
+  it("repairs the WebGL atlas after a parked terminal becomes visible", () => {
+    expect(source).toContain("scheduleRevealRepair(slot, leafId)");
+    expect(source).toContain("slot.webglAddon?.clearTextureAtlas()");
+    expect(source).toContain("slot.currentLeafId !== leafId || slot.parked");
+  });
 });

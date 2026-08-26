@@ -72,6 +72,7 @@ export type Slot = {
   webglReapTimer: ReturnType<typeof setTimeout> | null;
   slotReapTimer: ReturnType<typeof setTimeout> | null;
   unhideRaf: number | null;
+  revealRepairRaf: number | null;
   settledFitRaf: number | null;
   lastCols: number;
   lastRows: number;
@@ -337,6 +338,7 @@ function createSlot(): Slot {
     webglReapTimer: null,
     slotReapTimer: null,
     unhideRaf: null,
+    revealRepairRaf: null,
     settledFitRaf: null,
     lastCols: term.cols,
     lastRows: term.rows,
@@ -536,6 +538,7 @@ function discardRetention(slot: Slot): void {
 
 function bindSlot(slot: Slot, p: AcquireParams): void {
   const fast = slot.retainedLeafId === p.leafId;
+  const wasParked = slot.parked;
   const stale =
     !slot.webglAddon ||
     slot.parked ||
@@ -546,6 +549,7 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
   slot.lastUsedAt = performance.now();
 
   cancelPendingUnhide(slot);
+  cancelRevealRepair(slot);
   cancelWebglReap(slot);
   cancelSlotReap(slot);
   unparkSlotHost(slot);
@@ -632,6 +636,7 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
       } catch {}
     }
     if (adapter?.isLeafFocused(p.leafId)) slot.term.focus();
+    if (wasParked) scheduleRevealRepair(slot, p.leafId);
   } else {
     scheduleUnhide(slot, stale || hadWebgl);
   }
@@ -663,6 +668,38 @@ function cancelPendingUnhide(slot: Slot): void {
     cancelAnimationFrame(slot.unhideRaf);
     slot.unhideRaf = null;
   }
+}
+
+function scheduleRevealRepair(slot: Slot, leafId: number): void {
+  cancelRevealRepair(slot);
+  slot.revealRepairRaf = requestAnimationFrame(() => {
+    slot.revealRepairRaf = null;
+    if (slot.currentLeafId !== leafId || slot.parked) return;
+    const container = slot.host.parentElement;
+    if (container && canFitTerminal(container)) {
+      slot.fitAddon.fit();
+      slot.lastW = container.clientWidth;
+      slot.lastH = container.clientHeight;
+      if (
+        slot.term.cols !== slot.lastCols ||
+        slot.term.rows !== slot.lastRows
+      ) {
+        slot.lastCols = slot.term.cols;
+        slot.lastRows = slot.term.rows;
+        adapter?.resolveLeaf(leafId)?.resizePty(slot.lastCols, slot.lastRows);
+      }
+    }
+    try {
+      slot.webglAddon?.clearTextureAtlas();
+      slot.term.refresh(0, slot.term.rows - 1);
+    } catch {}
+  });
+}
+
+function cancelRevealRepair(slot: Slot): void {
+  if (slot.revealRepairRaf === null) return;
+  cancelAnimationFrame(slot.revealRepairRaf);
+  slot.revealRepairRaf = null;
 }
 
 function rewireSlot(slot: Slot, p: AcquireParams): void {
@@ -781,6 +818,7 @@ function detachSlotFromLeaf(slot: Slot, retain: boolean): void {
   slot.ptyTimer = null;
 
   cancelPendingUnhide(slot);
+  cancelRevealRepair(slot);
   slot.host.style.visibility = "";
 
   slot.currentLeafId = null;
@@ -792,6 +830,7 @@ function detachSlotFromLeaf(slot: Slot, retain: boolean): void {
 // display:none makes xterm's IntersectionObserver pause rendering while the
 // buffer keeps parsing writes; visibility:hidden would not (geometry remains).
 function parkSlotHost(slot: Slot): void {
+  cancelRevealRepair(slot);
   if (slot.parked) return;
   slot.parked = true;
   slot.host.style.display = "none";
@@ -851,6 +890,7 @@ function disposeSlot(slot: Slot): void {
   cancelSlotReap(slot);
   cancelWebglReap(slot);
   cancelPendingUnhide(slot);
+  cancelRevealRepair(slot);
   if (slot.settledFitRaf !== null) {
     cancelAnimationFrame(slot.settledFitRaf);
     slot.settledFitRaf = null;
@@ -1121,7 +1161,9 @@ export function parkLeafSlot(leafId: number): void {
 export function refreshLeafSlot(leafId: number): void {
   const slot = slots.find((s) => s.currentLeafId === leafId);
   if (!slot) return;
+  const wasParked = slot.parked;
   cancelWebglReap(slot);
+  cancelRevealRepair(slot);
   unparkSlotHost(slot);
   if (usePreferencesStore.getState().terminalWebglEnabled && !slot.webglAddon) {
     attachWebgl(slot);
@@ -1131,6 +1173,7 @@ export function refreshLeafSlot(leafId: number): void {
   if (!container || !canFitTerminal(container)) {
     slot.lastW = -1;
     slot.lastH = -1;
+    if (wasParked) scheduleRevealRepair(slot, leafId);
     return;
   }
   if (
@@ -1149,6 +1192,7 @@ export function refreshLeafSlot(leafId: number): void {
   try {
     slot.term.refresh(0, slot.term.rows - 1);
   } catch {}
+  if (wasParked) scheduleRevealRepair(slot, leafId);
 }
 
 export function disposeLeafSlot(leafId: number): void {
