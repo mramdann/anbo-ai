@@ -46,6 +46,14 @@ fn packaged_smoke_ready(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
+#[tauri::command]
+fn refresh_window_presentation(app: tauri::AppHandle, window: tauri::Window) -> Result<(), String> {
+    let Some(webview) = app.get_webview(window.label()) else {
+        return Err("current webview is unavailable".to_string());
+    };
+    browser::embed::refresh_webview_presentation(&webview)
+}
+
 enum LaunchEntry {
     Dir(PathBuf),
     File(PathBuf),
@@ -379,6 +387,7 @@ pub fn run() {
             get_launch_dir,
             get_launch_files,
             packaged_smoke_ready,
+            refresh_window_presentation,
             open_settings_window,
             agent::agent_cleanup_hooks,
             agent::agent_configure_mcp,

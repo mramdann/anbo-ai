@@ -856,6 +856,9 @@ fn set_embed_z_order(webview: &tauri::Webview, visible: bool) -> Result<(), Stri
                 .map_err(|error| error.to_string())?;
                 if visible {
                     let _ = unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+                    if let Err(error) = unsafe { controller.NotifyParentWindowPositionChanged() } {
+                        log::warn!("could not refresh browser presentation: {error}");
+                    }
                 }
                 Ok(())
             })();
@@ -877,6 +880,23 @@ fn set_embed_presentation(webview: &tauri::Webview, visible: bool) -> Result<(),
     // its settled visible bounds; the empty region is a second paint guard.
     webview.show().map_err(|error| error.to_string())?;
     set_embed_z_order(webview, visible)
+}
+
+#[cfg(windows)]
+pub fn refresh_webview_presentation(webview: &tauri::Webview) -> Result<(), String> {
+    webview
+        .with_webview(|platform| {
+            let controller = platform.controller();
+            if let Err(error) = unsafe { controller.NotifyParentWindowPositionChanged() } {
+                log::warn!("could not refresh WebView2 presentation: {error}");
+            }
+        })
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(windows))]
+pub fn refresh_webview_presentation(_webview: &tauri::Webview) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(not(windows))]

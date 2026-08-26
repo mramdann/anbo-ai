@@ -103,7 +103,9 @@ describe("BrowserPane native layering", () => {
 
   it("keeps native browser children hidden until the restore cover is removed", () => {
     expect(src).toContain("isWindowPresentationCovered()");
-    expect(src).toContain("subscribeWindowPresentation(syncBounds)");
+    expect(src).toContain("subscribeWindowPresentation((next)");
+    expect(src).toContain('if (next === "ready") sentKeyRef.current = ""');
+    expect(src).toContain("isWindowPresentationDocumentVisible");
   });
 
   it("demotes hidden browsers immediately and preserves their visible bounds across hosts", () => {

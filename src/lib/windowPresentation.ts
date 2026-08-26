@@ -1,9 +1,10 @@
-import { isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export type WindowPresentationPhase = "ready" | "suspended" | "restoring";
 
 const RESTORE_IDLE_MS = 180;
+const REVEAL_FAILSAFE_MS = 750;
 const STABLE_VIEWPORT_CAPTURE_MS = 220;
 const STABLE_VIEWPORT_WIDTH = "--anbo-stable-viewport-width";
 const STABLE_VIEWPORT_HEIGHT = "--anbo-stable-viewport-height";
@@ -14,16 +15,65 @@ let coverVisible = false;
 let initialized = false;
 let restoreTimer: number | null = null;
 let stableViewportTimer: number | null = null;
-let revealFrame = 0;
+let cancelReveal: (() => void) | null = null;
 let stateCheck = 0;
 let stableViewportWidth = 0;
 let stableViewportHeight = 0;
+let nativeWindowFocused = false;
+
+type RevealScheduler = {
+  requestFrame: (callback: () => void) => number;
+  cancelFrame: (id: number) => void;
+  setFallback: (callback: () => void, delay: number) => number;
+  clearFallback: (id: number) => void;
+};
+
+export function schedulePresentationReveal(
+  scheduler: RevealScheduler,
+  reveal: () => void,
+  fallbackMs = REVEAL_FAILSAFE_MS,
+): () => void {
+  let firstFrame = 0;
+  let secondFrame = 0;
+  let fallback = 0;
+  let settled = false;
+
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    if (firstFrame) scheduler.cancelFrame(firstFrame);
+    if (secondFrame) scheduler.cancelFrame(secondFrame);
+    if (fallback) scheduler.clearFallback(fallback);
+    reveal();
+  };
+
+  fallback = scheduler.setFallback(finish, fallbackMs);
+  firstFrame = scheduler.requestFrame(() => {
+    firstFrame = 0;
+    secondFrame = scheduler.requestFrame(finish);
+  });
+
+  return () => {
+    if (settled) return;
+    settled = true;
+    if (firstFrame) scheduler.cancelFrame(firstFrame);
+    if (secondFrame) scheduler.cancelFrame(secondFrame);
+    if (fallback) scheduler.clearFallback(fallback);
+  };
+}
 
 export function shouldSuspendWindowPresentation(
   documentHidden: boolean,
   minimized: boolean,
+  nativeFocused: boolean,
 ): boolean {
-  return documentHidden || minimized;
+  return minimized || (documentHidden && !nativeFocused);
+}
+
+export function isWindowPresentationDocumentVisible(
+  documentVisible: boolean,
+): boolean {
+  return documentVisible || nativeWindowFocused;
 }
 
 export function isWindowPresentationBlocked(): boolean {
@@ -91,8 +141,8 @@ function scheduleStableViewportCapture(): void {
 function cancelRestore(): void {
   if (restoreTimer !== null) window.clearTimeout(restoreTimer);
   restoreTimer = null;
-  if (revealFrame) cancelAnimationFrame(revealFrame);
-  revealFrame = 0;
+  cancelReveal?.();
+  cancelReveal = null;
 }
 
 function notify(next: WindowPresentationPhase): void {
@@ -126,21 +176,28 @@ export function suspendWindowPresentation(): void {
 }
 
 function revealSettledWindow(): void {
-  publish("ready");
-  // Give Dockview, CodeMirror, xterm, and native browser subscribers two
-  // complete frames to consume the final window geometry before revealing it.
   window.dispatchEvent(new Event("resize"));
-  revealFrame = requestAnimationFrame(() => {
-    revealFrame = requestAnimationFrame(() => {
-      revealFrame = 0;
+  cancelReveal = schedulePresentationReveal(
+    {
+      requestFrame: (callback) => requestAnimationFrame(callback),
+      cancelFrame: (id) => cancelAnimationFrame(id),
+      setFallback: (callback, delay) => window.setTimeout(callback, delay),
+      clearFallback: (id) => window.clearTimeout(id),
+    },
+    () => {
+      cancelReveal = null;
+      if (phase !== "restoring") return;
       coverVisible = false;
       delete document.documentElement.dataset.windowPresentation;
       captureStableViewport();
-      // Native child webviews stay hidden until this final signal. They are
-      // outside the React stacking context, so the CSS cover cannot mask them.
-      notify("ready");
-    });
-  });
+      if (isTauri()) {
+        void invoke("refresh_window_presentation").catch((error) => {
+          console.warn("[anbo] could not refresh window presentation:", error);
+        });
+      }
+      publish("ready");
+    },
+  );
 }
 
 function scheduleRestore(): void {
@@ -155,11 +212,20 @@ function scheduleRestore(): void {
 
 async function syncNativeWindowState(): Promise<void> {
   const check = ++stateCheck;
-  const minimized = await getCurrentWindow()
-    .isMinimized()
-    .catch(() => false);
+  const appWindow = getCurrentWindow();
+  const [minimized, focused] = await Promise.all([
+    appWindow.isMinimized().catch(() => false),
+    appWindow.isFocused().catch(() => document.hasFocus()),
+  ]);
   if (check !== stateCheck) return;
-  if (shouldSuspendWindowPresentation(document.hidden, minimized)) {
+  nativeWindowFocused = focused && !minimized;
+  if (
+    shouldSuspendWindowPresentation(
+      document.hidden,
+      minimized,
+      nativeWindowFocused,
+    )
+  ) {
     suspendWindowPresentation();
   } else {
     scheduleRestore();
@@ -186,6 +252,8 @@ export function initializeWindowPresentation(): void {
   };
   window.addEventListener("resize", onViewportResize, { passive: true });
   void appWindow.onResized(() => void syncNativeWindowState());
+  void appWindow.onMoved(() => void syncNativeWindowState());
+  void appWindow.onScaleChanged(() => void syncNativeWindowState());
   void appWindow.onFocusChanged(() => void syncNativeWindowState());
   void syncNativeWindowState();
 }

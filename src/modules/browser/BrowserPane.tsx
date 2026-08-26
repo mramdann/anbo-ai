@@ -1,6 +1,7 @@
 import { IS_WINDOWS } from "@/lib/platform";
 import type { WorkspaceEnv } from "@/modules/workspace";
 import {
+  isWindowPresentationDocumentVisible,
   isWindowPresentationCovered,
   subscribeWindowPresentation,
 } from "@/lib/windowPresentation";
@@ -287,7 +288,9 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       const allowedUrl =
         isSupportedBrowserUrl(currentUrl) && !isSelfReferenceUrl(currentUrl);
       const canMeasure = canMeasureBrowserPane(
-        document.visibilityState === "visible" &&
+        isWindowPresentationDocumentVisible(
+          document.visibilityState === "visible",
+        ) &&
           !isWindowPresentationCovered(),
         allowedUrl,
         !!element,
@@ -380,7 +383,10 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       // Minimize can suspend animation frames before a queued layout callback
       // runs. Apply presentation transitions immediately so the native child
       // surface is parked before Windows starts composing the restore frame.
-      const unsubscribePresentation = subscribeWindowPresentation(syncBounds);
+      const unsubscribePresentation = subscribeWindowPresentation((next) => {
+        if (next === "ready") sentKeyRef.current = "";
+        syncBounds();
+      });
       return () => {
         resizeObserver.disconnect();
         unsubscribeLayout();
