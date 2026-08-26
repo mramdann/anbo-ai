@@ -270,7 +270,7 @@ export function SpaceSwitcher({
             <Kbd className="h-5 bg-muted/70 text-[11px]">{shortcut}</Kbd>
           )}
         </div>
-        <div className="-mx-0.5 max-h-[60vh] overflow-y-auto px-0.5">
+        <div className="panel-scrollbar -mx-0.5 max-h-[60vh] overflow-y-auto px-0.5 [scrollbar-gutter:stable]">
           {spaces.map((sp) => (
             <SpaceRow
               key={sp.id}
