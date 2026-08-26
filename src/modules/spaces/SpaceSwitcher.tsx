@@ -16,7 +16,7 @@ import {
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { InlineRename } from "./components/InlineRename";
 import { accentFor } from "./lib/spaceColor";
@@ -90,9 +90,7 @@ export function SpaceSwitcher({
   const rename = useSpaces((s) => s.rename);
   const shortcut = useShortcutLabel("space.overview");
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<Set<string>>(() =>
-    activeId ? new Set([activeId]) : new Set(),
-  );
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
   const drag = useRef<DragState | null>(null);
   const dropRef = useRef<DropTarget | null>(null);
@@ -123,13 +121,6 @@ export function SpaceSwitcher({
     dragging?.kind === "space"
       ? (spaces.find((s) => s.id === dragging.id) ?? null)
       : null;
-
-  useEffect(() => {
-    if (!open || !activeId) return;
-    setExpanded((prev) =>
-      prev.has(activeId) ? prev : new Set(prev).add(activeId),
-    );
-  }, [open, activeId]);
 
   const toggleExpand = (id: string) =>
     setExpanded((prev) => {

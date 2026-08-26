@@ -24,4 +24,10 @@ describe("SpaceSwitcher hover layout", () => {
       '<SpaceAvatar space={current} size="sm" active />',
     );
   });
+
+  it("changes expanded spaces only from the disclosure button", () => {
+    expect(source).toContain("useState<Set<string>>(() => new Set())");
+    expect(source).toContain("onToggle={() => toggleExpand(sp.id)}");
+    expect(source).not.toContain("new Set(prev).add(activeId)");
+  });
 });
