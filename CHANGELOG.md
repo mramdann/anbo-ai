@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.2](https://github.com/mramdann/anbo-ai/compare/v0.19.1...v0.19.2) (2026-08-26)
+
+
+### Bug Fixes
+
+* **agent:** restore sessions before discovery completes ([68bd09e](https://github.com/mramdann/anbo-ai/commit/68bd09e0cb0287e52e3a1a91c771557787585f80))
+* **windows:** prevent input deadlock after display changes ([7a6d36d](https://github.com/mramdann/anbo-ai/commit/7a6d36d8720a94f33d74374a481f36e7b312534f))
+
 ## [0.19.1](https://github.com/mramdann/anbo-ai/compare/v0.19.0...v0.19.1) (2026-08-26)
 
 
