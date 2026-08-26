@@ -21,6 +21,7 @@
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "check-version": "node scripts/check-version-sync.mjs",
+    "check:native-patches": "node scripts/check-native-patches.mjs",
     "check-types": "tsc --noEmit",
     "lint": "biome lint ./src",
     "lint:fix": "biome lint --write ./src",

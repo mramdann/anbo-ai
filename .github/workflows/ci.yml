@@ -28,6 +28,9 @@ jobs:
       - name: Check release versions
         run: pnpm check-version
 
+      - name: Check native dependency patches
+        run: pnpm check:native-patches
+
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level moderate
 
