@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildAgentLaunchCommand,
   buildAgentResumeCommand,
+  buildAgentRestoreCommand,
+  createAgentRestoreFallback,
   createAgentResumeStates,
   createManualAgentResumeState,
   normalizePersistedAgentResume,
@@ -32,6 +34,7 @@ describe("agent resume commands", () => {
       command,
       armed: false,
       discoveryStartedAt: 1234,
+      relaunchOnRestore: true,
     });
   });
 
@@ -52,6 +55,7 @@ describe("agent resume commands", () => {
       const [state] = createAgentResumeStates(agent, command, 1);
       expect(state?.sessionId).toBeUndefined();
       expect(state?.armed).toBe(false);
+      expect(state?.relaunchOnRestore).toBe(true);
       expect(buildAgentLaunchCommand(state, command)).toBe(command);
       if (!state) throw new Error("missing resume descriptor");
       expect(
@@ -69,6 +73,31 @@ describe("agent resume commands", () => {
       undefined,
       undefined,
     ]);
+  });
+
+  it("restores a sessionless live agent with its original launch command", () => {
+    expect(
+      buildAgentRestoreCommand({
+        agent: "claude",
+        command: "claude --model opus",
+        relaunchOnRestore: true,
+      }),
+    ).toBe("claude --model opus");
+    expect(
+      buildAgentRestoreCommand({ agent: "claude", command: "claude" }),
+    ).toBeNull();
+  });
+
+  it("migrates a legacy agent tab with the built-in fresh command", () => {
+    expect(createAgentRestoreFallback("antigravity")).toEqual({
+      agent: "antigravity",
+      command: "agy",
+      armed: true,
+      relaunchOnRestore: true,
+      resumeOnStart: true,
+    });
+    expect(createAgentRestoreFallback("grok")).toBeUndefined();
+    expect(createAgentRestoreFallback("custom:aider")).toBeUndefined();
   });
 
   it("does not claim unsupported or custom agents are resumable", () => {

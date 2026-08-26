@@ -127,6 +127,7 @@ export function rearmLeafAgentResume(
         agent: n.agentResume.agent,
         command: n.agentResume.command,
         armed: false,
+        relaunchOnRestore: true,
         discoveryStartedAt,
       },
     };

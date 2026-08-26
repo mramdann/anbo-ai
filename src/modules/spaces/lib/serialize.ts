@@ -1,4 +1,5 @@
 import {
+  createAgentRestoreFallback,
   normalizePersistedAgentResume,
   type PersistedAgentResume,
 } from "@/modules/agents/lib/resume";
@@ -15,6 +16,7 @@ import type {
   TerminalTab,
 } from "@/modules/tabs/lib/useTabs";
 import {
+  adoptLeafAgentResume,
   isLeaf,
   type PaneNode,
   type SplitDir,
@@ -56,10 +58,15 @@ function titleFromUrl(url: string): string {
 
 function serializeNode(node: PaneNode, activeLeafId: number): SerializedNode {
   if (isLeaf(node)) {
-    const agentResume =
-      node.agentResume?.armed === false
-        ? undefined
-        : normalizePersistedAgentResume(node.agentResume);
+    const persistedCandidate =
+      node.agentResume?.armed === false &&
+      !node.agentResume.relaunchOnRestore
+        ? {
+            agent: node.agentResume.agent,
+            command: node.agentResume.command,
+          }
+        : node.agentResume;
+    const agentResume = normalizePersistedAgentResume(persistedCandidate);
     return {
       kind: "leaf",
       ...(node.cwd !== undefined && { cwd: node.cwd }),
@@ -132,13 +139,20 @@ function hydrateNode(
   if (node.kind === "leaf") {
     const id = allocId();
     const agentResume = normalizePersistedAgentResume(node.agentResume);
+    const resumeOnStart = Boolean(
+      agentResume?.sessionId || agentResume?.relaunchOnRestore,
+    );
     if (node.active && acc.activeLeafId === null) acc.activeLeafId = id;
     return {
       kind: "leaf",
       id,
       ...(node.cwd !== undefined && { cwd: node.cwd }),
       ...(agentResume && {
-        agentResume: { ...agentResume, armed: true, resumeOnStart: true },
+        agentResume: {
+          ...agentResume,
+          armed: resumeOnStart,
+          ...(resumeOnStart && { resumeOnStart: true }),
+        },
       }),
     };
   }
@@ -179,6 +193,12 @@ function hydrateTab(
     case "terminal": {
       const { tree, activeLeafId, firstLeafCwd } = hydrateTree(s.tree, allocId);
       const agent = normalizeAgentTabIdentity(s.agent);
+      const fallback = agent
+        ? createAgentRestoreFallback(agent.launcherId)
+        : undefined;
+      const paneTree = fallback
+        ? adoptLeafAgentResume(tree, activeLeafId, fallback)
+        : tree;
       const title =
         s.customTitle ??
         agent?.name ??
@@ -190,7 +210,7 @@ function hydrateTab(
         cold: true,
         title,
         cwd: firstLeafCwd,
-        paneTree: tree,
+        paneTree,
         activeLeafId,
         ...(s.blocks && { blocks: true }),
         ...(s.customTitle !== undefined && { customTitle: s.customTitle }),

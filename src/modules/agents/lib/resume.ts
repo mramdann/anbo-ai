@@ -1,5 +1,9 @@
 import type { PaneNode } from "@/modules/terminal/lib/panes";
-import type { AgentInstanceCount, AgentLauncherId } from "./launcher";
+import {
+  AGENT_LAUNCHERS,
+  type AgentInstanceCount,
+  type AgentLauncherId,
+} from "./launcher";
 
 export type ResumableAgentId =
   | "claude"
@@ -12,6 +16,7 @@ export type PersistedAgentResume = {
   agent: ResumableAgentId;
   command: string;
   sessionId?: string;
+  relaunchOnRestore?: boolean;
 };
 
 export type AgentResumeState = PersistedAgentResume & {
@@ -88,6 +93,7 @@ export function createAgentResumeStates(
     armed: false,
     command,
     discoveryStartedAt: Date.now(),
+    relaunchOnRestore: true,
   }));
 }
 
@@ -122,6 +128,24 @@ export function createManualAgentResumeState(
     command,
     armed: false,
     discoveryStartedAt,
+    relaunchOnRestore: true,
+  };
+}
+
+export function createAgentRestoreFallback(
+  agent: AgentLauncherId,
+): AgentResumeState | undefined {
+  if (!isResumableAgentId(agent)) return undefined;
+  const command = AGENT_LAUNCHERS.find(
+    (launcher) => launcher.id === agent,
+  )?.defaultCommand;
+  if (!command || !canAttachSession(agent, command)) return undefined;
+  return {
+    agent,
+    command,
+    armed: true,
+    relaunchOnRestore: true,
+    resumeOnStart: true,
   };
 }
 
@@ -141,15 +165,23 @@ export function normalizePersistedAgentResume(
   }
   const command = candidate.command.trim();
   if (!canAttachSession(candidate.agent, command)) return undefined;
-  if (typeof candidate.sessionId !== "string") {
-    return undefined;
+  let sessionId: string | undefined;
+  if (candidate.sessionId !== undefined) {
+    if (typeof candidate.sessionId !== "string") return undefined;
+    const validSessionId =
+      candidate.agent === "opencode"
+        ? OPENCODE_SESSION_ID.test(candidate.sessionId)
+        : UUID.test(candidate.sessionId);
+    if (!validSessionId) return undefined;
+    sessionId = candidate.sessionId;
   }
-  const validSessionId =
-    candidate.agent === "opencode"
-      ? OPENCODE_SESSION_ID.test(candidate.sessionId)
-      : UUID.test(candidate.sessionId);
-  if (!validSessionId) return undefined;
-  return { agent: candidate.agent, command, sessionId: candidate.sessionId };
+  const relaunchOnRestore = candidate.relaunchOnRestore === true;
+  return {
+    agent: candidate.agent,
+    command,
+    ...(sessionId && { sessionId }),
+    ...(relaunchOnRestore && { relaunchOnRestore: true }),
+  };
 }
 
 export function buildAgentLaunchCommand(
@@ -184,6 +216,13 @@ export function buildAgentResumeCommand(
         ? `${resume.command} --session ${resume.sessionId}`
         : null;
   }
+}
+
+export function buildAgentRestoreCommand(
+  resume: PersistedAgentResume,
+): string | null {
+  return buildAgentResumeCommand(resume) ??
+    (resume.relaunchOnRestore ? resume.command : null);
 }
 
 export function collectAgentResumeLeaves(tree: PaneNode): AgentResumeLeaf[] {

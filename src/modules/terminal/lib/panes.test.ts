@@ -141,6 +141,7 @@ describe("pinLeafAgentResumeSession", () => {
         command: "codex --model test",
         armed: false,
         discoveryStartedAt: 1234,
+        relaunchOnRestore: true,
       },
     });
     expect(rearmLeafAgentResume(tree, 1, "claude", 1234)).toBe(tree);

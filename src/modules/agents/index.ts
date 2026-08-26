@@ -28,6 +28,8 @@ export {
 export {
   buildAgentLaunchCommand,
   buildAgentResumeCommand,
+  buildAgentRestoreCommand,
+  createAgentRestoreFallback,
   collectAgentResumeLeaves,
   createAgentResumeStates,
   createManualAgentResumeState,

@@ -134,6 +134,15 @@ describe("serializeTabs", () => {
         label: "Claude",
         name: "Atlas",
       },
+      paneTree: {
+        agentResume: {
+          agent: "claude",
+          command: "claude",
+          armed: true,
+          relaunchOnRestore: true,
+          resumeOnStart: true,
+        },
+      },
     });
   });
 
@@ -176,7 +185,7 @@ describe("serializeTabs", () => {
     expect(names[1]).toMatch(/^[A-Za-z][A-Za-z0-9]{0,6}$/);
   });
 
-  it("does not persist resume metadata before a real session id is discovered", () => {
+  it("persists a dormant agent descriptor without a stale session id", () => {
     const [serialized] = serializeTabs([
       term({
         paneTree: {
@@ -191,7 +200,87 @@ describe("serializeTabs", () => {
         },
       }),
     ]);
-    expect(JSON.stringify(serialized)).not.toContain("agentResume");
+    expect(serialized).toMatchObject({
+      kind: "terminal",
+      tree: {
+        agentResume: {
+          agent: "claude",
+          command: "claude",
+        },
+      },
+    });
+    expect(JSON.stringify(serialized)).not.toContain("sessionId");
+  });
+
+  it("round-trips a live sessionless agent as a fresh restore launch", () => {
+    const [serialized] = serializeTabs([
+      term({
+        paneTree: {
+          kind: "leaf",
+          id: 2,
+          agentResume: {
+            agent: "codex",
+            command: "codex --model gpt-5.6-sol",
+            armed: false,
+            relaunchOnRestore: true,
+          },
+        },
+      }),
+    ]);
+    expect(serialized).toMatchObject({
+      kind: "terminal",
+      tree: {
+        agentResume: {
+          agent: "codex",
+          command: "codex --model gpt-5.6-sol",
+          relaunchOnRestore: true,
+        },
+      },
+    });
+
+    const [restored] = hydrateTabs([serialized], "s1", counter());
+    expect(restored).toMatchObject({
+      kind: "terminal",
+      paneTree: {
+        agentResume: {
+          agent: "codex",
+          command: "codex --model gpt-5.6-sol",
+          armed: true,
+          relaunchOnRestore: true,
+          resumeOnStart: true,
+        },
+      },
+    });
+  });
+
+  it("keeps an explicitly exited agent dormant after restore", () => {
+    const [serialized] = serializeTabs([
+      term({
+        paneTree: {
+          kind: "leaf",
+          id: 2,
+          agentResume: {
+            agent: "opencode",
+            command: "opencode",
+            armed: false,
+          },
+        },
+      }),
+    ]);
+    const [restored] = hydrateTabs([serialized], "s1", counter());
+    expect(restored).toMatchObject({
+      kind: "terminal",
+      paneTree: {
+        agentResume: {
+          agent: "opencode",
+          command: "opencode",
+          armed: false,
+        },
+      },
+    });
+    if (restored.kind === "terminal" && restored.paneTree.kind === "leaf") {
+      expect(restored.paneTree.agentResume?.resumeOnStart).toBeUndefined();
+    }
   });
 });
 

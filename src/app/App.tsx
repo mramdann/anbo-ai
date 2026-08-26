@@ -18,7 +18,7 @@ import {
   type AgentLaunchRequest,
   AgentNotificationsBridge,
   buildAgentLaunchCommand,
-  buildAgentResumeCommand,
+  buildAgentRestoreCommand,
   canLaunchAgentRequest,
   collectAgentResumeLeaves,
   configuredAgentLaunchRequest,
@@ -876,7 +876,18 @@ export default function App() {
           });
         }
       }
-      if (resumedAgentLeavesRef.current.has(leafId)) return;
+      const restoringFreshAgent =
+        resumedAgentLeavesRef.current.has(leafId) &&
+        existing?.resume.sessionId === undefined;
+      if (
+        resumedAgentLeavesRef.current.has(leafId) &&
+        !restoringFreshAgent
+      ) {
+        return;
+      }
+      if (restoringFreshAgent) {
+        resumedAgentLeavesRef.current.delete(leafId);
+      }
       const generation =
         (agentDiscoveryGenerationRef.current.get(leafId) ?? 0) + 1;
       agentDiscoveryGenerationRef.current.set(leafId, generation);
@@ -949,7 +960,7 @@ export default function App() {
         ) {
           continue;
         }
-        const baseResumeCommand = buildAgentResumeCommand(leaf.resume);
+        const baseResumeCommand = buildAgentRestoreCommand(leaf.resume);
         if (!baseResumeCommand) continue;
         let mcpReady = Promise.resolve(false);
         if (isMcpAgentId(leaf.resume.agent) && targetRoot) {
