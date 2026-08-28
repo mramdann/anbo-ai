@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.20.0](https://github.com/mramdann/anbo-ai/compare/v0.19.2...v0.20.0) (2026-08-28)
+
+
+### Features
+
+* **terminal:** add reliable shared terminal automation ([c38d3a9](https://github.com/mramdann/anbo-ai/commit/c38d3a9b8844cbebd483009b49a3fae37f0b5698))
+
+
+### Bug Fixes
+
+* **terminal:** harden automation resume and rendering ([26a47dc](https://github.com/mramdann/anbo-ai/commit/26a47dc3f9c8cf504120664f87b92bbadb88680f))
+* **terminal:** synchronize first background command ([bd3eee6](https://github.com/mramdann/anbo-ai/commit/bd3eee6702862cea45e15f5a3cbf73d2d6653259))
+
 ## [0.19.2](https://github.com/mramdann/anbo-ai/compare/v0.19.1...v0.19.2) (2026-08-26)
 
 
