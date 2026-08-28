@@ -416,22 +416,35 @@ export function planGitDiffOpen(
   return { tabs: next, targetId: id };
 }
 
+export function createTerminalTab(
+  tabId: number,
+  leafId: number,
+  spaceId: string,
+  cwd?: string,
+  options: { title?: string; cold?: boolean } = {},
+): TerminalTab {
+  const assignedTitle = options.title?.trim();
+  const title = assignedTitle || (cwd ? basename(cwd) : "shell");
+  return {
+    id: tabId,
+    kind: "terminal",
+    spaceId,
+    cold: options.cold ?? true,
+    title,
+    ...(assignedTitle && { customTitle: title }),
+    cwd,
+    paneTree: { kind: "leaf", id: leafId, cwd },
+    activeLeafId: leafId,
+  };
+}
+
 function coldTerminalTab(
   tabId: number,
   leafId: number,
   spaceId: string,
   cwd?: string,
 ): TerminalTab {
-  return {
-    id: tabId,
-    kind: "terminal",
-    spaceId,
-    cold: true,
-    title: cwd ? basename(cwd) : "shell",
-    cwd,
-    paneTree: { kind: "leaf", id: leafId, cwd },
-    activeLeafId: leafId,
-  };
+  return createTerminalTab(tabId, leafId, spaceId, cwd);
 }
 
 // Plans the removal of a deleted space's tabs while keeping the invariant that
@@ -593,24 +606,25 @@ export function useTabs(initial?: Partial<TerminalTab>) {
 
   // Appends a cold terminal tab to a space without stealing focus, so the
   // overview can populate a space in place; it spawns when first opened.
-  const newTabInSpace = useCallback((spaceId: string, cwd?: string) => {
-    const tabId = nextIdRef.current++;
-    const leafId = nextIdRef.current++;
-    setTabs((curr) => [
-      ...curr,
-      {
-        id: tabId,
-        kind: "terminal",
-        spaceId,
-        cold: true,
-        title: cwd ? basename(cwd) : "shell",
-        cwd,
-        paneTree: { kind: "leaf", id: leafId, cwd },
-        activeLeafId: leafId,
-      },
-    ]);
-    return tabId;
-  }, []);
+  const newTabInSpace = useCallback(
+    (
+      spaceId: string,
+      cwd?: string,
+      options: { title?: string; warm?: boolean } = {},
+    ) => {
+      const tabId = nextIdRef.current++;
+      const leafId = nextIdRef.current++;
+      setTabs((curr) => [
+        ...curr,
+        createTerminalTab(tabId, leafId, spaceId, cwd, {
+          title: options.title,
+          cold: !options.warm,
+        }),
+      ]);
+      return { tabId, leafId };
+    },
+    [],
+  );
 
   // Reassigns a tab to another space. Returns true when the moved tab was active
   // and emptied its source space, so the caller should follow it into the target.

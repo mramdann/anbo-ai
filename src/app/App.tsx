@@ -1571,6 +1571,27 @@ export default function App() {
             getSessionState: getTerminalSessionState,
             hasForegroundProcess: leafHasForegroundProcess,
             prepare: prepareTerminalAutomationSession,
+            open: (workspace, title) =>
+              newTabInSpace(workspace.id, workspace.root, {
+                title,
+                warm: true,
+              }),
+            close: (tabId, leafId) => {
+              const tab = tabsRef.current.find(
+                (candidate) => candidate.id === tabId,
+              );
+              if (
+                tab?.kind !== "terminal" ||
+                tab.private ||
+                tab.agent ||
+                tab.activeLeafId !== leafId ||
+                leafIds(tab.paneTree).length !== 1
+              ) {
+                return false;
+              }
+              closeTab(tabId);
+              return true;
+            },
           });
           return {
             handle: (request) =>
@@ -1617,7 +1638,7 @@ export default function App() {
       setTerminalAutomationHandler(null);
       void servicePromise?.then((service) => service.dispose());
     };
-  }, []);
+  }, [closeTab, newTabInSpace]);
 
   const splitActiveTabInDockview = useCallback(
     (position: "right" | "bottom") => {

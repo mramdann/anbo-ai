@@ -28,6 +28,8 @@ const TOOL_META: Record<string, { label: string; icon: typeof FilePlusIcon }> =
     create_directory: { label: "Create directory", icon: FolderAddIcon },
     bash_run: { label: "Run shell command", icon: TerminalIcon },
     bash_background: { label: "Spawn background process", icon: TerminalIcon },
+    terminal_open: { label: "Open shared terminal", icon: TerminalIcon },
+    terminal_close: { label: "Close shared terminal", icon: TerminalIcon },
     terminal_insert: {
       label: "Insert into shared terminal",
       icon: TerminalIcon,
@@ -107,6 +109,20 @@ function PreviewBlock({
   toolName: string;
   input: Record<string, unknown>;
 }) {
+  if (toolName === "terminal_open") {
+    return (
+      <div className="font-mono text-[11px] text-muted-foreground">
+        {String(input.title ?? "")}
+      </div>
+    );
+  }
+  if (toolName === "terminal_close") {
+    return (
+      <div className="font-mono text-[11px] text-muted-foreground">
+        {String(input.terminalId ?? "")}
+      </div>
+    );
+  }
   if (toolName === "terminal_interrupt") {
     return (
       <div className="space-y-1.5 font-mono text-[11px]">

@@ -11,11 +11,15 @@ import { findLeafCwd, leafIds } from "@/modules/terminal/lib/panes";
 import type { TerminalSessionState } from "@/modules/terminal/lib/useTerminalSession";
 
 const MAX_INPUT_CHARS = 8_000;
+const MAX_TITLE_CHARS = 64;
 const MAX_OUTPUT_CHARS = 12_000;
 const OUTPUT_HISTORY_CHARS = 64_000;
 const MAX_TRACKED_TERMINALS = 100;
 const MAX_EXECUTIONS = 100;
 const WAIT_POLL_MS = 75;
+const DISPATCH_DELAY_MS = 200;
+const INPUT_VISIBILITY_TIMEOUT_MS = 500;
+const INPUT_VISIBILITY_POLL_MS = 25;
 
 export type SharedTerminalDescriptor = {
   terminalId: string;
@@ -41,6 +45,11 @@ export type TerminalAutomationDependencies = {
   getSessionState: (leafId: number) => TerminalSessionState | null;
   hasForegroundProcess: (leafId: number) => Promise<boolean>;
   prepare: (leafId: number) => boolean;
+  open: (
+    workspace: { id: string; root: string },
+    title: string,
+  ) => { tabId: number; leafId: number } | null;
+  close: (tabId: number, leafId: number) => boolean;
   write: (leafId: number, data: string) => boolean;
 };
 
@@ -52,15 +61,46 @@ type OutputState = {
   total: number;
 };
 
+type TerminalReadSnapshot = {
+  output: string;
+  cursor: string;
+  truncated: boolean;
+  hasMore: boolean;
+  historyTruncated: boolean;
+  reset: boolean;
+  replayed: boolean;
+};
+
+type ExecutionPhase =
+  | "queued"
+  | "dispatched"
+  | "running"
+  | "completed"
+  | "interrupted";
+
+type CompletionReason = "exited" | "interrupted" | "closed" | "dispatch_failed";
+
 type ExecutionState = {
   executionId: string;
   terminalId: string;
   workspace: string;
+  terminal: SharedTerminalDescriptor;
   baselineGeneration: number;
   cursor: string;
   startedAt: number;
   usesOsc: boolean;
   initialFingerprint: string;
+  inputText: string;
+  sawBusy: boolean;
+  phase: ExecutionPhase;
+  interruptRequested: boolean;
+  waitCount: number;
+  dispatchedAt?: number;
+  runningAt?: number;
+  completedAt?: number;
+  completionReason?: CompletionReason;
+  exitCode: number | null;
+  finalRead?: TerminalReadSnapshot;
 };
 
 function bufferFingerprint(value: string): string {
@@ -161,7 +201,7 @@ class TerminalOutputTracker {
     rawOutput: string,
     cursor: unknown,
     requestedMaxChars: unknown,
-  ) {
+  ): TerminalReadSnapshot {
     const maxChars =
       typeof requestedMaxChars === "number" &&
       Number.isInteger(requestedMaxChars)
@@ -309,11 +349,38 @@ export function sanitizeTerminalInput(
   return { ok: true, text: value };
 }
 
+export function sanitizeTerminalTitle(
+  value: unknown,
+): { ok: true; title: string } | { ok: false; error: string } {
+  if (typeof value !== "string") {
+    return { ok: false, error: "title must be a string" };
+  }
+  const title = value.trim();
+  if (!title) return { ok: false, error: "title is required" };
+  if (title.length > MAX_TITLE_CHARS) {
+    return {
+      ok: false,
+      error: `title exceeds ${MAX_TITLE_CHARS} characters`,
+    };
+  }
+  for (let index = 0; index < title.length; index += 1) {
+    const code = title.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) {
+      return {
+        ok: false,
+        error: "title must be one line and cannot contain control characters",
+      };
+    }
+  }
+  return { ok: true, title };
+}
+
 export function createTerminalAutomationService(
   deps: TerminalAutomationDependencies,
 ) {
   const output = new TerminalOutputTracker();
   const executions = new Map<string, ExecutionState>();
+  const openedTerminals = new Set<string>();
   let executionSequence = 0;
 
   const rememberExecution = (execution: ExecutionState) => {
@@ -323,6 +390,140 @@ export function createTerminalAutomationService(
       if (oldest === undefined) break;
       executions.delete(oldest);
     }
+  };
+
+  const finishExecution = (
+    execution: ExecutionState,
+    reason: CompletionReason,
+    exitCode: number | null,
+  ) => {
+    if (execution.phase === "completed" || execution.phase === "interrupted") {
+      return;
+    }
+    execution.phase = reason === "interrupted" ? "interrupted" : "completed";
+    execution.completionReason = reason;
+    execution.exitCode = reason === "interrupted" ? 130 : exitCode;
+    execution.completedAt = Date.now();
+    if (reason === "closed") {
+      execution.terminal = { ...execution.terminal, status: "exited" };
+    }
+  };
+
+  const refreshExecutionCompletion = async (
+    execution: ExecutionState,
+  ): Promise<boolean> => {
+    if (execution.completedAt !== undefined) return true;
+    if (execution.phase === "queued") return false;
+    const match = /^terminal:(\d+):(\d+)$/.exec(execution.terminalId);
+    const leafId = match ? Number(match[2]) : Number.NaN;
+    const state = Number.isSafeInteger(leafId)
+      ? deps.getSessionState(leafId)
+      : null;
+    if (!state || state.shellExited) {
+      finishExecution(execution, "closed", null);
+      return true;
+    }
+    const targetGeneration = execution.baselineGeneration + 1;
+    const completion = state.commandCompletions?.find(
+      (candidate) => candidate.generation === targetGeneration,
+    );
+    if (completion || (state.commandGeneration ?? 0) >= targetGeneration) {
+      finishExecution(
+        execution,
+        execution.interruptRequested ? "interrupted" : "exited",
+        completion?.exitCode ?? null,
+      );
+      return true;
+    }
+    const shellBusy = state.commandRunning || state.blockMode !== "prompt";
+    if (shellBusy && execution.phase === "dispatched") {
+      execution.phase = "running";
+      execution.runningAt = Date.now();
+    }
+    let completed = false;
+    if (!completed && !execution.usesOsc) {
+      const foreground = await deps.hasForegroundProcess(leafId);
+      const busy = shellBusy || foreground;
+      if (busy && execution.phase === "dispatched") {
+        execution.phase = "running";
+        execution.runningAt = Date.now();
+      }
+      execution.sawBusy ||= busy;
+      const outputChanged =
+        bufferFingerprint(deps.getBuffer(leafId) ?? "") !==
+        execution.initialFingerprint;
+      completed =
+        !busy &&
+        (execution.sawBusy ||
+          (outputChanged && Date.now() - execution.startedAt >= 250));
+    }
+    if (completed) {
+      finishExecution(
+        execution,
+        execution.interruptRequested ? "interrupted" : "exited",
+        null,
+      );
+    }
+    return completed;
+  };
+
+  const dispatchExecution = async (execution: ExecutionState) => {
+    if (execution.phase !== "queued") return;
+    const state = deps.getSessionState(execution.terminal.leafId);
+    if (!state || state.shellExited) {
+      finishExecution(execution, "closed", null);
+      return;
+    }
+    if (
+      !state.ready ||
+      state.inputPending ||
+      state.commandRunning ||
+      state.blockMode !== "prompt" ||
+      (await deps.hasForegroundProcess(execution.terminal.leafId))
+    ) {
+      if (execution.phase === "queued") {
+        finishExecution(execution, "dispatch_failed", null);
+      }
+      return;
+    }
+    if (execution.phase !== "queued") return;
+    if (!deps.prepare(execution.terminal.leafId)) {
+      finishExecution(execution, "dispatch_failed", null);
+      return;
+    }
+    const latestState = deps.getSessionState(execution.terminal.leafId);
+    if (
+      !latestState?.ready ||
+      latestState.shellExited ||
+      latestState.inputPending ||
+      latestState.commandRunning ||
+      latestState.blockMode !== "prompt"
+    ) {
+      finishExecution(execution, "dispatch_failed", null);
+      return;
+    }
+    const raw = deps.getBuffer(execution.terminal.leafId) ?? "";
+    execution.baselineGeneration = latestState.commandGeneration ?? 0;
+    execution.cursor = output.checkpoint(execution.terminalId, raw);
+    execution.initialFingerprint = bufferFingerprint(raw);
+    execution.usesOsc = shellSupportsOsc(latestState.shell);
+    execution.phase = "dispatched";
+    execution.dispatchedAt = Date.now();
+    if (!deps.write(execution.terminal.leafId, `${execution.inputText}\r`)) {
+      finishExecution(execution, "closed", null);
+    }
+  };
+
+  const hasPendingExecution = async (id: string): Promise<boolean> => {
+    for (const execution of executions.values()) {
+      if (
+        execution.terminalId === id &&
+        !(await refreshExecutionCompletion(execution))
+      ) {
+        return true;
+      }
+    }
+    return false;
   };
 
   const resolve = async (
@@ -386,6 +587,15 @@ export function createTerminalAutomationService(
   const requireIdle = async (params: Record<string, unknown>) => {
     const target = await resolveTarget(params, false);
     if (!target.ok) return target;
+    if (await hasPendingExecution(target.terminal.terminalId)) {
+      return {
+        ok: false as const,
+        response: responseError(
+          "terminal_busy",
+          `${target.terminal.terminalId} is still observing a previously executed command`,
+        ),
+      };
+    }
     if (target.terminal.status !== "idle") {
       return {
         ok: false as const,
@@ -428,14 +638,124 @@ export function createTerminalAutomationService(
       method: TerminalAutomationMethod,
       params: Record<string, unknown>,
     ): Promise<AgentAutomationResponse> {
+      if (method === "terminal_open") {
+        const workspace = resolveAgentWorkspace(
+          deps.getSpaces(),
+          params.workspace,
+        );
+        if (!workspace.ok) {
+          return responseError("workspace_not_found", workspace.error);
+        }
+        const title = sanitizeTerminalTitle(params.title);
+        if (!title.ok) return responseError("invalid_request", title.error);
+        const opened = deps.open(workspace.space, title.title);
+        if (!opened) {
+          return responseError(
+            "terminal_open_failed",
+            `could not create a shared terminal in ${workspace.space.root}`,
+          );
+        }
+        const id = terminalId(opened.tabId, opened.leafId);
+        openedTerminals.add(id);
+        while (openedTerminals.size > MAX_TRACKED_TERMINALS) {
+          const oldest = openedTerminals.values().next().value;
+          if (oldest === undefined) break;
+          openedTerminals.delete(oldest);
+        }
+        return {
+          result: {
+            ok: true,
+            placement: "background",
+            terminal: {
+              terminalId: id,
+              title: title.title,
+              tabId: opened.tabId,
+              leafId: opened.leafId,
+              spaceId: workspace.space.id,
+              workspace: workspace.space.root,
+              cwd: workspace.space.root,
+              active: false,
+              status: "starting",
+              shell: "unknown",
+            } satisfies SharedTerminalDescriptor,
+          },
+        };
+      }
+
+      if (method === "terminal_close") {
+        const target = await resolveTarget(params, false);
+        if (!target.ok) return target.response;
+        const id = target.terminal.terminalId;
+        if (!openedTerminals.has(id)) {
+          return responseError(
+            "terminal_not_owned",
+            `${id} was not opened by terminal_open in this application session`,
+          );
+        }
+        if (await hasPendingExecution(id)) {
+          return responseError(
+            "terminal_busy",
+            `${id} is still observing a previously executed command`,
+          );
+        }
+        const state = deps.getSessionState(target.terminal.leafId);
+        if (state?.inputPending) {
+          return responseError(
+            "terminal_input_pending",
+            `${id} contains unsubmitted input; submit or clear it before closing`,
+          );
+        }
+        if (
+          !state ||
+          (!state.shellExited &&
+            (!state.ready ||
+              state.commandRunning ||
+              state.blockMode !== "prompt" ||
+              (await deps.hasForegroundProcess(target.terminal.leafId))))
+        ) {
+          return responseError(
+            "terminal_busy",
+            `${id} is starting or running a foreground process`,
+          );
+        }
+        if (!deps.close(target.terminal.tabId, target.terminal.leafId)) {
+          return responseError(
+            "terminal_close_failed",
+            `${id} could not be closed safely`,
+          );
+        }
+        openedTerminals.delete(id);
+        output.remove(id);
+        for (const [executionId, execution] of executions) {
+          if (execution.terminalId === id) executions.delete(executionId);
+        }
+        return {
+          result: {
+            ok: true,
+            closed: true,
+            terminalId: id,
+            tabId: target.terminal.tabId,
+            leafId: target.terminal.leafId,
+            workspace: target.terminal.workspace,
+          },
+        };
+      }
+
       if (method === "terminal_list") {
         const resolved = await resolve(params);
         if (!resolved.ok) return resolved.response;
+        const terminals = await Promise.all(
+          resolved.terminals.map(async (terminal) =>
+            (await hasPendingExecution(terminal.terminalId))
+              ? { ...terminal, status: "busy" as const }
+              : terminal,
+          ),
+        );
         return {
           result: {
             workspace: resolved.workspace.root,
             spaceId: resolved.workspace.id,
-            terminals: resolved.terminals,
+            terminals,
           },
         };
       }
@@ -466,58 +786,46 @@ export function createTerminalAutomationService(
       }
 
       if (method === "terminal_wait") {
-        const target = await resolveTarget(params, false);
-        if (!target.ok) return target.response;
         const executionId = paramString(params, "executionId");
         if (!executionId) {
           return responseError("invalid_request", "executionId is required");
         }
+        const requestedTerminalId = paramString(params, "terminalId");
+        if (!requestedTerminalId) {
+          return responseError("invalid_request", "terminalId is required");
+        }
+        const workspace = resolveAgentWorkspace(
+          deps.getSpaces(),
+          params.workspace,
+        );
+        if (!workspace.ok) {
+          return responseError("workspace_not_found", workspace.error);
+        }
         const execution = executions.get(executionId);
         if (
           !execution ||
-          execution.terminalId !== target.terminal.terminalId ||
-          execution.workspace !== target.terminal.workspace
+          execution.terminalId !== requestedTerminalId ||
+          execution.workspace !== workspace.space.root
         ) {
           return responseError(
             "execution_not_found",
             `shared terminal execution is not available: ${executionId}`,
           );
         }
+        const target = await resolveTarget(params, false);
+        const completedBeforeWait = execution.completedAt !== undefined;
+        const repeatedWait = execution.waitCount > 0;
+        execution.waitCount += 1;
         const timeout =
           typeof params.timeout === "number" && Number.isInteger(params.timeout)
             ? Math.max(100, Math.min(60_000, params.timeout))
             : 10_000;
         const deadline = Date.now() + timeout;
-        let completed = false;
-        let sawBusy = false;
+        let completed = completedBeforeWait;
         while (Date.now() < deadline) {
-          const state = deps.getSessionState(target.terminal.leafId);
-          if (!state || state.shellExited) break;
-          if ((state.commandGeneration ?? 0) > execution.baselineGeneration) {
+          if (await refreshExecutionCompletion(execution)) {
             completed = true;
             break;
-          }
-          if (!execution.usesOsc) {
-            const foreground = await deps.hasForegroundProcess(
-              target.terminal.leafId,
-            );
-            const busy =
-              state.commandRunning ||
-              state.blockMode !== "prompt" ||
-              foreground;
-            sawBusy ||= busy;
-            const outputChanged =
-              bufferFingerprint(
-                deps.getBuffer(target.terminal.leafId) ?? "",
-              ) !== execution.initialFingerprint;
-            if (
-              !busy &&
-              (sawBusy ||
-                (outputChanged && Date.now() - execution.startedAt >= 250))
-            ) {
-              completed = true;
-              break;
-            }
           }
           const remaining = deadline - Date.now();
           if (remaining > 0) {
@@ -526,27 +834,85 @@ export function createTerminalAutomationService(
             );
           }
         }
-        const raw = deps.getBuffer(target.terminal.leafId) ?? "";
-        const state = deps.getSessionState(target.terminal.leafId);
-        const read = output.read(
-          target.terminal.terminalId,
-          raw,
-          execution.cursor,
-          params.maxChars,
-        );
-        if (completed || state?.shellExited) executions.delete(executionId);
-        const refreshed = await resolveTarget(params, false);
+        completed ||= execution.completedAt !== undefined;
+        let raw = deps.getBuffer(execution.terminal.leafId) ?? "";
+        let state = deps.getSessionState(execution.terminal.leafId);
+        let read =
+          execution.finalRead ??
+          (target.ok
+            ? output.read(
+                execution.terminalId,
+                raw,
+                execution.cursor,
+                params.maxChars,
+              )
+            : {
+                output: "",
+                cursor: execution.cursor,
+                truncated: false,
+                hasMore: false,
+                historyTruncated: false,
+                reset: false,
+                replayed: false,
+              });
+        if (
+          !execution.finalRead &&
+          target.ok &&
+          completed &&
+          execution.dispatchedAt !== undefined &&
+          execution.completionReason !== "closed" &&
+          execution.completionReason !== "dispatch_failed" &&
+          (read.reset ||
+            !read.output.trim() ||
+            !state?.ready ||
+            (!state.shellExited &&
+              (state.commandRunning || state.blockMode !== "prompt")))
+        ) {
+          let previousLength = read.output.length;
+          let stableIdlePolls = 0;
+          for (let attempt = 0; attempt < 12; attempt += 1) {
+            await new Promise((resolveDelay) => setTimeout(resolveDelay, 75));
+            raw = deps.getBuffer(execution.terminal.leafId) ?? "";
+            const candidate = output.read(
+              execution.terminalId,
+              raw,
+              execution.cursor,
+              params.maxChars,
+            );
+            if (candidate.output.length > read.output.length) read = candidate;
+            state = deps.getSessionState(execution.terminal.leafId);
+            const shellIdle =
+              !!state?.ready &&
+              (state.shellExited ||
+                (!state.commandRunning && state.blockMode === "prompt"));
+            stableIdlePolls =
+              shellIdle && read.output.length === previousLength
+                ? stableIdlePolls + 1
+                : 0;
+            previousLength = read.output.length;
+            if (stableIdlePolls >= 2) break;
+          }
+        }
+        if (completed) {
+          execution.finalRead ??= { ...read };
+          read = execution.finalRead;
+        }
+        const refreshed = target.ok
+          ? await resolveTarget(params, false)
+          : target;
         return {
           result: {
             executionId,
             completed,
             timedOut: !completed && !state?.shellExited,
-            exitCode:
-              completed && execution.usesOsc
-                ? (state?.lastExitCode ?? null)
-                : null,
-            durationMs: Date.now() - execution.startedAt,
-            terminal: refreshed.ok ? refreshed.terminal : target.terminal,
+            phase: execution.phase,
+            completionReason: execution.completionReason ?? null,
+            interrupted: execution.completionReason === "interrupted",
+            exitCode: completed ? execution.exitCode : null,
+            durationMs:
+              (execution.completedAt ?? Date.now()) - execution.startedAt,
+            repeated: repeatedWait,
+            terminal: refreshed.ok ? refreshed.terminal : execution.terminal,
             ...read,
           },
         };
@@ -555,12 +921,87 @@ export function createTerminalAutomationService(
       if (method === "terminal_interrupt") {
         const target = await resolveTarget(params, false);
         if (!target.ok) return target.response;
+        const requestedExecutionId = paramString(params, "executionId");
+        const execution = requestedExecutionId
+          ? executions.get(requestedExecutionId)
+          : Array.from(executions.values())
+              .reverse()
+              .find(
+                (candidate) =>
+                  candidate.terminalId === target.terminal.terminalId &&
+                  candidate.workspace === target.terminal.workspace &&
+                  candidate.completedAt === undefined,
+              );
+        if (
+          requestedExecutionId &&
+          (!execution ||
+            execution.terminalId !== target.terminal.terminalId ||
+            execution.workspace !== target.terminal.workspace)
+        ) {
+          return responseError(
+            "execution_not_found",
+            `shared terminal execution is not available: ${requestedExecutionId}`,
+          );
+        }
+        if (execution) await refreshExecutionCompletion(execution);
+        if (execution?.completedAt !== undefined) {
+          return {
+            result: {
+              ok: true,
+              executionId: execution.executionId,
+              phase: execution.phase,
+              completionReason: execution.completionReason ?? null,
+              interrupted: execution.completionReason === "interrupted",
+              clearedInput: false,
+              alreadyCompleted: true,
+              terminal: target.terminal,
+            },
+          };
+        }
+        if (execution?.phase === "queued") {
+          execution.interruptRequested = true;
+          finishExecution(execution, "interrupted", 130);
+          return {
+            result: {
+              ok: true,
+              executionId: execution.executionId,
+              phase: execution.phase,
+              completionReason: execution.completionReason,
+              interrupted: true,
+              clearedInput: false,
+              cancelledBeforeDispatch: true,
+              terminal: target.terminal,
+            },
+          };
+        }
         const state = deps.getSessionState(target.terminal.leafId);
         if (!state?.ready || state.shellExited) {
           return responseError(
             "terminal_unavailable",
             `${target.terminal.terminalId} has no live shell`,
           );
+        }
+        if (execution) {
+          execution.interruptRequested = true;
+          if (!deps.write(target.terminal.leafId, "\x03")) {
+            finishExecution(execution, "closed", null);
+            return responseError(
+              "terminal_unavailable",
+              "terminal stopped before the interrupt could be delivered",
+            );
+          }
+          return {
+            result: {
+              ok: true,
+              executionId: execution.executionId,
+              phase: execution.phase,
+              completionReason: null,
+              interruptRequested: true,
+              interrupted: true,
+              clearedInput: false,
+              terminal: target.terminal,
+            },
+          };
         }
         if (state.inputPending) {
           if (!deps.write(target.terminal.leafId, "\x03")) {
@@ -610,50 +1051,80 @@ export function createTerminalAutomationService(
       if (!target.ok) return target.response;
       const rawBefore = deps.getBuffer(target.terminal.leafId) ?? "";
       const stateBefore = deps.getSessionState(target.terminal.leafId);
-      if (
-        method === "terminal_execute" &&
-        !deps.prepare(target.terminal.leafId)
-      ) {
-        return responseError(
-          "terminal_unavailable",
-          "terminal renderer could not be prepared for command tracking",
-        );
+      const cursor = output.checkpoint(target.terminal.terminalId, rawBefore);
+      if (method === "terminal_insert") {
+        if (!deps.write(target.terminal.leafId, input.text)) {
+          return responseError(
+            "terminal_unavailable",
+            "terminal stopped before input could be delivered",
+          );
+        }
+        const initialFingerprint = bufferFingerprint(rawBefore);
+        const deadline = Date.now() + INPUT_VISIBILITY_TIMEOUT_MS;
+        let inputVisible = false;
+        while (Date.now() < deadline) {
+          const current = deps.getBuffer(target.terminal.leafId) ?? "";
+          const changed = bufferFingerprint(current) !== initialFingerprint;
+          const visibleTail = current.slice(
+            Math.max(0, current.length - input.text.length - 512),
+          );
+          if (changed && visibleTail.includes(input.text)) {
+            inputVisible = true;
+            break;
+          }
+          await new Promise((resolveDelay) =>
+            setTimeout(resolveDelay, INPUT_VISIBILITY_POLL_MS),
+          );
+        }
+        return {
+          result: {
+            ok: true,
+            terminal: target.terminal,
+            inserted: input.text,
+            executed: false,
+            inputVisible,
+            inputPending:
+              deps.getSessionState(target.terminal.leafId)?.inputPending ??
+              false,
+            cursor,
+          },
+        };
       }
-      const delivered = deps.write(
-        target.terminal.leafId,
-        method === "terminal_execute" ? `${input.text}\r` : input.text,
-      );
-      if (!delivered) {
-        return responseError(
-          "terminal_unavailable",
-          "terminal stopped before input could be delivered",
-        );
-      }
-      let executionId: string | undefined;
-      if (method === "terminal_execute") {
-        executionSequence += 1;
-        executionId = `terminal-execution:${target.terminal.tabId}:${target.terminal.leafId}:${executionSequence}`;
-        rememberExecution({
-          executionId,
-          terminalId: target.terminal.terminalId,
-          workspace: target.terminal.workspace,
-          baselineGeneration: stateBefore?.commandGeneration ?? 0,
-          cursor: output.checkpoint(target.terminal.terminalId, rawBefore),
-          startedAt: Date.now(),
-          usesOsc: shellSupportsOsc(stateBefore?.shell),
-          initialFingerprint: bufferFingerprint(rawBefore),
+      executionSequence += 1;
+      const executionId = `terminal-execution:${target.terminal.tabId}:${target.terminal.leafId}:${executionSequence}`;
+      const execution: ExecutionState = {
+        executionId,
+        terminalId: target.terminal.terminalId,
+        workspace: target.terminal.workspace,
+        terminal: target.terminal,
+        baselineGeneration: stateBefore?.commandGeneration ?? 0,
+        cursor,
+        startedAt: Date.now(),
+        usesOsc: shellSupportsOsc(stateBefore?.shell),
+        initialFingerprint: bufferFingerprint(rawBefore),
+        inputText: input.text,
+        sawBusy: false,
+        phase: "queued",
+        interruptRequested: false,
+        waitCount: 0,
+        exitCode: null,
+      };
+      rememberExecution(execution);
+      setTimeout(() => {
+        void dispatchExecution(execution).catch(() => {
+          finishExecution(execution, "dispatch_failed", null);
         });
-      }
+      }, DISPATCH_DELAY_MS);
       return {
         result: {
           ok: true,
-          terminal: target.terminal,
+          terminal: { ...target.terminal, status: "busy" },
           inserted: input.text,
-          executed: method === "terminal_execute",
+          executed: true,
           executionId,
-          next: executionId
-            ? "Call terminal_wait with this executionId to receive completion, exitCode, and bounded output."
-            : undefined,
+          phase: execution.phase,
+          dispatched: false,
+          next: "Call terminal_wait with this executionId to receive completion, exitCode, and bounded output.",
         },
       };
     },

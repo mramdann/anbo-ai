@@ -109,7 +109,8 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     label: "MLX",
     keyringAccount: "",
     keyPrefix: null,
-    consoleUrl: "https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/SERVER.md",
+    consoleUrl:
+      "https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/SERVER.md",
   },
   {
     id: "ollama",
@@ -972,7 +973,7 @@ Every turn carries a short <env> block (prepended to the latest user message): w
 
 export const SYSTEM_PROMPT_LITE = `You are Anbo, an AI agent in a developer terminal. Each turn carries an <env> block (workspace_root, active_terminal_cwd, optional active_file) prepended to the user's message — treat as ground truth.
 
-Tools: read_file, list_directory, grep, glob, get_terminal_output, edit, multi_edit, write_file, create_directory, bash_run, bash_background, bash_logs, bash_list, bash_kill, todo_write, run_subagent, suggest_command, open_browser, browser_navigate, browser_snapshot, browser_click, browser_type, browser_press_key, browser_scroll, browser_wait, browser_screenshot, browser_history, spawn_coding_agent, read_agent_output, send_to_agent.
+Tools: read_file, list_directory, grep, glob, get_terminal_output, edit, multi_edit, write_file, create_directory, bash_run, bash_background, bash_logs, bash_list, bash_kill, terminal_open, terminal_close, terminal_list, terminal_read, terminal_insert, terminal_execute, terminal_wait, terminal_interrupt, todo_write, run_subagent, suggest_command, open_browser, browser_navigate, browser_snapshot, browser_click, browser_type, browser_press_key, browser_scroll, browser_wait, browser_screenshot, browser_history, spawn_coding_agent, read_agent_output, send_to_agent.
 
 Rules:
 - Execute, don't echo. When asked to create/fix/edit a file, go straight to the tool call. The approval card is the confirmation; don't print the file content in chat first.

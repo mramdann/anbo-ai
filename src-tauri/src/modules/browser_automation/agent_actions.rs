@@ -11,6 +11,7 @@ const AGENT_RESPONSE_EVENT: &str = "anbo:agent-response";
 const MAX_WORKSPACE_BYTES: usize = 4 * 1024;
 const MAX_AGENT_ID_BYTES: usize = 512;
 const MAX_TERMINAL_ID_BYTES: usize = 128;
+const MAX_TERMINAL_TITLE_BYTES: usize = 256;
 const MAX_MESSAGE_BYTES: usize = 32 * 1024;
 const MAX_MESSAGE_ID_BYTES: usize = 128;
 const MAX_CURSOR_BYTES: usize = 128;
@@ -110,20 +111,29 @@ fn validate_params(method: &str, params: &Value) -> Result<u64, (String, String)
         ));
     }
     required_bounded_string(params, "workspace", MAX_WORKSPACE_BYTES)?;
-    if matches!(
+    if method == "terminal_open" {
+        let title = required_bounded_string(params, "title", MAX_TERMINAL_TITLE_BYTES)?;
+        if title.chars().any(char::is_control) || title.chars().count() > 64 {
+            return Err((
+                error_codes::INVALID_REQUEST.to_string(),
+                "title must be one line with at most 64 characters".to_string(),
+            ));
+        }
+    } else if matches!(
         method,
         "terminal_read"
             | "terminal_insert"
             | "terminal_execute"
             | "terminal_wait"
             | "terminal_interrupt"
+            | "terminal_close"
     ) {
         required_bounded_string(params, "terminalId", MAX_TERMINAL_ID_BYTES)?;
     } else if !matches!(method, "agent_list" | "agent_spawn" | "terminal_list") {
         required_bounded_string(params, "agentId", MAX_AGENT_ID_BYTES)?;
     }
     match method {
-        "agent_list" | "agent_status" | "terminal_list" => Ok(5_000),
+        "agent_list" | "agent_status" | "terminal_list" | "terminal_open" => Ok(5_000),
         "agent_spawn" => {
             let agent = required_bounded_string(params, "agent", 71)?;
             if agent.chars().any(char::is_control) {
@@ -158,7 +168,11 @@ fn validate_params(method: &str, params: &Value) -> Result<u64, (String, String)
                 bounded_integer(params, "timeout", 100, MAX_TIMEOUT_MS)?.unwrap_or(10_000);
             Ok(timeout + 2_000)
         }
-        "terminal_interrupt" => Ok(7_000),
+        "terminal_interrupt" => {
+            optional_bounded_string(params, "executionId", MAX_TERMINAL_ID_BYTES)?;
+            Ok(7_000)
+        }
+        "terminal_close" => Ok(7_000),
         "agent_send" => {
             let message = required_bounded_string(params, "message", MAX_MESSAGE_BYTES)?;
             if message
@@ -304,6 +318,16 @@ mod tests {
         .is_err());
         assert!(validate_params("terminal_list", &json!({ "workspace": "C:/repo" })).is_ok());
         assert!(validate_params(
+            "terminal_open",
+            &json!({ "workspace": "C:/repo", "title": "Dev Server" })
+        )
+        .is_ok());
+        assert!(validate_params(
+            "terminal_open",
+            &json!({ "workspace": "C:/repo", "title": "" })
+        )
+        .is_err());
+        assert!(validate_params(
             "terminal_read",
             &json!({ "workspace": "C:/repo", "terminalId": "terminal:1:1", "maxChars": 12_001 })
         )
@@ -311,6 +335,24 @@ mod tests {
         assert!(validate_params(
             "terminal_execute",
             &json!({ "workspace": "C:/repo", "terminalId": "terminal:1:1", "text": "one\ntwo" })
+        )
+        .is_err());
+        assert!(validate_params(
+            "terminal_interrupt",
+            &json!({
+                "workspace": "C:/repo",
+                "terminalId": "terminal:1:1",
+                "executionId": "terminal-execution:1:1:1"
+            })
+        )
+        .is_ok());
+        assert!(validate_params(
+            "terminal_interrupt",
+            &json!({
+                "workspace": "C:/repo",
+                "terminalId": "terminal:1:1",
+                "executionId": "x".repeat(MAX_TERMINAL_ID_BYTES + 1)
+            })
         )
         .is_err());
     }

@@ -36,11 +36,10 @@ fn agent_id_prop() -> Value {
 }
 
 fn terminal_id_prop() -> Value {
-    json!({ "type": "string", "minLength": 1, "description": "Workspace-scoped shared terminal id returned by terminal_list, such as terminal:12:12." })
+    json!({ "type": "string", "minLength": 1, "description": "Workspace-scoped shared terminal id returned by terminal_open or terminal_list, such as terminal:12:12." })
 }
 
-/// The `tools` array returned by `tools/list`, grouped under `browser_` and
-/// `agent_` capability prefixes.
+/// The `tools` array returned by `tools/list`, grouped by capability prefix.
 pub fn tool_definitions() -> Value {
     let tab = tab_id_prop();
     let refr = ref_prop();
@@ -88,12 +87,14 @@ pub fn tool_definitions() -> Value {
         { "name": "agent_read", "description": "Read a redacted, bounded increment of an agent terminal. Reuse the returned opaque cursor to receive only newer output; reset indicates that terminal history changed or the cursor expired.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agentId": agent_id.clone(), "cursor": { "type": "string", "description": "Opaque cursor returned by an earlier agent_read call." }, "maxChars": { "type": "integer", "minimum": 1, "maximum": 12000, "default": 4000 } }, "required": ["workspace", "agentId"] } },
         { "name": "agent_send", "description": "Send one bounded instruction to a live agent without activating its workspace. By default waits until the agent is ready, serializes concurrent sends, and rejects duplicate message ids. Set waitForReady to false to deliver immediately even while the reported state is working.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agentId": agent_id.clone(), "message": { "type": "string", "minLength": 1, "maxLength": 8000 }, "waitForReady": { "type": "boolean", "default": true }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 30000 }, "sourceAgentId": { "type": "string", "description": "Optional sender agent id. Sending to the same id is rejected." }, "messageId": { "type": "string", "maxLength": 128, "description": "Optional idempotency key scoped to the target agent." } }, "required": ["workspace", "agentId", "message"] } },
         { "name": "agent_wait", "description": "Wait for an agent to become working, waiting for input, or finished, or for its state to change when status is omitted. A normal timeout is returned as timedOut rather than a tool error.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agentId": agent_id, "status": { "type": "string", "enum": ["working", "waiting", "finished"] }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 10000 } }, "required": ["workspace", "agentId"] } },
+        { "name": "terminal_open", "description": "Open a normal shared Anbo terminal in an explicitly selected workspace without changing UI focus. A short purpose-specific tab title is required, such as Dev Server, Tests, or Build. The returned terminalId can be used after the shell becomes idle. Agent CLI and private terminals are never created by this tool.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "title": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Required purpose-specific tab title." } }, "required": ["workspace", "title"] } },
+        { "name": "terminal_close", "description": "Close an idle normal terminal previously created by terminal_open during the current Anbo application session. Refuses user-created terminals, agent CLI terminals, pending input, and foreground processes.", "annotations": { "readOnlyHint": false, "destructiveHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone() }, "required": ["workspace", "terminalId"] } },
         { "name": "terminal_list", "description": "List normal non-private Anbo shell terminals in an explicitly selected workspace. Agent CLI terminals are excluded. Does not activate the workspace or move UI focus.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
         { "name": "terminal_read", "description": "Read a redacted bounded increment from a shared normal terminal. Reuse the returned cursor to receive only newer output. hasMore reports unread output after this response; historyTruncated reports omitted older history; reset and replayed identify a terminal buffer repaint. Private and agent CLI terminals are never available.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone(), "cursor": { "type": "string", "description": "Opaque cursor returned by an earlier terminal_read call." }, "maxChars": { "type": "integer", "minimum": 1, "maximum": 12000, "default": 4000 } }, "required": ["workspace", "terminalId"] } },
-        { "name": "terminal_insert", "description": "Insert one bounded single-line string into an explicitly selected idle normal terminal without pressing Enter or changing UI focus. Rejects private terminals, agent CLI terminals, and busy terminals.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone(), "text": { "type": "string", "minLength": 1, "maxLength": 8000 } }, "required": ["workspace", "terminalId", "text"] } },
-        { "name": "terminal_execute", "description": "Execute one bounded single-line command in an explicitly selected idle normal terminal without changing UI focus. Returns an executionId; call terminal_wait with it to obtain completion, exitCode, and bounded output. Rejects private terminals, agent CLI terminals, foreground processes, and prompts containing unsubmitted input so commands cannot be concatenated accidentally.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone(), "text": { "type": "string", "minLength": 1, "maxLength": 8000 } }, "required": ["workspace", "terminalId", "text"] } },
-        { "name": "terminal_wait", "description": "Wait for a command started by terminal_execute to complete without holding the terminal lock. Returns exitCode and redacted bounded output. A normal timeout is returned as timedOut rather than a tool error.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone(), "executionId": { "type": "string", "minLength": 1, "maxLength": 128 }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 10000 }, "maxChars": { "type": "integer", "minimum": 1, "maximum": 12000, "default": 4000 } }, "required": ["workspace", "terminalId", "executionId"] } },
-        { "name": "terminal_interrupt", "description": "Send Ctrl+C to the foreground command in an explicitly selected shared normal terminal without changing UI focus. If the shell is idle with unsubmitted prompt input, safely cancel that input instead and return clearedInput:true. Rejects idle prompts without input, private terminals, and agent CLI terminals.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace, "terminalId": terminal_id }, "required": ["workspace", "terminalId"] } }
+        { "name": "terminal_insert", "description": "Insert one bounded single-line string into an explicitly selected idle normal terminal without pressing Enter or changing UI focus. Waits briefly for visible terminal echo and returns inputVisible plus a cursor for terminal_read polling.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone(), "text": { "type": "string", "minLength": 1, "maxLength": 8000 } }, "required": ["workspace", "terminalId", "text"] } },
+        { "name": "terminal_execute", "description": "Queue one bounded single-line command for visible cancellable dispatch in an explicitly selected idle normal terminal. Returns an executionId in phase queued; call terminal_wait for the stable final result. Rejects private terminals, agent CLI terminals, foreground processes, and prompts containing unsubmitted input.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone(), "text": { "type": "string", "minLength": 1, "maxLength": 8000 } }, "required": ["workspace", "terminalId", "text"] } },
+        { "name": "terminal_wait", "description": "Wait for a command started by terminal_execute without holding the terminal lock. Returns stable phase, completionReason, interrupted, per-execution exitCode, and redacted bounded output. Completed results are idempotent.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone(), "executionId": { "type": "string", "minLength": 1, "maxLength": 128 }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 10000 }, "maxChars": { "type": "integer", "minimum": 1, "maximum": 12000, "default": 4000 } }, "required": ["workspace", "terminalId", "executionId"] } },
+        { "name": "terminal_interrupt", "description": "Cancel a specific queued, dispatched, or running execution by executionId. When executionId is omitted, send Ctrl+C to the terminal foreground command or safely clear unsubmitted prompt input.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace, "terminalId": terminal_id, "executionId": { "type": "string", "minLength": 1, "maxLength": 128 } }, "required": ["workspace", "terminalId"] } }
     ]
 }
 
@@ -139,6 +140,8 @@ pub fn tool_name_to_method(name: &str) -> Option<&'static str> {
         "agent_read" => "agent_read",
         "agent_send" => "agent_send",
         "agent_wait" => "agent_wait",
+        "terminal_open" => "terminal_open",
+        "terminal_close" => "terminal_close",
         "terminal_list" => "terminal_list",
         "terminal_read" => "terminal_read",
         "terminal_insert" => "terminal_insert",
@@ -156,7 +159,7 @@ mod tests {
     #[test]
     fn tools_have_capability_prefixes_and_unique_names() {
         let tools = tool_definitions().as_array().unwrap().clone();
-        assert_eq!(tools.len(), 45);
+        assert_eq!(tools.len(), 47);
         let mut names = std::collections::HashSet::new();
         for t in &tools {
             let n = t.get("name").and_then(|v| v.as_str()).unwrap();
@@ -182,6 +185,8 @@ mod tests {
     fn shared_terminal_tools_are_workspace_scoped() {
         let tools = tool_definitions();
         for (name, method) in [
+            ("terminal_open", "terminal_open"),
+            ("terminal_close", "terminal_close"),
             ("terminal_list", "terminal_list"),
             ("terminal_read", "terminal_read"),
             ("terminal_insert", "terminal_insert"),

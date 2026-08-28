@@ -2,6 +2,8 @@ export const AGENT_REQUEST_EVENT = "anbo:agent-request";
 export const AGENT_RESPONSE_EVENT = "anbo:agent-response";
 
 export type TerminalAutomationMethod =
+  | "terminal_open"
+  | "terminal_close"
   | "terminal_list"
   | "terminal_read"
   | "terminal_insert"

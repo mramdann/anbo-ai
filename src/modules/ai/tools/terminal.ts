@@ -17,6 +17,26 @@ export function buildTerminalTools(ctx: ToolContext) {
     });
 
   return {
+    terminal_open: tool({
+      description:
+        "Open a new normal Anbo terminal in this run's workspace without changing focus. A short purpose-specific tab title is required, such as Dev Server, Tests, or Build. Use terminal_execute with the returned terminalId after the shell becomes idle.",
+      inputSchema: z.object({
+        title: z.string().trim().min(1).max(64),
+      }),
+      needsApproval: true,
+      execute: async ({ title }) =>
+        sharedTerminalRequest("terminal_open", { title }),
+    }),
+
+    terminal_close: tool({
+      description:
+        "Close an idle normal terminal previously created by terminal_open in this application session. User-created terminals, agent CLI terminals, terminals with pending input, and terminals running a foreground process are never closed.",
+      inputSchema: z.object({ terminalId: z.string().min(1) }),
+      needsApproval: true,
+      execute: async ({ terminalId }) =>
+        sharedTerminalRequest("terminal_close", { terminalId }),
+    }),
+
     terminal_list: tool({
       description:
         "List normal user-owned Anbo terminals in this run's workspace. Returns stable terminal ids, cwd, shell, dimensions, active state, and idle/busy status. Private terminals and agent CLI tabs are excluded. Use this before other terminal tools.",
@@ -42,7 +62,7 @@ export function buildTerminalTools(ctx: ToolContext) {
 
     terminal_wait: tool({
       description:
-        "Wait for a command started by terminal_execute to complete, then return its exit code and redacted bounded output. A timeout is a normal poll result and does not block other terminal actions.",
+        "Wait for a command started by terminal_execute. Returns its stable phase, completionReason, interrupted flag, per-execution exitCode, and redacted bounded output. Completed results are idempotent; a timeout is a normal poll result.",
       inputSchema: z.object({
         terminalId: z.string().min(1),
         executionId: z.string().min(1).max(128),
@@ -60,16 +80,22 @@ export function buildTerminalTools(ctx: ToolContext) {
 
     terminal_interrupt: tool({
       description:
-        "Send Ctrl+C to a foreground command in an explicitly selected shared normal terminal, or safely cancel unsubmitted prompt input. Requires user approval and never changes workspace focus.",
-      inputSchema: z.object({ terminalId: z.string().min(1) }),
+        "Cancel a specific queued, dispatched, or running terminal execution, or omit executionId to send Ctrl+C to the terminal's current foreground command or clear pending prompt input. Requires user approval and never changes workspace focus.",
+      inputSchema: z.object({
+        terminalId: z.string().min(1),
+        executionId: z.string().min(1).max(128).optional(),
+      }),
       needsApproval: true,
-      execute: async ({ terminalId }) =>
-        sharedTerminalRequest("terminal_interrupt", { terminalId }),
+      execute: async ({ terminalId, executionId }) =>
+        sharedTerminalRequest("terminal_interrupt", {
+          terminalId,
+          executionId,
+        }),
     }),
 
     terminal_insert: tool({
       description:
-        "Insert one single-line string into an explicitly selected idle user-owned Anbo terminal without pressing Enter or changing focus. Requires user approval. Never targets private or agent CLI terminals.",
+        "Insert one single-line string into an explicitly selected idle user-owned Anbo terminal without pressing Enter or changing focus. Waits briefly for visible terminal echo and returns inputVisible plus a cursor for polling with terminal_read. Requires user approval.",
       inputSchema: z.object({
         terminalId: z.string().min(1),
         text: z.string().min(1).max(8_000),
@@ -81,7 +107,7 @@ export function buildTerminalTools(ctx: ToolContext) {
 
     terminal_execute: tool({
       description:
-        "Execute one single-line shell command visibly in an explicitly selected idle user-owned Anbo terminal. Prompts containing unsubmitted input are rejected instead of concatenated. The user and agent share its live output. Requires user approval and never changes workspace focus or targets private or agent CLI terminals.",
+        "Queue one single-line shell command for visible, cancellable dispatch in an explicitly selected idle user-owned Anbo terminal. Returns an executionId in phase queued; use terminal_wait for its stable final result. Prompts containing unsubmitted input are rejected instead of concatenated.",
       inputSchema: z.object({
         terminalId: z.string().min(1),
         text: z.string().min(1).max(8_000),

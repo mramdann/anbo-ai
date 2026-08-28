@@ -105,9 +105,17 @@ type Session = {
   commandRunning: boolean;
   commandGeneration: number;
   lastExitCode: number | null;
+  commandCompletions: TerminalCommandCompletion[];
   shell: string | null;
   hiddenReleaseTimer: ReturnType<typeof setTimeout> | null;
   spawnFailed: boolean;
+};
+
+const MAX_COMMAND_COMPLETIONS = 64;
+
+export type TerminalCommandCompletion = {
+  generation: number;
+  exitCode: number | null;
 };
 
 const sessions = new Map<number, Session>();
@@ -338,6 +346,7 @@ export type TerminalSessionState = {
   blockMode: BlockMode;
   commandGeneration?: number;
   lastExitCode?: number | null;
+  commandCompletions?: readonly TerminalCommandCompletion[];
   shell?: string | null;
   columns?: number;
   rows?: number;
@@ -356,6 +365,7 @@ export function getTerminalSessionState(
     blockMode: session.blockMode,
     commandGeneration: session.commandGeneration,
     lastExitCode: session.lastExitCode,
+    commandCompletions: session.commandCompletions,
     shell: session.shell,
     columns: session.cols || undefined,
     rows: session.rows || undefined,
@@ -513,6 +523,16 @@ function recordCommandCompletion(
   if (!session) return;
   session.commandGeneration += 1;
   session.lastExitCode = exitCode;
+  session.commandCompletions.push({
+    generation: session.commandGeneration,
+    exitCode,
+  });
+  if (session.commandCompletions.length > MAX_COMMAND_COMPLETIONS) {
+    session.commandCompletions.splice(
+      0,
+      session.commandCompletions.length - MAX_COMMAND_COMPLETIONS,
+    );
+  }
   session.inputPending = false;
 }
 
@@ -654,6 +674,7 @@ function ensureSession(
     commandRunning: false,
     commandGeneration: 0,
     lastExitCode: null,
+    commandCompletions: [],
     shell: null,
     hiddenReleaseTimer: null,
     spawnFailed: false,
@@ -930,6 +951,7 @@ export async function respawnSession(
   s.altScreenAtRelease = false;
   s.commandRunning = false;
   s.lastExitCode = null;
+  s.commandCompletions = [];
   s.inputPending = false;
   s.spawnFailed = false;
   cancelHiddenRelease(s);

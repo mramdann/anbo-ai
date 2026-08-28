@@ -1,6 +1,8 @@
+import { IS_WINDOWS } from "@/lib/platform";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { LatestResizeQueue } from "./latestResizeQueue";
+import { encodeWindowsPtyInput } from "./windowsPtyInput";
 
 const textEncoder = new TextEncoder();
 
@@ -63,7 +65,12 @@ export async function openPty(
   return {
     id,
     // Raw bytes + id header: no JSON round-trip on the per-keystroke path.
-    write: (data) => invoke("pty_write", textEncoder.encode(data), { headers }),
+    write: (data) =>
+      invoke(
+        "pty_write",
+        textEncoder.encode(IS_WINDOWS ? encodeWindowsPtyInput(data) : data),
+        { headers },
+      ),
     resize: (c, r) => resizeQueue.request({ cols: c, rows: r }),
     close: async () => {
       if (closed) return;

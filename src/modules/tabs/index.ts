@@ -6,6 +6,7 @@ export {
 export {
   type AiDiffStatus,
   type AiDiffTab,
+  createTerminalTab,
   DEFAULT_SPACE_ID,
   type EditorTab,
   type GitCommitFileDiffTab,
