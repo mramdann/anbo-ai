@@ -706,6 +706,72 @@ describe("shared terminal input", () => {
     expect(write).not.toHaveBeenCalled();
   });
 
+  it("synchronizes the initial OSC prompt before capturing the execution baseline", async () => {
+    let generation = 0;
+    let completions: Array<{ generation: number; exitCode: number | null }> =
+      [];
+    const prepare = vi.fn(() => {
+      setTimeout(() => {
+        generation = 1;
+        completions = [{ generation: 1, exitCode: 0 }];
+      }, 10);
+      return true;
+    });
+    const write = vi.fn(() => {
+      expect(generation).toBe(1);
+      setTimeout(() => {
+        generation = 2;
+        completions = [
+          { generation: 1, exitCode: 0 },
+          { generation: 2, exitCode: 7 },
+        ];
+      }, 10);
+      return true;
+    });
+    const service = createTerminalAutomationService(
+      dependencies({
+        prepare,
+        write,
+        getSessionState: () => ({
+          ready: true,
+          shellExited: false,
+          commandRunning: false,
+          blockMode: "prompt",
+          commandGeneration: generation,
+          commandCompletions: completions,
+          lastExitCode: completions[completions.length - 1]?.exitCode ?? null,
+          shell: "powershell",
+          inputPending: false,
+        }),
+      }),
+    );
+
+    const executed = await service.handle("terminal_execute", {
+      workspace: workspace.root,
+      terminalId: "terminal:10:101",
+      text: "cmd /c exit 7",
+    });
+    const executionId = (executed.result as { executionId: string })
+      .executionId;
+
+    await expect(
+      service.handle("terminal_wait", {
+        workspace: workspace.root,
+        terminalId: "terminal:10:101",
+        executionId,
+        timeout: 1_000,
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        completed: true,
+        completionReason: "exited",
+        exitCode: 7,
+      },
+    });
+    expect(prepare).toHaveBeenCalledWith(101);
+    expect(write).toHaveBeenCalledWith(101, "cmd /c exit 7\r");
+  });
+
   it("returns bounded redacted incremental output", async () => {
     let buffer = "ready API_KEY=supersecretvalue";
     const service = createTerminalAutomationService(

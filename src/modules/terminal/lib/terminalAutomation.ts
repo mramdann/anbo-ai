@@ -18,6 +18,8 @@ const MAX_TRACKED_TERMINALS = 100;
 const MAX_EXECUTIONS = 100;
 const WAIT_POLL_MS = 75;
 const DISPATCH_DELAY_MS = 200;
+const INITIAL_PROMPT_SYNC_TIMEOUT_MS = 3_000;
+const INITIAL_PROMPT_SYNC_POLL_MS = 25;
 const INPUT_VISIBILITY_TIMEOUT_MS = 500;
 const INPUT_VISIBILITY_POLL_MS = 25;
 
@@ -467,6 +469,29 @@ export function createTerminalAutomationService(
     return completed;
   };
 
+  const synchronizeInitialPrompt = async (
+    leafId: number,
+    initialState: TerminalSessionState,
+  ): Promise<TerminalSessionState | null> => {
+    if (
+      !shellSupportsOsc(initialState.shell) ||
+      (initialState.commandGeneration ?? 0) > 0
+    ) {
+      return initialState;
+    }
+    const deadline = Date.now() + INITIAL_PROMPT_SYNC_TIMEOUT_MS;
+    let state: TerminalSessionState | null = initialState;
+    while (Date.now() < deadline) {
+      await new Promise((resolveDelay) =>
+        setTimeout(resolveDelay, INITIAL_PROMPT_SYNC_POLL_MS),
+      );
+      state = deps.getSessionState(leafId);
+      if (!state || state.shellExited) return null;
+      if ((state.commandGeneration ?? 0) > 0) return state;
+    }
+    return null;
+  };
+
   const dispatchExecution = async (execution: ExecutionState) => {
     if (execution.phase !== "queued") return;
     const state = deps.getSessionState(execution.terminal.leafId);
@@ -491,7 +516,13 @@ export function createTerminalAutomationService(
       finishExecution(execution, "dispatch_failed", null);
       return;
     }
-    const latestState = deps.getSessionState(execution.terminal.leafId);
+    const preparedState = deps.getSessionState(execution.terminal.leafId);
+    const latestState = preparedState
+      ? await synchronizeInitialPrompt(
+          execution.terminal.leafId,
+          preparedState,
+        )
+      : null;
     if (
       !latestState?.ready ||
       latestState.shellExited ||
