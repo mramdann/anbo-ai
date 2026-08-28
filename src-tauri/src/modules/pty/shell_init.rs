@@ -1215,6 +1215,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn powershell_prompt_captures_pipeline_status_before_running_hooks() {
+        let profile = include_str!("scripts/profile.ps1");
+        let capture = profile.find("$commandSucceeded = $?").unwrap();
+        let install = capture + profile[capture..].find("__anbo_install_readline").unwrap();
+
+        assert!(capture < install);
+        assert!(profile.contains("if ($commandSucceeded)"));
+        assert!(!profile.contains("$lec = $LASTEXITCODE"));
+    }
+
     #[cfg(windows)]
     #[test]
     fn hook_executable_env_value_quotes_paths_with_spaces() {

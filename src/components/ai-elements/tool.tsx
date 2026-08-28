@@ -40,6 +40,12 @@ const TOOL_META: Record<string, { label: string; icon: typeof File01Icon }> = {
   edit: { label: "Edit", icon: FileEditIcon },
   multi_edit: { label: "Edit", icon: Edit02Icon },
   bash_run: { label: "Run", icon: TerminalIcon },
+  terminal_list: { label: "Terminals", icon: TerminalIcon },
+  terminal_read: { label: "Read terminal", icon: TerminalIcon },
+  terminal_insert: { label: "Insert", icon: TerminalIcon },
+  terminal_execute: { label: "Run in terminal", icon: TerminalIcon },
+  terminal_wait: { label: "Wait for terminal", icon: TerminalIcon },
+  terminal_interrupt: { label: "Interrupt terminal", icon: TerminalIcon },
   bash_background: { label: "Spawn", icon: TerminalIcon },
   bash_logs: { label: "Logs", icon: TerminalIcon },
   bash_list: { label: "Jobs", icon: TerminalIcon },
@@ -89,6 +95,14 @@ function deriveSummary(toolName: string, input: unknown): string | null {
     case "bash_run":
     case "bash_background":
       return str("command");
+    case "terminal_read":
+    case "terminal_insert":
+    case "terminal_execute":
+    case "terminal_wait":
+    case "terminal_interrupt":
+      return str("terminalId");
+    case "terminal_list":
+      return "shared shell terminals";
     case "bash_logs":
     case "bash_kill":
       return str("id");

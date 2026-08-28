@@ -71,6 +71,7 @@ export type BlockMatch = { line: number; col: number; len: number };
 export type BlockDecorationsOptions = {
   onCwd?: (cwd: string) => void;
   onMode?: (mode: BlockMode) => void;
+  onCommandComplete?: (exitCode: number | null) => void;
   onViewport?: () => void;
 };
 
@@ -88,6 +89,7 @@ export class BlockDecorations {
   private readonly disposers: (() => void)[] = [];
   private readonly onCwd?: (cwd: string) => void;
   private readonly onMode?: (mode: BlockMode) => void;
+  private readonly onCommandComplete?: (exitCode: number | null) => void;
   private readonly onViewport?: () => void;
   private viewportRaf: number | null = null;
 
@@ -97,6 +99,7 @@ export class BlockDecorations {
   ) {
     this.onCwd = opts?.onCwd;
     this.onMode = opts?.onMode;
+    this.onCommandComplete = opts?.onCommandComplete;
     this.onViewport = opts?.onViewport;
     this.term.options.cursorInactiveStyle = "none";
     const osc133 = term.parser.registerOscHandler(133, (data) => {
@@ -470,6 +473,7 @@ export class BlockDecorations {
       case "D":
         this.shellState.inCommand = false;
         this.finishBlock(rest);
+        this.onCommandComplete?.(parseExitCode(rest));
         this.mode = reduceMode(this.mode, { type: "osc133", marker: "D" });
         break;
     }

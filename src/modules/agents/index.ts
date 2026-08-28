@@ -26,11 +26,13 @@ export {
   validateAgentLaunchCommand,
 } from "./lib/launcher";
 export {
+  AGENT_EXIT_RESUME_GRACE_MS,
+  AgentExitResumeGuard,
   buildAgentLaunchCommand,
-  buildAgentResumeCommand,
   buildAgentRestoreCommand,
-  createAgentRestoreFallback,
+  buildAgentResumeCommand,
   collectAgentResumeLeaves,
+  createAgentRestoreFallback,
   createAgentResumeStates,
   createManualAgentResumeState,
   normalizePersistedAgentResume,

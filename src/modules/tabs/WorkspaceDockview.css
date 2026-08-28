@@ -47,13 +47,13 @@
 
 .dockview-theme-anbo-workspace .dv-tabs-and-actions-container {
   align-items: stretch;
-  border-bottom: 1px solid color-mix(in oklab, var(--border) 65%, transparent);
-  padding: 3px 4px;
+  border-bottom: 0;
+  padding: 3px 5px 0;
   overflow: hidden;
 }
 
 .dockview-theme-anbo-workspace .dv-tabs-container {
-  gap: 2px;
+  gap: 8px;
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
@@ -75,14 +75,13 @@
 }
 
 .dockview-theme-anbo-workspace .dv-tab {
-  height: 29px;
+  height: 33px;
   max-width: 320px;
   padding: 0;
-  border-radius: 6px;
+  border-radius: 8px 8px 0 0;
   background: transparent;
 }
 
-.dockview-theme-anbo-workspace .dv-tab::before,
 .dockview-theme-anbo-workspace .dv-tab:focus::after,
 .dockview-theme-anbo-workspace .dv-tab:focus-within::after {
   display: none;
@@ -93,44 +92,112 @@
   outline-offset: -1px;
 }
 
-@keyframes anbo-workspace-active-tab-pulse {
+@keyframes anbo-workspace-active-tab-focus-pulse {
   0%,
   100% {
-    background: color-mix(in oklab, var(--primary) 9%, transparent);
     box-shadow:
-      inset 0 0 0 1px color-mix(in oklab, var(--ring) 28%, transparent),
-      0 0 0 0 color-mix(in oklab, var(--primary) 0%, transparent),
-      0 1px 2px color-mix(in oklab, black 12%, transparent);
+      inset 0 0.5px 0 color-mix(in oklab, var(--primary) 38%, transparent),
+      0 2px 0 var(--anbo-chrome-tab-surface),
+      0 -1px 2px color-mix(in oklab, var(--foreground) 4%, transparent),
+      0 0 0 0 color-mix(in oklab, var(--primary) 0%, transparent);
   }
 
   50% {
-    background: color-mix(in oklab, var(--primary) 16%, transparent);
     box-shadow:
-      inset 0 0 0 1px color-mix(in oklab, var(--ring) 68%, transparent),
-      0 0 0 3px color-mix(in oklab, var(--primary) 10%, transparent),
-      0 2px 6px color-mix(in oklab, var(--primary) 14%, transparent);
+      inset 0 0.5px 0 color-mix(in oklab, var(--primary) 88%, transparent),
+      0 2px 0 var(--anbo-chrome-tab-surface),
+      0 -1px 4px color-mix(in oklab, var(--primary) 20%, transparent),
+      0 0 0 2px color-mix(in oklab, var(--primary) 8%, transparent);
   }
 }
 
 .dockview-theme-anbo-workspace .dv-tab.dv-active-tab {
-  background: color-mix(in oklab, var(--primary) 9%, transparent);
+  z-index: 2;
+  background: transparent;
+  box-shadow: none;
+}
+
+.dockview-theme-anbo-workspace
+.dv-tab.dv-active-tab::before,
+.dockview-theme-anbo-workspace .dv-tab.dv-active-tab::after {
+  display: none;
+}
+
+.dockview-theme-anbo-workspace
+  .dv-tab.dv-active-tab
+  .anbo-workspace-dockview-tab {
+  --anbo-chrome-tab-surface: var(--background);
+
+  position: relative;
+  z-index: 2;
+  border-radius: 8px 8px 0 0;
+  background: var(--anbo-chrome-tab-surface);
   box-shadow:
-    inset 0 0 0 1px color-mix(in oklab, var(--ring) 28%, transparent),
-    0 1px 2px color-mix(in oklab, black 12%, transparent);
+    inset 0 1px 0 color-mix(in oklab, var(--foreground) 10%, transparent),
+    0 2px 0 var(--anbo-chrome-tab-surface),
+    0 -1px 2px color-mix(in oklab, var(--foreground) 4%, transparent);
   transition:
     background-color var(--dur-base) var(--ease-soft),
     box-shadow var(--dur-base) var(--ease-soft);
 }
 
 .dockview-theme-anbo-workspace
+  .dv-tab.dv-active-tab
+  .anbo-workspace-dockview-tab[data-workspace-dockview-tab-kind="terminal"] {
+  --anbo-chrome-tab-surface: var(--terminal-background);
+}
+
+.dockview-theme-anbo-workspace
+  .dv-tab.dv-active-tab
+  .anbo-workspace-dockview-tab[data-workspace-dockview-tab-kind="browser"] {
+  --anbo-chrome-tab-surface: var(--card);
+}
+
+.dockview-theme-anbo-workspace
   .dv-groupview.dv-active-group
   > .dv-tabs-and-actions-container
-  .dv-tab.dv-active-tab {
-  animation: anbo-workspace-active-tab-pulse 1.9s ease-in-out infinite;
+  .dv-tab.dv-active-tab
+  .anbo-workspace-dockview-tab {
+  animation: anbo-workspace-active-tab-focus-pulse 1.8s ease-in-out infinite;
+}
+
+.dockview-theme-anbo-workspace
+  .dv-tab.dv-active-tab
+  .anbo-workspace-dockview-tab::before,
+.dockview-theme-anbo-workspace
+  .dv-tab.dv-active-tab
+  .anbo-workspace-dockview-tab::after {
+  position: absolute;
+  top: auto;
+  bottom: 0;
+  display: block;
+  width: 8px;
+  height: 8px;
+  content: "";
+  pointer-events: none;
+}
+
+.dockview-theme-anbo-workspace
+  .dv-tab.dv-active-tab
+  .anbo-workspace-dockview-tab::before {
+  left: -8px;
+  border-bottom-right-radius: 8px;
+  background: transparent;
+  box-shadow: 4px 4px 0 4px var(--anbo-chrome-tab-surface);
+}
+
+.dockview-theme-anbo-workspace
+  .dv-tab.dv-active-tab
+  .anbo-workspace-dockview-tab::after {
+  right: -8px;
+  border-bottom-left-radius: 8px;
+  background: transparent;
+  box-shadow: -4px 4px 0 4px var(--anbo-chrome-tab-surface);
 }
 
 .dockview-theme-anbo-workspace .dv-tab.dv-inactive-tab:hover {
-  background: color-mix(in oklab, var(--foreground) 4%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--foreground) 5%, transparent);
   color: color-mix(in oklab, var(--foreground) 82%, transparent);
 }
 
@@ -142,7 +209,7 @@
 
 .dockview-theme-anbo-workspace .dv-right-actions-container {
   align-items: center;
-  padding-left: 3px;
+  padding: 0 0 0 5px;
 }
 
 .anbo-workspace-dockview-actions {
@@ -371,8 +438,13 @@
   .dockview-theme-anbo-workspace
     .dv-groupview.dv-active-group
     > .dv-tabs-and-actions-container
-    .dv-tab.dv-active-tab {
+    .dv-tab.dv-active-tab
+    .anbo-workspace-dockview-tab {
     animation: none;
+    box-shadow:
+      inset 0 0.5px 0 color-mix(in oklab, var(--primary) 62%, transparent),
+      0 2px 0 var(--anbo-chrome-tab-surface),
+      0 -1px 2px color-mix(in oklab, var(--foreground) 4%, transparent);
   }
 
   .anbo-browser-automation-indicator::before {

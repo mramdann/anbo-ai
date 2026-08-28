@@ -35,6 +35,11 @@ export function createRunToolContext(
       if (live.getActiveSpaceId() !== snapshot.spaceId) return false;
       return live.injectIntoActivePty(text);
     },
+    sharedTerminalRequest: (method, params) =>
+      getLive().sharedTerminalRequest(method, {
+        ...params,
+        workspace: snapshot.workspaceRoot ?? snapshot.spaceId,
+      }),
     openBrowser: (url) => getLive().openBrowser(url, snapshot.spaceId),
     navigateBrowser: (url) => getLive().navigateBrowser(url, snapshot.spaceId),
     getActiveBrowserTabId: () =>

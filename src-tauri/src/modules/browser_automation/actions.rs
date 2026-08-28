@@ -157,7 +157,7 @@ pub async fn handle_action(
 ) -> Result<Value, (String, String)> {
     let started = Instant::now();
     let result = handle_action_inner(app, method, params).await;
-    if method.starts_with("agent_") {
+    if method.starts_with("agent_") || method.starts_with("terminal_") {
         return result;
     }
     result.map(|mut value| {
@@ -174,7 +174,7 @@ async fn handle_action_inner(
     method: &str,
     params: Value,
 ) -> Result<Value, (String, String)> {
-    if method.starts_with("agent_") {
+    if method.starts_with("agent_") || method.starts_with("terminal_") {
         return crate::modules::browser_automation::agent_actions::handle_agent_action(
             app, method, params,
         )

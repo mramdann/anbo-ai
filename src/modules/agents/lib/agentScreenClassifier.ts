@@ -92,14 +92,17 @@ export function classifyAgentScreen(
       // the reliable boundary between stale spinner text and live work.
       settledAt = lastPatternIndex(
         screen,
-        /(?:baked|brewed|cooked|crunched|worked) for \d+s/i,
+        /(?:baked|brewed|churned|cooked|crunched|worked) for (?:\d+m\s*)?\d+(?:\.\d+)?s/i,
       );
       break;
     case "codex":
       if (/(?:gpt-|OpenAI Codex|\/model to change)/i.test(screen)) {
         readyAt = lastPatternIndex(screen, /(?:\u203a|>)(?!\s*\d+\.)[^\n]*/u);
       }
-      settledAt = lastPatternIndex(screen, /worked for \d+s/i);
+      settledAt = lastPatternIndex(
+        screen,
+        /worked for (?:\d+m\s*)?\d+(?:\.\d+)?s/i,
+      );
       break;
     case "agy":
     case "antigravity":

@@ -35,6 +35,10 @@ fn agent_id_prop() -> Value {
     json!({ "type": "string", "minLength": 1, "description": "Workspace-scoped agent id returned by agent_list." })
 }
 
+fn terminal_id_prop() -> Value {
+    json!({ "type": "string", "minLength": 1, "description": "Workspace-scoped shared terminal id returned by terminal_list, such as terminal:12:12." })
+}
+
 /// The `tools` array returned by `tools/list`, grouped under `browser_` and
 /// `agent_` capability prefixes.
 pub fn tool_definitions() -> Value {
@@ -43,6 +47,7 @@ pub fn tool_definitions() -> Value {
     let workspace = workspace_prop();
     let file_workspace = file_workspace_prop();
     let agent_id = agent_id_prop();
+    let terminal_id = terminal_id_prop();
     tool_array![
         { "name": "browser_open", "description": "Open a native browser tab without focusing it in an explicitly selected Anbo workspace. Pass the agent's workspace root or a space id; UI focus is never used as a fallback.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["url", "workspace"] } },
         { "name": "browser_close", "description": "Close a native browser tab in an explicitly selected Anbo workspace.", "annotations": { "destructiveHint": true, "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["tabId", "workspace"] } },
@@ -82,7 +87,13 @@ pub fn tool_definitions() -> Value {
         { "name": "agent_status", "description": "Get the callsign, CLI type, working or waiting state, tab, space, workspace, and discovered resume session for one live agent. Agent ids are readable and workspace-scoped, such as lucian-claude:14 or claude:14.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agentId": agent_id.clone() }, "required": ["workspace", "agentId"] } },
         { "name": "agent_read", "description": "Read a redacted, bounded increment of an agent terminal. Reuse the returned opaque cursor to receive only newer output; reset indicates that terminal history changed or the cursor expired.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agentId": agent_id.clone(), "cursor": { "type": "string", "description": "Opaque cursor returned by an earlier agent_read call." }, "maxChars": { "type": "integer", "minimum": 1, "maximum": 12000, "default": 4000 } }, "required": ["workspace", "agentId"] } },
         { "name": "agent_send", "description": "Send one bounded instruction to a live agent without activating its workspace. By default waits until the agent is ready, serializes concurrent sends, and rejects duplicate message ids. Set waitForReady to false to deliver immediately even while the reported state is working.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agentId": agent_id.clone(), "message": { "type": "string", "minLength": 1, "maxLength": 8000 }, "waitForReady": { "type": "boolean", "default": true }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 30000 }, "sourceAgentId": { "type": "string", "description": "Optional sender agent id. Sending to the same id is rejected." }, "messageId": { "type": "string", "maxLength": 128, "description": "Optional idempotency key scoped to the target agent." } }, "required": ["workspace", "agentId", "message"] } },
-        { "name": "agent_wait", "description": "Wait for an agent to become working, waiting for input, or finished, or for its state to change when status is omitted. A normal timeout is returned as timedOut rather than a tool error.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace, "agentId": agent_id, "status": { "type": "string", "enum": ["working", "waiting", "finished"] }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 10000 } }, "required": ["workspace", "agentId"] } }
+        { "name": "agent_wait", "description": "Wait for an agent to become working, waiting for input, or finished, or for its state to change when status is omitted. A normal timeout is returned as timedOut rather than a tool error.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agentId": agent_id, "status": { "type": "string", "enum": ["working", "waiting", "finished"] }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 10000 } }, "required": ["workspace", "agentId"] } },
+        { "name": "terminal_list", "description": "List normal non-private Anbo shell terminals in an explicitly selected workspace. Agent CLI terminals are excluded. Does not activate the workspace or move UI focus.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
+        { "name": "terminal_read", "description": "Read a redacted bounded increment from a shared normal terminal. Reuse the returned cursor to receive only newer output. hasMore reports unread output after this response; historyTruncated reports omitted older history; reset and replayed identify a terminal buffer repaint. Private and agent CLI terminals are never available.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone(), "cursor": { "type": "string", "description": "Opaque cursor returned by an earlier terminal_read call." }, "maxChars": { "type": "integer", "minimum": 1, "maximum": 12000, "default": 4000 } }, "required": ["workspace", "terminalId"] } },
+        { "name": "terminal_insert", "description": "Insert one bounded single-line string into an explicitly selected idle normal terminal without pressing Enter or changing UI focus. Rejects private terminals, agent CLI terminals, and busy terminals.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone(), "text": { "type": "string", "minLength": 1, "maxLength": 8000 } }, "required": ["workspace", "terminalId", "text"] } },
+        { "name": "terminal_execute", "description": "Execute one bounded single-line command in an explicitly selected idle normal terminal without changing UI focus. Returns an executionId; call terminal_wait with it to obtain completion, exitCode, and bounded output. Rejects private terminals, agent CLI terminals, foreground processes, and prompts containing unsubmitted input so commands cannot be concatenated accidentally.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone(), "text": { "type": "string", "minLength": 1, "maxLength": 8000 } }, "required": ["workspace", "terminalId", "text"] } },
+        { "name": "terminal_wait", "description": "Wait for a command started by terminal_execute to complete without holding the terminal lock. Returns exitCode and redacted bounded output. A normal timeout is returned as timedOut rather than a tool error.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone(), "executionId": { "type": "string", "minLength": 1, "maxLength": 128 }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 10000 }, "maxChars": { "type": "integer", "minimum": 1, "maximum": 12000, "default": 4000 } }, "required": ["workspace", "terminalId", "executionId"] } },
+        { "name": "terminal_interrupt", "description": "Send Ctrl+C to the foreground command in an explicitly selected shared normal terminal without changing UI focus. If the shell is idle with unsubmitted prompt input, safely cancel that input instead and return clearedInput:true. Rejects idle prompts without input, private terminals, and agent CLI terminals.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace, "terminalId": terminal_id }, "required": ["workspace", "terminalId"] } }
     ]
 }
 
@@ -128,6 +139,12 @@ pub fn tool_name_to_method(name: &str) -> Option<&'static str> {
         "agent_read" => "agent_read",
         "agent_send" => "agent_send",
         "agent_wait" => "agent_wait",
+        "terminal_list" => "terminal_list",
+        "terminal_read" => "terminal_read",
+        "terminal_insert" => "terminal_insert",
+        "terminal_execute" => "terminal_execute",
+        "terminal_wait" => "terminal_wait",
+        "terminal_interrupt" => "terminal_interrupt",
         _ => return None,
     })
 }
@@ -139,12 +156,12 @@ mod tests {
     #[test]
     fn tools_have_capability_prefixes_and_unique_names() {
         let tools = tool_definitions().as_array().unwrap().clone();
-        assert_eq!(tools.len(), 39);
+        assert_eq!(tools.len(), 45);
         let mut names = std::collections::HashSet::new();
         for t in &tools {
             let n = t.get("name").and_then(|v| v.as_str()).unwrap();
             assert!(
-                n.starts_with("browser_") || n.starts_with("agent_"),
+                n.starts_with("browser_") || n.starts_with("agent_") || n.starts_with("terminal_"),
                 "{n} missing capability prefix"
             );
             assert!(names.insert(n), "duplicate tool name {n}");
@@ -159,6 +176,30 @@ mod tests {
     fn unknown_tool_maps_to_none() {
         assert!(tool_name_to_method("browser_nope").is_none());
         assert!(tool_name_to_method("navigate").is_none());
+    }
+
+    #[test]
+    fn shared_terminal_tools_are_workspace_scoped() {
+        let tools = tool_definitions();
+        for (name, method) in [
+            ("terminal_list", "terminal_list"),
+            ("terminal_read", "terminal_read"),
+            ("terminal_insert", "terminal_insert"),
+            ("terminal_execute", "terminal_execute"),
+            ("terminal_wait", "terminal_wait"),
+            ("terminal_interrupt", "terminal_interrupt"),
+        ] {
+            let tool = tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap();
+            assert!(tool["inputSchema"]["required"]
+                .as_array()
+                .is_some_and(|required| required.contains(&json!("workspace"))));
+            assert_eq!(tool_name_to_method(name), Some(method));
+        }
     }
 
     #[test]

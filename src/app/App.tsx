@@ -15,6 +15,7 @@ import { usePresence } from "@/lib/usePresence";
 import { useZoom } from "@/lib/useZoom";
 import { isMarkdownPath } from "@/lib/utils";
 import {
+  AgentExitResumeGuard,
   type AgentLaunchRequest,
   AgentNotificationsBridge,
   buildAgentLaunchCommand,
@@ -33,7 +34,12 @@ import {
   withAgentMcpRuntime,
 } from "@/modules/agents";
 import { setAgentRequestHandler } from "@/modules/agents/lib/agentAutomationBridge";
-import { AGENT_RESPONSE_EVENT } from "@/modules/agents/lib/agentAutomationProtocol";
+import {
+  AGENT_RESPONSE_EVENT,
+  type AgentAutomationRequest,
+  type AgentAutomationResponse,
+  type TerminalAutomationMethod,
+} from "@/modules/agents/lib/agentAutomationProtocol";
 import { agentIdFor } from "@/modules/agents/lib/agentIdentity";
 import { useAgentStore } from "@/modules/agents/store/agentStore";
 import {
@@ -49,12 +55,12 @@ import {
 import { AiComposerProvider } from "@/modules/ai/lib/composer";
 import { native } from "@/modules/ai/lib/native";
 import {
+  acceptBrowserPopupRequest,
   BROWSER_CLOSE_RESPONSE_EVENT,
   BROWSER_OPEN_RESPONSE_EVENT,
   BROWSER_TABS_RESPONSE_EVENT,
   type BrowserPaneHandle,
   BrowserStack,
-  acceptBrowserPopupRequest,
   beginBrowserSession,
   browserEmbedClose,
   browserOpenPlacement,
@@ -132,15 +138,18 @@ import {
   disposeSession,
   disposeSessionsOutside,
   findLeafCwd,
+  getTerminalSessionState,
   hasLeaf,
   leafHasForegroundProcess,
   leafIds,
   navigateFocusedBlocks,
   type PaneBounds,
+  prepareTerminalAutomationSession,
   ptyIdForLeaf,
   readTerminalBuffer,
   refitVisibleTerminalSlots,
   selectBackgroundTerminalTabs,
+  setTerminalAutomationHandler,
   type TerminalPaneHandle,
   TerminalStack,
   useAgentActivityStore,
@@ -838,10 +847,22 @@ export default function App() {
   const agentDiscoveryLeavesRef = useRef(new Set<number>());
   const requestedAgentDiscoveryLeavesRef = useRef(new Set<number>());
   const agentDiscoveryGenerationRef = useRef(new Map<number, number>());
+  const agentExitResumeGuardRef = useRef(new AgentExitResumeGuard());
   const agentRecoveryRunningRef = useRef(false);
   const [agentDiscoveryRetry, setAgentDiscoveryRetry] = useState(0);
+  useEffect(() => {
+    const dispose = () => {
+      agentExitResumeGuardRef.current.dispose();
+    };
+    window.addEventListener("pagehide", dispose);
+    return () => {
+      window.removeEventListener("pagehide", dispose);
+      dispose();
+    };
+  }, []);
   const handleAgentStarted = useCallback(
     (leafId: number, agent: string, sessionId?: string) => {
+      agentExitResumeGuardRef.current.cancel(leafId);
       const target = tabsRef.current.find(
         (tab) =>
           tab.kind === "terminal" &&
@@ -879,10 +900,7 @@ export default function App() {
       const restoringFreshAgent =
         resumedAgentLeavesRef.current.has(leafId) &&
         existing?.resume.sessionId === undefined;
-      if (
-        resumedAgentLeavesRef.current.has(leafId) &&
-        !restoringFreshAgent
-      ) {
+      if (resumedAgentLeavesRef.current.has(leafId) && !restoringFreshAgent) {
         return;
       }
       if (restoringFreshAgent) {
@@ -926,7 +944,11 @@ export default function App() {
         leafId,
         (agentDiscoveryGenerationRef.current.get(leafId) ?? 0) + 1,
       );
-      deactivateAgentResume(leafId);
+      agentExitResumeGuardRef.current.schedule(
+        leafId,
+        () => useAgentStore.getState().sessions[leafId] !== undefined,
+        () => deactivateAgentResume(leafId),
+      );
     },
     [deactivateAgentResume],
   );
@@ -1478,22 +1500,32 @@ export default function App() {
 
   useEffect(() => {
     let servicePromise:
-      | Promise<
-          ReturnType<
-            typeof import("@/modules/agents/lib/agentAutomation")["createAgentAutomationService"]
-          >
-        >
+      | Promise<{
+          handle: (
+            request: AgentAutomationRequest,
+          ) => Promise<AgentAutomationResponse>;
+          dispose: () => void;
+        }>
       | undefined;
     const getService = () => {
-      servicePromise ??= import("@/modules/agents/lib/agentAutomation").then(
-        ({ createAgentAutomationService }) =>
-          createAgentAutomationService({
+      servicePromise ??= Promise.all([
+        import("@/modules/agents/lib/agentAutomation"),
+        import("@/modules/terminal/lib/terminalAutomation"),
+      ]).then(
+        ([
+          { createAgentAutomationService },
+          { createTerminalAutomationService },
+        ]) => {
+          const shared = {
             getTabs: () => tabsRef.current,
             getSpaces: () => useSpaces.getState().spaces,
             getSessions: () => useAgentStore.getState().sessions,
             getActiveTabId: () => activeIdRef.current,
-            getBuffer: (leafId) => readTerminalBuffer(leafId, 400),
+            getBuffer: (leafId: number) => readTerminalBuffer(leafId, 400),
             write: writeToSession,
+          };
+          const agentService = createAgentAutomationService({
+            ...shared,
             spawn: (workspace, agent) => {
               const space = useSpaces
                 .getState()
@@ -1533,7 +1565,24 @@ export default function App() {
               useAgentStore.subscribe((state, previous) =>
                 listener(state.sessions, previous.sessions),
               ),
-          }),
+          });
+          const terminalService = createTerminalAutomationService({
+            ...shared,
+            getSessionState: getTerminalSessionState,
+            hasForegroundProcess: leafHasForegroundProcess,
+            prepare: prepareTerminalAutomationSession,
+          });
+          return {
+            handle: (request) =>
+              request.method.startsWith("terminal_")
+                ? terminalService.handle(
+                    request.method as TerminalAutomationMethod,
+                    request.params,
+                  )
+                : agentService.handle(request),
+            dispose: () => agentService.dispose(),
+          };
+        },
       );
       return servicePromise;
     };
@@ -1555,7 +1604,17 @@ export default function App() {
           }),
         );
     });
+    setTerminalAutomationHandler((method, params) =>
+      getService().then((service) =>
+        service.handle({
+          requestId: `panel-${Date.now()}`,
+          method,
+          params,
+        }),
+      ),
+    );
     return () => {
+      setTerminalAutomationHandler(null);
       void servicePromise?.then((service) => service.dispose());
     };
   }, []);

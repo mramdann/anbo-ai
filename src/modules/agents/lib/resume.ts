@@ -31,6 +31,39 @@ export type AgentResumeLeaf = {
   resume: AgentResumeState;
 };
 
+export const AGENT_EXIT_RESUME_GRACE_MS = 3_000;
+
+export class AgentExitResumeGuard {
+  private readonly pending = new Map<number, ReturnType<typeof setTimeout>>();
+
+  constructor(private readonly delayMs = AGENT_EXIT_RESUME_GRACE_MS) {}
+
+  cancel(leafId: number): void {
+    const timer = this.pending.get(leafId);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    this.pending.delete(leafId);
+  }
+
+  schedule(
+    leafId: number,
+    hasReplacement: () => boolean,
+    deactivate: () => void,
+  ): void {
+    this.cancel(leafId);
+    const timer = setTimeout(() => {
+      this.pending.delete(leafId);
+      if (!hasReplacement()) deactivate();
+    }, this.delayMs);
+    this.pending.set(leafId, timer);
+  }
+
+  dispose(): void {
+    for (const timer of this.pending.values()) clearTimeout(timer);
+    this.pending.clear();
+  }
+}
+
 const EXACT_SESSION_AGENTS = new Set<ResumableAgentId>([
   "claude",
   "codex",
@@ -221,8 +254,10 @@ export function buildAgentResumeCommand(
 export function buildAgentRestoreCommand(
   resume: PersistedAgentResume,
 ): string | null {
-  return buildAgentResumeCommand(resume) ??
-    (resume.relaunchOnRestore ? resume.command : null);
+  return (
+    buildAgentResumeCommand(resume) ??
+    (resume.relaunchOnRestore ? resume.command : null)
+  );
 }
 
 export function collectAgentResumeLeaves(tree: PaneNode): AgentResumeLeaf[] {

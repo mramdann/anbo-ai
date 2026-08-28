@@ -224,6 +224,32 @@ describe("classifyAgentScreen", () => {
     ).toBe("ready");
   });
 
+  it("settles a restored Claude screen with a multi-minute Churned summary", () => {
+    expect(
+      classifyAgentScreen(
+        "claude",
+        [
+          "Claude Code v2.1.247",
+          "\u276f inspect this workspace",
+          "Thought for 6s",
+          "final answer",
+          "Churned for 1m 37s · done 1:01 PM",
+          "\u276f ",
+          "bypass permissions on · ? for shortcuts",
+        ].join("\n"),
+      ),
+    ).toBe("ready");
+  });
+
+  it("settles a restored Codex screen with a multi-minute completion", () => {
+    expect(
+      classifyAgentScreen(
+        "codex",
+        "OpenAI Codex\nWorking (3s · esc to interrupt)\nanswer\nWorked for 2m 4.5s\n› \ngpt-5.6-sol high",
+      ),
+    ).toBe("ready");
+  });
+
   it("settles Codex and Antigravity after their completion boundary", () => {
     expect(
       classifyAgentScreen(

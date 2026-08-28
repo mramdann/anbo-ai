@@ -4,7 +4,99 @@ import { checkShellCommand } from "../lib/security";
 import type { ToolContext } from "./context";
 
 export function buildTerminalTools(ctx: ToolContext) {
+  const sharedTerminalRequest = (
+    method: Parameters<NonNullable<ToolContext["sharedTerminalRequest"]>>[0],
+    params: Record<string, unknown>,
+  ) =>
+    ctx.sharedTerminalRequest?.(method, params) ??
+    Promise.resolve({
+      error: {
+        code: "terminal_unavailable",
+        message: "shared terminal service is not ready",
+      },
+    });
+
   return {
+    terminal_list: tool({
+      description:
+        "List normal user-owned Anbo terminals in this run's workspace. Returns stable terminal ids, cwd, shell, dimensions, active state, and idle/busy status. Private terminals and agent CLI tabs are excluded. Use this before other terminal tools.",
+      inputSchema: z.object({}),
+      execute: async () => sharedTerminalRequest("terminal_list", {}),
+    }),
+
+    terminal_read: tool({
+      description:
+        "Read a redacted bounded increment from one shared normal Anbo terminal without changing workspace or focus. Reuse cursor for only newer output. hasMore and historyTruncated have distinct meanings; reset plus replayed identifies a buffer repaint.",
+      inputSchema: z.object({
+        terminalId: z.string().min(1),
+        cursor: z.string().optional(),
+        maxChars: z.number().int().min(1).max(12_000).optional(),
+      }),
+      execute: async ({ terminalId, cursor, maxChars }) =>
+        sharedTerminalRequest("terminal_read", {
+          terminalId,
+          cursor,
+          maxChars,
+        }),
+    }),
+
+    terminal_wait: tool({
+      description:
+        "Wait for a command started by terminal_execute to complete, then return its exit code and redacted bounded output. A timeout is a normal poll result and does not block other terminal actions.",
+      inputSchema: z.object({
+        terminalId: z.string().min(1),
+        executionId: z.string().min(1).max(128),
+        timeout: z.number().int().min(100).max(60_000).optional(),
+        maxChars: z.number().int().min(1).max(12_000).optional(),
+      }),
+      execute: async ({ terminalId, executionId, timeout, maxChars }) =>
+        sharedTerminalRequest("terminal_wait", {
+          terminalId,
+          executionId,
+          timeout,
+          maxChars,
+        }),
+    }),
+
+    terminal_interrupt: tool({
+      description:
+        "Send Ctrl+C to a foreground command in an explicitly selected shared normal terminal, or safely cancel unsubmitted prompt input. Requires user approval and never changes workspace focus.",
+      inputSchema: z.object({ terminalId: z.string().min(1) }),
+      needsApproval: true,
+      execute: async ({ terminalId }) =>
+        sharedTerminalRequest("terminal_interrupt", { terminalId }),
+    }),
+
+    terminal_insert: tool({
+      description:
+        "Insert one single-line string into an explicitly selected idle user-owned Anbo terminal without pressing Enter or changing focus. Requires user approval. Never targets private or agent CLI terminals.",
+      inputSchema: z.object({
+        terminalId: z.string().min(1),
+        text: z.string().min(1).max(8_000),
+      }),
+      needsApproval: true,
+      execute: async ({ terminalId, text }) =>
+        sharedTerminalRequest("terminal_insert", { terminalId, text }),
+    }),
+
+    terminal_execute: tool({
+      description:
+        "Execute one single-line shell command visibly in an explicitly selected idle user-owned Anbo terminal. Prompts containing unsubmitted input are rejected instead of concatenated. The user and agent share its live output. Requires user approval and never changes workspace focus or targets private or agent CLI terminals.",
+      inputSchema: z.object({
+        terminalId: z.string().min(1),
+        text: z.string().min(1).max(8_000),
+      }),
+      needsApproval: true,
+      execute: async ({ terminalId, text }) => {
+        const safety = checkShellCommand(text);
+        if (!safety.ok) return { error: safety.reason };
+        return sharedTerminalRequest("terminal_execute", {
+          terminalId,
+          text,
+        });
+      },
+    }),
+
     suggest_command: tool({
       description:
         "Propose a single shell command. Renders a card in chat with an 'Insert' button — the command is NOT written to any terminal automatically; only the user's click inserts it at the prompt without executing. Use this when the answer IS a command.",

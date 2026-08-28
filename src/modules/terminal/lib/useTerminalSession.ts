@@ -24,6 +24,7 @@ import {
   registerPromptTracker,
 } from "./osc-handlers";
 import { openPty, type PtySession } from "./pty-bridge";
+import { joinTerminalBufferRows } from "./terminalBuffer";
 import "../block/block.css";
 import { ensureAgentActivityListener, isAgentActivePty } from "./agentActivity";
 import {
@@ -89,6 +90,9 @@ type Session = {
   inputDraft: string;
   // Live "input has text" flag from the block shell-input (gates the watermark).
   inputActive: boolean;
+  // True while the interactive prompt contains unsubmitted text. Automation
+  // uses this to avoid concatenating an exact command onto user/tool input.
+  inputPending: boolean;
   // A command was submitted on this leaf; kills the watermark synchronously,
   // before the shell's OSC 133 C round-trips through the PTY.
   everSubmitted: boolean;
@@ -99,11 +103,28 @@ type Session = {
   // OSC 133 C..D window (or blocks running mode): a foreground process owns
   // the terminal, so the leaf must keep its live grid while hidden.
   commandRunning: boolean;
+  commandGeneration: number;
+  lastExitCode: number | null;
+  shell: string | null;
   hiddenReleaseTimer: ReturnType<typeof setTimeout> | null;
   spawnFailed: boolean;
 };
 
 const sessions = new Map<number, Session>();
+let defaultShellNamePromise: Promise<string> | null = null;
+
+function shellName(value: string): string {
+  const leaf = value.replace(/\\/g, "/").split("/").pop() ?? value;
+  return leaf.replace(/\.exe$/i, "").toLowerCase() || "unknown";
+}
+
+async function resolveShellName(configured?: string): Promise<string> {
+  if (configured) return shellName(configured);
+  defaultShellNamePromise ??= invoke<string>("pty_shell_name")
+    .then(shellName)
+    .catch(() => "unknown");
+  return defaultShellNamePromise;
+}
 
 type TerminalInputListener = (leafId: number, data: string) => void;
 const terminalInputListeners = new Set<TerminalInputListener>();
@@ -116,6 +137,26 @@ export function subscribeTerminalInput(
 }
 
 function notifyTerminalInput(leafId: number, data: string): void {
+  const session = sessions.get(leafId);
+  if (session) {
+    const printable = data.replace(
+      /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g,
+      "",
+    );
+    for (const character of printable) {
+      if (
+        character === "\r" ||
+        character === "\n" ||
+        character === "\x03" ||
+        character === "\x15"
+      ) {
+        session.inputPending = false;
+      } else {
+        const code = character.charCodeAt(0);
+        if (code >= 0x20 && code !== 0x7f) session.inputPending = true;
+      }
+    }
+  }
   for (const listener of terminalInputListeners) listener(leafId, data);
 }
 
@@ -128,13 +169,19 @@ export function readTerminalBuffer(
   const slot = getLiveSlotForLeaf(leafId);
   if (slot) {
     const buffer = slot.term.buffer.active;
-    const lines: string[] = [];
-    const start = Math.max(0, buffer.length - maxLines);
-    for (let index = start; index < buffer.length; index++) {
-      lines.push(buffer.getLine(index)?.translateToString(true) ?? "");
+    const rows: { text: string; wrapped: boolean }[] = [];
+    let start = Math.max(0, buffer.length - maxLines);
+    let rewind = 0;
+    while (start > 0 && buffer.getLine(start)?.isWrapped && rewind < 64) {
+      start -= 1;
+      rewind += 1;
     }
-    while (lines.length && lines[lines.length - 1] === "") lines.pop();
-    return lines.join("\n");
+    for (let index = start; index < buffer.length; index++) {
+      const line = buffer.getLine(index);
+      const text = line?.translateToString(true) ?? "";
+      rows.push({ text, wrapped: line?.isWrapped ?? false });
+    }
+    return joinTerminalBufferRows(rows, maxLines);
   }
   const source =
     session.snapshot ??
@@ -207,6 +254,23 @@ export function writeToSession(leafId: number, data: string): boolean {
   return true;
 }
 
+export function prepareTerminalAutomationSession(leafId: number): boolean {
+  const session = sessions.get(leafId);
+  if (
+    !session?.pty ||
+    session.shellExited ||
+    session.disposed ||
+    !session.container
+  ) {
+    return false;
+  }
+  if (!session.hasSlot) {
+    bindLeafToSlot(leafId, session);
+    if (!session.visibleNow) parkLeafSlot(leafId);
+  }
+  return session.hasSlot;
+}
+
 export async function writeToReadySession(
   leafId: number,
   data: string,
@@ -267,6 +331,39 @@ export function getLeafBlockMode(leafId: number): BlockMode {
   return sessions.get(leafId)?.blockMode ?? "prompt";
 }
 
+export type TerminalSessionState = {
+  ready: boolean;
+  shellExited: boolean;
+  commandRunning: boolean;
+  blockMode: BlockMode;
+  commandGeneration?: number;
+  lastExitCode?: number | null;
+  shell?: string | null;
+  columns?: number;
+  rows?: number;
+  inputPending?: boolean;
+};
+
+export function getTerminalSessionState(
+  leafId: number,
+): TerminalSessionState | null {
+  const session = sessions.get(leafId);
+  if (!session) return null;
+  return {
+    ready: session.pty !== null && readyLeaves.has(leafId),
+    shellExited: session.shellExited,
+    commandRunning: session.commandRunning,
+    blockMode: session.blockMode,
+    commandGeneration: session.commandGeneration,
+    lastExitCode: session.lastExitCode,
+    shell: session.shell,
+    columns: session.cols || undefined,
+    rows: session.rows || undefined,
+    inputPending:
+      session.inputPending || (session.blocks && !!session.inputDraft.trim()),
+  };
+}
+
 export function subscribeLeafBlockMode(
   leafId: number,
   cb: () => void,
@@ -297,7 +394,10 @@ export function getLeafDraft(leafId: number): string {
 
 export function setLeafDraft(leafId: number, text: string): void {
   const s = sessions.get(leafId);
-  if (s) s.inputDraft = text;
+  if (s) {
+    s.inputDraft = text;
+    s.inputPending = !!text.trim();
+  }
 }
 
 export function setLeafInputActivity(leafId: number, active: boolean): void {
@@ -405,11 +505,27 @@ async function leafHasForegroundJob(leafId: number): Promise<boolean> {
   }
 }
 
-function onLeafCommandState(leafId: number, running: boolean): void {
+function recordCommandCompletion(
+  leafId: number,
+  exitCode: number | null,
+): void {
+  const session = sessions.get(leafId);
+  if (!session) return;
+  session.commandGeneration += 1;
+  session.lastExitCode = exitCode;
+  session.inputPending = false;
+}
+
+function onLeafCommandState(
+  leafId: number,
+  change: { running: boolean; exitCode: number | null; completed: boolean },
+): void {
   const s = sessions.get(leafId);
-  if (!s || s.commandRunning === running) return;
-  s.commandRunning = running;
-  if (!running) {
+  if (!s) return;
+  if (change.completed) recordCommandCompletion(leafId, change.exitCode);
+  if (s.commandRunning === change.running) return;
+  s.commandRunning = change.running;
+  if (!change.running) {
     scheduleHiddenRelease(leafId, s);
     return;
   }
@@ -532,9 +648,13 @@ function ensureSession(
     inputFocus: null,
     inputDraft: "",
     inputActive: false,
+    inputPending: false,
     everSubmitted: false,
     altScreenAtRelease: false,
     commandRunning: false,
+    commandGeneration: 0,
+    lastExitCode: null,
+    shell: null,
     hiddenReleaseTimer: null,
     spawnFailed: false,
   };
@@ -600,6 +720,9 @@ async function openPtyForSession(
 ): Promise<PtySession> {
   const startCols = s.cols > 0 ? s.cols : 80;
   const startRows = s.rows > 0 ? s.rows : 24;
+  const configuredShell =
+    usePreferencesStore.getState().terminalShell || undefined;
+  s.shell = await resolveShellName(configuredShell);
   const pty = await openPty(
     startCols,
     startRows,
@@ -619,7 +742,7 @@ async function openPtyForSession(
     },
     cwd,
     s.blocks,
-    usePreferencesStore.getState().terminalShell || undefined,
+    configuredShell,
   );
   // Only resize if the bound dims changed during the spawn: a same-size
   // ResizePseudoConsole during conhost warmup is a known ConPTY trigger for
@@ -682,6 +805,8 @@ function bindLeafToSlot(leafId: number, s: Session): void {
             s.callbacks.onCwd?.(next);
           },
           onMode: (mode) => applyBlockMode(leafId, mode),
+          onCommandComplete: (exitCode) =>
+            recordCommandCompletion(leafId, exitCode),
           onViewport: () => {
             const set = blockViewportListeners.get(leafId);
             if (set) for (const l of set) l();
@@ -706,8 +831,8 @@ function bindLeafToSlot(leafId: number, s: Session): void {
       // 7 emitted by untrusted command output (remote SSH, `cat` of an
       // attacker file, etc.).
       const shellState = createShellIntegrationState();
-      const prompt = registerPromptTracker(term, shellState, (running) =>
-        onLeafCommandState(leafId, running),
+      const prompt = registerPromptTracker(term, shellState, (change) =>
+        onLeafCommandState(leafId, change),
       );
       const cwd = registerCwdHandler(
         term,
@@ -804,6 +929,8 @@ export async function respawnSession(
   s.pendingInput = "";
   s.altScreenAtRelease = false;
   s.commandRunning = false;
+  s.lastExitCode = null;
+  s.inputPending = false;
   s.spawnFailed = false;
   cancelHiddenRelease(s);
 

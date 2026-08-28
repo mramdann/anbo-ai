@@ -42,19 +42,25 @@ export type PromptTracker = {
   dispose: () => void;
 };
 
+export type CommandStateChange = {
+  running: boolean;
+  exitCode: number | null;
+  completed: boolean;
+};
+
 export function registerPromptTracker(
   term: Terminal,
   state?: ShellIntegrationState,
   // Fires on C (process executing) and A/D (back at prompt). Distinct from
   // inCommand, which is already true from B while the user merely types.
-  onCommandState?: (running: boolean) => void,
+  onCommandState?: (change: CommandStateChange) => void,
 ): PromptTracker {
   let marker: IMarker | null = null;
   const d = term.parser.registerOscHandler(133, (data) => {
     // OSC 133 A — start of new prompt (between commands).
     if (data.startsWith("A")) {
       if (state) state.inCommand = false;
-      onCommandState?.(false);
+      onCommandState?.({ running: false, exitCode: null, completed: false });
       marker?.dispose();
       marker = term.registerMarker(0);
     } else if (data.startsWith("B")) {
@@ -64,11 +70,17 @@ export function registerPromptTracker(
     } else if (data.startsWith("C")) {
       // OSC 133 C — command pre-execution marker; still inside command.
       if (state) state.inCommand = true;
-      onCommandState?.(true);
+      onCommandState?.({ running: true, exitCode: null, completed: false });
     } else if (data.startsWith("D")) {
       // OSC 133 D — command ends.
       if (state) state.inCommand = false;
-      onCommandState?.(false);
+      const match = /^D(?:;(-?\d+))?/.exec(data);
+      const parsed = match?.[1] === undefined ? null : Number(match[1]);
+      onCommandState?.({
+        running: false,
+        exitCode: Number.isSafeInteger(parsed) ? parsed : null,
+        completed: true,
+      });
     }
     return true;
   });

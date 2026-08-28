@@ -10,6 +10,7 @@ const AGENT_REQUEST_EVENT: &str = "anbo:agent-request";
 const AGENT_RESPONSE_EVENT: &str = "anbo:agent-response";
 const MAX_WORKSPACE_BYTES: usize = 4 * 1024;
 const MAX_AGENT_ID_BYTES: usize = 512;
+const MAX_TERMINAL_ID_BYTES: usize = 128;
 const MAX_MESSAGE_BYTES: usize = 32 * 1024;
 const MAX_MESSAGE_ID_BYTES: usize = 128;
 const MAX_CURSOR_BYTES: usize = 128;
@@ -105,15 +106,24 @@ fn validate_params(method: &str, params: &Value) -> Result<u64, (String, String)
     if !params.is_object() {
         return Err((
             error_codes::INVALID_REQUEST.to_string(),
-            "agent tool arguments must be an object".to_string(),
+            "agent and terminal tool arguments must be an object".to_string(),
         ));
     }
     required_bounded_string(params, "workspace", MAX_WORKSPACE_BYTES)?;
-    if !matches!(method, "agent_list" | "agent_spawn") {
+    if matches!(
+        method,
+        "terminal_read"
+            | "terminal_insert"
+            | "terminal_execute"
+            | "terminal_wait"
+            | "terminal_interrupt"
+    ) {
+        required_bounded_string(params, "terminalId", MAX_TERMINAL_ID_BYTES)?;
+    } else if !matches!(method, "agent_list" | "agent_spawn" | "terminal_list") {
         required_bounded_string(params, "agentId", MAX_AGENT_ID_BYTES)?;
     }
     match method {
-        "agent_list" | "agent_status" => Ok(5_000),
+        "agent_list" | "agent_status" | "terminal_list" => Ok(5_000),
         "agent_spawn" => {
             let agent = required_bounded_string(params, "agent", 71)?;
             if agent.chars().any(char::is_control) {
@@ -126,11 +136,29 @@ fn validate_params(method: &str, params: &Value) -> Result<u64, (String, String)
                 bounded_integer(params, "timeout", 100, MAX_TIMEOUT_MS)?.unwrap_or(15_000);
             Ok(timeout + 2_000)
         }
-        "agent_read" => {
+        "agent_read" | "terminal_read" => {
             optional_bounded_string(params, "cursor", MAX_CURSOR_BYTES)?;
             bounded_integer(params, "maxChars", 1, MAX_READ_CHARS)?;
             Ok(5_000)
         }
+        "terminal_insert" | "terminal_execute" => {
+            let text = required_bounded_string(params, "text", 8_000)?;
+            if text.chars().any(char::is_control) {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    "text must be one line and cannot contain control characters".to_string(),
+                ));
+            }
+            Ok(7_000)
+        }
+        "terminal_wait" => {
+            required_bounded_string(params, "executionId", MAX_TERMINAL_ID_BYTES)?;
+            bounded_integer(params, "maxChars", 1, MAX_READ_CHARS)?;
+            let timeout =
+                bounded_integer(params, "timeout", 100, MAX_TIMEOUT_MS)?.unwrap_or(10_000);
+            Ok(timeout + 2_000)
+        }
+        "terminal_interrupt" => Ok(7_000),
         "agent_send" => {
             let message = required_bounded_string(params, "message", MAX_MESSAGE_BYTES)?;
             if message
@@ -163,7 +191,7 @@ fn validate_params(method: &str, params: &Value) -> Result<u64, (String, String)
         }
         _ => Err((
             error_codes::INVALID_REQUEST.to_string(),
-            format!("unsupported agent method: {method}"),
+            format!("unsupported agent or terminal method: {method}"),
         )),
     }
 }
@@ -272,6 +300,17 @@ mod tests {
         assert!(validate_params(
             "agent_wait",
             &json!({ "workspace": "C:/repo", "agentId": "agent:one:1", "status": "done" })
+        )
+        .is_err());
+        assert!(validate_params("terminal_list", &json!({ "workspace": "C:/repo" })).is_ok());
+        assert!(validate_params(
+            "terminal_read",
+            &json!({ "workspace": "C:/repo", "terminalId": "terminal:1:1", "maxChars": 12_001 })
+        )
+        .is_err());
+        assert!(validate_params(
+            "terminal_execute",
+            &json!({ "workspace": "C:/repo", "terminalId": "terminal:1:1", "text": "one\ntwo" })
         )
         .is_err());
     }

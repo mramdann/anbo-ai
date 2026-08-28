@@ -117,4 +117,23 @@ describe("AgentScreenObserver", () => {
     expect(observer.poll(() => settled, 7_200)[0]?.kind).toBe("ready");
     expect(observer.poll(() => settled, 8_800)).toEqual([]);
   });
+
+  it("restores an idle Claude screen after a multi-minute Churned turn", () => {
+    const observer = new AgentScreenObserver();
+    const restored = [
+      "Claude Code v2.1.247",
+      "\u276f inspect this workspace",
+      "Thought for 6s",
+      "final answer",
+      "Churned for 1m 37s · done 1:01 PM",
+      "\u276f ",
+      "manual mode on · ? for shortcuts",
+    ].join("\n");
+
+    expect(observer.start(10, 20, "claude").kind).toBe("working");
+    expect(observer.poll(() => restored, 0)).toEqual([]);
+    expect(observer.poll(() => restored, 100)).toEqual([
+      expect.objectContaining({ kind: "ready", leafId: 10, ptyId: 20 }),
+    ]);
+  });
 });

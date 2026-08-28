@@ -28,6 +28,15 @@ const TOOL_META: Record<string, { label: string; icon: typeof FilePlusIcon }> =
     create_directory: { label: "Create directory", icon: FolderAddIcon },
     bash_run: { label: "Run shell command", icon: TerminalIcon },
     bash_background: { label: "Spawn background process", icon: TerminalIcon },
+    terminal_insert: {
+      label: "Insert into shared terminal",
+      icon: TerminalIcon,
+    },
+    terminal_execute: { label: "Run in shared terminal", icon: TerminalIcon },
+    terminal_interrupt: {
+      label: "Interrupt shared terminal",
+      icon: TerminalIcon,
+    },
   };
 
 function AiToolApprovalImpl({ part, toolName, onRespond }: Props) {
@@ -46,9 +55,7 @@ function AiToolApprovalImpl({ part, toolName, onRespond }: Props) {
           strokeWidth={1.75}
           className="shrink-0 text-muted-foreground"
         />
-        <span className="text-[12px] font-medium text-foreground">
-          {label}
-        </span>
+        <span className="text-[12px] font-medium text-foreground">{label}</span>
         <span className="ml-auto text-[10px] text-muted-foreground">
           needs approval
         </span>
@@ -100,7 +107,22 @@ function PreviewBlock({
   toolName: string;
   input: Record<string, unknown>;
 }) {
-  if (toolName === "bash_run" || toolName === "bash_background") {
+  if (toolName === "terminal_interrupt") {
+    return (
+      <div className="space-y-1.5 font-mono text-[11px]">
+        <div className="text-muted-foreground">
+          {String(input.terminalId ?? "")}
+        </div>
+        <pre className="rounded-md bg-muted/60 p-2">Ctrl+C</pre>
+      </div>
+    );
+  }
+  if (
+    toolName === "bash_run" ||
+    toolName === "bash_background" ||
+    toolName === "terminal_insert" ||
+    toolName === "terminal_execute"
+  ) {
     const cwd = typeof input.cwd === "string" ? input.cwd : null;
     return (
       <div className="space-y-1.5">
@@ -114,7 +136,7 @@ function PreviewBlock({
             "max-h-40 overflow-auto rounded-md bg-muted/60 p-2 font-mono text-[11px] leading-relaxed",
           )}
         >
-          {String(input.command ?? "")}
+          {String(input.command ?? input.text ?? "")}
         </pre>
       </div>
     );
@@ -180,4 +202,3 @@ function PreviewBlock({
     </pre>
   );
 }
-

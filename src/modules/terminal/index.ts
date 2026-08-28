@@ -32,12 +32,16 @@ export {
   leafIdForPty,
   navigateFocusedBlocks,
   ptyIdForLeaf,
+  prepareTerminalAutomationSession,
   readTerminalBuffer,
+  getTerminalSessionState,
+  type TerminalSessionState,
   respawnSession,
   subscribeTerminalInput,
   whenSessionReady,
   writeToReadySession,
   writeToSession,
 } from "./lib/useTerminalSession";
+export { setTerminalAutomationHandler } from "./lib/terminalAutomationBridge";
 export { TerminalPane, type TerminalPaneHandle } from "./TerminalPane";
 export { TerminalStack } from "./TerminalStack";

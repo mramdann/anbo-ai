@@ -26,7 +26,9 @@ function makeFakeTerm() {
         return { dispose: () => handlers.delete(code) };
       },
     },
-    registerMarker: vi.fn().mockReturnValue({ isDisposed: false, dispose: vi.fn() }),
+    registerMarker: vi
+      .fn()
+      .mockReturnValue({ isDisposed: false, dispose: vi.fn() }),
   } as unknown as Terminal;
   return { term, handlers };
 }
@@ -125,13 +127,25 @@ describe("OSC 133 command-state tracking", () => {
     registerPromptTracker(term, undefined, onCommandState);
 
     handlers.get(133)?.("A");
-    expect(onCommandState).toHaveBeenLastCalledWith(false);
+    expect(onCommandState).toHaveBeenLastCalledWith({
+      running: false,
+      exitCode: null,
+      completed: false,
+    });
     handlers.get(133)?.("B");
     expect(onCommandState).toHaveBeenCalledTimes(1);
     handlers.get(133)?.("C;claude");
-    expect(onCommandState).toHaveBeenLastCalledWith(true);
+    expect(onCommandState).toHaveBeenLastCalledWith({
+      running: true,
+      exitCode: null,
+      completed: false,
+    });
     handlers.get(133)?.("D;0");
-    expect(onCommandState).toHaveBeenLastCalledWith(false);
+    expect(onCommandState).toHaveBeenLastCalledWith({
+      running: false,
+      exitCode: 0,
+      completed: true,
+    });
   });
 
   it("clears running state on a bare new prompt when D was lost", () => {
@@ -140,9 +154,37 @@ describe("OSC 133 command-state tracking", () => {
     registerPromptTracker(term, undefined, onCommandState);
 
     handlers.get(133)?.("C;vim");
-    expect(onCommandState).toHaveBeenLastCalledWith(true);
+    expect(onCommandState).toHaveBeenLastCalledWith({
+      running: true,
+      exitCode: null,
+      completed: false,
+    });
     handlers.get(133)?.("A");
-    expect(onCommandState).toHaveBeenLastCalledWith(false);
+    expect(onCommandState).toHaveBeenLastCalledWith({
+      running: false,
+      exitCode: null,
+      completed: false,
+    });
+  });
+
+  it("reports signed exit codes and distinguishes completion from prompt repaint", () => {
+    const { term, handlers } = makeFakeTerm();
+    const onCommandState = vi.fn();
+    registerPromptTracker(term, undefined, onCommandState);
+
+    handlers.get(133)?.("D;-1");
+    handlers.get(133)?.("A");
+
+    expect(onCommandState).toHaveBeenNthCalledWith(1, {
+      running: false,
+      exitCode: -1,
+      completed: true,
+    });
+    expect(onCommandState).toHaveBeenNthCalledWith(2, {
+      running: false,
+      exitCode: null,
+      completed: false,
+    });
   });
 });
 

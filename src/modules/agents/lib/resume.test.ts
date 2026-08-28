@@ -1,14 +1,80 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  AgentExitResumeGuard,
   buildAgentLaunchCommand,
-  buildAgentResumeCommand,
   buildAgentRestoreCommand,
+  buildAgentResumeCommand,
   createAgentRestoreFallback,
   createAgentResumeStates,
   createManualAgentResumeState,
   normalizePersistedAgentResume,
   shouldPinAgentSession,
 } from "./resume";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe("agent exit resume guard", () => {
+  it.each([
+    ["claude", "claude"],
+    ["codex", "codex"],
+    ["antigravity", "agy"],
+    ["pi", "pi"],
+    ["opencode", "opencode"],
+  ] as const)(
+    "preserves the pinned %s session when its replacement starts",
+    (agent, command) => {
+      vi.useFakeTimers();
+      const deactivate = vi.fn();
+      const guard = new AgentExitResumeGuard(1_000);
+      const [resume] = createAgentResumeStates(agent, command, 1);
+
+      expect(resume?.agent).toBe(agent);
+      guard.schedule(6, () => false, deactivate);
+      guard.cancel(6);
+      vi.advanceTimersByTime(1_000);
+
+      expect(deactivate).not.toHaveBeenCalled();
+    },
+  );
+
+  it("deactivates resume after a genuine agent exit", () => {
+    vi.useFakeTimers();
+    const deactivate = vi.fn();
+    const guard = new AgentExitResumeGuard(1_000);
+
+    guard.schedule(6, () => false, deactivate);
+    vi.advanceTimersByTime(999);
+    expect(deactivate).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+
+    expect(deactivate).toHaveBeenCalledOnce();
+  });
+
+  it("does not deactivate when the leaf already has a replacement session", () => {
+    vi.useFakeTimers();
+    const deactivate = vi.fn();
+    const guard = new AgentExitResumeGuard(1_000);
+
+    guard.schedule(6, () => true, deactivate);
+    vi.advanceTimersByTime(1_000);
+
+    expect(deactivate).not.toHaveBeenCalled();
+  });
+
+  it("clears pending deactivation when the app lifecycle ends", () => {
+    vi.useFakeTimers();
+    const deactivate = vi.fn();
+    const guard = new AgentExitResumeGuard(1_000);
+
+    guard.schedule(6, () => false, deactivate);
+    guard.dispose();
+    vi.advanceTimersByTime(1_000);
+
+    expect(deactivate).not.toHaveBeenCalled();
+  });
+});
 
 describe("agent resume commands", () => {
   it.each(["claude", "codex", "antigravity", "pi", "opencode"])(

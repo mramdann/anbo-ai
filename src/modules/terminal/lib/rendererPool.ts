@@ -15,6 +15,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { type FontWeight, Terminal } from "@xterm/xterm";
 import { shouldCursorBlink } from "./cursorBlink";
 import { terminalReadlineSequence } from "./keymap";
+import { shouldRepairWebglFrame } from "./rendererRepairPolicy";
 import { shouldShowTerminalScrollbar } from "./scrollbarVisibility";
 import {
   readTerminalClipboard,
@@ -73,6 +74,7 @@ export type Slot = {
   slotReapTimer: ReturnType<typeof setTimeout> | null;
   unhideRaf: number | null;
   revealRepairRaf: number | null;
+  frameRepairTimer: ReturnType<typeof setTimeout> | null;
   settledFitRaf: number | null;
   lastCols: number;
   lastRows: number;
@@ -152,6 +154,7 @@ function scheduleSettledSlotFit(slot: Slot): void {
       return;
     }
     slot.fitAddon.fit();
+    scheduleWebglFrameRepair(slot, leafId);
     slot.lastW = container.clientWidth;
     slot.lastH = container.clientHeight;
     slot.lastCols = slot.term.cols;
@@ -174,9 +177,26 @@ function refitVisibleSlots(kick: boolean): void {
     ) {
       continue;
     }
-    slot.lastW = container.clientWidth;
-    slot.lastH = container.clientHeight;
+    const previousFrame = {
+      width: slot.lastW,
+      height: slot.lastH,
+      cols: slot.lastCols,
+      rows: slot.lastRows,
+    };
+    const width = container.clientWidth;
+    const height = container.clientHeight;
     slot.fitAddon.fit();
+    if (
+      shouldRepairWebglFrame(
+        previousFrame,
+        { width, height, cols: slot.term.cols, rows: slot.term.rows },
+        kick,
+      )
+    ) {
+      scheduleWebglFrameRepair(slot, leafId);
+    }
+    slot.lastW = width;
+    slot.lastH = height;
     slot.lastCols = slot.term.cols;
     slot.lastRows = slot.term.rows;
     const bridge = adapter.resolveLeaf(leafId);
@@ -339,6 +359,7 @@ function createSlot(): Slot {
     slotReapTimer: null,
     unhideRaf: null,
     revealRepairRaf: null,
+    frameRepairTimer: null,
     settledFitRaf: null,
     lastCols: term.cols,
     lastRows: term.rows,
@@ -615,7 +636,6 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
     // resizePty updates session.cols/rows + pty backend; no separate scope call.
     adapter?.resolveLeaf(p.leafId)?.resizePty(slot.lastCols, slot.lastRows);
   }
-
   if (!fast && p.searchQuery) {
     try {
       slot.searchAddon.findNext(p.searchQuery);
@@ -690,7 +710,6 @@ function scheduleRevealRepair(slot: Slot, leafId: number): void {
       }
     }
     try {
-      slot.webglAddon?.clearTextureAtlas();
       slot.term.refresh(0, slot.term.rows - 1);
     } catch {}
   });
@@ -702,21 +721,66 @@ function cancelRevealRepair(slot: Slot): void {
   slot.revealRepairRaf = null;
 }
 
+function scheduleWebglFrameRepair(slot: Slot, leafId: number): void {
+  cancelWebglFrameRepair(slot);
+  if (!slot.webglAddon) return;
+  slot.frameRepairTimer = setTimeout(() => {
+    slot.frameRepairTimer = null;
+    const container = slot.host.parentElement;
+    if (
+      slot.currentLeafId !== leafId ||
+      slot.parked ||
+      !container ||
+      !canFitTerminal(container) ||
+      !adapter?.isLeafVisible(leafId)
+    ) {
+      return;
+    }
+    try {
+      slot.term.refresh(0, slot.term.rows - 1);
+    } catch {}
+  }, WEBGL_FRAME_REPAIR_DELAY_MS);
+}
+
+function cancelWebglFrameRepair(slot: Slot): void {
+  if (slot.frameRepairTimer === null) return;
+  clearTimeout(slot.frameRepairTimer);
+  slot.frameRepairTimer = null;
+}
+
 function rewireSlot(slot: Slot, p: AcquireParams): void {
   slot.lastUsedAt = performance.now();
+  const previousFrame = {
+    width: slot.lastW,
+    height: slot.lastH,
+    cols: slot.lastCols,
+    rows: slot.lastRows,
+  };
   unparkSlotHost(slot);
   if (slot.host.parentNode !== p.container) {
     p.container.appendChild(slot.host);
   }
   setupResizeObserver(slot, p);
   if (canFitTerminal(p.container)) slot.fitAddon.fit();
-  slot.lastW = p.container.clientWidth;
-  slot.lastH = p.container.clientHeight;
+  const width = p.container.clientWidth;
+  const height = p.container.clientHeight;
+  slot.lastW = width;
+  slot.lastH = height;
   if (slot.term.cols !== p.cols || slot.term.rows !== p.rows) {
     adapter?.resolveLeaf(p.leafId)?.resizePty(slot.term.cols, slot.term.rows);
   }
   slot.lastCols = slot.term.cols;
   slot.lastRows = slot.term.rows;
+  if (
+    shouldRepairWebglFrame(previousFrame, {
+      width,
+      height,
+      cols: slot.lastCols,
+      rows: slot.lastRows,
+    })
+  ) {
+    scheduleWebglFrameRepair(slot, p.leafId);
+  }
   p.onSearchReady(slot.searchAddon);
 }
 
@@ -756,6 +820,7 @@ function setupResizeObserver(slot: Slot, p: AcquireParams): void {
       slot.lastW = w;
       slot.lastH = h;
       slot.fitAddon.fit();
+      scheduleWebglFrameRepair(slot, p.leafId);
       if (slot.ptyTimer) clearTimeout(slot.ptyTimer);
       slot.ptyTimer = setTimeout(flushPty, PTY_RESIZE_DEBOUNCE_MS);
     }, FIT_DEBOUNCE_MS);
@@ -819,6 +884,7 @@ function detachSlotFromLeaf(slot: Slot, retain: boolean): void {
 
   cancelPendingUnhide(slot);
   cancelRevealRepair(slot);
+  cancelWebglFrameRepair(slot);
   slot.host.style.visibility = "";
 
   slot.currentLeafId = null;
@@ -891,6 +957,7 @@ function disposeSlot(slot: Slot): void {
   cancelWebglReap(slot);
   cancelPendingUnhide(slot);
   cancelRevealRepair(slot);
+  cancelWebglFrameRepair(slot);
   if (slot.settledFitRaf !== null) {
     cancelAnimationFrame(slot.settledFitRaf);
     slot.settledFitRaf = null;
@@ -919,6 +986,7 @@ function disposeSlot(slot: Slot): void {
 }
 
 const WEBGL_RECOVERY_DELAY_MS = 250;
+const WEBGL_FRAME_REPAIR_DELAY_MS = 80;
 // Below this a re-shown slot is fresh enough to trust; above it, repaint on
 // unhide to defeat silent GPU/context staleness.
 const SLOT_STALE_MS = 10_000;
@@ -1054,6 +1122,7 @@ function refitSlot(slot: Slot): void {
     return;
   }
   slot.fitAddon.fit();
+  scheduleWebglFrameRepair(slot, slot.currentLeafId);
   slot.lastCols = slot.term.cols;
   slot.lastRows = slot.term.rows;
   adapter

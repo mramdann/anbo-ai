@@ -68,9 +68,19 @@ function global:__anbo_install_readline {
 }
 
 function global:prompt {
+    # Capture $? before running any statement in this function. LASTEXITCODE
+    # persists across PowerShell cmdlets, so consulting it first can report a
+    # stale native success after a cmdlet or script exception.
+    $commandSucceeded = $?
+    $nativeExitCode = $LASTEXITCODE
     __anbo_install_readline
-    $lec = $LASTEXITCODE
-    if ($null -eq $lec) { $lec = if ($?) { 0 } else { 1 } }
+    $lec = if ($commandSucceeded) {
+        0
+    } elseif ($null -ne $nativeExitCode -and [int]$nativeExitCode -ne 0) {
+        [int]$nativeExitCode
+    } else {
+        1
+    }
     $esc = [char]27
 
     $oscD = "$esc]133;D;$lec$esc\"
@@ -91,7 +101,7 @@ function global:prompt {
     # prompt (markers only) and reserve the header/gap rows in the prompt
     # itself -- same layout contract as the zsh integration.
     if ($env:ANBO_BLOCKS) {
-        $global:LASTEXITCODE = $lec
+        $global:LASTEXITCODE = $nativeExitCode
         $gap = if ($global:__anbo_block_seen) { "`n`n" } else { "`n" }
         return "$oscD$oscA$osc7$gap$oscB"
     }
@@ -102,6 +112,8 @@ function global:prompt {
         "PS $((Get-Location).Path)> "
     }
 
-    $global:LASTEXITCODE = $lec
+    # Shell integration must observe status without mutating the user's
+    # native-command state.
+    $global:LASTEXITCODE = $nativeExitCode
     "$oscD$oscA$osc7${original}${oscB}"
 }

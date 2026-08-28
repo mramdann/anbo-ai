@@ -14,6 +14,12 @@ export type ToolContext = {
    * Returns false if there is no active terminal tab to inject into.
    */
   injectIntoActivePty: (text: string) => boolean;
+  sharedTerminalRequest?: (
+    method: import("@/modules/agents/lib/agentAutomationProtocol").TerminalAutomationMethod,
+    params: Record<string, unknown>,
+  ) => Promise<
+    import("@/modules/agents/lib/agentAutomationProtocol").AgentAutomationResponse
+  >;
   /** Open a new native browser tab at the given URL. */
   openBrowser: (url: string) => boolean;
   /** Navigate the active browser tab, opening one when another surface is active. */

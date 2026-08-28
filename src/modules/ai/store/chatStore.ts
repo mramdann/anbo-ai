@@ -35,6 +35,12 @@ export type Live = {
   getTerminalContext: () => string | null;
   isActiveTerminalPrivate: () => boolean;
   injectIntoActivePty: (text: string) => boolean;
+  sharedTerminalRequest: (
+    method: import("@/modules/agents/lib/agentAutomationProtocol").TerminalAutomationMethod,
+    params: Record<string, unknown>,
+  ) => Promise<
+    import("@/modules/agents/lib/agentAutomationProtocol").AgentAutomationResponse
+  >;
   getWorkspaceRoot: () => string | null;
   getActiveFile: () => string | null;
   getActiveSpaceId: () => string;
@@ -163,6 +169,12 @@ const NOOP_LIVE: Live = {
   getTerminalContext: () => null,
   isActiveTerminalPrivate: () => false,
   injectIntoActivePty: () => false,
+  sharedTerminalRequest: async () => ({
+    error: {
+      code: "terminal_unavailable",
+      message: "shared terminal service is not ready",
+    },
+  }),
   getWorkspaceRoot: () => null,
   getActiveFile: () => null,
   getActiveSpaceId: () => "default",

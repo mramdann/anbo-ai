@@ -428,6 +428,7 @@ function WorkspaceDockviewTab(
       )}
       data-workspace-dockview-panel-id={props.api.id}
       data-workspace-dockview-tab-id={tab.id}
+      data-workspace-dockview-tab-kind={tab.kind}
       onPointerDown={(event) =>
         context.onTabPointerDown(event, props.api.id, tab.id, labelFor(tab))
       }

@@ -15,6 +15,7 @@ import {
   writeToReadySession,
   writeToSession,
 } from "@/modules/terminal";
+import { requestTerminalAutomation } from "@/modules/terminal/lib/terminalAutomationBridge";
 import { type RefObject, useEffect, useRef } from "react";
 import type { Live } from "../store/chatStore";
 import { redactSensitive } from "./redact";
@@ -208,6 +209,7 @@ export function useAiLiveBridge(params: Params) {
         term.focus();
         return true;
       },
+      sharedTerminalRequest: requestTerminalAutomation,
       getWorkspaceRoot: () => {
         const { explorerRoot, launchCwd, home } = ref.current;
         return explorerRoot ?? launchCwd ?? home ?? null;
