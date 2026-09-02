@@ -633,7 +633,7 @@ describe("shared terminal input", () => {
     expect(write).toHaveBeenCalledTimes(1);
   });
 
-  it("checks foreground work once for execute and not during OSC wait", async () => {
+  it("rechecks foreground ownership after renderer preparation", async () => {
     let generation = 2;
     const hasForegroundProcess = vi.fn(async () => false);
     const service = createTerminalAutomationService(
@@ -671,7 +671,7 @@ describe("shared terminal input", () => {
       timeout: 1_000,
     });
 
-    expect(hasForegroundProcess).toHaveBeenCalledTimes(2);
+    expect(hasForegroundProcess).toHaveBeenCalledTimes(3);
   });
 
   it("prepares a released renderer before executing so OSC completion stays observable", async () => {
@@ -770,6 +770,51 @@ describe("shared terminal input", () => {
     });
     expect(prepare).toHaveBeenCalledWith(101);
     expect(write).toHaveBeenCalledWith(101, "cmd /c exit 7\r");
+  });
+
+  it("fails safely when the initial OSC marker never arrives", async () => {
+    const write = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({
+        initialPromptSyncTimeoutMs: 20,
+        write,
+        getSessionState: () => ({
+          ready: true,
+          shellExited: false,
+          commandRunning: false,
+          blockMode: "prompt",
+          commandGeneration: 0,
+          commandCompletions: [],
+          lastExitCode: null,
+          shell: "powershell",
+          inputPending: false,
+        }),
+      }),
+    );
+
+    const executed = await service.handle("terminal_execute", {
+      workspace: workspace.root,
+      terminalId: "terminal:10:101",
+      text: "cmd /c exit 23",
+    });
+    const executionId = (executed.result as { executionId: string })
+      .executionId;
+
+    await expect(
+      service.handle("terminal_wait", {
+        workspace: workspace.root,
+        terminalId: "terminal:10:101",
+        executionId,
+        timeout: 1_000,
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        completed: true,
+        completionReason: "dispatch_failed",
+        exitCode: null,
+      },
+    });
+    expect(write).not.toHaveBeenCalled();
   });
 
   it("returns bounded redacted incremental output", async () => {

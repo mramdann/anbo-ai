@@ -272,6 +272,7 @@ export function prepareTerminalAutomationSession(leafId: number): boolean {
   ) {
     return false;
   }
+  cancelHiddenRelease(session);
   if (!session.hasSlot) {
     bindLeafToSlot(leafId, session);
     if (!session.visibleNow) parkLeafSlot(leafId);

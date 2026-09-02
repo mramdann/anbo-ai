@@ -5,6 +5,10 @@ import { describe, expect, it } from "vitest";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(path.join(here, "rendererPool.ts"), "utf8");
+const sessionSource = readFileSync(
+  path.join(here, "useTerminalSession.ts"),
+  "utf8",
+);
 
 function sourceBetween(start: string, end: string): string {
   return source.slice(source.indexOf(start), source.indexOf(end));
@@ -45,6 +49,28 @@ describe("terminal window restore", () => {
         "export function disposeLeafSlot",
       ),
     ).not.toContain("scheduleWebglFrameRepair");
+  });
+
+  it("registers OSC handlers before replaying dormant terminal bytes", () => {
+    const bind = sourceBetween("function bindSlot", "function scheduleUnhide");
+    expect(
+      bind.indexOf("slot.oscDisposers = p.registerOsc(slot.term)"),
+    ).toBeLessThan(
+      bind.indexOf("p.drainRing((bytes) => slot.term.write(bytes))"),
+    );
+  });
+
+  it("cancels a stale hidden-release timer before automation binds", () => {
+    const start = sessionSource.indexOf(
+      "export function prepareTerminalAutomationSession",
+    );
+    const end = sessionSource.indexOf(
+      "export async function writeToReadySession",
+    );
+    const prepare = sessionSource.slice(start, end);
+    expect(prepare.indexOf("cancelHiddenRelease(session)")).toBeLessThan(
+      prepare.indexOf("bindLeafToSlot(leafId, session)"),
+    );
   });
 
   it("gates rewire repair on an actual frame geometry change", () => {

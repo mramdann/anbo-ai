@@ -589,6 +589,13 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
     slot.term.clear();
     slot.term.reset();
 
+    for (const d of slot.oscDisposers) {
+      try {
+        d();
+      } catch {}
+    }
+    slot.oscDisposers = p.registerOsc(slot.term);
+
     if (
       p.cols > 0 &&
       p.rows > 0 &&
@@ -615,13 +622,6 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
     try {
       slot.term.write("\x1b[?25h");
     } catch {}
-
-    for (const d of slot.oscDisposers) {
-      try {
-        d();
-      } catch {}
-    }
-    slot.oscDisposers = p.registerOsc(slot.term);
   } else {
     p.drainRing((bytes) => slot.term.write(bytes));
   }
