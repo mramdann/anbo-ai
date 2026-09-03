@@ -334,18 +334,6 @@ html[data-native-browser-live="true"] footer {
   margin-inline: auto;
 }
 
-.cm-editor,
-.cm-scroller {
-  scrollbar-width: none !important;
-  -ms-overflow-style: none !important;
-}
-.cm-editor::-webkit-scrollbar,
-.cm-scroller::-webkit-scrollbar {
-  width: 0 !important;
-  height: 0 !important;
-  display: none !important;
-}
-
 /* CodeMirror normally injects these structural rules through style-mod. Keep
  * the layout-critical subset global as a WebView2 production fallback. If the
  * injected base module is delayed or de-duplicated across lazy chunks, gutters
@@ -748,6 +736,35 @@ html *::-webkit-scrollbar {
 }
 
 .panel-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--foreground) 48%, transparent);
+}
+
+/* The main CodeMirror scroller is nested inside the editor wrapper, so the
+ * panel-scrollbar utility cannot be attached to it directly. Keep both axes
+ * usable for long files and long unwrapped lines without restoring chunky
+ * native scrollbars to every CodeMirror surface. */
+.anbo-code-editor .cm-scroller {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--foreground) 28%, transparent)
+    transparent;
+}
+
+.anbo-code-editor .cm-scroller::-webkit-scrollbar {
+  display: block;
+  width: 3px;
+  height: 3px;
+}
+
+.anbo-code-editor .cm-scroller::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.anbo-code-editor .cm-scroller::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--foreground) 28%, transparent);
+}
+
+.anbo-code-editor .cm-scroller::-webkit-scrollbar-thumb:hover {
   background: color-mix(in oklab, var(--foreground) 48%, transparent);
 }
 
