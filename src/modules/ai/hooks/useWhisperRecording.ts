@@ -4,6 +4,7 @@ import { useChatStore } from "../store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { transcribeAudio, type SttOptions } from "../lib/stt";
 import type { SttProvider } from "../config";
+import { createAudioMeter } from "../lib/audioMeter";
 
 const MIME_CANDIDATES = [
   "audio/webm;codecs=opus",
@@ -46,6 +47,7 @@ export function useWhisperRecording({
   const groqSttModel = usePreferencesStore((s) => s.groqSttModel);
   const whispercppBaseURL = usePreferencesStore((s) => s.whispercppBaseURL);
   const [state, setState] = useState<State>("idle");
+  const audioMeter = useMemo(createAudioMeter, []);
   const recRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
@@ -77,11 +79,12 @@ export function useWhisperRecording({
       clearTimeout(recordingTimerRef.current);
       recordingTimerRef.current = null;
     }
+    audioMeter.disconnect();
     streamRef.current?.getTracks().forEach((track) => {
       track.stop();
     });
     streamRef.current = null;
-  }, []);
+  }, [audioMeter]);
 
   const stop = useCallback(() => {
     if (recordingTimerRef.current) {
@@ -135,6 +138,7 @@ export function useWhisperRecording({
           return false;
         }
         streamRef.current = stream;
+        audioMeter.connect(stream);
         const mimeType = pickMime();
         const rec = new MediaRecorder(
           stream,
@@ -233,6 +237,7 @@ export function useWhisperRecording({
       supported,
       hasKey,
       teardownStream,
+      audioMeter.connect,
     ],
   );
 
@@ -265,5 +270,6 @@ export function useWhisperRecording({
     supported,
     hasKey,
     sttProvider,
+    audioMeter,
   };
 }

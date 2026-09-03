@@ -3,8 +3,9 @@ import {
   clampOrbPosition,
   clampOrbX,
   ORB_BOTTOM_LIMIT,
-  ORB_SIZE,
+  ORB_HEIGHT,
   ORB_TOP_LIMIT,
+  ORB_WIDTH,
   orbX,
 } from "./orbPosition";
 
@@ -23,7 +24,7 @@ describe("AnboVoice orb placement", () => {
       ORB_TOP_LIMIT,
     );
     expect(clampOrbPosition({ x: 200, y: 999 }, viewport).y).toBe(
-      600 - ORB_BOTTOM_LIMIT - ORB_SIZE,
+      600 - ORB_BOTTOM_LIMIT - ORB_HEIGHT,
     );
   });
 
@@ -34,9 +35,9 @@ describe("AnboVoice orb placement", () => {
 
   it("keeps the orb inside the window while it is dragged", () => {
     expect(clampOrbX(-100, 800)).toBe(12);
-    expect(clampOrbX(900, 800)).toBe(800 - 12 - ORB_SIZE);
+    expect(clampOrbX(900, 800)).toBe(800 - 12 - ORB_WIDTH);
     expect(
       clampOrbPosition({ x: 900, y: 200 }, { width: 800, height: 600 }).x,
-    ).toBe(800 - 12 - ORB_SIZE);
+    ).toBe(800 - 12 - ORB_WIDTH);
   });
 });

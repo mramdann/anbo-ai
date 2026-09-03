@@ -3,19 +3,21 @@ import { cn } from "@/lib/utils";
 import { STT_PROVIDER_LABELS } from "@/modules/ai/config";
 import { useComposer } from "@/modules/ai/lib/composer";
 import { notifyNativeBrowserLayout } from "@/modules/browser/nativeVisibility";
-import { ORB_SIZE } from "@/modules/voice/lib/orbPosition";
+import { ORB_WIDTH } from "@/modules/voice/lib/orbPosition";
 import { useVoiceOrbPosition } from "@/modules/voice/lib/useVoiceOrbPosition";
 import {
   normalizeVoiceText,
   type VoiceTarget,
 } from "@/modules/voice/lib/voiceTarget";
-import {
-  Cancel01Icon,
-  Copy01Icon,
-  Mic01Icon,
-} from "@hugeicons/core-free-icons";
+import { Cancel01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 
 type Props = {
@@ -29,11 +31,34 @@ type FallbackTranscript = {
   message: string;
 };
 
+type VoiceVisualStyle = CSSProperties & {
+  "--anbo-voice-ring-scale": string;
+  "--anbo-voice-ring-opacity": string;
+  "--anbo-voice-glow": string;
+  "--anbo-voice-bar-1": string;
+  "--anbo-voice-bar-2": string;
+  "--anbo-voice-bar-3": string;
+  "--anbo-voice-bar-4": string;
+  "--anbo-voice-bar-5": string;
+};
+
+const INITIAL_VISUAL_STYLE = {
+  "--anbo-voice-ring-scale": "1",
+  "--anbo-voice-ring-opacity": "0",
+  "--anbo-voice-glow": "0px",
+  "--anbo-voice-bar-1": "3px",
+  "--anbo-voice-bar-2": "3px",
+  "--anbo-voice-bar-3": "3px",
+  "--anbo-voice-bar-4": "3px",
+  "--anbo-voice-bar-5": "3px",
+} as const;
+
 export function AnboVoice({ visible, onHide, captureTarget }: Props) {
   const composer = useComposer();
   const voice = composer.voice;
   const geometry = useVoiceOrbPosition();
   const targetRef = useRef<VoiceTarget | null>(null);
+  const visualRef = useRef<HTMLDivElement>(null);
   const [targetLabel, setTargetLabel] = useState<string | null>(null);
   const [fallback, setFallback] = useState<FallbackTranscript | null>(null);
 
@@ -62,6 +87,39 @@ export function AnboVoice({ visible, onHide, captureTarget }: Props) {
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [cancel, voice.recording, voice.requesting]);
+
+  useEffect(() => {
+    const element = visualRef.current;
+    if (!element) return;
+    const apply = (level: number, bands: readonly number[]) => {
+      element.style.setProperty(
+        "--anbo-voice-ring-scale",
+        (1.08 + level * 0.34).toFixed(3),
+      );
+      element.style.setProperty(
+        "--anbo-voice-ring-opacity",
+        (0.18 + level * 0.5).toFixed(3),
+      );
+      element.style.setProperty(
+        "--anbo-voice-glow",
+        `${Math.round(5 + level * 14)}px`,
+      );
+      bands.forEach((band, index) => {
+        element.style.setProperty(
+          `--anbo-voice-bar-${index + 1}`,
+          `${(3 + band * 9).toFixed(1)}px`,
+        );
+      });
+    };
+
+    if (!voice.recording) {
+      apply(0, [0, 0, 0, 0, 0]);
+      return;
+    }
+    return voice.audioMeter.subscribe((frame) => {
+      apply(frame.level, frame.bands);
+    });
+  }, [voice.audioMeter, voice.recording]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: every visual state change can resize the native browser punch holes.
   useEffect(() => {
@@ -151,24 +209,44 @@ export function AnboVoice({ visible, onHide, captureTarget }: Props) {
       : voice.transcribing
         ? "Transcribing"
         : null;
-  const dockRight = geometry.position.x + ORB_SIZE / 2 >= window.innerWidth / 2;
+  const dockRight =
+    geometry.position.x + ORB_WIDTH / 2 >= window.innerWidth / 2;
 
   return (
     <div
-      className="fixed z-[90]"
-      style={geometry.style}
+      ref={visualRef}
+      className="fixed z-[90] h-8 w-[104px]"
+      style={
+        {
+          ...geometry.style,
+          ...INITIAL_VISUAL_STYLE,
+        } as VoiceVisualStyle
+      }
       data-anbo-voice-overlay
     >
       {status ? (
         <div
           className={cn(
-            "absolute top-1/2 flex -translate-y-1/2 items-center gap-2 rounded-full border border-border/70 bg-popover/95 px-3 py-1.5 text-[11px] text-foreground shadow-xl backdrop-blur-xl",
-            dockRight ? "right-[44px]" : "left-[44px]",
+            "absolute top-1/2 z-20 flex -translate-y-1/2 items-center gap-2 rounded-full border border-border/70 bg-popover/95 px-3 py-1.5 text-[11px] text-foreground shadow-xl backdrop-blur-xl",
+            dockRight ? "right-[40px]" : "left-[40px]",
           )}
           data-anbo-voice-overlay
         >
-          {voice.requesting || voice.recording ? (
-            <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-destructive" />
+          {voice.recording ? (
+            <span
+              aria-hidden
+              className="flex h-3 w-[18px] shrink-0 items-center justify-center gap-[1.5px]"
+            >
+              {([1, 2, 3, 4, 5] as const).map((bar) => (
+                <span
+                  key={bar}
+                  className="w-[1.5px] rounded-full bg-primary transition-[height] duration-75 ease-out motion-reduce:transition-none"
+                  style={{ height: `var(--anbo-voice-bar-${bar})` }}
+                />
+              ))}
+            </span>
+          ) : voice.requesting ? (
+            <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
           ) : (
             <Spinner className="size-3 shrink-0" />
           )}
@@ -196,8 +274,8 @@ export function AnboVoice({ visible, onHide, captureTarget }: Props) {
       {fallback ? (
         <div
           className={cn(
-            "absolute top-1/2 w-72 -translate-y-1/2 rounded-xl border border-border/70 bg-popover/95 p-3 text-xs shadow-xl backdrop-blur-xl",
-            dockRight ? "right-[44px]" : "left-[44px]",
+            "absolute top-1/2 z-20 w-72 -translate-y-1/2 rounded-xl border border-border/70 bg-popover/95 p-3 text-xs shadow-xl backdrop-blur-xl",
+            dockRight ? "right-[112px]" : "left-[112px]",
           )}
           data-anbo-voice-overlay
         >
@@ -235,11 +313,29 @@ export function AnboVoice({ visible, onHide, captureTarget }: Props) {
         </div>
       ) : null}
 
+      {voice.recording ? (
+        <>
+          <span
+            aria-hidden
+            className={cn(
+              "pointer-events-none absolute top-0 z-0 size-8 rounded-full border border-primary/70 opacity-[var(--anbo-voice-ring-opacity)] transition-[transform,opacity] duration-75 ease-out [transform:scale(var(--anbo-voice-ring-scale))] motion-reduce:transform-none motion-reduce:transition-none",
+              dockRight ? "right-0" : "left-0",
+            )}
+          />
+          <span
+            aria-hidden
+            className={cn(
+              "pointer-events-none absolute top-0 z-0 size-8 rounded-full bg-primary/15 opacity-[var(--anbo-voice-ring-opacity)] transition-[transform,opacity] duration-100 ease-out [transform:scale(calc(var(--anbo-voice-ring-scale)_+_0.16))] motion-reduce:transform-none motion-reduce:transition-none",
+              dockRight ? "right-0" : "left-0",
+            )}
+          />
+        </>
+      ) : null}
+
       <button
         type="button"
         tabIndex={-1}
         aria-label={voice.recording ? "Stop AnboVoice" : "Start AnboVoice"}
-        title={voice.recording ? "Stop and insert transcript" : "AnboVoice"}
         onPointerDown={captureOnPointerDown}
         onClick={toggleRecording}
         onContextMenu={(event) => {
@@ -248,22 +344,34 @@ export function AnboVoice({ visible, onHide, captureTarget }: Props) {
           onHide();
         }}
         className={cn(
-          "group flex size-9 touch-none items-center justify-center rounded-full border shadow-lg backdrop-blur-xl transition-[color,background-color,border-color,box-shadow,opacity]",
-          "border-border/70 bg-popover/85 text-muted-foreground hover:border-primary/50 hover:bg-popover hover:text-foreground hover:shadow-xl",
-          !busy && "opacity-70 hover:opacity-100",
+          "group relative z-10 flex h-8 touch-none items-center rounded-full border shadow-lg backdrop-blur-xl transition-[width,padding,color,background-color,border-color,box-shadow,opacity] duration-150",
+          "border-primary/55 bg-popover/90 text-muted-foreground hover:border-primary/75 hover:bg-popover hover:text-foreground hover:shadow-xl",
+          busy
+            ? cn(
+                "w-8 justify-center p-0",
+                dockRight ? "ml-auto" : "mr-auto",
+              )
+            : "w-[104px] justify-center gap-1.5 px-1.5 opacity-95 hover:opacity-100",
           voice.recording &&
-            "border-destructive/60 bg-destructive/15 text-destructive opacity-100 shadow-[0_0_0_4px_color-mix(in_oklab,var(--destructive)_12%,transparent)]",
+            "border-primary/60 bg-popover text-primary opacity-100 shadow-[0_0_var(--anbo-voice-glow)_color-mix(in_oklab,var(--primary)_28%,transparent)]",
           voice.transcribing &&
             "border-primary/50 bg-primary/10 text-primary opacity-100",
         )}
       >
-        {voice.requesting || voice.transcribing ? (
-          <Spinner className="size-4" />
-        ) : voice.recording ? (
-          <span className="size-2.5 rounded-[3px] bg-current" />
-        ) : (
-          <HugeiconsIcon icon={Mic01Icon} size={17} strokeWidth={1.8} />
-        )}
+        <img
+          src="/logo.svg"
+          alt=""
+          draggable={false}
+          className={cn(
+            "pointer-events-none size-[14px] select-none rounded-[4px] shadow-sm transition-transform duration-150",
+            voice.recording && "scale-[1.03]",
+          )}
+        />
+        {!busy ? (
+          <span className="pointer-events-none mr-0.5 truncate text-xs leading-[14px] font-bold tracking-[-0.01em] text-foreground">
+            AnboVoice
+          </span>
+        ) : null}
       </button>
     </div>
   );
