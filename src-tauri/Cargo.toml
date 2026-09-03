@@ -51,6 +51,8 @@ reqwest = { version = "0.12", default-features = false, features = [
 	"stream",
 ] }
 bytes = "1"
+sha2 = "0.10"
+zip = { version = "4", default-features = false, features = ["deflate"] }
 # Local MCP (Streamable HTTP) server. hyper/hyper-util/http-body-util are already
 # compiled transitively via reqwest, so these direct deps add ~no build cost.
 hyper = { version = "1", features = ["server", "http1"] }
@@ -59,6 +61,7 @@ http-body-util = "0.1"
 base64 = "0.23"
 futures-util = "0.3"
 tokio = { version = "1", default-features = false, features = [
+	"fs",
 	"io-std",
 	"io-util",
 	"macros",
@@ -111,6 +114,7 @@ windows-sys = { version = "0.61", features = [
 	"Win32_System_ProcessStatus",
 	"Win32_System_Threading",
 	"Win32_System_Diagnostics_ToolHelp",
+	"Win32_Storage_FileSystem",
 ] }
 webview2-com = "0.38"
 windows = { version = "0.61", features = [

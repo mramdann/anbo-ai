@@ -44,7 +44,6 @@ import {
   providerNeedsKey,
   STT_PROVIDER_LABELS,
   type SttProvider,
-  WHISPERCPP_DEFAULT_BASE_URL,
 } from "@/modules/ai/config";
 import {
   type CustomEndpointKeys,
@@ -80,8 +79,8 @@ import {
   setOpenrouterModelId,
   setRecentModelIds,
   setSttProvider,
-  setWhispercppBaseURL,
 } from "@/modules/settings/store";
+import { WhisperRuntimeSettings } from "@/modules/voice";
 import {
   Add01Icon,
   ArrowDown01Icon,
@@ -1669,11 +1668,8 @@ function StatusLine({
 function VoiceBlock() {
   const sttProvider = usePreferencesStore((s) => s.sttProvider);
   const groqSttModel = usePreferencesStore((s) => s.groqSttModel);
-  const whispercppBaseURL = usePreferencesStore((s) => s.whispercppBaseURL);
-  const [urlDraft, setUrlDraft] = useState(whispercppBaseURL);
   const [groqModelDraft, setGroqModelDraft] = useState(groqSttModel);
 
-  useEffect(() => setUrlDraft(whispercppBaseURL), [whispercppBaseURL]);
   useEffect(() => setGroqModelDraft(groqSttModel), [groqSttModel]);
 
   return (
@@ -1743,23 +1739,7 @@ function VoiceBlock() {
         </div>
       )}
 
-      {sttProvider === "whispercpp" && (
-        <div className="flex flex-col gap-2.5">
-          <FieldRow label="Base URL">
-            <Input
-              value={urlDraft}
-              onChange={(e) => setUrlDraft(e.target.value)}
-              onBlur={() => {
-                const v = urlDraft.trim();
-                if (v !== whispercppBaseURL) void setWhispercppBaseURL(v);
-              }}
-              placeholder={WHISPERCPP_DEFAULT_BASE_URL}
-              spellCheck={false}
-              className="h-8 font-mono text-[11.5px]"
-            />
-          </FieldRow>
-        </div>
-      )}
+      {sttProvider === "whispercpp" && <WhisperRuntimeSettings />}
     </div>
   );
 }

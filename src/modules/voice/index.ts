@@ -1,4 +1,6 @@
 export { AnboVoice } from "./AnboVoice";
+export { WhisperRuntimeBridge } from "./WhisperRuntimeBridge";
+export { WhisperRuntimeSettings } from "./WhisperRuntimeSettings";
 export { captureDomVoiceTarget } from "./lib/domTarget";
 export { useVoiceVisibility } from "./lib/useVoiceVisibility";
 export {

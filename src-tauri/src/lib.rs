@@ -2,7 +2,7 @@ pub mod modules;
 
 use modules::{
     agent, anbo, app_data, browser, browser_automation, fs, git, history, lsp, net, proc,
-    project_memory, pty, secrets, shell, workspace,
+    project_memory, pty, secrets, shell, voice_runtime, workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -287,6 +287,7 @@ pub fn run() {
         .manage(fs::watch::FsWatchState::default())
         .manage(history::HistoryState::default())
         .manage(lsp::LspState::default())
+        .manage(voice_runtime::WhisperRuntimeState::default())
         .manage(fs::grep::ContentSearchState::default())
         .manage({
             let registry = workspace::WorkspaceRegistry::default();
@@ -408,6 +409,12 @@ pub fn run() {
             history::history_commands,
             history::history_record,
             history::history_list,
+            voice_runtime::whisper_runtime_status,
+            voice_runtime::whisper_runtime_install,
+            voice_runtime::whisper_runtime_cancel_install,
+            voice_runtime::whisper_runtime_start,
+            voice_runtime::whisper_runtime_stop,
+            voice_runtime::whisper_runtime_uninstall,
         ])
         .build(context)
         .expect("error while building tauri application")

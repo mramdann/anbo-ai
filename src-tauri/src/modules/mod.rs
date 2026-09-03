@@ -15,4 +15,5 @@ pub mod project_memory;
 pub mod pty;
 pub mod secrets;
 pub mod shell;
+pub mod voice_runtime;
 pub mod workspace;

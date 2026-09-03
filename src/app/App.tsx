@@ -166,6 +166,7 @@ import {
   successfulVoiceInsert,
   type VoiceTarget,
   useVoiceVisibility,
+  WhisperRuntimeBridge,
 } from "@/modules/voice";
 import { useWorkspaceEnvStore, type WorkspaceEnv } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
@@ -2689,6 +2690,7 @@ export default function App() {
                 onSettled={handleAgentSettled}
                 onExit={handleAgentExited}
               />
+              <WhisperRuntimeBridge />
               <Toaster position="bottom-right" />
               <AnboVoice
                 visible={voiceVisibility.visible}
