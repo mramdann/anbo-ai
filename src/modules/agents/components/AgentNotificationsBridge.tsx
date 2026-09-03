@@ -11,11 +11,12 @@ import {
 import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
-import { displayAgentInstance } from "../lib/format";
 import {
   AgentScreenObserver,
   type ObservedAgentSignal,
 } from "../lib/agentScreenObserver";
+import { prepareAttentionSound } from "../lib/attentionSound";
+import { displayAgentInstance } from "../lib/format";
 import { maybeTriggerManagedReview } from "../lib/review";
 import { routeAgentNotification } from "../lib/route";
 import type { AgentSession, AgentSignal } from "../lib/types";
@@ -81,8 +82,7 @@ function route(
     workspace,
     focused: ctx.focused,
     visible: ctx.activeId === tabId,
-    // Stop fires every turn, so finished only updates the bell; attention toasts.
-    allowToast: kind === "attention",
+    allowToast: true,
     tabId,
     leafId: session.leafId,
     onActivate: () => ctx.onActivate(tabId, session.leafId),
@@ -197,6 +197,8 @@ export function AgentNotificationsBridge({
     onSettled,
     onExit,
   };
+
+  useEffect(() => prepareAttentionSound(), []);
 
   useEffect(() => {
     const store = useAgentStore.getState();

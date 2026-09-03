@@ -1,14 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { pushNotification, osNotify, showAgentToast } = vi.hoisted(() => ({
-  pushNotification: vi.fn(),
-  osNotify: vi.fn(),
-  showAgentToast: vi.fn(),
-}));
+const { preferences, pushNotification, osNotify, showAgentToast } = vi.hoisted(
+  () => ({
+    preferences: {
+      agentInAppNotifications: true,
+      agentSystemNotifications: true,
+    },
+    pushNotification: vi.fn(),
+    osNotify: vi.fn(),
+    showAgentToast: vi.fn(),
+  }),
+);
 
 vi.mock("@/modules/settings/preferences", () => ({
   usePreferencesStore: {
-    getState: () => ({ agentNotifications: true }),
+    getState: () => preferences,
   },
 }));
 
@@ -39,6 +45,8 @@ const base = {
 describe("routeAgentNotification", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    preferences.agentInAppNotifications = true;
+    preferences.agentSystemNotifications = true;
   });
 
   it("uses the callsign in retained notification metadata", () => {
@@ -77,5 +85,32 @@ describe("routeAgentNotification", () => {
       "Leander needs your input",
       "Claude Code · notaris-surat",
     );
+  });
+
+  it("keeps in-app alerts active when system notifications are disabled", () => {
+    preferences.agentSystemNotifications = false;
+
+    routeAgentNotification({
+      ...base,
+      kind: "attention",
+      focused: false,
+    });
+
+    expect(showAgentToast).toHaveBeenCalledOnce();
+    expect(osNotify).not.toHaveBeenCalled();
+  });
+
+  it("keeps system notifications active when in-app alerts are disabled", () => {
+    preferences.agentInAppNotifications = false;
+
+    routeAgentNotification({
+      ...base,
+      kind: "finished",
+      focused: false,
+    });
+
+    expect(pushNotification).not.toHaveBeenCalled();
+    expect(showAgentToast).not.toHaveBeenCalled();
+    expect(osNotify).toHaveBeenCalledOnce();
   });
 });

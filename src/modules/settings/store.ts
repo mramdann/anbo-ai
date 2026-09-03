@@ -175,7 +175,8 @@ export type Preferences = {
   terminalScrollback: number;
   lastWslDistro: string | null;
   zoomLevel: number;
-  agentNotifications: boolean;
+  agentInAppNotifications: boolean;
+  agentSystemNotifications: boolean;
   agentMcpEnabled: AgentMcpEnabled;
   agentLaunchCommands: AgentLaunchCommands;
   customCliAgents: CustomCliAgent[];
@@ -269,7 +270,11 @@ const KEY_TERMINAL_FONT_SIZE = "terminalFontSize";
 const KEY_TERMINAL_SCROLLBACK = "terminalScrollback";
 const KEY_LAST_WSL_DISTRO = "lastWslDistro";
 const KEY_ZOOM_LEVEL = "zoomLevel";
+// Read-only migration key used by Anbo versions before notification channels
+// were separated. New writes use the two channel-specific keys below.
 const KEY_AGENT_NOTIFICATIONS = "agentNotifications";
+const KEY_AGENT_IN_APP_NOTIFICATIONS = "agentInAppNotifications";
+const KEY_AGENT_SYSTEM_NOTIFICATIONS = "agentSystemNotifications";
 const KEY_AGENT_MCP_ENABLED = "agentMcpEnabled";
 const KEY_AGENT_LAUNCH_COMMANDS = "agentLaunchCommands";
 const KEY_CUSTOM_CLI_AGENTS = "customCliAgents";
@@ -355,7 +360,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   terminalScrollback: TERMINAL_SCROLLBACK_DEFAULT,
   lastWslDistro: null,
   zoomLevel: 1.0,
-  agentNotifications: true,
+  agentInAppNotifications: true,
+  agentSystemNotifications: true,
   agentMcpEnabled: DEFAULT_AGENT_MCP_ENABLED,
   agentLaunchCommands: DEFAULT_AGENT_LAUNCH_COMMANDS,
   customCliAgents: [],
@@ -396,6 +402,7 @@ export async function loadPreferences(): Promise<Preferences> {
   const entries = await store.entries();
   const map = new Map<string, unknown>(entries);
   const get = <T>(k: string): T | undefined => map.get(k) as T | undefined;
+  const legacyAgentNotifications = get<boolean>(KEY_AGENT_NOTIFICATIONS);
   return {
     theme: get<ThemePref>(KEY_THEME) ?? DEFAULT_PREFERENCES.theme,
     themeId: get<string>(KEY_THEME_ID) ?? DEFAULT_PREFERENCES.themeId,
@@ -534,9 +541,14 @@ export async function loadPreferences(): Promise<Preferences> {
       get<string | null>(KEY_LAST_WSL_DISTRO) ??
       DEFAULT_PREFERENCES.lastWslDistro,
     zoomLevel: get<number>(KEY_ZOOM_LEVEL) ?? DEFAULT_PREFERENCES.zoomLevel,
-    agentNotifications:
-      get<boolean>(KEY_AGENT_NOTIFICATIONS) ??
-      DEFAULT_PREFERENCES.agentNotifications,
+    agentInAppNotifications:
+      get<boolean>(KEY_AGENT_IN_APP_NOTIFICATIONS) ??
+      legacyAgentNotifications ??
+      DEFAULT_PREFERENCES.agentInAppNotifications,
+    agentSystemNotifications:
+      get<boolean>(KEY_AGENT_SYSTEM_NOTIFICATIONS) ??
+      legacyAgentNotifications ??
+      DEFAULT_PREFERENCES.agentSystemNotifications,
     agentMcpEnabled: normalizeAgentMcpEnabled(
       get<unknown>(KEY_AGENT_MCP_ENABLED),
     ),
@@ -899,8 +911,16 @@ export async function setEditorCustomFormatCommand(
   await writePref(KEY_EDITOR_CUSTOM_FORMAT_COMMAND, value);
 }
 
-export async function setAgentNotifications(value: boolean): Promise<void> {
-  await writePref(KEY_AGENT_NOTIFICATIONS, value);
+export async function setAgentInAppNotifications(
+  value: boolean,
+): Promise<void> {
+  await writePref(KEY_AGENT_IN_APP_NOTIFICATIONS, value);
+}
+
+export async function setAgentSystemNotifications(
+  value: boolean,
+): Promise<void> {
+  await writePref(KEY_AGENT_SYSTEM_NOTIFICATIONS, value);
 }
 
 export async function setAgentMcpEnabled(
@@ -992,7 +1012,8 @@ export async function onPreferencesChange(
     [KEY_TERMINAL_SCROLLBACK]: "terminalScrollback",
     [KEY_LAST_WSL_DISTRO]: "lastWslDistro",
     [KEY_ZOOM_LEVEL]: "zoomLevel",
-    [KEY_AGENT_NOTIFICATIONS]: "agentNotifications",
+    [KEY_AGENT_IN_APP_NOTIFICATIONS]: "agentInAppNotifications",
+    [KEY_AGENT_SYSTEM_NOTIFICATIONS]: "agentSystemNotifications",
     [KEY_AGENT_MCP_ENABLED]: "agentMcpEnabled",
     [KEY_AGENT_LAUNCH_COMMANDS]: "agentLaunchCommands",
     [KEY_CUSTOM_CLI_AGENTS]: "customCliAgents",

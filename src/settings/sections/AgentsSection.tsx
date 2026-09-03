@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { IS_WINDOWS } from "@/lib/platform";
 import { AGENT_ICONS } from "@/modules/ai/components/AgentSwitcher";
 import {
   type Agent,
@@ -28,7 +29,8 @@ import {
 } from "@/modules/ai/store/snippetsStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
-  setAgentNotifications,
+  setAgentInAppNotifications,
+  setAgentSystemNotifications,
   setBrowserAutomationEnabled,
   setCustomInstructions,
 } from "@/modules/settings/store";
@@ -56,7 +58,12 @@ const ICON_OPTIONS: AgentIconId[] = [
 
 export function AgentsSection() {
   const customInstructions = usePreferencesStore((s) => s.customInstructions);
-  const agentNotifications = usePreferencesStore((s) => s.agentNotifications);
+  const agentInAppNotifications = usePreferencesStore(
+    (s) => s.agentInAppNotifications,
+  );
+  const agentSystemNotifications = usePreferencesStore(
+    (s) => s.agentSystemNotifications,
+  );
   const browserAutomationEnabled = usePreferencesStore(
     (s) => s.browserAutomationEnabled,
   );
@@ -90,12 +97,21 @@ export function AgentsSection() {
       <section className="flex flex-col gap-2">
         <Label>Agent runtime</Label>
         <SettingRow
-          title="Coding agent notifications"
-          description="Alert when a terminal agent needs input or finishes."
+          title="In-app notifications"
+          description="Show agent alerts inside Anbo and keep completed activity in the notification center."
         >
           <Switch
-            checked={agentNotifications}
-            onCheckedChange={(value) => void setAgentNotifications(value)}
+            checked={agentInAppNotifications}
+            onCheckedChange={(value) => void setAgentInAppNotifications(value)}
+          />
+        </SettingRow>
+        <SettingRow
+          title={IS_WINDOWS ? "Windows notifications" : "System notifications"}
+          description="Show native notifications when Anbo is not focused. This setting is independent from in-app alerts."
+        >
+          <Switch
+            checked={agentSystemNotifications}
+            onCheckedChange={(value) => void setAgentSystemNotifications(value)}
           />
         </SettingRow>
         <SettingRow

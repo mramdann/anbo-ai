@@ -38,29 +38,32 @@ export function routeAgentNotification({
   leafId = 0,
   onActivate,
 }: RouteArgs): void {
-  if (!usePreferencesStore.getState().agentNotifications) return;
   if (focused && visible) return;
+  const preferences = usePreferencesStore.getState();
+  const inAppEnabled = preferences.agentInAppNotifications;
+  const systemEnabled = preferences.agentSystemNotifications;
 
-  const displayName = displayAgentInstance(agent, name);
-  if (kind !== "attention") {
-    useAgentStore.getState().pushNotification({
-      source,
-      agent,
-      name: displayName,
-      kind,
-      tabId,
-      leafId,
-    });
+  if (inAppEnabled) {
+    const displayName = displayAgentInstance(agent, name);
+    if (kind !== "attention") {
+      useAgentStore.getState().pushNotification({
+        source,
+        agent,
+        name: displayName,
+        kind,
+        tabId,
+        leafId,
+      });
+    }
+    if (allowToast) {
+      showAgentToast({ agent, title, body, workspace, onActivate });
+    }
   }
 
-  if (!focused) {
+  if (systemEnabled && !focused) {
     void osNotify(
       title,
       [displayAgent(agent), workspace, body].filter(Boolean).join(" · "),
     );
-    return;
-  }
-  if (allowToast) {
-    showAgentToast({ agent, title, body, workspace, onActivate });
   }
 }
