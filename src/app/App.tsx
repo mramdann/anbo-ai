@@ -159,6 +159,14 @@ import {
 } from "@/modules/terminal";
 import { ThemeProvider, useThemeFileEditing } from "@/modules/theme";
 import { UpdaterDialog } from "@/modules/updater";
+import {
+  AnboVoice,
+  captureDomVoiceTarget,
+  failedVoiceInsert,
+  successfulVoiceInsert,
+  type VoiceTarget,
+  useVoiceVisibility,
+} from "@/modules/voice";
 import { useWorkspaceEnvStore, type WorkspaceEnv } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
@@ -620,6 +628,7 @@ export default function App() {
   const respondToApproval = useChatStore((s) => s.respondToApproval);
 
   const { hasComposer, keysLoaded } = useAiBootstrap();
+  const voiceVisibility = useVoiceVisibility();
 
   const activeTab = tabs.find((t) => t.id === activeId);
   const isTerminalTab = activeTab?.kind === "terminal";
@@ -2286,6 +2295,111 @@ export default function App() {
     [isTerminalTab, activeLeafId],
   );
 
+  const captureVoiceTarget = useCallback((): VoiceTarget | null => {
+    const domTarget = captureDomVoiceTarget();
+    if (domTarget) return domTarget;
+
+    const tab = tabsRef.current.find(
+      (candidate) => candidate.id === activeIdRef.current,
+    );
+    if (!tab) return null;
+
+    if (tab.kind === "terminal") {
+      const leafId = tab.activeLeafId;
+      const handle = terminalRefs.current.get(leafId);
+      if (!handle) return null;
+      const session = useAgentStore.getState().sessions[leafId];
+      const label = session?.name || tab.agent?.name || tab.title || "Terminal";
+      return {
+        kind: "terminal",
+        label,
+        insert: (text) => {
+          const current = tabsRef.current.find(
+            (candidate) => candidate.id === activeIdRef.current,
+          );
+          if (
+            current?.kind !== "terminal" ||
+            current.id !== tab.id ||
+            current.activeLeafId !== leafId
+          ) {
+            return failedVoiceInsert(
+              "The active terminal changed while AnboVoice was listening.",
+            );
+          }
+          const currentAgent = useAgentStore.getState().sessions[leafId];
+          if (currentAgent?.status === "working") {
+            return failedVoiceInsert(
+              `${currentAgent.name} is still working. Wait for its input prompt before inserting voice text.`,
+            );
+          }
+          if (!currentAgent && !current.agent) {
+            const state = getTerminalSessionState(leafId);
+            if (!state?.ready || state.shellExited || state.commandRunning) {
+              return failedVoiceInsert(
+                "The terminal is busy or no longer ready for input.",
+              );
+            }
+          }
+          if (!writeToSession(leafId, text)) {
+            return failedVoiceInsert("The terminal is no longer available.");
+          }
+          terminalRefs.current.get(leafId)?.focus();
+          return successfulVoiceInsert();
+        },
+      };
+    }
+
+    if (tab.kind === "editor") {
+      const insertion = editorRefs.current.get(tab.id)?.captureVoiceInsertion();
+      if (!insertion) return null;
+      return {
+        kind: "editor",
+        label: tab.title,
+        insert: (text) => {
+          if (activeIdRef.current !== tab.id) {
+            return failedVoiceInsert(
+              "The active editor changed while AnboVoice was listening.",
+            );
+          }
+          return insertion(text)
+            ? successfulVoiceInsert()
+            : failedVoiceInsert(
+                "The document changed while AnboVoice was listening.",
+              );
+        },
+      };
+    }
+
+    if (tab.kind === "browser" && tab.url) {
+      const handle = browserRefs.current.get(tab.id);
+      if (!handle) return null;
+      return {
+        kind: "browser",
+        label: tab.title || "Browser",
+        insert: async (text) => {
+          if (activeIdRef.current !== tab.id) {
+            return failedVoiceInsert(
+              "The active browser changed while AnboVoice was listening.",
+            );
+          }
+          try {
+            return (await handle.insertText(text))
+              ? successfulVoiceInsert()
+              : failedVoiceInsert(
+                  "The browser no longer has an editable field selected.",
+                );
+          } catch (error) {
+            return failedVoiceInsert(
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+        },
+      };
+    }
+
+    return null;
+  }, []);
+
   useAiLiveBridge({
     setLive,
     activeId,
@@ -2324,6 +2438,8 @@ export default function App() {
                   onActivateAgent={onActivateAgent}
                   onActivateLocalAgent={onActivateLocalAgent}
                   onOpenSettings={() => void openSettingsWindow()}
+                  voiceVisible={voiceVisibility.visible}
+                  onToggleVoice={voiceVisibility.toggle}
                   spaceSwitcher={spaceSwitcher}
                   searchTarget={searchTarget}
                   searchRef={searchInlineRef}
@@ -2574,6 +2690,11 @@ export default function App() {
                 onExit={handleAgentExited}
               />
               <Toaster position="bottom-right" />
+              <AnboVoice
+                visible={voiceVisibility.visible}
+                onHide={() => voiceVisibility.setVisible(false)}
+                captureTarget={captureVoiceTarget}
+              />
 
               {hasComposer ? (
                 <>

@@ -1,10 +1,12 @@
 import { Button } from "@/components/ui/button";
 import { WindowControls } from "@/components/WindowControls";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
+import { cn } from "@/lib/utils";
 import { NotificationBell } from "@/modules/agents";
 import type { WorkspaceEnv } from "@/modules/workspace";
 import {
   CommandIcon,
+  Mic01Icon,
   Settings01Icon,
   SidebarLeftIcon,
 } from "@hugeicons/core-free-icons";
@@ -28,6 +30,8 @@ type Props = {
   onActivateAgent: (tabId: number, leafId: number) => void;
   onActivateLocalAgent: () => void;
   onOpenSettings: () => void;
+  voiceVisible: boolean;
+  onToggleVoice: () => void;
   spaceSwitcher: ReactNode;
   searchTarget: SearchTarget;
   searchRef: RefObject<SearchInlineHandle | null>;
@@ -43,6 +47,8 @@ export function Header({
   onActivateAgent,
   onActivateLocalAgent,
   onOpenSettings,
+  voiceVisible,
+  onToggleVoice,
   spaceSwitcher,
   searchTarget,
   searchRef,
@@ -72,6 +78,22 @@ export function Header({
       title="Settings"
     >
       <HugeiconsIcon icon={Settings01Icon} size={15} strokeWidth={1.75} />
+    </Button>
+  );
+
+  const voiceButton = (
+    <Button
+      variant="ghost"
+      size="icon"
+      className={cn(
+        "size-7 shrink-0 rounded-md hover:bg-accent hover:text-foreground",
+        voiceVisible ? "text-primary" : "text-muted-foreground",
+      )}
+      onClick={onToggleVoice}
+      title={voiceVisible ? "Hide AnboVoice" : "Show AnboVoice"}
+      aria-pressed={voiceVisible}
+    >
+      <HugeiconsIcon icon={Mic01Icon} size={15} strokeWidth={1.75} />
     </Button>
   );
 
@@ -136,11 +158,17 @@ export function Header({
             workspaceRoot={workspaceRoot}
             workspace={workspace}
           />
+          {voiceButton}
           {settingsButton}
         </>
       )}
 
-      {!IS_MAC && settingsButton}
+      {!IS_MAC && (
+        <>
+          {voiceButton}
+          {settingsButton}
+        </>
+      )}
 
       {USE_CUSTOM_WINDOW_CONTROLS && (
         <>

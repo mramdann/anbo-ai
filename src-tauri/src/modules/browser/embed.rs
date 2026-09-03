@@ -37,6 +37,8 @@ pub(crate) const BROWSER_POPUP_REQUEST_EVENT: &str = "anbo:browser-popup-request
 const MAX_ACTIVE_EMBEDS: usize = 256;
 const MAX_CLOSED_EMBEDS: usize = 16 * 1024;
 const MAX_RELEASED_OWNERS: usize = 32 * 1024;
+const MAX_VOICE_TEXT_BYTES: usize = 32 * 1024;
+const MAX_PUNCH_HOLES: usize = 8;
 
 #[cfg(any(target_os = "linux", test))]
 const fn browser_child_transparent() -> bool {
@@ -124,6 +126,30 @@ fn bounded_insert<T: Clone + Eq + Hash>(set: &mut HashSet<T>, value: T, limit: u
         }
     }
     set.insert(value);
+}
+
+fn validate_voice_text(text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("voice transcript is empty".to_string());
+    }
+    if text.len() > MAX_VOICE_TEXT_BYTES {
+        return Err(format!(
+            "voice transcript exceeds {MAX_VOICE_TEXT_BYTES} bytes"
+        ));
+    }
+    if text.contains('\0') {
+        return Err("voice transcript contains a null byte".to_string());
+    }
+    Ok(())
+}
+
+fn validate_punch_hole_count(count: usize) -> Result<(), String> {
+    if count > MAX_PUNCH_HOLES {
+        return Err(format!(
+            "browser punch-hole count exceeds {MAX_PUNCH_HOLES}"
+        ));
+    }
+    Ok(())
 }
 
 pub fn embed_label(tab_id: i64) -> String {
@@ -908,17 +934,14 @@ fn set_embed_presentation(webview: &tauri::Webview, visible: bool) -> Result<(),
     }
 }
 
-/// Clips the embedded browser's window region to exclude `hole` (a rectangle in
-/// physical pixels relative to the webview's own origin), or restores the full
-/// region when `hole` is `None`. While the webview stays on top (receiving
-/// input everywhere it paints), the punched-out area lets the HTML layer behind
-/// it — the AI mini window — show through and stay interactive. Region
-/// coordinates are clamped to the webview's client rect to stay well-formed.
+/// Clips the embedded browser's window region around floating HTML surfaces.
+/// Hole coordinates use physical pixels relative to the webview's origin. An
+/// empty list restores the complete browser region.
 #[cfg(windows)]
-async fn apply_punch_hole(webview: &tauri::Webview, hole: Option<PunchHole>) -> Result<(), String> {
+async fn apply_punch_holes(webview: &tauri::Webview, holes: Vec<PunchHole>) -> Result<(), String> {
     // Await the webview-thread result on a tokio oneshot instead of blocking a
-    // worker thread with a synchronous mpsc recv — this command runs per-frame
-    // while the AI mini window is dragged, so it must not stall the runtime.
+    // worker thread with a synchronous mpsc recv. This command runs per-frame
+    // while a floating surface is dragged, so it must not stall the runtime.
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     webview
         .with_webview(move |platform| {
@@ -927,31 +950,30 @@ async fn apply_punch_hole(webview: &tauri::Webview, hole: Option<PunchHole>) -> 
                 let mut hwnd = windows::Win32::Foundation::HWND::default();
                 unsafe { controller.ParentWindow(&mut hwnd) }.map_err(|e| e.to_string())?;
 
-                let region = match hole {
-                    None => None,
-                    Some(h) => {
-                        let mut client = RECT::default();
-                        unsafe { GetClientRect(hwnd, &mut client) }.map_err(|e| e.to_string())?;
+                let region = if holes.is_empty() {
+                    None
+                } else {
+                    let mut client = RECT::default();
+                    unsafe { GetClientRect(hwnd, &mut client) }.map_err(|e| e.to_string())?;
+                    let full = unsafe { CreateRectRgn(0, 0, client.right, client.bottom) };
+                    for h in holes {
                         let left = h.x.max(0);
                         let top = h.y.max(0);
                         let right = (h.x + h.width).min(client.right).max(left);
                         let bottom = (h.y + h.height).min(client.bottom).max(top);
-                        let full = unsafe { CreateRectRgn(0, 0, client.right, client.bottom) };
-                        let hole_rgn = unsafe { CreateRectRgn(left, top, right, bottom) };
-                        let combined = unsafe { CreateRectRgn(0, 0, 0, 0) };
-                        let kind = unsafe {
-                            CombineRgn(Some(combined), Some(full), Some(hole_rgn), RGN_DIFF)
-                        };
-                        // Scratch regions are ours to free; `combined` is either handed
-                        // to SetWindowRgn (ownership transferred on success) or freed below.
-                        let _ = unsafe { DeleteObject(full.into()) };
-                        let _ = unsafe { DeleteObject(hole_rgn.into()) };
+                        if right <= left || bottom <= top {
+                            continue;
+                        }
+                        let hole = unsafe { CreateRectRgn(left, top, right, bottom) };
+                        let kind =
+                            unsafe { CombineRgn(Some(full), Some(full), Some(hole), RGN_DIFF) };
+                        let _ = unsafe { DeleteObject(hole.into()) };
                         if kind == RGN_ERROR {
-                            let _ = unsafe { DeleteObject(combined.into()) };
+                            let _ = unsafe { DeleteObject(full.into()) };
                             return Err("failed to compute browser punch-hole region".to_string());
                         }
-                        Some(combined)
                     }
+                    Some(full)
                 };
 
                 // SetWindowRgn returns nonzero on success and then takes ownership of
@@ -1022,12 +1044,13 @@ pub async fn browser_embed_set_punch_hole(
     tab_id: i64,
     instance_id: String,
     owner_id: String,
-    hole: Option<PunchHole>,
+    holes: Vec<PunchHole>,
 ) -> Result<(), String> {
     ensure_main_window(&window)?;
     validate_tab_id(tab_id)?;
     validate_token(&instance_id)?;
     validate_token(&owner_id)?;
+    validate_punch_hole_count(holes.len())?;
     let webview = {
         let _lifecycle = LIFECYCLE_LOCK.lock().await;
         ensure_current_instance(&instance_id)?;
@@ -1041,12 +1064,15 @@ pub async fn browser_embed_set_punch_hole(
     };
 
     #[cfg(windows)]
-    return apply_punch_hole(&webview, hole).await;
+    return apply_punch_holes(&webview, holes).await;
 
     #[cfg(not(windows))]
     {
         let _ = webview;
-        let _ = hole.map(|hole| (hole.x, hole.y, hole.width, hole.height));
+        let _ = holes
+            .into_iter()
+            .map(|hole| (hole.x, hole.y, hole.width, hole.height))
+            .collect::<Vec<_>>();
         Ok(())
     }
 }
@@ -1350,6 +1376,107 @@ pub async fn browser_embed_url(
 }
 
 #[tauri::command]
+pub async fn browser_embed_insert_text(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    tab_id: i64,
+    instance_id: String,
+    owner_id: String,
+    text: String,
+) -> Result<bool, String> {
+    ensure_main_window(&window)?;
+    validate_tab_id(tab_id)?;
+    validate_token(&instance_id)?;
+    validate_token(&owner_id)?;
+    validate_voice_text(&text)?;
+    let tab_lock = get_tab_lock(tab_id);
+    let _tab_lock = tab_lock.lock().await;
+    let webview = {
+        let _lifecycle = LIFECYCLE_LOCK.lock().await;
+        ensure_current_instance(&instance_id)?;
+        if !is_active(tab_id, &instance_id, Some(&owner_id)) {
+            return Ok(false);
+        }
+        app.get_webview(&embed_label(tab_id))
+    };
+    let Some(webview) = webview else {
+        return Ok(false);
+    };
+
+    #[cfg(windows)]
+    {
+        let focused = crate::modules::browser_automation::cdp::execute_script_with_timeout(
+            &webview,
+            r#"(() => {
+                let doc = document;
+                let el = doc.activeElement;
+                if (!el) return "none";
+                while (el instanceof HTMLIFrameElement) {
+                    try {
+                        doc = el.contentDocument;
+                        if (!doc) return "frame";
+                        el = doc.activeElement;
+                        if (!el) return "none";
+                    } catch {
+                        return "frame";
+                    }
+                }
+                const tag = el.tagName?.toLowerCase();
+                if (tag === "input") {
+                    if (el.type === "password") return "password";
+                    return ["text", "search", "email", "url", "tel"].includes(el.type) ? "editable" : "none";
+                }
+                if (tag === "textarea" || el.isContentEditable) return "editable";
+                return "none";
+            })()"#,
+            std::time::Duration::from_secs(2),
+        )
+        .await?;
+        let focused = serde_json::from_str::<String>(&focused).unwrap_or_default();
+        match focused.as_str() {
+            "password" => {
+                return Err("AnboVoice does not insert text into password fields".to_string())
+            }
+            "editable" => {}
+            "frame" => return Ok(false),
+            _ => return Ok(false),
+        }
+        webview.set_focus().map_err(|error| error.to_string())?;
+        let params = serde_json::json!({ "text": text }).to_string();
+        crate::modules::browser_automation::cdp::call_devtools_protocol_method(
+            &webview,
+            "Input.insertText",
+            &params,
+            std::time::Duration::from_secs(2),
+        )
+        .await?;
+        Ok(true)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let text = serde_json::to_string(&text).map_err(|error| error.to_string())?;
+        let script = format!(
+            r#"(() => {{
+                const el = document.activeElement;
+                if (!el || (el instanceof HTMLInputElement && el.type === "password")) return;
+                const text = {text};
+                if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {{
+                    const start = el.selectionStart ?? el.value.length;
+                    const end = el.selectionEnd ?? start;
+                    el.setRangeText(text, start, end, "end");
+                    el.dispatchEvent(new InputEvent("input", {{ bubbles: true, data: text, inputType: "insertText" }}));
+                }} else if (el.isContentEditable) {{
+                    document.execCommand("insertText", false, text);
+                }}
+            }})()"#
+        );
+        webview.eval(&script).map_err(|error| error.to_string())?;
+        Ok(true)
+    }
+}
+
+#[tauri::command]
 pub async fn browser_embed_snapshot(
     app: tauri::AppHandle,
     window: tauri::Window,
@@ -1559,7 +1686,8 @@ pub async fn browser_embed_close(
 mod tests {
     use super::{
         bounded_insert, browser_child_transparent, navigation_allowed, parse_pane_url,
-        physical_rect, should_process_update, EmbedBounds,
+        physical_rect, should_process_update, validate_punch_hole_count, validate_voice_text,
+        EmbedBounds, MAX_PUNCH_HOLES, MAX_VOICE_TEXT_BYTES,
     };
     use std::collections::HashSet;
     use url::Url;
@@ -1583,6 +1711,20 @@ mod tests {
         bounded_insert(&mut values, 3, 2);
         assert_eq!(values.len(), 2);
         assert!(values.contains(&3));
+    }
+
+    #[test]
+    fn voice_text_validation_is_bounded_and_rejects_null_bytes() {
+        assert!(validate_voice_text("open ANBO.md").is_ok());
+        assert!(validate_voice_text("   ").is_err());
+        assert!(validate_voice_text("bad\0text").is_err());
+        assert!(validate_voice_text(&"a".repeat(MAX_VOICE_TEXT_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn browser_punch_holes_are_bounded() {
+        assert!(validate_punch_hole_count(MAX_PUNCH_HOLES).is_ok());
+        assert!(validate_punch_hole_count(MAX_PUNCH_HOLES + 1).is_err());
     }
 
     #[test]

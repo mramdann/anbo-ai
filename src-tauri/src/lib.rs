@@ -340,6 +340,7 @@ pub fn run() {
             browser::embed::browser_embed_navigate,
             browser::embed::browser_embed_dispatch,
             browser::embed::browser_embed_url,
+            browser::embed::browser_embed_insert_text,
             browser::embed::browser_embed_snapshot,
             browser::embed::browser_embed_set_ui_overlay,
             browser::embed::browser_embed_set_punch_hole,

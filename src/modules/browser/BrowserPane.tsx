@@ -30,6 +30,7 @@ import {
   BROWSER_LOADING_FALLBACK_MS,
   type BrowserNavEvent,
   browserEmbedDispatch,
+  browserEmbedInsertText,
   browserEmbedNavigate,
   browserEmbedRelease,
   browserEmbedSetPunchHole,
@@ -62,6 +63,7 @@ export type BrowserPaneHandle = {
   navigate: (url: string) => void;
   focusAddressBar: () => void;
   getUrl: () => string;
+  insertText: (text: string) => Promise<boolean>;
 };
 
 type Props = {
@@ -290,8 +292,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       const canMeasure = canMeasureBrowserPane(
         isWindowPresentationDocumentVisible(
           document.visibilityState === "visible",
-        ) &&
-          !isWindowPresentationCovered(),
+        ) && !isWindowPresentationCovered(),
         allowedUrl,
         !!element,
       );
@@ -325,36 +326,38 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       };
       sendDesiredBounds();
 
-      // Punch a hole through the webview for the AI mini window so it can float
-      // over the browser and stay interactive without sinking the whole webview
-      // behind the app layer. The hole is the intersection (physical px, relative
-      // to the webview's own origin) of the browser content rect and the panel.
+      // Keep persistent floating surfaces interactive without sinking the
+      // complete native browser behind the main webview.
       if (IS_WINDOWS && shouldShow) {
-        const mini = document.querySelector(
-          '[data-ai-mini-window][data-state="open"]',
-        ) as HTMLElement | null;
-        let hole: PunchHole | null = null;
-        if (shouldShow && rect && mini) {
-          const m = mini.getBoundingClientRect();
-          const ix = Math.max(rect.left, m.left);
-          const iy = Math.max(rect.top, m.top);
-          const ir = Math.min(rect.right, m.right);
-          const ib = Math.min(rect.bottom, m.bottom);
-          if (ir > ix && ib > iy) {
-            hole = {
+        const surfaces = document.querySelectorAll<HTMLElement>(
+          '[data-ai-mini-window][data-state="open"], [data-anbo-voice-overlay]',
+        );
+        const holes: PunchHole[] = [];
+        if (rect) {
+          for (const surface of surfaces) {
+            const floating = surface.getBoundingClientRect();
+            const ix = Math.max(rect.left, floating.left);
+            const iy = Math.max(rect.top, floating.top);
+            const ir = Math.min(rect.right, floating.right);
+            const ib = Math.min(rect.bottom, floating.bottom);
+            if (ir <= ix || ib <= iy) continue;
+            if (holes.length >= 8) break;
+            holes.push({
               x: Math.round((ix - rect.left) * dpr),
               y: Math.round((iy - rect.top) * dpr),
               width: Math.round((ir - ix) * dpr),
               height: Math.round((ib - iy) * dpr),
-            };
+            });
           }
         }
-        const key = hole
-          ? `${hole.x},${hole.y},${hole.width},${hole.height}`
+        const key = holes.length
+          ? holes
+              .map((hole) => `${hole.x},${hole.y},${hole.width},${hole.height}`)
+              .join(";")
           : "none";
         if (key !== lastHoleRef.current) {
           lastHoleRef.current = key;
-          void browserEmbedSetPunchHole(id, ownerIdRef.current, hole).catch(
+          void browserEmbedSetPunchHole(id, ownerIdRef.current, holes).catch(
             () => {},
           );
         }
@@ -607,8 +610,10 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
         navigate,
         focusAddressBar: () => addressRef.current?.focus(),
         getUrl: () => currentUrlRef.current,
+        insertText: (text: string) =>
+          browserEmbedInsertText(id, ownerIdRef.current, text),
       }),
-      [dispatch, navigate],
+      [dispatch, id, navigate],
     );
 
     const showXfoHint = !native && url ? !isLocalUrl(url) : false;

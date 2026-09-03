@@ -16,8 +16,11 @@ function isTooltip(element: Element): boolean {
 // overlay. It coexists with the browser via a punched-out hole in the webview
 // (see browserEmbedSetPunchHole), so it must NOT be treated as an overlay that
 // sinks the whole webview to the bottom of the z-order.
-function isAiMiniWindow(element: Element): boolean {
-  return element.closest("[data-ai-mini-window]") !== null;
+function isPersistentFloatingSurface(element: Element): boolean {
+  return (
+    element.closest("[data-ai-mini-window]") !== null ||
+    element.closest("[data-anbo-voice-overlay]") !== null
+  );
 }
 
 type Rect = Pick<
@@ -41,7 +44,7 @@ export function rectsIntersect(a: Rect, b: Rect): boolean {
 export function hasNativeBrowserOverlay(target?: Rect): boolean {
   for (const element of document.querySelectorAll(OVERLAY_SELECTOR)) {
     if (isTooltip(element)) continue;
-    if (isAiMiniWindow(element)) continue;
+    if (isPersistentFloatingSurface(element)) continue;
     const style = window.getComputedStyle(element);
     if (style.display === "none" || style.visibility === "hidden") continue;
     const bounds = element.getBoundingClientRect();

@@ -196,11 +196,13 @@ export function AiComposerInput() {
     if (it) onPickItem(it);
   };
 
-  const voiceLabel = c.voice.recording
-    ? "Listening…"
-    : c.voice.transcribing
-      ? "Transcribing…"
-      : null;
+  const voiceLabel = c.voice.requesting
+    ? "Requesting microphone…"
+    : c.voice.recording
+      ? "Listening…"
+      : c.voice.transcribing
+        ? "Transcribing…"
+        : null;
   const voiceRow = usePresence(Boolean(voiceLabel), 180);
   const lastVoiceLabel = useRef("");
   if (voiceLabel) lastVoiceLabel.current = voiceLabel;

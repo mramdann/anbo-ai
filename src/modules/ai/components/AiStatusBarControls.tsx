@@ -131,22 +131,29 @@ export function AiStatusBarControls() {
               ? `Voice needs a ${STT_PROVIDER_LABELS[c.voice.sttProvider]} key`
               : c.voice.recording
                 ? "Stop & transcribe"
-                : c.voice.transcribing
-                  ? "Transcribing…"
-                  : "Voice input"
+                : c.voice.requesting
+                  ? "Requesting microphone…"
+                  : c.voice.transcribing
+                    ? "Transcribing…"
+                    : "Voice input"
           }
           onClick={() =>
             c.voice.recording ? c.voice.stop() : void c.voice.start()
           }
-          disabled={c.isBusy || c.voice.transcribing || !c.voice.hasKey}
+          disabled={
+            c.isBusy ||
+            c.voice.requesting ||
+            c.voice.transcribing ||
+            !c.voice.hasKey
+          }
           className={cn(
             c.voice.recording &&
-            "bg-destructive/10 text-destructive hover:bg-destructive/15",
+              "bg-destructive/10 text-destructive hover:bg-destructive/15",
           )}
         >
           {c.voice.recording ? (
             <span className="size-2 animate-pulse rounded-full bg-destructive" />
-          ) : c.voice.transcribing ? (
+          ) : c.voice.requesting || c.voice.transcribing ? (
             <Spinner className="size-3" />
           ) : (
             <HugeiconsIcon icon={Mic01Icon} size={13} strokeWidth={1.75} />

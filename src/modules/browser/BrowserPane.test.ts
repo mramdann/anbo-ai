@@ -117,4 +117,12 @@ describe("BrowserPane native layering", () => {
     );
     expect(src).not.toContain("scheduleNativeBrowserPresentationSync");
   });
+
+  it("punches bounded holes for persistent floating surfaces", () => {
+    expect(src).toContain("[data-anbo-voice-overlay]");
+    expect(src).toContain("if (holes.length >= 8) break");
+    expect(src).toContain(
+      "browserEmbedSetPunchHole(id, ownerIdRef.current, holes)",
+    );
+  });
 });

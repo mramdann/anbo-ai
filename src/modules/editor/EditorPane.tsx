@@ -82,6 +82,8 @@ export type EditorPaneHandle = {
   triggerAiComplete: () => void;
   /** Open CodeMirror's completion popup. */
   triggerCodeComplete: () => void;
+  /** Capture the current selection and return a one-shot voice insertion. */
+  captureVoiceInsertion: () => ((text: string) => boolean) | null;
 };
 
 type Props = {
@@ -510,6 +512,22 @@ export const EditorPane = memo(
           if (!view) return;
           view.focus();
           startCompletion(view);
+        },
+        captureVoiceInsertion: () => {
+          const capturedView = cmRef.current?.view;
+          if (!capturedView) return null;
+          const capturedDoc = capturedView.state.doc;
+          const { from, to } = capturedView.state.selection.main;
+          return (text: string) => {
+            const view = cmRef.current?.view;
+            if (!view || view.state.doc !== capturedDoc) return false;
+            view.dispatch({
+              changes: { from, to, insert: text },
+              selection: { anchor: from + text.length },
+            });
+            view.focus();
+            return true;
+          };
         },
       }),
       [path, applyPendingGoto],

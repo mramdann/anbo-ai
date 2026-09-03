@@ -46,4 +46,9 @@ describe("native browser layout signals", () => {
     expect(source).not.toContain("MutationObserver");
     expect(source).not.toContain("subtree: true");
   });
+
+  it("keeps AnboVoice above the native browser through a punch hole", () => {
+    expect(source).toContain("[data-anbo-voice-overlay]");
+    expect(source).toContain("isPersistentFloatingSurface");
+  });
 });

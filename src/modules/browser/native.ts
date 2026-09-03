@@ -253,6 +253,20 @@ export async function browserEmbedUrl(
   });
 }
 
+export async function browserEmbedInsertText(
+  tabId: number,
+  ownerId: string,
+  text: string,
+): Promise<boolean> {
+  await ensureBrowserSession();
+  return invoke<boolean>("browser_embed_insert_text", {
+    tabId,
+    instanceId: BROWSER_INSTANCE_ID,
+    ownerId,
+    text,
+  });
+}
+
 export async function browserEmbedSnapshot(
   tabId: number,
   ownerId: string,
@@ -293,9 +307,7 @@ export async function browserEmbedSetZoom(
   });
 }
 
-/** A rectangular hole (physical px) to clip out of the embedded browser so a
- * floating HTML panel can show through and stay interactive. Relative to the
- * webview's own top-left. `null` restores the full browser surface. */
+/** A rectangular hole in physical pixels relative to the browser webview. */
 export type PunchHole = {
   x: number;
   y: number;
@@ -306,14 +318,14 @@ export type PunchHole = {
 export async function browserEmbedSetPunchHole(
   tabId: number,
   ownerId: string,
-  hole: PunchHole | null,
+  holes: PunchHole[],
 ): Promise<void> {
   await ensureBrowserSession();
   await invoke("browser_embed_set_punch_hole", {
     tabId,
     instanceId: BROWSER_INSTANCE_ID,
     ownerId,
-    hole: hole ?? null,
+    holes,
   });
 }
 
