@@ -1,7 +1,7 @@
 export type OrbSide = "left" | "right";
 
 export type OrbPosition = {
-  side: OrbSide;
+  x: number;
   y: number;
 };
 
@@ -17,7 +17,7 @@ export const ORB_BOTTOM_LIMIT = 44;
 
 export function defaultOrbPosition(viewport: OrbViewport): OrbPosition {
   return {
-    side: "right",
+    x: orbX("right", viewport.width),
     y: Math.round(viewport.height * 0.62),
   };
 }
@@ -31,7 +31,7 @@ export function clampOrbPosition(
     viewport.height - ORB_BOTTOM_LIMIT - ORB_SIZE,
   );
   return {
-    side: position.side,
+    x: clampOrbX(position.x, viewport.width),
     y: Math.max(ORB_TOP_LIMIT, Math.min(position.y, maxY)),
   };
 }
@@ -45,8 +45,4 @@ export function orbX(side: OrbSide, viewportWidth: number): number {
 export function clampOrbX(x: number, viewportWidth: number): number {
   const maxX = Math.max(ORB_EDGE, viewportWidth - ORB_EDGE - ORB_SIZE);
   return Math.max(ORB_EDGE, Math.min(x, maxX));
-}
-
-export function nearestOrbSide(x: number, viewportWidth: number): OrbSide {
-  return x + ORB_SIZE / 2 < viewportWidth / 2 ? "left" : "right";
 }

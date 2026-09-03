@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import { STT_PROVIDER_LABELS } from "@/modules/ai/config";
 import { useComposer } from "@/modules/ai/lib/composer";
 import { notifyNativeBrowserLayout } from "@/modules/browser/nativeVisibility";
+import { ORB_SIZE } from "@/modules/voice/lib/orbPosition";
 import { useVoiceOrbPosition } from "@/modules/voice/lib/useVoiceOrbPosition";
 import {
   normalizeVoiceText,
@@ -150,7 +151,7 @@ export function AnboVoice({ visible, onHide, captureTarget }: Props) {
       : voice.transcribing
         ? "Transcribing"
         : null;
-  const dockRight = geometry.position.side === "right";
+  const dockRight = geometry.position.x + ORB_SIZE / 2 >= window.innerWidth / 2;
 
   return (
     <div

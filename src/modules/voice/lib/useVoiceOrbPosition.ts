@@ -1,11 +1,9 @@
 import {
-  clampOrbX,
   clampOrbPosition,
   defaultOrbPosition,
-  nearestOrbSide,
-  orbX,
   type OrbPosition,
   type OrbViewport,
+  orbX,
 } from "@/modules/voice/lib/orbPosition";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -20,13 +18,26 @@ function loadPosition(): OrbPosition {
   try {
     const raw = window.localStorage.getItem(STORE_KEY);
     if (!raw) return clampOrbPosition(fallback, viewport());
-    const parsed = JSON.parse(raw) as Partial<OrbPosition>;
+    const parsed = JSON.parse(raw) as Partial<OrbPosition> & {
+      side?: "left" | "right";
+    };
+    if (
+      typeof parsed.x === "number" &&
+      Number.isFinite(parsed.x) &&
+      typeof parsed.y === "number" &&
+      Number.isFinite(parsed.y)
+    ) {
+      return clampOrbPosition({ x: parsed.x, y: parsed.y }, viewport());
+    }
     if (
       (parsed.side === "left" || parsed.side === "right") &&
       typeof parsed.y === "number" &&
       Number.isFinite(parsed.y)
     ) {
-      return clampOrbPosition({ side: parsed.side, y: parsed.y }, viewport());
+      return clampOrbPosition(
+        { x: orbX(parsed.side, window.innerWidth), y: parsed.y },
+        viewport(),
+      );
     }
   } catch {}
   return clampOrbPosition(fallback, viewport());
@@ -40,14 +51,18 @@ function savePosition(position: OrbPosition): void {
 
 export function useVoiceOrbPosition() {
   const [position, setPosition] = useState(loadPosition);
-  const [dragX, setDragX] = useState<number | null>(null);
   const dragRef = useRef(false);
-  const dragXRef = useRef<number | null>(null);
+  const dragPositionRef = useRef<OrbPosition | null>(null);
   const suppressClickRef = useRef(false);
 
   useEffect(() => {
-    const onResize = () =>
-      setPosition((current) => clampOrbPosition(current, viewport()));
+    const onResize = () => {
+      setPosition((current) => {
+        const next = clampOrbPosition(current, viewport());
+        savePosition(next);
+        return next;
+      });
+    };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
@@ -61,8 +76,8 @@ export function useVoiceOrbPosition() {
       const startX = event.clientX;
       const startY = event.clientY;
       const initial = position;
-      const initialX = orbX(initial.side, window.innerWidth);
       dragRef.current = false;
+      dragPositionRef.current = initial;
       suppressClickRef.current = false;
       element.setPointerCapture?.(pointerId);
 
@@ -72,15 +87,12 @@ export function useVoiceOrbPosition() {
         if (!dragRef.current && Math.hypot(dx, dy) < 4) return;
         dragRef.current = true;
         suppressClickRef.current = true;
-        const nextX = clampOrbX(initialX + dx, window.innerWidth);
-        dragXRef.current = nextX;
-        setDragX(nextX);
-        setPosition(
-          clampOrbPosition(
-            { side: initial.side, y: initial.y + dy },
-            viewport(),
-          ),
+        const next = clampOrbPosition(
+          { x: initial.x + dx, y: initial.y + dy },
+          viewport(),
         );
+        dragPositionRef.current = next;
+        setPosition(next);
       };
 
       const onEnd = (end: PointerEvent) => {
@@ -89,23 +101,14 @@ export function useVoiceOrbPosition() {
         element.removeEventListener("pointercancel", onEnd);
         element.releasePointerCapture?.(pointerId);
         if (dragRef.current) {
-          setPosition((current) => {
-            const next = clampOrbPosition(
-              {
-                side: nearestOrbSide(
-                  dragXRef.current ?? initialX,
-                  window.innerWidth,
-                ),
-                y: current.y,
-              },
-              viewport(),
-            );
-            savePosition(next);
-            return next;
-          });
+          const next = clampOrbPosition(
+            dragPositionRef.current ?? initial,
+            viewport(),
+          );
+          savePosition(next);
+          setPosition(next);
         }
-        dragXRef.current = null;
-        setDragX(null);
+        dragPositionRef.current = null;
         dragRef.current = false;
         if (end.type === "pointercancel") suppressClickRef.current = false;
       };
@@ -126,7 +129,7 @@ export function useVoiceOrbPosition() {
   return {
     position,
     style: {
-      left: dragX ?? orbX(position.side, window.innerWidth),
+      left: position.x,
       top: position.y,
     },
     onPointerDown,

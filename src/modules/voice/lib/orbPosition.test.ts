@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  clampOrbX,
   clampOrbPosition,
-  nearestOrbSide,
+  clampOrbX,
   ORB_BOTTOM_LIMIT,
   ORB_SIZE,
   ORB_TOP_LIMIT,
@@ -10,17 +9,20 @@ import {
 } from "./orbPosition";
 
 describe("AnboVoice orb placement", () => {
-  it("snaps to the nearest horizontal edge", () => {
-    expect(nearestOrbSide(100, 1_000)).toBe("left");
-    expect(nearestOrbSide(800, 1_000)).toBe("right");
+  it("keeps a free position inside the workspace", () => {
+    const viewport = { width: 1_000, height: 700 };
+    expect(clampOrbPosition({ x: 420, y: 310 }, viewport)).toEqual({
+      x: 420,
+      y: 310,
+    });
   });
 
   it("keeps the orb between header and status bar", () => {
     const viewport = { width: 800, height: 600 };
-    expect(clampOrbPosition({ side: "left", y: -100 }, viewport).y).toBe(
+    expect(clampOrbPosition({ x: 200, y: -100 }, viewport).y).toBe(
       ORB_TOP_LIMIT,
     );
-    expect(clampOrbPosition({ side: "right", y: 999 }, viewport).y).toBe(
+    expect(clampOrbPosition({ x: 200, y: 999 }, viewport).y).toBe(
       600 - ORB_BOTTOM_LIMIT - ORB_SIZE,
     );
   });
@@ -33,5 +35,8 @@ describe("AnboVoice orb placement", () => {
   it("keeps the orb inside the window while it is dragged", () => {
     expect(clampOrbX(-100, 800)).toBe(12);
     expect(clampOrbX(900, 800)).toBe(800 - 12 - ORB_SIZE);
+    expect(
+      clampOrbPosition({ x: 900, y: 200 }, { width: 800, height: 600 }).x,
+    ).toBe(800 - 12 - ORB_SIZE);
   });
 });
