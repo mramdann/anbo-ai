@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.22.0](https://github.com/mramdann/anbo-ai/compare/v0.21.0...v0.22.0) (2026-09-04)
+
+
+### Features
+
+* **app:** stamp the build version on the startup screen ([c8593ee](https://github.com/mramdann/anbo-ai/commit/c8593eeed5b5ef93e6eedaf75277c879f400b58e))
+* **browser:** emulate a device viewport in a tab ([eef40da](https://github.com/mramdann/anbo-ai/commit/eef40da718159405269251f575673adab440e8db))
+* **browser:** open links in Anbo, and hide voice until it works ([10fef47](https://github.com/mramdann/anbo-ai/commit/10fef47eabcaf15c4de8ef95aa5fb26c00d62ca8))
+* **voice:** give local Whisper a home, a GPU, and honest feedback ([20d8ed9](https://github.com/mramdann/anbo-ai/commit/20d8ed989e5dc3a3b5255ea67dbf7c7cbf6c5c7b))
+
+
+### Bug Fixes
+
+* **agents:** stop cancelling long first messages to OpenCode ([cf3c50a](https://github.com/mramdann/anbo-ai/commit/cf3c50a19d74cf0288e3020cae0508b4b3074314))
+* **browser:** make tab lifecycle survive churn and workspace switching ([e4dab59](https://github.com/mramdann/anbo-ai/commit/e4dab59fed0b04ff648d87a55a32c57141f89cc0))
+* **logging:** keep enough log history to diagnose a long session ([2530f9c](https://github.com/mramdann/anbo-ai/commit/2530f9c51d52051dacd0497624cba551573c67b3))
+
+
+### Performance Improvements
+
+* **browser:** stop repeating work on every geometry update ([120e159](https://github.com/mramdann/anbo-ai/commit/120e1594eb17fb8fa7281e82b9a51d347a8b6604))
+
 ## [0.21.0](https://github.com/mramdann/anbo-ai/compare/v0.20.0...v0.21.0) (2026-09-04)
 
 
