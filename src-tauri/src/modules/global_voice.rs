@@ -134,7 +134,6 @@ fn ensure_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String>
             .max_inner_size(122.0, 42.0)
             .resizable(false)
             .decorations(false)
-            .transparent(true)
             .always_on_top(true)
             .visible_on_all_workspaces(true)
             .skip_taskbar(true)
@@ -142,6 +141,12 @@ fn ensure_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String>
             .focused(false)
             .focusable(false)
             .visible(false);
+
+    // macOS only exposes transparent windows behind macos-private-api, which
+    // this app does not enable. The orb is Windows only anyway, so the window
+    // just has to keep compiling everywhere.
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.transparent(true);
 
     #[cfg(target_os = "windows")]
     let builder = builder.drag_and_drop(false);
