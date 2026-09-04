@@ -634,8 +634,15 @@ mod platform {
         process_id == std::process::id()
     }
 
+    const INTERNAL_INPUT_CLASSES: [&str; 2] = ["xterm-helper-textarea", "cm-content"];
+
+    // UI Automation reports a Chromium element's whole class attribute, so a
+    // CodeMirror surface arrives as "cm-content cm-lineWrapping" and never
+    // matched a whole string comparison. Only xterm happened to carry one token.
     fn is_internal_input_class(class_name: &str) -> bool {
-        matches!(class_name, "xterm-helper-textarea" | "cm-content")
+        class_name
+            .split_whitespace()
+            .any(|token| INTERNAL_INPUT_CLASSES.contains(&token))
     }
 
     fn focused_is_internal_input() -> bool {
@@ -946,6 +953,21 @@ mod platform {
             assert!(is_internal_input_class("xterm-helper-textarea"));
             assert!(is_internal_input_class("cm-content"));
             assert!(!is_internal_input_class("Tauri Window"));
+
+            // The terminal block always ships lineWrapping, and the editor adds
+            // it whenever word wrap is on. Both used to be rejected outright.
+            assert!(is_internal_input_class("cm-content cm-lineWrapping"));
+            assert!(is_internal_input_class(
+                "cm-content cm-lineWrapping cm-focused"
+            ));
+            assert!(is_internal_input_class(
+                "  cm-lineWrapping   cm-content  "
+            ));
+
+            // A token has to match whole, never as a prefix or a substring.
+            assert!(!is_internal_input_class("cm-contenteditable"));
+            assert!(!is_internal_input_class("precm-content"));
+            assert!(!is_internal_input_class(""));
         }
 
         #[test]
