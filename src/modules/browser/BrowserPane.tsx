@@ -164,6 +164,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     const [loading, setLoading] = useState(initialLoading);
     const onLoadingChangeRef = useRef(onLoadingChange);
     const lastHoleRef = useRef("");
+    const retryAttemptRef = useRef(0);
     const urlError = browserUrlError(url);
 
     const handleZoom = useCallback(
@@ -222,10 +223,16 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       )
         .then(() => {
           if (disposedRef.current) return;
-          if (IS_WINDOWS && desired.visible) {
+          if (
+            IS_WINDOWS &&
+            desired.visible &&
+            lastHoleRef.current !== "none"
+          ) {
             // Restoring the native paint region also resets any AI mini-window
             // punch hole. Recompute it only after the visible bounds update has
             // completed so the final region cannot be overwritten by a race.
+            // Only when a hole was actually applied: re-sending an empty list
+            // repeats what the bounds update just did, on every single update.
             lastHoleRef.current = "";
             notifyNativeBrowserLayout();
           }
@@ -234,6 +241,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
               () => {},
             );
           }
+          retryAttemptRef.current = 0;
           if (boundsErrorRef.current) {
             boundsErrorRef.current = false;
             setNativeError(null);
@@ -247,12 +255,18 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
           );
           const failedKey = desired.key;
           if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+          // A failure here almost always means the UI thread is already
+          // saturated. Retrying at a fixed second adds to the very queue that
+          // caused it and never lets go, so back off instead.
+          const attempt = Math.min(retryAttemptRef.current + 1, 6);
+          retryAttemptRef.current = attempt;
+          const delay = Math.min(1_000 * 2 ** (attempt - 1), 30_000);
           retryTimerRef.current = setTimeout(() => {
             retryTimerRef.current = null;
             if (sentKeyRef.current !== failedKey) return;
             sentKeyRef.current = "";
             sendDesiredBounds();
-          }, 1_000);
+          }, delay);
         })
         .finally(() => {
           inFlightRef.current = false;

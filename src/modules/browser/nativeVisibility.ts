@@ -45,16 +45,19 @@ export function hasNativeBrowserOverlay(target?: Rect): boolean {
   for (const element of document.querySelectorAll(OVERLAY_SELECTOR)) {
     if (isTooltip(element)) continue;
     if (isPersistentFloatingSurface(element)) continue;
+    // Measure before asking for computed style. An element with no area, or one
+    // that misses the pane entirely, can never be an overlay, and skipping it
+    // here avoids a style recalculation per match. `.fixed` is a Tailwind
+    // utility, so this loop walks a large slice of a document that only grows:
+    // tabs stay mounted for the life of the session.
+    const bounds = element.getBoundingClientRect();
+    const covers = !target
+      ? bounds.width > 0 && bounds.height > 0
+      : rectsIntersect(bounds, target);
+    if (!covers) continue;
     const style = window.getComputedStyle(element);
     if (style.display === "none" || style.visibility === "hidden") continue;
-    const bounds = element.getBoundingClientRect();
-    if (
-      !target
-        ? bounds.width > 0 && bounds.height > 0
-        : rectsIntersect(bounds, target)
-    ) {
-      return true;
-    }
+    return true;
   }
   return false;
 }
