@@ -435,6 +435,10 @@ mod platform {
         application_owned: bool,
         internal_text_input: bool,
         focused_class_name: String,
+        // Anbo's whole UI lives under one top level window, so hwnd and class
+        // cannot tell two terminals or two editors apart. The screen rectangle
+        // can, and unlike the runtime id it survives a re-render in place.
+        bounds: (i32, i32, i32, i32),
     }
 
     struct ComApartment;
@@ -608,8 +612,15 @@ mod platform {
             let Ok(id) = runtime_id(&element) else {
                 continue;
             };
+            // Falling back to the first element of a matching class would focus
+            // whichever terminal or editor the tree happened to list first,
+            // including a parked one from the renderer pool. Require the screen
+            // rectangle to agree, and give up rather than guess: the caller then
+            // restores focus through the DOM marker, which is exact.
             if !target.focused_class_name.is_empty()
                 && class_name == target.focused_class_name
+                && bounds_identify(target.bounds)
+                && element_bounds(&element) == target.bounds
                 && fallback.is_none()
             {
                 fallback = Some(element.clone());
@@ -713,6 +724,20 @@ mod platform {
         String::from_utf16_lossy(&buffer[..copied])
     }
 
+    fn element_bounds(
+        element: &windows::Win32::UI::Accessibility::IUIAutomationElement,
+    ) -> (i32, i32, i32, i32) {
+        unsafe { element.CurrentBoundingRectangle() }
+            .map(|rect| (rect.left, rect.top, rect.right, rect.bottom))
+            .unwrap_or_default()
+    }
+
+    // An empty or unreported rectangle identifies nothing, so it must never be
+    // accepted as proof that two elements are the same input.
+    fn bounds_identify(bounds: (i32, i32, i32, i32)) -> bool {
+        bounds.2 > bounds.0 && bounds.3 > bounds.1
+    }
+
     fn runtime_id(
         element: &windows::Win32::UI::Accessibility::IUIAutomationElement,
     ) -> Result<Vec<i32>, String> {
@@ -787,6 +812,7 @@ mod platform {
                 application_owned,
                 internal_text_input: application_owned && is_internal_input_class(&class_name),
                 focused_class_name: class_name.clone(),
+                bounds: element_bounds(&focused),
             },
             GlobalVoiceTarget {
                 label,
@@ -867,19 +893,27 @@ mod platform {
         insert_text_excluding(target, text, excluded_window)
     }
 
+    // A runtime id can change when an element re-renders in place, so the
+    // relaxed arms exist to survive that. They must still prove the element is
+    // the same one: every Anbo surface shares a window handle, and every
+    // terminal or editor of a kind shares a class name, so the screen rectangle
+    // is what actually distinguishes them. Refusing beats typing into the wrong
+    // pane.
     fn is_same_input(target: &CapturedTarget, current: &CapturedTarget) -> bool {
-        target == current
-            || (!target.internal_text_input
-                && !current.internal_text_input
-                && target.application_owned
-                && current.application_owned
-                && target.hwnd == current.hwnd)
-            || (target.application_owned
-                && current.application_owned
-                && target.internal_text_input
-                && current.internal_text_input
-                && target.hwnd == current.hwnd
-                && target.focused_class_name == current.focused_class_name)
+        if target == current {
+            return true;
+        }
+        if !target.application_owned
+            || !current.application_owned
+            || target.hwnd != current.hwnd
+            || target.internal_text_input != current.internal_text_input
+            || !bounds_identify(target.bounds)
+            || target.bounds != current.bounds
+        {
+            return false;
+        }
+        !target.internal_text_input
+            || target.focused_class_name == current.focused_class_name
     }
 
     fn insert_text_excluding(
@@ -979,6 +1013,7 @@ mod platform {
                 application_owned: false,
                 internal_text_input: false,
                 focused_class_name: "EDIT".to_string(),
+                bounds: (10, 20, 210, 60),
             };
             assert_eq!(base, base.clone());
             assert_ne!(
@@ -1039,6 +1074,62 @@ mod platform {
                     ..base.clone()
                 }
             );
+            // Two panes of the same kind share the window handle and the class
+            // name, so only the rectangle keeps them apart.
+            let terminal_a = CapturedTarget {
+                application_owned: true,
+                internal_text_input: true,
+                focused_class_name: "xterm-helper-textarea".to_string(),
+                bounds: (0, 0, 400, 300),
+                ..base.clone()
+            };
+            let terminal_b = CapturedTarget {
+                runtime_id: vec![77, 1],
+                bounds: (400, 0, 800, 300),
+                ..terminal_a.clone()
+            };
+            assert!(!is_same_input(&terminal_a, &terminal_b));
+            assert!(is_same_input(
+                &terminal_a,
+                &CapturedTarget {
+                    runtime_id: vec![77, 1],
+                    ..terminal_a.clone()
+                }
+            ));
+
+            // An editor is not a terminal even when both sit at the same place.
+            assert!(!is_same_input(
+                &terminal_a,
+                &CapturedTarget {
+                    focused_class_name: "cm-content".to_string(),
+                    ..terminal_a.clone()
+                }
+            ));
+
+            // A rectangle that identifies nothing must never stand in for one.
+            let unmeasured = CapturedTarget {
+                bounds: (0, 0, 0, 0),
+                ..terminal_a.clone()
+            };
+            assert!(!is_same_input(
+                &unmeasured,
+                &CapturedTarget {
+                    runtime_id: vec![77, 1],
+                    ..unmeasured.clone()
+                }
+            ));
+
+            // An internal target never matches an external one, and the plain
+            // owned arm still needs its rectangle.
+            assert!(!is_same_input(
+                &terminal_a,
+                &CapturedTarget {
+                    internal_text_input: false,
+                    runtime_id: vec![77, 1],
+                    ..terminal_a.clone()
+                }
+            ));
+
             assert_ne!(
                 base,
                 CapturedTarget {
