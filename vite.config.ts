@@ -1,4 +1,5 @@
 import babel from "@rolldown/plugin-babel";
+import { readFileSync } from "fs";
 import tailwindcss from "@tailwindcss/vite";
 import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import path from "path";
@@ -7,6 +8,19 @@ import Inspect from "vite-plugin-inspect";
 import { configDefaults } from "vitest/config";
 
 const host = process.env.TAURI_DEV_HOST;
+
+// The startup screen is plain HTML that renders before any module evaluates,
+// so the version has to be baked in rather than read at runtime. This is the
+// same field release-please keeps in step with the installer.
+const manifest = JSON.parse(
+  readFileSync(path.resolve(__dirname, "package.json"), "utf8"),
+) as { version: string; repository?: { url?: string } };
+const appVersion: string = manifest.version;
+// The owner segment of the repository URL, which is the GitHub username. Read
+// from the manifest rather than from `git remote`, so a build from a tarball
+// with no .git still names the author.
+const appAuthor: string =
+  manifest.repository?.url?.match(/github\.com\/([^/]+)\//)?.[1] ?? "";
 
 // Bundle/treemap analysis is opt-in: `ANALYZE=true pnpm build` emits stats.html.
 const analyze = process.env.ANALYZE === "true";
@@ -23,6 +37,18 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
     }),
     react(),
     tailwindcss(),
+    {
+      name: "anbo-startup-version",
+      transformIndexHtml(html: string) {
+        // A dev build carries the last released number, so without this the
+        // splash would claim to be a release it is not.
+        const label =
+          mode === "development" ? `${appVersion} dev` : appVersion;
+        return html
+          .replaceAll("%ANBO_VERSION%", label)
+          .replaceAll("%ANBO_AUTHOR%", appAuthor);
+      },
+    },
     // Module-graph inspector at /__inspect (who-imports-what, per-plugin
     // transforms). Opt-in via `pnpm dev:inspect`, never in a production build.
     ...(mode === "development" && inspectGraph
