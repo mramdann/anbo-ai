@@ -6,7 +6,8 @@ import {
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { TerminalCursorStyle } from "@/modules/settings/store";
 import { buildTerminalTheme } from "@/styles/terminalTheme";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openLink } from "@/modules/browser/openLink";
+import { findUrlAt } from "./terminalLinks";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { SerializeAddon } from "@xterm/addon-serialize";
@@ -321,6 +322,62 @@ export function applyBackgroundActive(active: boolean): void {
   }
 }
 
+/**
+ * Open a link on Ctrl+click (Cmd on macOS), reading the URL out of the buffer
+ * rather than through xterm's link layer.
+ *
+ * A program that turns on mouse reporting takes the mouse from the terminal,
+ * so an agent's links are underlined and dead to a plain click. This listens in
+ * the capture phase, before the event can be forwarded to that program, and
+ * only acts when the modifier is held so ordinary clicks still reach the app.
+ */
+function attachModifierLinkClick(term: Terminal, host: HTMLElement): void {
+  host.addEventListener(
+    "mousedown",
+    (event) => {
+      if (event.button !== 0) return;
+      if (!(event.ctrlKey || event.metaKey)) return;
+      // `.xterm-screen` is the cell grid; falling back to the terminal element
+      // keeps this working rather than silently doing nothing if that class
+      // ever moves.
+      const screen =
+        host.querySelector<HTMLElement>(".xterm-screen") ?? term.element;
+      if (!screen) return;
+      const rect = screen.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const column = Math.floor(
+        ((event.clientX - rect.left) / rect.width) * term.cols,
+      );
+      const row = Math.floor(
+        ((event.clientY - rect.top) / rect.height) * term.rows,
+      );
+      if (column < 0 || row < 0 || column >= term.cols || row >= term.rows) {
+        return;
+      }
+      const buffer = term.buffer.active;
+      // A URL long enough to wrap is spread over several buffer rows, so walk
+      // back to where the logical line started and count the column from there.
+      let index = buffer.viewportY + row;
+      let offset = 0;
+      while (index > 0 && buffer.getLine(index)?.isWrapped) {
+        index -= 1;
+        offset += term.cols;
+      }
+      let text = "";
+      for (let cursor = index; cursor <= buffer.viewportY + row; cursor += 1) {
+        text += buffer.getLine(cursor)?.translateToString(false) ?? "";
+      }
+      const url = findUrlAt(text, offset + column);
+      if (!url) return;
+      // Claim the click so the program underneath never sees it.
+      event.preventDefault();
+      event.stopPropagation();
+      void openLink(url).catch(console.error);
+    },
+    true,
+  );
+}
+
 function createSlot(): Slot {
   const term = new Terminal(termOptions());
   const fitAddon = new FitAddon();
@@ -330,7 +387,7 @@ function createSlot(): Slot {
   term.loadAddon(searchAddon);
   term.loadAddon(serializeAddon);
   term.loadAddon(
-    new WebLinksAddon((_e, uri) => openUrl(uri).catch(console.error)),
+    new WebLinksAddon((_e, uri) => openLink(uri).catch(console.error)),
   );
 
   const host = document.createElement("div");
@@ -338,6 +395,7 @@ function createSlot(): Slot {
   host.setAttribute("data-anbo-slot", String(slots.length));
   getRecycler().appendChild(host);
   term.open(host);
+  attachModifierLinkClick(term, host);
 
   const slot: Slot = {
     id: slots.length,

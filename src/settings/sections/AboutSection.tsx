@@ -3,7 +3,7 @@ import { useUpdater } from "@/modules/updater";
 import { GithubIcon, Globe02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { getName, getVersion } from "@tauri-apps/api/app";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openLink } from "@/modules/browser/openLink";
 import { arch, platform } from "@tauri-apps/plugin-os";
 import { useEffect, useState } from "react";
 import { SectionHeader } from "../components/SectionHeader";
@@ -99,7 +99,7 @@ export function AboutSection() {
         <dd>
           <button
             type="button"
-            onClick={() => void openUrl(REPO_URL)}
+            onClick={() => void openLink(REPO_URL)}
             className="inline-flex items-center gap-1.5 rounded-md text-[12px] underline-offset-2 hover:text-foreground hover:underline"
           >
             <HugeiconsIcon icon={GithubIcon} size={12} strokeWidth={1.75} />
@@ -110,7 +110,7 @@ export function AboutSection() {
         <dd>
           <button
             type="button"
-            onClick={() => void openUrl(WEBSITE)}
+            onClick={() => void openLink(WEBSITE)}
             className="inline-flex items-center gap-1.5 rounded-md text-[12px] underline-offset-2 hover:text-foreground hover:underline"
           >
             <HugeiconsIcon icon={Globe02Icon} size={12} strokeWidth={1.75} />
@@ -131,7 +131,7 @@ export function AboutSection() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => void openUrl(REPO_URL)}
+            onClick={() => void openLink(REPO_URL)}
             className="gap-1.5"
           >
             <HugeiconsIcon icon={GithubIcon} size={12} strokeWidth={1.75} />
@@ -140,7 +140,7 @@ export function AboutSection() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => void openUrl(`${REPO_URL}/issues/new`)}
+            onClick={() => void openLink(`${REPO_URL}/issues/new`)}
           >
             Report an issue
           </Button>

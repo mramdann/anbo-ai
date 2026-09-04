@@ -12,7 +12,7 @@ import {
   ViewPlugin,
   type ViewUpdate,
 } from "@codemirror/view";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openLink } from "@/modules/browser/openLink";
 import { LANGUAGES } from "./languageDefinitions";
 
 // Fence-info strings (```ts, ```python) resolve against the same lazy
@@ -85,7 +85,7 @@ const clickHandlers = EditorView.domEventHandlers({
     if (event.metaKey || event.ctrlKey) {
       const url = urlAt(view, pos);
       if (!url) return false;
-      void openUrl(url).catch(console.error);
+      void openLink(url).catch(console.error);
       return true;
     }
 

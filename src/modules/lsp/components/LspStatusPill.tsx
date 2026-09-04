@@ -13,7 +13,7 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openLink } from "@/modules/browser/openLink";
 import { useState } from "react";
 import { redetectBinary } from "../lib/detect";
 import type { LspPreset } from "../lib/presets";
@@ -196,7 +196,7 @@ function InstallPill({ preset }: { preset: LspPreset }) {
             <button
               type="button"
               className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-              onClick={() => void openUrl(install.docsUrl).catch(console.error)}
+              onClick={() => void openLink(install.docsUrl).catch(console.error)}
             >
               Documentation
             </button>

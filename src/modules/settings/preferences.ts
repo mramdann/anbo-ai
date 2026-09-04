@@ -1,3 +1,4 @@
+import { setPreferInAppLinks } from "@/modules/browser/openLink";
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import {
@@ -55,6 +56,9 @@ export const usePreferencesStore = create<State>((set) => ({
       try {
         const prefs = await loadPreferences();
         set({ ...prefs, hydrated: true });
+        // Every window resolves links for itself, so the choice has to reach
+        // all of them rather than only the one that owns tabs.
+        setPreferInAppLinks(prefs.openLinksInAnbo);
         mirrorBgFastPath(prefs.backgroundKind, prefs.backgroundImageId);
         if (prefs.browserAutomationEnabled) {
           void invoke("browser_automation_start").catch((error) => {
@@ -63,6 +67,9 @@ export const usePreferencesStore = create<State>((set) => ({
         }
         void onPreferencesChange((key, value) => {
           set({ [key]: value } as Partial<State>);
+          if (key === "openLinksInAnbo") {
+            setPreferInAppLinks(value as boolean);
+          }
           if (key === "backgroundKind" || key === "backgroundImageId") {
             const s = usePreferencesStore.getState();
             mirrorBgFastPath(s.backgroundKind, s.backgroundImageId);

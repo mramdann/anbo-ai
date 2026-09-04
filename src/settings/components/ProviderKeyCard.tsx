@@ -13,7 +13,7 @@ import {
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openLink } from "@/modules/browser/openLink";
 import { useEffect, useState } from "react";
 import { ProviderIcon } from "./ProviderIcon";
 
@@ -90,7 +90,7 @@ export function ProviderKeyCard({
         ) : null}
         <button
           type="button"
-          onClick={() => void openUrl(provider.consoleUrl)}
+          onClick={() => void openLink(provider.consoleUrl)}
           className="ml-auto inline-flex items-center gap-0.5 text-[10.5px] text-muted-foreground transition-colors hover:text-foreground"
         >
           Get key

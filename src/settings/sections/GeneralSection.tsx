@@ -21,6 +21,7 @@ import {
   setDefaultWorkspaceEnv,
   setExplorerGitDecorations,
   setRestoreWindowState,
+  setOpenLinksInAnbo,
   setShowHidden,
   setTerminalCursorBlink,
   setTerminalCursorStyle,
@@ -81,6 +82,7 @@ export function GeneralSection() {
 
   const autostart = usePreferencesStore((s) => s.autostart);
   const restoreWindowState = usePreferencesStore((s) => s.restoreWindowState);
+  const openLinksInAnbo = usePreferencesStore((s) => s.openLinksInAnbo);
   const showHidden = usePreferencesStore((s) => s.showHidden);
   const explorerGitDecorations = usePreferencesStore(
     (s) => s.explorerGitDecorations,
@@ -188,6 +190,19 @@ export function GeneralSection() {
             onValueChange={(v) => void setZoomLevel(v[0] ?? 1)}
           />
         </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <Label>Links</Label>
+        <SettingRow
+          title="Open links in Anbo"
+          description="Links you click anywhere in Anbo, including in agent output, open in a browser tab beside your work. Turn this off to send them to your system browser instead. Addresses Anbo cannot show, such as mailto:, always go to the system."
+        >
+          <Switch
+            checked={openLinksInAnbo}
+            onCheckedChange={(v) => void setOpenLinksInAnbo(v)}
+          />
+        </SettingRow>
       </div>
 
       <div className="flex flex-col gap-2">

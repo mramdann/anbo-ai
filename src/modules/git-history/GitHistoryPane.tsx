@@ -20,7 +20,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openLink } from "@/modules/browser/openLink";
 import {
   memo,
   useCallback,
@@ -880,7 +880,7 @@ function CommitDetail({
               size="xs"
               variant="ghost"
               className="h-6 cursor-pointer gap-1.5 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
-              onClick={() => void openUrl(webUrl).catch(console.error)}
+              onClick={() => void openLink(webUrl).catch(console.error)}
             >
               <HugeiconsIcon
                 icon={LinkSquare02Icon}

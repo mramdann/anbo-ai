@@ -1,4 +1,5 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { useVoiceConfigured } from "@/modules/voice/lib/useVoiceConfigured";
 import { setGlobalVoiceRuntimeEnabled } from "@/modules/voice/lib/globalVoice";
 import { useEffect, useRef } from "react";
 
@@ -21,9 +22,11 @@ function clearInternalVoiceTarget() {
 
 export function GlobalVoiceBridge() {
   const hydrated = usePreferencesStore((state) => state.hydrated);
-  const runtimeEnabled = usePreferencesStore(
-    (state) => state.globalVoiceEnabled,
-  );
+  const enabled = usePreferencesStore((state) => state.globalVoiceEnabled);
+  const configured = useVoiceConfigured();
+  // An orb that cannot transcribe is worse than no orb: the take is recorded
+  // and then lost. Keep it away until voice has been set up.
+  const runtimeEnabled = enabled && configured;
   // The runtime starts disabled, so seeding this false keeps the default path
   // from spending an IPC round trip turning off something that was never on.
   const appliedRef = useRef(false);

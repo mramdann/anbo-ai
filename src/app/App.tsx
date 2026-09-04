@@ -96,7 +96,12 @@ import {
   type SearchTarget,
 } from "@/modules/header";
 import { setLspNavigator } from "@/modules/lsp";
+import {
+  listenForForwardedLinks,
+  setInAppLinkOpener,
+} from "@/modules/browser/openLink";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
+import { useVoiceConfigured } from "@/modules/voice/lib/useVoiceConfigured";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   type ShortcutHandlers,
@@ -287,6 +292,8 @@ export default function App() {
   const globalVoiceEnabled = usePreferencesStore(
     (state) => state.globalVoiceEnabled,
   );
+  // Both orbs stay away until voice can actually transcribe.
+  const voiceConfigured = useVoiceConfigured();
 
   const activeTerminalTab = useMemo(() => {
     const t = tabs.find((x) => x.id === activeId);
@@ -1388,6 +1395,26 @@ export default function App() {
     },
     [openBrowserTab],
   );
+
+  // Content links, and every other link a click can reach, land in a tab here.
+  // Windows that own no tabs forward theirs to this one.
+  useEffect(() => {
+    const open = (url: string) => {
+      openBrowserTab(url);
+    };
+    setInAppLinkOpener(open);
+    let dispose: (() => void) | undefined;
+    let disposed = false;
+    void listenForForwardedLinks(open).then((stop) => {
+      if (disposed) stop();
+      else dispose = stop;
+    });
+    return () => {
+      disposed = true;
+      setInAppLinkOpener(null);
+      dispose?.();
+    };
+  }, [openBrowserTab]);
 
   useEffect(() => {
     setBrowserOpenRequestHandler((payload) => {
@@ -2709,7 +2736,7 @@ export default function App() {
               <GlobalVoiceBridge />
               <Toaster position="bottom-right" />
               <AnboVoice
-                visible={voiceVisibility.visible}
+                visible={voiceVisibility.visible && voiceConfigured}
                 superseded={globalVoiceEnabled}
                 onHide={() => voiceVisibility.setVisible(false)}
                 captureTarget={captureVoiceTarget}

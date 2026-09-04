@@ -96,7 +96,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openLink } from "@/modules/browser/openLink";
 import {
   type ReactNode,
   useEffect,
@@ -1085,7 +1085,7 @@ function LocalProviderCard({
         ) : null}
         <button
           type="button"
-          onClick={() => void openUrl(provider.consoleUrl)}
+          onClick={() => void openLink(provider.consoleUrl)}
           className="ml-auto inline-flex items-center gap-0.5 text-[10.5px] text-muted-foreground transition-colors hover:text-foreground"
         >
           Docs

@@ -889,6 +889,10 @@ export function getAutocompleteEligibleModels(): readonly ModelInfo[] {
 
 export type SttProvider = "openai" | "groq" | "whispercpp";
 
+// Anbo has its own browser, so a link in agent output stays in the workspace
+// it came from unless the user would rather leave the app.
+export const DEFAULT_OPEN_LINKS_IN_ANBO = true;
+
 export const WHISPERCPP_ACCELERATIONS = [
   "auto",
   "cpu",

@@ -28,6 +28,7 @@ import {
   OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
   type SttProvider,
   WHISPERCPP_DEFAULT_BASE_URL,
+  DEFAULT_OPEN_LINKS_IN_ANBO,
   WHISPERCPP_DEFAULT_ACCELERATION,
   WHISPERCPP_DEFAULT_MODEL,
   type WhispercppAcceleration,
@@ -166,6 +167,7 @@ export type Preferences = {
   whispercppBaseURL: string;
   whispercppModel: WhispercppModel;
   whispercppAcceleration: WhispercppAcceleration;
+  openLinksInAnbo: boolean;
   whispercppAutoStart: boolean;
   globalVoiceEnabled: boolean;
   favoriteModelIds: string[];
@@ -263,6 +265,7 @@ const KEY_STT_PROVIDER = "sttProvider";
 const KEY_GROQ_STT_MODEL = "groqSttModel";
 const KEY_WHISPERCPP_BASE_URL = "whispercppBaseURL";
 const KEY_WHISPERCPP_ACCELERATION = "whispercppAcceleration";
+const KEY_OPEN_LINKS_IN_ANBO = "openLinksInAnbo";
 const KEY_WHISPERCPP_MODEL = "whispercppModel";
 const KEY_WHISPERCPP_AUTO_START = "whispercppAutoStart";
 const KEY_GLOBAL_VOICE_ENABLED = "globalVoiceEnabled";
@@ -359,6 +362,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   whispercppBaseURL: WHISPERCPP_DEFAULT_BASE_URL,
   whispercppModel: WHISPERCPP_DEFAULT_MODEL,
   whispercppAcceleration: WHISPERCPP_DEFAULT_ACCELERATION,
+  openLinksInAnbo: DEFAULT_OPEN_LINKS_IN_ANBO,
   whispercppAutoStart: true,
   globalVoiceEnabled: false,
   favoriteModelIds: [],
@@ -526,6 +530,9 @@ export async function loadPreferences(): Promise<Preferences> {
     whispercppAutoStart:
       get<boolean>(KEY_WHISPERCPP_AUTO_START) ??
       DEFAULT_PREFERENCES.whispercppAutoStart,
+    openLinksInAnbo:
+      get<boolean>(KEY_OPEN_LINKS_IN_ANBO) ??
+      DEFAULT_PREFERENCES.openLinksInAnbo,
     globalVoiceEnabled:
       get<boolean>(KEY_GLOBAL_VOICE_ENABLED) ??
       DEFAULT_PREFERENCES.globalVoiceEnabled,
@@ -820,6 +827,10 @@ export async function setWhispercppAcceleration(
   await writePref(KEY_WHISPERCPP_ACCELERATION, value);
 }
 
+export async function setOpenLinksInAnbo(value: boolean): Promise<void> {
+  await writePref(KEY_OPEN_LINKS_IN_ANBO, value);
+}
+
 export async function setWhispercppAutoStart(value: boolean): Promise<void> {
   await writePref(KEY_WHISPERCPP_AUTO_START, value);
 }
@@ -1052,6 +1063,7 @@ export async function onPreferencesChange(
     [KEY_GROQ_STT_MODEL]: "groqSttModel",
     [KEY_WHISPERCPP_BASE_URL]: "whispercppBaseURL",
     [KEY_WHISPERCPP_ACCELERATION]: "whispercppAcceleration",
+    [KEY_OPEN_LINKS_IN_ANBO]: "openLinksInAnbo",
     [KEY_WHISPERCPP_MODEL]: "whispercppModel",
     [KEY_WHISPERCPP_AUTO_START]: "whispercppAutoStart",
     [KEY_GLOBAL_VOICE_ENABLED]: "globalVoiceEnabled",
