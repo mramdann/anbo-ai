@@ -255,8 +255,16 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(
+            // The plugin defaults to one 40 KB file that is discarded once full.
+            // Anbo runs for days with many terminals and agents, so that budget
+            // is spent in hours and every incident report arrives with an empty
+            // log. Keep five 5 MB files instead, bounded at 25 MB on disk, and
+            // stamp them in local time so they line up with what a user reports.
             tauri_plugin_log::Builder::new()
                 .level(tauri_plugin_log::log::LevelFilter::Info)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(5))
+                .max_file_size(5 * 1024 * 1024)
+                .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
