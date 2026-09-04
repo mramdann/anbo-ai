@@ -80,7 +80,11 @@ import {
   setRecentModelIds,
   setSttProvider,
 } from "@/modules/settings/store";
-import { GlobalVoiceSettings, WhisperRuntimeSettings } from "@/modules/voice";
+// Imported by file rather than through the module barrel: the barrel also
+// exports the in-app orb, which pulls the composer and the whole recording
+// stack into the Settings startup closure for the sake of one switch.
+import { GlobalVoiceSettings } from "@/modules/voice/GlobalVoiceSettings";
+import { WhisperRuntimeSettings } from "@/modules/voice/WhisperRuntimeSettings";
 import {
   Add01Icon,
   ArrowDown01Icon,
