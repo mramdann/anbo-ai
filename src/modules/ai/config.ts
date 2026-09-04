@@ -889,6 +889,26 @@ export function getAutocompleteEligibleModels(): readonly ModelInfo[] {
 
 export type SttProvider = "openai" | "groq" | "whispercpp";
 
+export const WHISPERCPP_ACCELERATIONS = [
+  "auto",
+  "cpu",
+  "blas",
+  "cuda",
+] as const;
+export type WhispercppAcceleration =
+  (typeof WHISPERCPP_ACCELERATIONS)[number];
+
+export function isWhispercppAcceleration(
+  value: unknown,
+): value is WhispercppAcceleration {
+  return (
+    typeof value === "string" &&
+    (WHISPERCPP_ACCELERATIONS as readonly string[]).includes(value)
+  );
+}
+
+export const WHISPERCPP_DEFAULT_ACCELERATION: WhispercppAcceleration = "auto";
+
 export const WHISPERCPP_MODELS = ["tiny", "base", "small"] as const;
 export type WhispercppModel = (typeof WHISPERCPP_MODELS)[number];
 

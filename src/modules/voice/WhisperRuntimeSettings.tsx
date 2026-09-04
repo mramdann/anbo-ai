@@ -11,11 +11,13 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import {
+  type WhispercppAcceleration,
   type WhispercppModel,
   WHISPERCPP_DEFAULT_BASE_URL,
 } from "@/modules/ai/config";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
+  setWhispercppAcceleration,
   setWhispercppAutoStart,
   setWhispercppBaseURL,
   setWhispercppModel,
@@ -42,6 +44,28 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useState } from "react";
+
+const ACCELERATION_META: Record<
+  WhispercppAcceleration,
+  { label: string; download: string; note: string }
+> = {
+  auto: {
+    label: "Automatic",
+    download: "",
+    note: "Picks NVIDIA when a driver is present, OpenBLAS otherwise",
+  },
+  cpu: { label: "CPU only", download: "8 MB", note: "Smallest download" },
+  blas: {
+    label: "CPU + OpenBLAS",
+    download: "21 MB",
+    note: "Faster matrix maths on any processor",
+  },
+  cuda: {
+    label: "NVIDIA GPU",
+    download: "270 MB",
+    note: "Needs an NVIDIA driver. Much faster, much larger",
+  },
+};
 
 const MODEL_META: Record<
   WhispercppModel,
@@ -72,6 +96,9 @@ function errorMessage(error: unknown): string {
 
 export function WhisperRuntimeSettings() {
   const model = usePreferencesStore((state) => state.whispercppModel);
+  const acceleration = usePreferencesStore(
+    (state) => state.whispercppAcceleration,
+  );
   const autoStart = usePreferencesStore((state) => state.whispercppAutoStart);
   const baseURL = usePreferencesStore((state) => state.whispercppBaseURL);
   const [urlDraft, setUrlDraft] = useState(baseURL);
@@ -125,6 +152,29 @@ export function WhisperRuntimeSettings() {
 
   const selectedInstalled = status?.installedModels.includes(model) ?? false;
   const busy = operation !== null || status?.installing === true;
+  const installingNow = status?.installing === true || operation === "install";
+  // Loading a model and waiting for the server to bind its port takes seconds
+  // and reports no progress, so it needs its own indeterminate state rather
+  // than borrowing the install bar.
+  const startingNow = operation === "start";
+  // The backend answers with the model the process is actually serving, which
+  // drifts from the dropdown the moment someone picks another installed one.
+  const runningModel = status?.running ? status.model : null;
+  const modelDrifted = runningModel !== null && runningModel !== model;
+  // Anything on disk should be removable. `installed` also requires a model,
+  // so a cancelled download would otherwise strand the extracted runtime with
+  // no way to reclaim the space.
+  // "auto" is resolved by the backend, so compare against what it recommends
+  // rather than against the literal preference.
+  const wantedVariant =
+    acceleration === "auto" ? status?.recommendedVariant : acceleration;
+  const backendWantsGpu = wantedVariant === "cuda";
+  const backendDrifted =
+    status?.variant != null &&
+    wantedVariant != null &&
+    status.variant !== wantedVariant;
+  const hasFilesOnDisk =
+    (status?.installed ?? false) || (status?.sizeBytes ?? 0) > 0;
   const progressPercent = useMemo(() => {
     const progress = status?.progress;
     if (!progress || progress.total <= 0) return 0;
@@ -162,7 +212,12 @@ export function WhisperRuntimeSettings() {
     setError(null);
     try {
       if (status?.running) await stopWhisperRuntime();
-      await installWhisperRuntime(model);
+      await installWhisperRuntime(model, acceleration);
+      // The backend clears its progress the moment the install returns, so
+      // holding "install" here would drop the bar back to an empty
+      // "Downloading runtime 0%" for the whole of the start, next to a Cancel
+      // button that no longer has an install to cancel.
+      setOperation("start");
       const next = await startWhisperRuntime(model);
       setStatus(next);
       if (next.baseUrl) await setWhispercppBaseURL(next.baseUrl);
@@ -241,7 +296,52 @@ export function WhisperRuntimeSettings() {
           {selectedInstalled ? " / Installed" : ""}
         </p>
 
-        {status?.installing || operation === "install" ? (
+        <div className="mt-2 flex items-center gap-2">
+          <span className="w-16 shrink-0 text-[10.5px] text-muted-foreground">
+            Compute
+          </span>
+          <Select
+            value={acceleration}
+            onValueChange={(value) =>
+              void setWhispercppAcceleration(value as WhispercppAcceleration)
+            }
+            disabled={busy}
+          >
+            <SelectTrigger
+              size="sm"
+              className="h-7 min-w-44 flex-1 text-[11px]"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(
+                Object.keys(ACCELERATION_META) as WhispercppAcceleration[]
+              ).map((id) => (
+                <SelectItem key={id} value={id} className="text-[11px]">
+                  {ACCELERATION_META[id].label}
+                  {ACCELERATION_META[id].download
+                    ? ` (${ACCELERATION_META[id].download})`
+                    : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <p className="ml-18 mt-1 text-[9.5px] text-muted-foreground">
+          {acceleration === "auto" && status
+            ? `${ACCELERATION_META[status.recommendedVariant].label} on this machine`
+            : ACCELERATION_META[acceleration].note}
+          {status && !status.gpuAvailable && backendWantsGpu
+            ? " / No NVIDIA driver found here"
+            : ""}
+        </p>
+        {backendDrifted ? (
+          <p className="ml-18 mt-1 text-[9.5px] text-amber-600 dark:text-amber-500">
+            Installed backend is {status?.variantLabel}. Reinstall to change it.
+          </p>
+        ) : null}
+
+        {installingNow ? (
           <div className="mt-3 rounded-md bg-muted/45 px-2.5 py-2">
             <div className="flex items-center justify-between text-[10px]">
               <span className="flex items-center gap-1.5 text-muted-foreground">
@@ -273,6 +373,11 @@ export function WhisperRuntimeSettings() {
               Cancel
             </Button>
           </div>
+        ) : startingNow ? (
+          <div className="mt-3 flex items-center gap-1.5 rounded-md bg-muted/45 px-2.5 py-2 text-[10px] text-muted-foreground">
+            <Spinner className="size-3" />
+            Starting {MODEL_META[model].label} server
+          </div>
         ) : (
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
             {!selectedInstalled ? (
@@ -291,25 +396,41 @@ export function WhisperRuntimeSettings() {
                 Install & start
               </Button>
             ) : status?.running ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="h-7 text-[10.5px]"
-                disabled={busy}
-                onClick={() => void run("stop", () => stopWhisperRuntime())}
-              >
-                {operation === "stop" ? (
-                  <Spinner className="size-3" />
-                ) : (
-                  <HugeiconsIcon
-                    icon={StopCircleIcon}
-                    size={12}
-                    strokeWidth={1.8}
-                  />
-                )}
-                Stop
-              </Button>
+              <>
+                {modelDrifted ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 text-[10.5px]"
+                    disabled={busy}
+                    onClick={() =>
+                      void run("start", () => startWhisperRuntime(model))
+                    }
+                  >
+                    <HugeiconsIcon icon={PlayIcon} size={12} strokeWidth={1.8} />
+                    Switch to {MODEL_META[model].label}
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[10.5px]"
+                  disabled={busy}
+                  onClick={() => void run("stop", () => stopWhisperRuntime())}
+                >
+                  {operation === "stop" ? (
+                    <Spinner className="size-3" />
+                  ) : (
+                    <HugeiconsIcon
+                      icon={StopCircleIcon}
+                      size={12}
+                      strokeWidth={1.8}
+                    />
+                  )}
+                  Stop
+                </Button>
+              </>
             ) : (
               <>
                 <Button
@@ -321,15 +442,9 @@ export function WhisperRuntimeSettings() {
                     void run("start", () => startWhisperRuntime(model))
                   }
                 >
-                  {operation === "start" ? (
-                    <Spinner className="size-3" />
-                  ) : (
-                    <HugeiconsIcon
-                      icon={PlayIcon}
-                      size={12}
-                      strokeWidth={1.8}
-                    />
-                  )}
+                  {/* Starting has its own panel above, so this button is never
+                      the thing reporting progress. */}
+                  <HugeiconsIcon icon={PlayIcon} size={12} strokeWidth={1.8} />
                   Start
                 </Button>
                 <Button
@@ -345,7 +460,7 @@ export function WhisperRuntimeSettings() {
               </>
             )}
 
-            {status?.installed && !confirmUninstall ? (
+            {hasFilesOnDisk && !confirmUninstall ? (
               <Button
                 type="button"
                 size="sm"
@@ -409,9 +524,17 @@ export function WhisperRuntimeSettings() {
           />
         </div>
 
+        {modelDrifted ? (
+          <p className="mt-2 text-[10px] leading-relaxed text-amber-600 dark:text-amber-500">
+            The server is still running{" "}
+            {MODEL_META[runningModel as WhispercppModel]?.label ?? runningModel}
+            . Dictation keeps using it until you switch.
+          </p>
+        ) : null}
         {status?.running && status.baseUrl ? (
           <p className="mt-2 truncate font-mono text-[9.5px] text-muted-foreground">
-            PID {status.pid} / {status.baseUrl}
+            PID {status.pid} / {runningModel} / {status.variant}
+            {status.gpu ? " (GPU)" : ""} / {status.baseUrl}
           </p>
         ) : null}
         {status?.installDir ? (

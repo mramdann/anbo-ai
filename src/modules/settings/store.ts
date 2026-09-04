@@ -19,6 +19,7 @@ import {
   DEFAULT_STT_PROVIDER,
   isCompatModelId,
   isKnownModelId,
+  isWhispercppAcceleration,
   isWhispercppModel,
   LMSTUDIO_DEFAULT_BASE_URL,
   MLX_DEFAULT_BASE_URL,
@@ -27,7 +28,9 @@ import {
   OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
   type SttProvider,
   WHISPERCPP_DEFAULT_BASE_URL,
+  WHISPERCPP_DEFAULT_ACCELERATION,
   WHISPERCPP_DEFAULT_MODEL,
+  type WhispercppAcceleration,
   type WhispercppModel,
 } from "@/modules/ai/config";
 import type { KeyBinding, ShortcutId } from "@/modules/shortcuts/shortcuts";
@@ -162,6 +165,7 @@ export type Preferences = {
   groqSttModel: string;
   whispercppBaseURL: string;
   whispercppModel: WhispercppModel;
+  whispercppAcceleration: WhispercppAcceleration;
   whispercppAutoStart: boolean;
   globalVoiceEnabled: boolean;
   favoriteModelIds: string[];
@@ -258,6 +262,7 @@ const KEY_OPENROUTER_MODEL_ID = "openrouterModelId";
 const KEY_STT_PROVIDER = "sttProvider";
 const KEY_GROQ_STT_MODEL = "groqSttModel";
 const KEY_WHISPERCPP_BASE_URL = "whispercppBaseURL";
+const KEY_WHISPERCPP_ACCELERATION = "whispercppAcceleration";
 const KEY_WHISPERCPP_MODEL = "whispercppModel";
 const KEY_WHISPERCPP_AUTO_START = "whispercppAutoStart";
 const KEY_GLOBAL_VOICE_ENABLED = "globalVoiceEnabled";
@@ -353,6 +358,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   groqSttModel: "whisper-large-v3-turbo",
   whispercppBaseURL: WHISPERCPP_DEFAULT_BASE_URL,
   whispercppModel: WHISPERCPP_DEFAULT_MODEL,
+  whispercppAcceleration: WHISPERCPP_DEFAULT_ACCELERATION,
   whispercppAutoStart: true,
   globalVoiceEnabled: false,
   favoriteModelIds: [],
@@ -510,6 +516,12 @@ export async function loadPreferences(): Promise<Preferences> {
       return isWhispercppModel(stored)
         ? stored
         : DEFAULT_PREFERENCES.whispercppModel;
+    })(),
+    whispercppAcceleration: (() => {
+      const stored = get<unknown>(KEY_WHISPERCPP_ACCELERATION);
+      return isWhispercppAcceleration(stored)
+        ? stored
+        : DEFAULT_PREFERENCES.whispercppAcceleration;
     })(),
     whispercppAutoStart:
       get<boolean>(KEY_WHISPERCPP_AUTO_START) ??
@@ -802,6 +814,12 @@ export async function setWhispercppModel(
   await writePref(KEY_WHISPERCPP_MODEL, value);
 }
 
+export async function setWhispercppAcceleration(
+  value: WhispercppAcceleration,
+): Promise<void> {
+  await writePref(KEY_WHISPERCPP_ACCELERATION, value);
+}
+
 export async function setWhispercppAutoStart(value: boolean): Promise<void> {
   await writePref(KEY_WHISPERCPP_AUTO_START, value);
 }
@@ -1033,6 +1051,7 @@ export async function onPreferencesChange(
     [KEY_STT_PROVIDER]: "sttProvider",
     [KEY_GROQ_STT_MODEL]: "groqSttModel",
     [KEY_WHISPERCPP_BASE_URL]: "whispercppBaseURL",
+    [KEY_WHISPERCPP_ACCELERATION]: "whispercppAcceleration",
     [KEY_WHISPERCPP_MODEL]: "whispercppModel",
     [KEY_WHISPERCPP_AUTO_START]: "whispercppAutoStart",
     [KEY_GLOBAL_VOICE_ENABLED]: "globalVoiceEnabled",

@@ -1,4 +1,7 @@
-import type { WhispercppModel } from "@/modules/ai/config";
+import type {
+  WhispercppAcceleration,
+  WhispercppModel,
+} from "@/modules/ai/config";
 import { invoke } from "@tauri-apps/api/core";
 
 export const WHISPER_RUNTIME_PROGRESS_EVENT =
@@ -29,6 +32,14 @@ export type WhisperRuntimeStatus = {
   pid: number | null;
   installDir: string;
   sizeBytes: number;
+  /// The backend actually installed, null when nothing is installed yet.
+  variant: WhispercppAcceleration | null;
+  variantLabel: string | null;
+  /// Whether that installed backend runs on the GPU.
+  gpu: boolean;
+  /// Whether this machine has an NVIDIA driver at all.
+  gpuAvailable: boolean;
+  recommendedVariant: WhispercppAcceleration;
   progress: WhisperInstallProgress | null;
   error: string | null;
 };
@@ -39,8 +50,9 @@ export function getWhisperRuntimeStatus(): Promise<WhisperRuntimeStatus> {
 
 export function installWhisperRuntime(
   model: WhispercppModel,
+  acceleration: WhispercppAcceleration = "auto",
 ): Promise<WhisperRuntimeStatus> {
-  return invoke("whisper_runtime_install", { model });
+  return invoke("whisper_runtime_install", { model, acceleration });
 }
 
 export function cancelWhisperRuntimeInstall(): Promise<boolean> {

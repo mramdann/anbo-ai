@@ -1,9 +1,13 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import type { SttProvider } from "../config";
+import { type SttProvider, WHISPERCPP_DEFAULT_BASE_URL } from "../config";
 import { createAudioMeter } from "../lib/audioMeter";
-import { type SttOptions, transcribeAudio } from "../lib/stt";
+import {
+  type SttOptions,
+  transcribeAudio,
+  whisperCppReachable,
+} from "../lib/stt";
 import { useChatStore } from "../store/chatStore";
 
 const MIME_CANDIDATES = [
@@ -139,6 +143,18 @@ export function useWhisperRecording({
       const generation = generationRef.current + 1;
       generationRef.current = generation;
       activeRef.current = true;
+      if (sttProvider === "whispercpp") {
+        const endpoint =
+          whispercppBaseURL?.replace(/\/+$/, "") || WHISPERCPP_DEFAULT_BASE_URL;
+        if (!(await whisperCppReachable(endpoint))) {
+          activeRef.current = false;
+          errorRef.current?.(
+            `No local Whisper server at ${endpoint}. Start it in Settings, under Models.`,
+          );
+          settledRef.current?.();
+          return false;
+        }
+      }
       try {
         cancelledRef.current = false;
         sessionResultRef.current = resultHandler ?? resultRef.current;
@@ -264,6 +280,7 @@ export function useWhisperRecording({
       state,
       supported,
       hasKey,
+      whispercppBaseURL,
       teardownStream,
       audioMeter.connect,
     ],

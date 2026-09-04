@@ -275,6 +275,9 @@ pub fn run() {
             // previous run left behind.
             #[cfg(windows)]
             browser::host::reap_orphaned_host(_app.handle());
+            // Before any command can resolve the runtime root, so install,
+            // start and status all agree on one location from the first call.
+            voice_runtime::migrate_legacy_runtime();
             match agent::cleanup_legacy_global_integrations() {
                 Ok(count) if count > 0 => {
                     log::info!("removed {count} legacy global agent integration(s)")

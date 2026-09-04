@@ -1,6 +1,6 @@
 use crate::modules::proc;
 use futures_util::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -11,18 +11,66 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const PROGRESS_EVENT: &str = "anbo:whisper-runtime-progress";
+const RUNTIME_DIR: &str = "whisper.cpp";
 const RUNTIME_VERSION: &str = "b4938";
-const ARCHIVE_URL: &str =
-    "https://github.com/ggml-org/whisper.cpp/releases/download/b4938/whisper-bin-x64.zip";
-const ARCHIVE_BYTES: u64 = 8_361_840;
-const ARCHIVE_SHA256: &str = "c2a4b60edb11f7e11a9191ffb50929535527d4d91c9903dbe3e554583bbbc63d";
-const SERVER_SHA256: &str = "9eb6ee297215f07ba77a6d588a6a2715f2235f665528529c377b775bbab3cd2d";
+const ARCHIVE_BASE: &str = "https://github.com/ggml-org/whisper.cpp/releases/download/b4938";
 const DOWNLOAD_HEADROOM_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_ARCHIVE_FILES: usize = 128;
-const MAX_ARCHIVE_BYTES: u64 = 96 * 1024 * 1024;
+
+/// whisper.cpp ships one Windows build per compute backend, and the backend is
+/// baked into the binaries: the plain build has no GPU code to enable, so the
+/// choice is made at download time rather than by a flag at startup.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RuntimeVariant {
+    id: &'static str,
+    label: &'static str,
+    archive: &'static str,
+    bytes: u64,
+    sha256: &'static str,
+    server_sha256: &'static str,
+    /// Unpacked size, which the CUDA build takes far past the others because it
+    /// carries the CUDA runtime with it.
+    max_bytes: u64,
+    gpu: bool,
+}
+
+const VARIANTS: [RuntimeVariant; 3] = [
+    RuntimeVariant {
+        id: "cpu",
+        label: "CPU",
+        archive: "whisper-bin-x64.zip",
+        bytes: 8_361_840,
+        sha256: "c2a4b60edb11f7e11a9191ffb50929535527d4d91c9903dbe3e554583bbbc63d",
+        server_sha256: "9eb6ee297215f07ba77a6d588a6a2715f2235f665528529c377b775bbab3cd2d",
+        max_bytes: 96 * 1024 * 1024,
+        gpu: false,
+    },
+    RuntimeVariant {
+        id: "blas",
+        label: "CPU with OpenBLAS",
+        archive: "whisper-blas-bin-x64.zip",
+        bytes: 21_147_582,
+        sha256: "78568aa80b361382cb303438a7be3b05669651f2ca8258910394679e049d26ea",
+        server_sha256: "5f369c78348c2d4478daa5a89eb38ef6c37ccbc90de0f7bf489921315539c46d",
+        max_bytes: 128 * 1024 * 1024,
+        gpu: false,
+    },
+    RuntimeVariant {
+        id: "cuda",
+        label: "NVIDIA GPU (CUDA 11.8)",
+        archive: "whisper-cublas-11.8.0-bin-x64.zip",
+        bytes: 269_896_802,
+        sha256: "2510ae3fe25af5cd7fed55ff71a97a5b1bcc7ea27e88e98d1d53229761a0857d",
+        server_sha256: "be3d33d12181460bacd4058fc7f1471f062cf2b1b60df2d94d2b0a689413d801",
+        // 581 MB unpacked, and a release that grows a little must not start
+        // failing extraction over it.
+        max_bytes: 704 * 1024 * 1024,
+        gpu: true,
+    },
+];
 
 #[derive(Clone, Copy)]
 struct ModelSpec {
@@ -84,14 +132,23 @@ pub struct WhisperRuntimeStatus {
     pid: Option<u32>,
     install_dir: String,
     size_bytes: u64,
+    variant: Option<String>,
+    variant_label: Option<String>,
+    gpu: bool,
+    gpu_available: bool,
+    recommended_variant: String,
     progress: Option<WhisperInstallProgress>,
     error: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeManifest {
     runtime_version: String,
+    /// Absent in manifests written before backends existed, which is why the
+    /// reader falls back to the server hash it has always recorded.
+    #[serde(default)]
+    variant: String,
     server_sha256: String,
     installed_models: Vec<String>,
 }
@@ -149,9 +206,135 @@ fn runtime_supported() -> bool {
 }
 
 fn runtime_root() -> Result<PathBuf, String> {
-    dirs::data_local_dir()
-        .map(|path| path.join("Anbo").join("whisper.cpp"))
-        .ok_or_else(|| "could not resolve the local application data directory".to_string())
+    crate::modules::app_data::local_data_root().map(|root| root.join(RUNTIME_DIR))
+}
+
+/// Where the runtime used to live. `data_local_dir()/Anbo` is not a data
+/// directory at all: the NSIS installer sets `$INSTDIR` to
+/// `$LOCALAPPDATA\${PRODUCTNAME}`, and this product is named Anbo, so the
+/// server and its models were being written into the app's own install folder.
+/// Nothing there survives cleanly: the uninstaller clears only the files it
+/// recorded and then calls a non-recursive `RMDir`, so half a gigabyte of
+/// models stayed behind and kept the install folder alive with it.
+fn legacy_runtime_root() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|path| path.join("Anbo").join(RUNTIME_DIR))
+}
+
+/// Move a runtime installed by an older build into the data directory. Both
+/// paths sit under `%LOCALAPPDATA%`, so this is a rename on one volume rather
+/// than half a gigabyte of copying, and a user who already downloaded a model
+/// never downloads it again.
+pub fn migrate_legacy_runtime() {
+    let (Some(legacy), Ok(current)) = (legacy_runtime_root(), runtime_root()) else {
+        return;
+    };
+    match migrate_runtime_dir(&legacy, &current) {
+        Ok(true) => log::info!(
+            "moved the Whisper runtime out of the install directory into {}",
+            current.display()
+        ),
+        Ok(false) => {}
+        Err(error) => log::warn!(
+            "could not move the Whisper runtime from {}: {error}",
+            legacy.display()
+        ),
+    }
+}
+
+/// Returns whether anything moved. Doing nothing is the common case and is
+/// never an error: most installs have no legacy directory at all.
+fn migrate_runtime_dir(legacy: &Path, current: &Path) -> Result<bool, String> {
+    if legacy == current || !legacy.is_dir() {
+        return Ok(false);
+    }
+    // A runtime already at the new path is the authority. Deleting the old copy
+    // here could destroy a model the user is still using, so leave it alone.
+    if current.exists() {
+        return Err(format!("{} already exists", current.display()));
+    }
+    if let Some(parent) = current.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    }
+    fs::rename(legacy, current).map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+fn variant_spec(id: &str) -> Option<&'static RuntimeVariant> {
+    VARIANTS.iter().find(|variant| variant.id == id)
+}
+
+fn variant_url(variant: &RuntimeVariant) -> String {
+    format!("{ARCHIVE_BASE}/{}", variant.archive)
+}
+
+/// Every NVIDIA display driver installs the CUDA driver API next to the system
+/// libraries. Its absence is the cheapest honest answer to "is there a GPU we
+/// can use", and it costs no process spawn and no extra dependency.
+#[cfg(windows)]
+fn nvidia_driver_present() -> bool {
+    let system_root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("C:/Windows"));
+    system_root.join("System32").join("nvcuda.dll").is_file()
+}
+
+#[cfg(not(windows))]
+fn nvidia_driver_present() -> bool {
+    false
+}
+
+/// The variant an unconfigured machine should get. OpenBLAS rather than the
+/// plain build: it is 13 MB more to download and measurably faster on every
+/// CPU, so there is no reason to prefer the slower one by default.
+fn detected_variant() -> &'static RuntimeVariant {
+    let wanted = if nvidia_driver_present() {
+        "cuda"
+    } else {
+        "blas"
+    };
+    variant_spec(wanted).unwrap_or(&VARIANTS[0])
+}
+
+/// Resolve a stored preference. "auto" follows the hardware; anything else is
+/// honoured as written so a user can refuse a 270 MB CUDA download, or force it
+/// on a machine whose driver we failed to spot.
+fn resolve_variant(preference: Option<&str>) -> Result<&'static RuntimeVariant, String> {
+    match preference {
+        None | Some("") | Some("auto") => Ok(detected_variant()),
+        Some(id) => {
+            variant_spec(id).ok_or_else(|| format!("unsupported Whisper acceleration: {id}"))
+        }
+    }
+}
+
+/// Which variant is on disk, decided by hashing the installed server rather
+/// than by trusting the manifest. A runtime installed before variants existed
+/// carries no marker, and re-downloading over a perfectly good install would be
+/// the worst possible answer.
+async fn installed_variant(root: &Path) -> Option<&'static RuntimeVariant> {
+    let path = server_path(root);
+    if !path.is_file() {
+        return None;
+    }
+    let hash = tokio::task::spawn_blocking(move || hash_file(&path))
+        .await
+        .ok()?
+        .ok()?;
+    VARIANTS.iter().find(|variant| variant.server_sha256 == hash)
+}
+
+/// The backend an install advertises, read from its manifest. This is for
+/// display: it costs a small file read rather than hashing the server on every
+/// poll, and the paths that must not be wrong hash it anyway.
+fn manifest_variant(root: &Path) -> Option<&'static RuntimeVariant> {
+    let raw = fs::read(root.join(".anbo-runtime.json")).ok()?;
+    let manifest: RuntimeManifest = serde_json::from_slice(&raw).ok()?;
+    variant_spec(&manifest.variant).or_else(|| {
+        VARIANTS
+            .iter()
+            .find(|variant| variant.server_sha256 == manifest.server_sha256)
+    })
 }
 
 fn model_spec(id: &str) -> Result<&'static ModelSpec, String> {
@@ -234,6 +417,7 @@ fn status_from_inner(inner: &WhisperRuntimeInner) -> Result<WhisperRuntimeStatus
         .unwrap_or_else(|error| error.into_inner());
     let running = process.is_some();
     let installed = server_installed && !installed_models.is_empty();
+    let variant = manifest_variant(&root);
     let phase = if installing {
         "installing"
     } else if running {
@@ -257,6 +441,11 @@ fn status_from_inner(inner: &WhisperRuntimeInner) -> Result<WhisperRuntimeStatus
         pid: process.as_ref().map(|running| running.child.id()),
         install_dir: root.to_string_lossy().into_owned(),
         size_bytes: directory_size(&root),
+        variant: variant.map(|found| found.id.to_string()),
+        variant_label: variant.map(|found| found.label.to_string()),
+        gpu: variant.is_some_and(|found| found.gpu),
+        gpu_available: nvidia_driver_present(),
+        recommended_variant: detected_variant().id.to_string(),
         progress: inner
             .progress
             .lock()
@@ -324,18 +513,8 @@ async fn file_is_valid(path: PathBuf, bytes: u64, hash: &'static str) -> bool {
         .unwrap_or(false)
 }
 
-async fn server_is_valid(root: &Path) -> bool {
-    let path = server_path(root);
-    let Ok(metadata) = fs::metadata(&path) else {
-        return false;
-    };
-    let bytes = metadata.len();
-    tokio::task::spawn_blocking(move || {
-        hash_file(&path).is_ok_and(|actual| actual == SERVER_SHA256)
-    })
-    .await
-    .unwrap_or(false)
-        && bytes > 0
+async fn server_is_valid(root: &Path, variant: &RuntimeVariant) -> bool {
+    installed_variant(root).await == Some(variant)
 }
 
 struct DownloadRequest<'a> {
@@ -369,8 +548,18 @@ async fn download_file(
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()
         .map_err(|error| format!("create download client: {error}"))?;
-    let response = client
-        .get(url)
+    // Whatever a previous attempt left behind is worth keeping: losing a
+    // connection at 420 MB of 465 should cost the remainder, not the lot.
+    let on_disk = tokio::fs::metadata(destination)
+        .await
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    let resume_from = resume_offset(on_disk, expected_bytes);
+    let mut builder = client.get(url);
+    if resume_from > 0 {
+        builder = builder.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
+    }
+    let response = builder
         .send()
         .await
         .map_err(|error| format!("download {phase}: {error}"))?;
@@ -380,19 +569,37 @@ async fn download_file(
             response.status()
         ));
     }
+    // A server free to ignore the range header answers 200 with the whole body,
+    // so the resume only counts once it has been acknowledged.
+    let resume_from = if response.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+        resume_from
+    } else {
+        0
+    };
     if let Some(length) = response.content_length() {
-        if length != expected_bytes {
+        if length != expected_bytes - resume_from {
             return Err(format!(
                 "download {phase} reported an unexpected size: {length}"
             ));
         }
     }
-    let mut file = tokio::fs::File::create(destination)
-        .await
-        .map_err(|error| format!("create {}: {error}", destination.display()))?;
-    let mut stream = response.bytes_stream();
     let mut hasher = Sha256::new();
-    let mut downloaded = 0_u64;
+    let mut file = if resume_from > 0 {
+        // The hash covers the whole file, so the kept bytes have to go through
+        // it before the new ones do.
+        hash_prefix(destination, resume_from, &mut hasher).await?;
+        tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(destination)
+            .await
+            .map_err(|error| format!("append to {}: {error}", destination.display()))?
+    } else {
+        tokio::fs::File::create(destination)
+            .await
+            .map_err(|error| format!("create {}: {error}", destination.display()))?
+    };
+    let mut stream = response.bytes_stream();
+    let mut downloaded = resume_from;
     let mut last_emit = Instant::now();
     emit_progress(app, inner, phase, model, offset, total);
     while let Some(chunk) = stream.next().await {
@@ -424,7 +631,39 @@ async fn download_file(
     }
     let actual_hash = format!("{:x}", hasher.finalize());
     if actual_hash != expected_hash {
+        // Bytes that hash wrong are poison for a resume: keeping them would
+        // make every later attempt fail the same way.
+        let _ = fs::remove_file(destination);
         return Err(format!("download {phase} failed integrity verification"));
+    }
+    Ok(())
+}
+
+/// How many bytes of a previous attempt are worth keeping. A file already at
+/// its full length is not a resume candidate: it is either finished or wrong,
+/// and both are decided by the hash rather than by another request.
+fn resume_offset(on_disk: u64, expected_bytes: u64) -> u64 {
+    if on_disk > 0 && on_disk < expected_bytes {
+        on_disk
+    } else {
+        0
+    }
+}
+
+/// Feed the bytes already on disk through the hash before appending more.
+async fn hash_prefix(path: &Path, length: u64, hasher: &mut Sha256) -> Result<(), String> {
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|error| format!("open {}: {error}", path.display()))?;
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    let mut remaining = length;
+    while remaining > 0 {
+        let want = remaining.min(buffer.len() as u64) as usize;
+        file.read_exact(&mut buffer[..want])
+            .await
+            .map_err(|error| format!("read {}: {error}", path.display()))?;
+        hasher.update(&buffer[..want]);
+        remaining -= want as u64;
     }
     Ok(())
 }
@@ -444,7 +683,11 @@ fn release_entry_destination(staging: &Path, entry: &Path) -> Result<PathBuf, St
     Ok(staging.join(entry))
 }
 
-fn extract_release_archive(archive_path: &Path, staging: &Path) -> Result<(), String> {
+fn extract_release_archive(
+    archive_path: &Path,
+    staging: &Path,
+    max_bytes: u64,
+) -> Result<(), String> {
     let file = File::open(archive_path)
         .map_err(|error| format!("open {}: {error}", archive_path.display()))?;
     let mut archive =
@@ -466,7 +709,7 @@ fn extract_release_archive(archive_path: &Path, staging: &Path) -> Result<(), St
         extracted_bytes = extracted_bytes
             .checked_add(entry.size())
             .ok_or_else(|| "Whisper archive size overflow".to_string())?;
-        if extracted_bytes > MAX_ARCHIVE_BYTES {
+        if extracted_bytes > max_bytes {
             return Err("Whisper archive expands beyond the allowed size".to_string());
         }
         let enclosed = entry
@@ -545,10 +788,11 @@ fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
     })
 }
 
-fn write_manifest(root: &Path) -> Result<(), String> {
+fn write_manifest(root: &Path, variant: &RuntimeVariant) -> Result<(), String> {
     let manifest = RuntimeManifest {
         runtime_version: RUNTIME_VERSION.to_string(),
-        server_sha256: SERVER_SHA256.to_string(),
+        variant: variant.id.to_string(),
+        server_sha256: variant.server_sha256.to_string(),
         installed_models: installed_models(root),
     };
     let bytes = serde_json::to_vec_pretty(&manifest)
@@ -595,6 +839,7 @@ async fn install_runtime(
     app: &AppHandle,
     state: &WhisperRuntimeState,
     model: &ModelSpec,
+    variant: &'static RuntimeVariant,
 ) -> Result<(), String> {
     if !runtime_supported() {
         return Err("Managed Whisper installation currently supports Windows x64".to_string());
@@ -618,11 +863,13 @@ async fn install_runtime(
         .parent()
         .ok_or_else(|| "Whisper installation path has no parent".to_string())?;
     fs::create_dir_all(parent).map_err(|error| format!("create {}: {error}", parent.display()))?;
-    let server_valid = server_is_valid(&root).await;
+    // A different backend on disk is not a valid install for this request, so
+    // switching backends re-downloads the runtime and leaves the models alone.
+    let server_valid = server_is_valid(&root, variant).await;
     let model_destination = model_path(&root, model);
     let model_valid = file_is_valid(model_destination.clone(), model.bytes, model.sha256).await;
     let required_download =
-        (if server_valid { 0 } else { ARCHIVE_BYTES }) + if model_valid { 0 } else { model.bytes };
+        (if server_valid { 0 } else { variant.bytes }) + if model_valid { 0 } else { model.bytes };
     if required_download > 0 {
         let free = available_space(parent)?;
         let required = required_download.saturating_add(DOWNLOAD_HEADROOM_BYTES);
@@ -638,18 +885,17 @@ async fn install_runtime(
     fs::create_dir_all(&root).map_err(|error| format!("create {}: {error}", root.display()))?;
 
     if !server_valid {
-        let archive_path = root.join(".whisper-bin.zip.part");
+        let archive_path = root.join(format!(".whisper-{}.zip.part", variant.id));
         let staging = root.join(".release-install");
-        let _ = fs::remove_file(&archive_path);
         remove_directory(&staging)?;
         let download = download_file(
             app,
             &state.inner,
             DownloadRequest {
-                url: ARCHIVE_URL,
+                url: &variant_url(variant),
                 destination: &archive_path,
-                expected_bytes: ARCHIVE_BYTES,
-                expected_hash: ARCHIVE_SHA256,
+                expected_bytes: variant.bytes,
+                expected_hash: variant.sha256,
                 phase: "runtime",
                 model: model.id,
                 offset,
@@ -657,20 +903,20 @@ async fn install_runtime(
             },
         )
         .await;
-        if let Err(error) = download {
-            let _ = fs::remove_file(&archive_path);
-            return Err(error);
-        }
-        offset += ARCHIVE_BYTES;
+        // A partial archive stays put so the next attempt resumes it. Bytes
+        // that fail their hash are removed by the download itself.
+        download?;
+        offset += variant.bytes;
         let archive_for_extract = archive_path.clone();
         let staging_for_extract = staging.clone();
+        let max_bytes = variant.max_bytes;
         tokio::task::spawn_blocking(move || {
-            extract_release_archive(&archive_for_extract, &staging_for_extract)
+            extract_release_archive(&archive_for_extract, &staging_for_extract, max_bytes)
         })
         .await
         .map_err(|error| format!("extract Whisper runtime task: {error}"))??;
         let staged_server = server_path(&staging);
-        if hash_file(&staged_server)? != SERVER_SHA256 {
+        if hash_file(&staged_server)? != variant.server_sha256 {
             remove_directory(&staging)?;
             let _ = fs::remove_file(&archive_path);
             return Err("Whisper server failed integrity verification".to_string());
@@ -685,7 +931,6 @@ async fn install_runtime(
         fs::create_dir_all(&model_dir)
             .map_err(|error| format!("create {}: {error}", model_dir.display()))?;
         let temporary = model_dir.join(format!(".{}.part", model.file));
-        let _ = fs::remove_file(&temporary);
         let download = download_file(
             app,
             &state.inner,
@@ -701,14 +946,11 @@ async fn install_runtime(
             },
         )
         .await;
-        if let Err(error) = download {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
-        }
+        download?;
         replace_file(&temporary, &model_destination)?;
     }
     emit_progress(app, &state.inner, "finalizing", model.id, total, total);
-    write_manifest(&root)
+    write_manifest(&root, variant)
 }
 
 fn choose_port() -> Result<u16, String> {
@@ -744,8 +986,10 @@ pub async fn whisper_runtime_install(
     app: AppHandle,
     state: State<'_, WhisperRuntimeState>,
     model: String,
+    acceleration: Option<String>,
 ) -> Result<WhisperRuntimeStatus, String> {
     let model = model_spec(&model)?;
+    let variant = resolve_variant(acceleration.as_deref())?;
     if state
         .inner
         .installing
@@ -760,7 +1004,7 @@ pub async fn whisper_runtime_install(
     let guard = InstallGuard {
         inner: state.inner.clone(),
     };
-    let result = install_runtime(&app, &state, model).await;
+    let result = install_runtime(&app, &state, model, variant).await;
     drop(guard);
     if let Err(error) = result {
         if error == "Whisper installation was cancelled" {
@@ -808,16 +1052,16 @@ pub async fn whisper_runtime_start(
         return status_from_inner(&state.inner);
     }
     let root = runtime_root()?;
-    if !server_is_valid(&root).await {
+    let Some(variant) = installed_variant(&root).await else {
         return Err("Whisper runtime is missing or failed integrity verification".to_string());
-    }
+    };
     if !file_is_valid(model_path(&root, &model), model.bytes, model.sha256).await {
         return Err(format!("{} is not installed or is invalid", model.label));
     }
     if current_model.is_some() {
         stop_runtime(&state.inner);
     }
-    write_manifest(&root)?;
+    write_manifest(&root, variant)?;
     let port = choose_port()?;
     let stdout = File::create(root.join("server.stdout.log"))
         .map_err(|error| format!("create Whisper stdout log: {error}"))?;
@@ -842,8 +1086,13 @@ pub async fn whisper_runtime_start(
             "127.0.0.1",
             "--port",
             &port.to_string(),
-            "--no-gpu",
-        ])
+        ]);
+    if !variant.gpu {
+        // The CPU builds carry no GPU code at all, so this only silences the
+        // attempt; on the CUDA build it would throw the acceleration away.
+        command.arg("--no-gpu");
+    }
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
@@ -899,7 +1148,10 @@ pub async fn whisper_runtime_start(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     set_error(&state.inner, None);
-    log::info!("started managed Whisper server pid={pid} port={port}");
+    log::info!(
+        "started managed Whisper server pid={pid} port={port} backend={}",
+        variant.id
+    );
     status_from_inner(&state.inner)
 }
 
@@ -932,9 +1184,158 @@ pub async fn whisper_runtime_uninstall(
 
 #[cfg(test)]
 mod tests {
-    use super::{installed_models, model_spec, release_entry_destination, MODELS};
+    use super::{
+        detected_variant, hash_prefix, installed_models, manifest_variant, migrate_runtime_dir,
+        model_spec, release_entry_destination, resolve_variant, resume_offset, variant_spec,
+        MODELS, VARIANTS,
+    };
+    use sha2::{Digest, Sha256};
     use std::fs;
     use std::path::Path;
+
+    #[test]
+    fn an_interrupted_download_resumes_from_what_it_already_wrote() {
+        assert_eq!(resume_offset(420_000_000, 487_601_967), 420_000_000);
+    }
+
+    #[test]
+    fn a_complete_or_oversized_file_is_never_resumed() {
+        // Both are settled by the hash, not by asking for more bytes.
+        assert_eq!(resume_offset(487_601_967, 487_601_967), 0);
+        assert_eq!(resume_offset(500_000_000, 487_601_967), 0);
+        assert_eq!(resume_offset(0, 487_601_967), 0);
+    }
+
+    #[tokio::test]
+    async fn resuming_hashes_the_kept_bytes_before_the_new_ones() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("partial.bin");
+        fs::write(&path, b"first half").unwrap();
+
+        let mut resumed = Sha256::new();
+        hash_prefix(&path, 10, &mut resumed).await.unwrap();
+        resumed.update(b"second half");
+
+        let mut whole = Sha256::new();
+        whole.update(b"first halfsecond half");
+        assert_eq!(
+            format!("{:x}", resumed.finalize()),
+            format!("{:x}", whole.finalize())
+        );
+    }
+
+    #[test]
+    fn a_runtime_left_in_the_install_directory_moves_to_the_data_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = temp.path().join("Anbo").join("whisper.cpp");
+        let current = temp.path().join("com.anbo.desktop").join("whisper.cpp");
+        fs::create_dir_all(legacy.join("models")).unwrap();
+        fs::write(legacy.join("models").join("ggml-tiny.bin"), b"model").unwrap();
+
+        assert!(migrate_runtime_dir(&legacy, &current).unwrap());
+        assert!(!legacy.exists());
+        assert_eq!(
+            fs::read(current.join("models").join("ggml-tiny.bin")).unwrap(),
+            b"model"
+        );
+    }
+
+    #[test]
+    fn migration_never_destroys_a_runtime_already_in_the_data_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = temp.path().join("Anbo").join("whisper.cpp");
+        let current = temp.path().join("com.anbo.desktop").join("whisper.cpp");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::create_dir_all(&current).unwrap();
+        fs::write(current.join("keep.bin"), b"keep").unwrap();
+
+        assert!(migrate_runtime_dir(&legacy, &current).is_err());
+        assert_eq!(fs::read(current.join("keep.bin")).unwrap(), b"keep");
+        assert!(legacy.is_dir());
+    }
+
+    #[test]
+    fn a_fresh_install_has_nothing_to_migrate() {
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = temp.path().join("Anbo").join("whisper.cpp");
+        let current = temp.path().join("com.anbo.desktop").join("whisper.cpp");
+        assert!(!migrate_runtime_dir(&legacy, &current).unwrap());
+        assert!(!current.exists());
+    }
+
+    #[test]
+    fn only_the_cuda_backend_claims_the_gpu() {
+        assert!(!variant_spec("cpu").unwrap().gpu);
+        assert!(!variant_spec("blas").unwrap().gpu);
+        assert!(variant_spec("cuda").unwrap().gpu);
+        assert!(variant_spec("vulkan").is_none());
+    }
+
+    #[test]
+    fn every_backend_is_pinned_to_its_own_binaries() {
+        // A shared hash between two variants would let the wrong backend pass
+        // verification and run without anyone noticing.
+        for (index, variant) in VARIANTS.iter().enumerate() {
+            assert_eq!(variant.sha256.len(), 64, "{}", variant.id);
+            assert_eq!(variant.server_sha256.len(), 64, "{}", variant.id);
+            for other in VARIANTS.iter().skip(index + 1) {
+                assert_ne!(variant.sha256, other.sha256);
+                assert_ne!(variant.server_sha256, other.server_sha256);
+                assert_ne!(variant.archive, other.archive);
+            }
+        }
+    }
+
+    #[test]
+    fn an_explicit_backend_is_honoured_and_a_wrong_one_is_refused() {
+        assert_eq!(resolve_variant(Some("cpu")).unwrap().id, "cpu");
+        assert_eq!(resolve_variant(Some("cuda")).unwrap().id, "cuda");
+        assert!(resolve_variant(Some("rocm")).is_err());
+    }
+
+    #[test]
+    fn an_unset_preference_follows_the_hardware() {
+        // Whatever this machine has, "auto" and an absent preference must agree
+        // with detection rather than diverging.
+        let detected = detected_variant().id;
+        assert_eq!(resolve_variant(None).unwrap().id, detected);
+        assert_eq!(resolve_variant(Some("auto")).unwrap().id, detected);
+        assert_eq!(resolve_variant(Some("")).unwrap().id, detected);
+    }
+
+    #[test]
+    fn a_manifest_written_before_backends_existed_is_read_by_its_server_hash() {
+        let temp = tempfile::tempdir().unwrap();
+        let cpu = variant_spec("cpu").unwrap();
+        fs::write(
+            temp.path().join(".anbo-runtime.json"),
+            format!(
+                r#"{{"runtimeVersion":"b4938","serverSha256":"{}","installedModels":["base"]}}"#,
+                cpu.server_sha256
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(manifest_variant(temp.path()).map(|v| v.id), Some("cpu"));
+    }
+
+    #[test]
+    fn a_manifest_naming_its_backend_is_taken_at_its_word() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join(".anbo-runtime.json"),
+            r#"{"runtimeVersion":"b4938","variant":"cuda","serverSha256":"","installedModels":[]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(manifest_variant(temp.path()).map(|v| v.id), Some("cuda"));
+    }
+
+    #[test]
+    fn no_manifest_means_no_backend_rather_than_a_guess() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(manifest_variant(temp.path()).is_none());
+    }
 
     #[test]
     fn model_registry_accepts_only_known_multilingual_models() {

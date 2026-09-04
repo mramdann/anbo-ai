@@ -140,6 +140,24 @@ function assertLoopbackUrl(baseURL: string): void {
   }
 }
 
+const STT_PREFLIGHT_MS = 1_500;
+
+/// A local server that is not running only announces itself after the take is
+/// already recorded, and the audio is gone by then. One loopback round trip
+/// before the microphone opens costs nothing and turns that into a refusal the
+/// user can act on.
+export async function whisperCppReachable(baseURL: string): Promise<boolean> {
+  try {
+    assertLoopbackUrl(baseURL);
+    // Any HTTP answer proves a server is listening. whisper.cpp has no health
+    // route, so a 404 is just as good as a 200 here.
+    await fetchWithTimeout(baseURL, { method: "GET" }, STT_PREFLIGHT_MS);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export type SttOptions = {
   groqSttModel?: string;
   whispercppBaseURL?: string;
