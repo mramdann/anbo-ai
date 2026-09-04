@@ -22,6 +22,10 @@ import { toast } from "sonner";
 
 type Props = {
   visible: boolean;
+  // Set when the global orb has taken over. The in-app orb stops rendering but
+  // must not cancel the shared recorder: the status bar microphone drives the
+  // same hook and is still on screen.
+  superseded?: boolean;
   onHide: () => void;
   captureTarget: () => VoiceTarget | null;
 };
@@ -53,7 +57,12 @@ const INITIAL_VISUAL_STYLE = {
   "--anbo-voice-bar-5": "3px",
 } as const;
 
-export function AnboVoice({ visible, onHide, captureTarget }: Props) {
+export function AnboVoice({
+  visible,
+  superseded = false,
+  onHide,
+  captureTarget,
+}: Props) {
   const composer = useComposer();
   const voice = composer.voice;
   const geometry = useVoiceOrbPosition();
@@ -199,7 +208,7 @@ export function AnboVoice({ visible, onHide, captureTarget }: Props) {
       });
   };
 
-  if (!visible) return null;
+  if (!visible || superseded) return null;
 
   const busy = voice.requesting || voice.recording || voice.transcribing;
   const status = voice.requesting

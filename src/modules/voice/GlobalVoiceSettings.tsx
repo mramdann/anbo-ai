@@ -64,7 +64,7 @@ export function GlobalVoiceSettings() {
       <Switch
         size="sm"
         checked={enabled}
-        disabled={updating || status?.supported === false}
+        disabled={updating || status === null || !status.supported}
         onCheckedChange={(checked) => void update(checked)}
         aria-label="Use AnboVoice across Windows"
       />

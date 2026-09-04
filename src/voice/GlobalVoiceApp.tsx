@@ -13,6 +13,7 @@ import {
   rememberGlobalVoiceForeground,
 } from "@/modules/voice/lib/globalVoice";
 import { resolveVoicePress } from "@/modules/voice/lib/voicePress";
+import { normalizeVoiceText } from "@/modules/voice/lib/voiceTarget";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
@@ -148,17 +149,21 @@ export function GlobalVoiceApp() {
   }, []);
 
   const finishInsert = useCallback(async (text: string) => {
+    // The native side turns control characters into real keystrokes, so a raw
+    // multi line transcript would press Enter and submit a half typed command
+    // to whatever terminal happens to be focused.
+    const normalized = normalizeVoiceText(text);
     setInserting(true);
     try {
-      await insertGlobalVoiceText(text);
+      if (normalized) await insertGlobalVoiceText(normalized);
       setError(null);
       setFallbackTranscript(null);
     } catch (cause) {
       const detail = message(cause);
       setError(detail);
-      setFallbackTranscript(text);
+      setFallbackTranscript(normalized);
       try {
-        await navigator.clipboard.writeText(text);
+        await navigator.clipboard.writeText(normalized);
         setError(`${detail} Transcript copied to the clipboard.`);
       } catch {
         // The transcript remains in memory and can be copied on right click.
@@ -229,6 +234,10 @@ export function GlobalVoiceApp() {
   const cancel = useCallback(() => {
     voice.cancel();
     targetRef.current = null;
+    // Escape and right click can land while a start is still capturing its
+    // target. Clearing actionRef alone would let that start go on to create a
+    // recorder nobody asked for, so join the abort protocol too.
+    abortStartRef.current = true;
     actionRef.current = false;
     void clearGlobalVoiceTarget()
       .catch(() => {})

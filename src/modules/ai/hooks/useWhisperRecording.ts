@@ -106,6 +106,9 @@ export function useWhisperRecording({
       rec.stop();
       return;
     }
+    // An inactive recorder that is still referenced means a stop is already in
+    // flight, so let onstop land the state rather than racing it to idle.
+    if (rec) return;
     // Never drop the runaway watchdog for a stop that stopped nothing, and never
     // leave the caller stranded in "recording" with no recorder behind it.
     if (stateRef.current !== "recording") return;

@@ -2695,10 +2695,11 @@ export default function App() {
                 onExit={handleAgentExited}
               />
               <WhisperRuntimeBridge />
-              <GlobalVoiceBridge visible={voiceVisibility.visible} />
+              <GlobalVoiceBridge />
               <Toaster position="bottom-right" />
               <AnboVoice
-                visible={voiceVisibility.visible && !globalVoiceEnabled}
+                visible={voiceVisibility.visible}
+                superseded={globalVoiceEnabled}
                 onHide={() => voiceVisibility.setVisible(false)}
                 captureTarget={captureVoiceTarget}
               />

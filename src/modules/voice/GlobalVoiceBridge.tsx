@@ -19,13 +19,19 @@ function clearInternalVoiceTarget() {
     });
 }
 
-export function GlobalVoiceBridge({ visible }: { visible: boolean }) {
+export function GlobalVoiceBridge() {
   const hydrated = usePreferencesStore((state) => state.hydrated);
-  const enabled = usePreferencesStore((state) => state.globalVoiceEnabled);
-  const appliedRef = useRef<boolean | null>(null);
-  const runtimeEnabled = enabled && visible;
+  const runtimeEnabled = usePreferencesStore(
+    (state) => state.globalVoiceEnabled,
+  );
+  // The runtime starts disabled, so seeding this false keeps the default path
+  // from spending an IPC round trip turning off something that was never on.
+  const appliedRef = useRef(false);
 
+  // Gated on the preference: with the feature off these document wide capture
+  // listeners would run for every user on every focus and pointer event.
   useEffect(() => {
+    if (!runtimeEnabled) return;
     const rememberInternalInput = (event: FocusEvent) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
@@ -56,13 +62,13 @@ export function GlobalVoiceBridge({ visible }: { visible: boolean }) {
       );
       clearInternalVoiceTarget();
     };
-  }, []);
+  }, [runtimeEnabled]);
 
   useEffect(() => {
     if (!hydrated || appliedRef.current === runtimeEnabled) return;
     appliedRef.current = runtimeEnabled;
     void setGlobalVoiceRuntimeEnabled(runtimeEnabled).catch((error) => {
-      appliedRef.current = null;
+      appliedRef.current = !runtimeEnabled;
       console.error("global AnboVoice lifecycle failed", error);
     });
   }, [hydrated, runtimeEnabled]);
