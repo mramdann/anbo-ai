@@ -360,6 +360,27 @@ export async function browserEmbedRelease(
   );
 }
 
+/**
+ * Destroy native browser children the renderer no longer has a tab for.
+ *
+ * `liveTabIds` must be EVERY browser tab across EVERY space, including inactive
+ * spaces, background-hosted and cold tabs. A narrower list would destroy the
+ * background tabs the product deliberately keeps running. `maxTabId` is the id
+ * allocator's high-water mark, so a tab being created right now is never a
+ * candidate.
+ */
+export async function browserEmbedReconcile(
+  liveTabIds: number[],
+  maxTabId: number,
+): Promise<number> {
+  await ensureBrowserSession();
+  return invoke<number>("browser_embed_reconcile", {
+    instanceId: BROWSER_INSTANCE_ID,
+    liveTabIds,
+    maxTabId,
+  });
+}
+
 export async function browserEmbedClose(tabId: number): Promise<void> {
   await ensureBrowserSession();
   await retry(() =>

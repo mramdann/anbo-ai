@@ -3652,9 +3652,26 @@ async fn open_browser(app: &AppHandle, params: &Value) -> Result<Value, (String,
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while get_embed_webview(app, tab_id).is_err() {
         if tokio::time::Instant::now() >= deadline {
+            // The UI already created this tab. Returning without it would leave a
+            // live browser the caller never learns about and can never close, and
+            // a scraping run repeats that on every attempt.
+            let _ = app.emit(
+                BROWSER_CLOSE_REQUEST_EVENT,
+                json!({
+                    "requestId": format!(
+                        "{}-{}",
+                        std::process::id(),
+                        OPEN_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+                    ),
+                    "tabId": tab_id,
+                    "workspace": response.workspace,
+                }),
+            );
             return Err((
                 error_codes::TIMEOUT.to_string(),
-                format!("browser tab {tab_id} did not become ready in time"),
+                format!(
+                    "browser tab {tab_id} did not become ready in time; a close was requested for it"
+                ),
             ));
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -3672,8 +3689,9 @@ async fn open_browser(app: &AppHandle, params: &Value) -> Result<Value, (String,
 
 async fn close_browser(app: &AppHandle, params: &Value) -> Result<Value, (String, String)> {
     let (tab_id, workspace) = extract_browser_close_params(params)?;
-    get_embed_webview(app, tab_id)
-        .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
+    // No precheck here. A tab whose embed registration was already dropped is
+    // exactly the tab that most needs closing, and rejecting it as not-found
+    // left it running with nothing able to reach it.
     let request_id = format!(
         "{}-{}",
         std::process::id(),

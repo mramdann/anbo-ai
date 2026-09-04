@@ -63,6 +63,7 @@ import {
   BrowserStack,
   beginBrowserSession,
   browserEmbedClose,
+  browserEmbedReconcile,
   browserOpenPlacement,
   clearBrowserAutomationActivity,
   faviconUrlForPage,
@@ -132,6 +133,7 @@ import {
   WorkspaceDockview,
 } from "@/modules/tabs";
 import { DEFAULT_SPACE_ID } from "@/modules/tabs/lib/useTabs";
+import { runtimeTabIdAllocator } from "@/modules/tabs/lib/runtimeId";
 import {
   clearFocusedTerminal,
   collectRetainedTerminalLeafIds,
@@ -711,6 +713,8 @@ export default function App() {
     for (const k of [...searchAddons.current.keys()])
       if (!live.has(k)) searchAddons.current.delete(k);
 
+    // `tabs` spans every space, so this is the authoritative browser tab set:
+    // inactive spaces, background-hosted and cold tabs included.
     const liveBrowsers = new Set(
       tabs.filter((tab) => tab.kind === "browser").map((tab) => tab.id),
     );
@@ -721,6 +725,13 @@ export default function App() {
       }
     }
     liveBrowserIdsRef.current = liveBrowsers;
+    // A close only queues the destroy and forgets the label, so one that never
+    // reached the event loop would strand a live child forever. Reconcile from
+    // the pass that already knows every live tab: no timer, no polling.
+    void browserEmbedReconcile(
+      [...liveBrowsers],
+      runtimeTabIdAllocator().current - 1,
+    ).catch(() => {});
   }, [tabs]);
 
   useEffect(() => {

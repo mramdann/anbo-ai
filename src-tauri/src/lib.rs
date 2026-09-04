@@ -271,6 +271,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|_app| {
             browser_automation::server::cleanup_stale_descriptor();
+            // Before the first tab exists, so the only host it can find is one a
+            // previous run left behind.
+            #[cfg(windows)]
+            browser::host::reap_orphaned_host(_app.handle());
             match agent::cleanup_legacy_global_integrations() {
                 Ok(count) if count > 0 => {
                     log::info!("removed {count} legacy global agent integration(s)")
@@ -383,6 +387,7 @@ pub fn run() {
             browser::embed::browser_embed_suspend_all_presentations,
             browser::embed::browser_embed_release,
             browser::embed::browser_embed_close,
+            browser::embed::browser_embed_reconcile,
             browser_automation::browser_automation_start,
             browser_automation::browser_automation_stop,
             browser_automation::browser_automation_status,

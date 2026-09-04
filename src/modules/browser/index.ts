@@ -33,4 +33,8 @@ export {
   googleFaviconUrlForPage,
   isBrowserPreviewablePath,
 } from "./browserInput";
-export { beginBrowserSession, browserEmbedClose } from "./native";
+export {
+  beginBrowserSession,
+  browserEmbedClose,
+  browserEmbedReconcile,
+} from "./native";

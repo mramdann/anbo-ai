@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tauri::webview::{Color, DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder};
@@ -26,7 +26,8 @@ use windows::Win32::{
         IStream, StructuredStorage::CreateStreamOnHGlobal, STREAM_SEEK_END, STREAM_SEEK_SET,
     },
     UI::WindowsAndMessaging::{
-        GetClientRect, SetWindowPos, ShowWindow, HWND_BOTTOM, HWND_TOP, SET_WINDOW_POS_FLAGS,
+        DestroyWindow, GetClientRect, IsWindow, SetWindowPos, ShowWindow, HWND_BOTTOM, HWND_TOP,
+        SET_WINDOW_POS_FLAGS,
         SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SW_HIDE,
         SW_SHOWNOACTIVATE,
     },
@@ -95,6 +96,9 @@ struct ActiveEmbed {
     loading: Arc<AtomicBool>,
     pending_url: Arc<Mutex<Option<String>>>,
     navigation_generation: Arc<AtomicU64>,
+    /// Host HWND of this child, captured at spawn. Closing only queues the
+    /// destroy, so this handle is the one thing that can prove it happened.
+    host_window: Arc<AtomicIsize>,
 }
 
 static CLOSED_EMBEDS: OnceLock<Mutex<HashSet<EmbedKey>>> = OnceLock::new();
@@ -154,6 +158,12 @@ fn validate_punch_hole_count(count: usize) -> Result<(), String> {
 
 pub fn embed_label(tab_id: i64) -> String {
     format!("browser-embed-{tab_id}")
+}
+
+/// Inverse of `embed_label`. A strict prefix plus an i64 parse is what keeps the
+/// reconciliation sweep away from "main", "settings" and the voice window.
+fn parse_embed_label(label: &str) -> Option<i64> {
+    label.strip_prefix("browser-embed-")?.parse::<i64>().ok()
 }
 
 pub fn list_active_tab_ids() -> Vec<i64> {
@@ -406,6 +416,7 @@ mod privilege_tests {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // One call site; splitting it would only hide the wiring.
 fn spawn_browser_child(
     window: &tauri::Window,
     tab_id: i64,
@@ -414,6 +425,7 @@ fn spawn_browser_child(
     size: PhysicalSize<i32>,
     visible: bool,
     local_root: Arc<Mutex<Option<PathBuf>>>,
+    host_window: Arc<AtomicIsize>,
 ) -> Result<(), String> {
     let app = window.app_handle();
     let app_url = app
@@ -645,6 +657,18 @@ fn spawn_browser_child(
         .add_child(builder, position, size)
         .map_err(|error| error.to_string())?;
     if let Some(webview) = window.app_handle().get_webview(&embed_label(tab_id)) {
+        // The host process is shared by every tab, so this only does work once.
+        #[cfg(windows)]
+        super::host::adopt_from_webview(&webview);
+        // Record the child window while it certainly exists. Closing later only
+        // queues the destroy, so this handle is the only way to observe that it
+        // actually happened.
+        #[cfg(windows)]
+        if let Ok(hwnd) = webview_parent_hwnd(&webview) {
+            host_window.store(hwnd, Ordering::Release);
+        }
+        #[cfg(not(windows))]
+        let _ = &host_window;
         set_embed_presentation(&webview, visible)?;
     }
     Ok(())
@@ -1105,6 +1129,73 @@ pub async fn browser_embed_set_zoom(
     Ok(())
 }
 
+type PreparedEmbed = (
+    Arc<Mutex<Option<PathBuf>>>,
+    Arc<AtomicBool>,
+    Arc<Mutex<Option<String>>>,
+    Arc<AtomicIsize>,
+);
+
+/// Registry side of an update: reuse this tab's shared handles when they exist,
+/// otherwise create them, and record the entry. Caller holds LIFECYCLE_LOCK.
+fn prepare_active_embed(
+    tab_id: i64,
+    instance_id: &str,
+    owner_id: &str,
+    resolved_local_root: Option<PathBuf>,
+) -> Result<PreparedEmbed, String> {
+    let mut active = active_embeds()
+        .lock()
+        .map_err(|_| "browser lifecycle state is unavailable".to_string())?;
+    if !active.contains_key(&tab_id) && active.len() >= MAX_ACTIVE_EMBEDS {
+        return Err("browser embed limit reached".to_string());
+    }
+    let mine =
+        |entry: &&ActiveEmbed| entry.instance_id == instance_id && entry.owner_id == owner_id;
+    let local_root = active
+        .get(&tab_id)
+        .filter(mine)
+        .map(|entry| entry.local_root.clone())
+        .unwrap_or_else(|| Arc::new(Mutex::new(None)));
+    let loading = active
+        .get(&tab_id)
+        .filter(mine)
+        .map(|entry| entry.loading.clone())
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(true)));
+    let pending_url = active
+        .get(&tab_id)
+        .filter(mine)
+        .map(|entry| entry.pending_url.clone())
+        .unwrap_or_else(|| Arc::new(Mutex::new(None)));
+    let navigation_generation = active
+        .get(&tab_id)
+        .filter(mine)
+        .map(|entry| entry.navigation_generation.clone())
+        .unwrap_or_else(|| Arc::new(AtomicU64::new(0)));
+    let host_window = active
+        .get(&tab_id)
+        .filter(mine)
+        .map(|entry| entry.host_window.clone())
+        .unwrap_or_else(|| Arc::new(AtomicIsize::new(0)));
+    *local_root
+        .lock()
+        .map_err(|_| "browser local-file policy is unavailable".to_string())? =
+        resolved_local_root;
+    active.insert(
+        tab_id,
+        ActiveEmbed {
+            instance_id: instance_id.to_string(),
+            owner_id: owner_id.to_string(),
+            local_root: local_root.clone(),
+            loading: loading.clone(),
+            pending_url: pending_url.clone(),
+            navigation_generation,
+            host_window: host_window.clone(),
+        },
+    );
+    Ok((local_root, loading, pending_url, host_window))
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri exposes these as named invoke arguments.
 pub async fn browser_embed_update(
@@ -1124,78 +1215,62 @@ pub async fn browser_embed_update(
     validate_tab_id(tab_id)?;
     validate_token(&instance_id)?;
     validate_token(&owner_id)?;
-    let _lifecycle = LIFECYCLE_LOCK.lock().await;
-    ensure_current_instance(&instance_id)?;
+    // Per tab, the way browser_embed_navigate and browser_embed_close already do
+    // it, and always taken before LIFECYCLE_LOCK so the order stays consistent.
+    let tab_lock = get_tab_lock(tab_id);
+    let _tab_lock = tab_lock.lock().await;
     let label = embed_label(tab_id);
 
-    if closed_embeds()
-        .lock()
-        .map(|closed| closed.contains(&(tab_id, instance_id.clone())))
-        .unwrap_or(true)
-    {
-        return Ok(());
-    }
-    if released_owners()
-        .lock()
-        .map(|released| released.contains(&(tab_id, instance_id.clone(), owner_id.clone())))
-        .unwrap_or(true)
-    {
-        return Ok(());
-    }
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let resolved_local_root = resolve_local_root(&registry, workspace_root.as_deref(), &workspace)?;
 
-    if !should_process_update(&bounds, visible) {
+    // LIFECYCLE_LOCK guards the registries and nothing else. It used to be held
+    // across the main-thread round trips further down, which turned one busy
+    // main thread into an app-wide stall: every browser and automation command
+    // queues behind this single mutex. Switching workspace flips visibility on
+    // every mounted pane at once, which is exactly when that convoy forms.
+    // Scoped so the std MutexGuard is provably gone before any await below:
+    // the command future has to stay Send.
+    let prepared = {
+        let _lifecycle = LIFECYCLE_LOCK.lock().await;
+        ensure_current_instance(&instance_id)?;
+
+        if closed_embeds()
+            .lock()
+            .map(|closed| closed.contains(&(tab_id, instance_id.clone())))
+            .unwrap_or(true)
+        {
+            return Ok(());
+        }
+        if released_owners()
+            .lock()
+            .map(|released| released.contains(&(tab_id, instance_id.clone(), owner_id.clone())))
+            .unwrap_or(true)
+        {
+            return Ok(());
+        }
+
+        if !should_process_update(&bounds, visible) {
+            None
+        } else {
+            Some(prepare_active_embed(
+                tab_id,
+                &instance_id,
+                &owner_id,
+                resolved_local_root,
+            )?)
+        }
+    };
+
+    let Some((local_root, loading, pending_url, host_window)) = prepared else {
         if is_active(tab_id, &instance_id, Some(&owner_id)) {
             if let Some(webview) = app.get_webview(&label) {
                 webview.hide().map_err(|error| error.to_string())?;
             }
         }
         return Ok(());
-    }
+    };
 
-    let workspace = WorkspaceEnv::from_option(workspace);
-    let resolved_local_root = resolve_local_root(&registry, workspace_root.as_deref(), &workspace)?;
-
-    let mut active = active_embeds()
-        .lock()
-        .map_err(|_| "browser lifecycle state is unavailable".to_string())?;
-    if !active.contains_key(&tab_id) && active.len() >= MAX_ACTIVE_EMBEDS {
-        return Err("browser embed limit reached".to_string());
-    }
-    let local_root = active
-        .get(&tab_id)
-        .filter(|entry| entry.instance_id == instance_id && entry.owner_id == owner_id)
-        .map(|entry| entry.local_root.clone())
-        .unwrap_or_else(|| Arc::new(Mutex::new(None)));
-    let loading = active
-        .get(&tab_id)
-        .filter(|entry| entry.instance_id == instance_id && entry.owner_id == owner_id)
-        .map(|entry| entry.loading.clone())
-        .unwrap_or_else(|| Arc::new(AtomicBool::new(true)));
-    let pending_url = active
-        .get(&tab_id)
-        .filter(|entry| entry.instance_id == instance_id && entry.owner_id == owner_id)
-        .map(|entry| entry.pending_url.clone())
-        .unwrap_or_else(|| Arc::new(Mutex::new(None)));
-    let navigation_generation = active
-        .get(&tab_id)
-        .filter(|entry| entry.instance_id == instance_id && entry.owner_id == owner_id)
-        .map(|entry| entry.navigation_generation.clone())
-        .unwrap_or_else(|| Arc::new(AtomicU64::new(0)));
-    *local_root
-        .lock()
-        .map_err(|_| "browser local-file policy is unavailable".to_string())? = resolved_local_root;
-    active.insert(
-        tab_id,
-        ActiveEmbed {
-            instance_id: instance_id.clone(),
-            owner_id: owner_id.clone(),
-            local_root: local_root.clone(),
-            loading: loading.clone(),
-            pending_url: pending_url.clone(),
-            navigation_generation,
-        },
-    );
-    drop(active);
 
     let target = if url.is_empty() {
         None
@@ -1209,7 +1284,23 @@ pub async fn browser_embed_update(
     let (position, size) = physical_rect(&bounds)?;
     if let Some(webview) = app.get_webview(&label) {
         if let Some(target) = target {
-            let current = webview.url().map_err(|error| error.to_string())?;
+            // webview.url() posts to the main thread and waits on an UNBOUNDED
+            // channel receive. This runs while LIFECYCLE_LOCK is held, so a
+            // wedged main thread would stall every other browser and automation
+            // command behind it, permanently. Bound the wait and let the caller
+            // retry instead of holding the lock for everyone.
+            let probe = webview.clone();
+            let current = match tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                tauri::async_runtime::spawn_blocking(move || probe.url()),
+            )
+            .await
+            {
+                Ok(Ok(Ok(url))) => url,
+                Ok(Ok(Err(error))) => return Err(error.to_string()),
+                Ok(Err(error)) => return Err(error.to_string()),
+                Err(_) => return Err("timed out reading the browser URL".to_string()),
+            };
             if current != target {
                 loading.store(true, Ordering::Release);
                 if let Ok(mut pending) = pending_url.lock() {
@@ -1237,7 +1328,16 @@ pub async fn browser_embed_update(
     let Some(target) = target else {
         return Ok(());
     };
-    spawn_browser_child(&window, tab_id, target, position, size, visible, local_root)
+    spawn_browser_child(
+        &window,
+        tab_id,
+        target,
+        position,
+        size,
+        visible,
+        local_root,
+        host_window,
+    )
 }
 
 #[tauri::command]
@@ -1637,6 +1737,161 @@ pub async fn browser_embed_begin_session(
     Ok(())
 }
 
+/// Wait for a browser child's host window to actually disappear.
+///
+/// `Webview::close()` returns as soon as the destroy is queued on the event
+/// loop and drops the label from the manager immediately, so its `Ok` says
+/// nothing about the child. The window handle does.
+#[cfg(windows)]
+async fn child_window_destroyed(raw_hwnd: isize, budget: std::time::Duration) -> bool {
+    if raw_hwnd == 0 {
+        // Never observed a handle, so nothing can be claimed either way.
+        return false;
+    }
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        // Rebuilt per poll on purpose: a raw HWND is not Send and must never be
+        // held across the await below.
+        let alive = {
+            let hwnd = windows::Win32::Foundation::HWND(raw_hwnd as *mut std::ffi::c_void);
+            unsafe { IsWindow(Some(hwnd)) }.as_bool()
+        };
+        if !alive {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
+#[cfg(not(windows))]
+async fn child_window_destroyed(_raw_hwnd: isize, _budget: std::time::Duration) -> bool {
+    true
+}
+
+/// Destroy a stranded child window directly.
+///
+/// Once `Webview::close()` has run, the label is gone from the Tauri manager and
+/// no handle in the app can reach that child again. The window handle recorded
+/// at spawn is the only remaining way to reach it, and `DestroyWindow` has to
+/// run on the thread that owns the window, which is the main thread.
+#[cfg(windows)]
+async fn force_destroy_child(app: &tauri::AppHandle, raw_hwnd: isize) -> bool {
+    if raw_hwnd == 0 {
+        return false;
+    }
+    let requested = app
+        .run_on_main_thread(move || {
+            let hwnd = windows::Win32::Foundation::HWND(raw_hwnd as *mut std::ffi::c_void);
+            if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+                let _ = unsafe { DestroyWindow(hwnd) };
+            }
+        })
+        .is_ok();
+    if !requested {
+        return false;
+    }
+    child_window_destroyed(raw_hwnd, std::time::Duration::from_secs(2)).await
+}
+
+#[cfg(not(windows))]
+async fn force_destroy_child(_app: &tauri::AppHandle, _raw_hwnd: isize) -> bool {
+    true
+}
+
+/// Destroy browser children the renderer no longer has a tab for.
+///
+/// `Webview::close()` returns once the destroy is queued and forgets the label
+/// immediately, so any close that never reached the event loop leaves a child
+/// nothing in Anbo can reach again. This is the backstop that turns such a miss
+/// from permanent into transient.
+///
+/// The caller must send EVERY browser tab it holds, across every space,
+/// including inactive spaces, background-hosted and cold tabs. Anything
+/// narrower would destroy exactly the background tabs the product keeps alive
+/// on purpose. `max_tab_id` is the renderer's id high-water mark: ids above it
+/// belong to tabs being created right now and are never candidates.
+#[tauri::command]
+pub async fn browser_embed_reconcile(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    instance_id: String,
+    live_tab_ids: Vec<i64>,
+    max_tab_id: i64,
+) -> Result<usize, String> {
+    ensure_main_window(&window)?;
+    validate_token(&instance_id)?;
+
+    // Registry work only, so the closes below never run under the global lock.
+    let strays: Vec<(i64, isize)> = {
+        let _lifecycle = LIFECYCLE_LOCK.lock().await;
+        ensure_current_instance(&instance_id)?;
+        let live: HashSet<i64> = live_tab_ids.into_iter().collect();
+        let closed = closed_embeds()
+            .lock()
+            .map_err(|_| "browser close state is unavailable".to_string())?;
+        let active = active_embeds()
+            .lock()
+            .map_err(|_| "browser lifecycle state is unavailable".to_string())?;
+        // Two sources, because neither alone is complete. The manager knows the
+        // children it still tracks; the registry knows the window handle of a
+        // child whose close was already dispatched and whose label the manager
+        // has therefore forgotten. Only the second can reach a stranded child.
+        let mut candidates: HashSet<i64> = app
+            .webviews()
+            .keys()
+            .filter_map(|label| parse_embed_label(label))
+            .collect();
+        candidates.extend(active.keys().copied());
+        candidates
+            .into_iter()
+            .filter(|tab_id| {
+                *tab_id <= max_tab_id
+                    && !live.contains(tab_id)
+                    && !closed.contains(&(*tab_id, instance_id.clone()))
+            })
+            .map(|tab_id| {
+                let handle = active
+                    .get(&tab_id)
+                    .map(|entry| entry.host_window.load(Ordering::Acquire))
+                    .unwrap_or(0);
+                (tab_id, handle)
+            })
+            .collect()
+    };
+
+    let mut reaped = 0_usize;
+    for (tab_id, host_window) in strays {
+        let tab_lock = get_tab_lock(tab_id);
+        let _tab_lock = tab_lock.lock().await;
+        // Never abort the loop on one failure: the rest are still strays.
+        if let Some(webview) = app.get_webview(&embed_label(tab_id)) {
+            if let Err(error) = webview.close() {
+                log::warn!("could not reconcile stray browser embed {tab_id}: {error}");
+                continue;
+            }
+        }
+        let gone = child_window_destroyed(host_window, std::time::Duration::from_secs(2)).await
+            || force_destroy_child(&app, host_window).await
+            || host_window == 0;
+        if gone {
+            reaped += 1;
+            if let Ok(mut active) = active_embeds().lock() {
+                active.remove(&tab_id);
+            }
+            log::info!("reconciled stray browser embed {tab_id}");
+        } else {
+            log::warn!("stray browser embed {tab_id} survived reconciliation");
+        }
+    }
+    if reaped > 0 {
+        log::info!("browser reconciliation destroyed {reaped} stray embed(s)");
+    }
+    Ok(reaped)
+}
+
 #[tauri::command]
 pub async fn browser_embed_close(
     app: tauri::AppHandle,
@@ -1652,28 +1907,69 @@ pub async fn browser_embed_close(
         let _tab_lock = tab_lock.lock().await;
         let _lifecycle = LIFECYCLE_LOCK.lock().await;
         ensure_current_instance(&instance_id)?;
-        let mut closed = closed_embeds()
-            .lock()
-            .map_err(|_| "browser close state is unavailable".to_string())?;
-        bounded_insert(
-            &mut closed,
-            (tab_id, instance_id.clone()),
-            MAX_CLOSED_EMBEDS,
-        );
-        drop(closed);
+        // Scoped: this std guard must be provably gone before the await below,
+        // or the command future stops being Send.
+        {
+            let mut closed = closed_embeds()
+                .lock()
+                .map_err(|_| "browser close state is unavailable".to_string())?;
+            bounded_insert(
+                &mut closed,
+                (tab_id, instance_id.clone()),
+                MAX_CLOSED_EMBEDS,
+            );
+        }
         released_owners()
             .lock()
             .map_err(|_| "browser owner state is unavailable".to_string())?
             .retain(|(released_tab_id, _, _)| *released_tab_id != tab_id);
-        if is_active(tab_id, &instance_id, None) {
-            if let Some(webview) = app.get_webview(&embed_label(tab_id)) {
-                let _ = webview.hide();
-                webview.close().map_err(|error| error.to_string())?;
+        // Close whatever handle still exists, whether or not the registry
+        // agrees this tab is ours. The old is_active gate turned a stale entry
+        // into a permanently live child, and the registry entry used to be
+        // erased even when the lookup found nothing to close, throwing away the
+        // last record that the tab ever existed.
+        let host_window = active_embeds()
+            .lock()
+            .ok()
+            .and_then(|active| active.get(&tab_id).map(|entry| entry.host_window.clone()));
+        let requested = match app.get_webview(&embed_label(tab_id)) {
+            Some(webview) => match webview.close() {
+                Ok(()) => true,
+                Err(error) => {
+                    // Keep the entry so a later sweep can still find this tab.
+                    log::warn!("browser embed {tab_id} did not close: {error}");
+                    false
+                }
+            },
+            None => true,
+        };
+        if requested {
+            let raw = host_window
+                .map(|handle| handle.load(Ordering::Acquire))
+                .unwrap_or(0);
+            if child_window_destroyed(raw, std::time::Duration::from_secs(3)).await {
+                active_embeds()
+                    .lock()
+                    .map_err(|_| "browser lifecycle state is unavailable".to_string())?
+                    .remove(&tab_id);
+            } else if force_destroy_child(&app, raw).await {
+                // The queued destroy never ran, but the recorded window handle
+                // still reaches the child. This is the only path that can, since
+                // close() already dropped the label from the manager.
+                log::info!("browser embed {tab_id} destroyed through its window handle");
+                active_embeds()
+                    .lock()
+                    .map_err(|_| "browser lifecycle state is unavailable".to_string())?
+                    .remove(&tab_id);
+            } else {
+                // Keep the registry entry, which still holds the handle, and take
+                // the tab back out of the closed set so reconciliation can retry
+                // instead of reporting a success that never happened.
+                log::warn!("browser embed {tab_id} close did not destroy its window in time");
+                if let Ok(mut closed) = closed_embeds().lock() {
+                    closed.retain(|(closed_tab_id, _)| *closed_tab_id != tab_id);
+                }
             }
-            active_embeds()
-                .lock()
-                .map_err(|_| "browser lifecycle state is unavailable".to_string())?
-                .remove(&tab_id);
         }
     }
     remove_tab_lock(tab_id);
