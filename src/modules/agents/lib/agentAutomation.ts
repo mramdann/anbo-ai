@@ -286,7 +286,13 @@ export async function submitAgentMessage(
           /\x1b\[[0-9;>?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][AB012]|\x1b[78=>]|\x1bc|\x1b[NOP\]X^_]/g,
           "",
         )
-        .replace(/[\s\u0000-\u001f\u007f]+/g, "");
+        // A message wider than the prompt wraps inside the input box, and a
+        // TUI that draws a border paints its edge at the start of every
+        // wrapped row. Those edges land between the echoed fragments, so the
+        // needle would never match a long message. Both sides go through this
+        // same pass, so dropping the border glyphs keeps the comparison honest
+        // even when the message itself contains them.
+        .replace(/[\s\u0000-\u001f\u007f\u2500-\u259f]+/g, "");
     const needle = compactEcho(message).slice(-120);
     const deadline = Date.now() + inputReadyTimeoutMs;
     let observed = false;

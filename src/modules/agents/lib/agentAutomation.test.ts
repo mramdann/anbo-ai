@@ -215,6 +215,34 @@ describe("agent messages", () => {
     expect(writes).toEqual([message, "\r"]);
   });
 
+  it("verifies an input echo that a bordered TUI wraps across rows", async () => {
+    const writes: string[] = [];
+    let reads = 0;
+    // OpenCode draws its prompt inside a box, so a message wider than the box
+    // comes back split across rows with a border glyph between the fragments.
+    const message =
+      "Buka contoh dot com di workspace erp lalu tutup lagi tabnya tanpa menyentuh workspace lain";
+    const half = Math.ceil(message.length / 2);
+    const submitted = await submitAgentMessage(
+      (_leafId, data) => {
+        writes.push(data);
+        return true;
+      },
+      () => {
+        reads += 1;
+        return reads === 1
+          ? "OpenCode 1.18.27\n┃"
+          : `┃ ${message.slice(0, half)}\n┃ ${message.slice(half)}`;
+      },
+      103,
+      message,
+      true,
+    );
+
+    expect(submitted).toBe(true);
+    expect(writes).toEqual([message, "\r"]);
+  });
+
   it("allows Antigravity input to settle before pressing Enter", async () => {
     vi.useFakeTimers();
     const writes: string[] = [];
