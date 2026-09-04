@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.21.0](https://github.com/mramdann/anbo-ai/compare/v0.20.0...v0.21.0) (2026-09-04)
+
+
+### Features
+
+* **agents:** split in-app and system notifications ([fb9ef35](https://github.com/mramdann/anbo-ai/commit/fb9ef3569f143a9e8ef710bba9deb23dbf6afe6d))
+* **voice:** add floating voice prompt input ([cc89596](https://github.com/mramdann/anbo-ai/commit/cc895966428335f3340497464d030d11c3fda662))
+* **voice:** add responsive floating voice control ([63f35de](https://github.com/mramdann/anbo-ai/commit/63f35de01705f399a3c903f87138fc00a21d2b17))
+* **voice:** add system-wide dictation window ([bbfc193](https://github.com/mramdann/anbo-ai/commit/bbfc1933a76fd0e36f64aeb6bc20a90b0b59131a))
+* **voice:** manage local whisper runtime ([30d7e9b](https://github.com/mramdann/anbo-ai/commit/30d7e9b97aa883feb75ba221aafdcade24ebf715))
+
+
+### Bug Fixes
+
+* **editor:** show thin scrollbars for long files ([164d8c6](https://github.com/mramdann/anbo-ai/commit/164d8c6b02dd531f14ea87afccee2be4f4ea89fb))
+* **terminal:** harden automation renderer synchronization ([de1d632](https://github.com/mramdann/anbo-ai/commit/de1d6329c22014dceee8153f6161afa3a7834c35))
+* **voice:** allow free orb positioning ([457846f](https://github.com/mramdann/anbo-ai/commit/457846fdc6014ca2a50f134b5a165cce86d944b6))
+* **voice:** build the voice window on macOS ([fd19f75](https://github.com/mramdann/anbo-ai/commit/fd19f75ead329172e3ddbd86570cf35ef80cd3cc))
+* **voice:** detect CodeMirror inputs that carry several classes ([c770976](https://github.com/mramdann/anbo-ai/commit/c7709764fcb6539749c862b3a0321ed1fd6bb519))
+* **voice:** keep the in-app microphone working and normalize global transcripts ([14a6a7b](https://github.com/mramdann/anbo-ai/commit/14a6a7b59e4a7ac7ffa6df428748e1545846a98d))
+* **voice:** keep the in-app orb out of the settings startup closure ([8363de3](https://github.com/mramdann/anbo-ai/commit/8363de3bb2bd33d044a443a1960881cea00a888f))
+* **voice:** stop dictation landing in a pane the user did not pick ([045c442](https://github.com/mramdann/anbo-ai/commit/045c442439d2d2d64b9972e6f5762bce8e9b0cf4))
+* **voice:** stop losing the press that ends a recording ([d046b75](https://github.com/mramdann/anbo-ai/commit/d046b755ab1749c9b7c999eb482893c49bc248de))
+
 ## [0.20.0](https://github.com/mramdann/anbo-ai/compare/v0.19.2...v0.20.0) (2026-08-28)
 
 
