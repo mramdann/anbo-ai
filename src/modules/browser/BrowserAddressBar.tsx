@@ -13,9 +13,15 @@ import {
   Globe02Icon,
   LinkSquare02Icon,
   Add01Icon,
+  ComputerPhoneSyncIcon,
   Remove01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  DEVICE_PRESETS,
+  devicePreset,
+  RESPONSIVE_DEVICE,
+} from "./devices";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   forwardRef,
@@ -64,12 +70,28 @@ type Props = {
   onReload: () => void;
   zoom?: number;
   onZoom?: (zoom: number) => void;
+  deviceId?: string;
+  onDevice?: (id: string) => void;
+  /** Set while a device is emulated, when page zoom would fight the fit. */
+  emulatedFit?: number | null;
   aiAction?: string | null;
 };
 
 export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
   function BrowserAddressBar(
-    { url, onSubmit, onBack, onForward, onReload, zoom, onZoom, aiAction },
+    {
+      url,
+      onSubmit,
+      onBack,
+      onForward,
+      onReload,
+      zoom,
+      onZoom,
+      deviceId,
+      onDevice,
+      emulatedFit,
+      aiAction,
+    },
     ref,
   ) {
     const [draft, setDraft] = useState(url);
@@ -167,6 +189,52 @@ export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
               strokeWidth={1.75}
             />
           </Button>
+          {onDevice && deviceId !== undefined && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  title={
+                    deviceId === RESPONSIVE_DEVICE.id
+                      ? "Emulate a device viewport"
+                      : `Emulating ${devicePreset(deviceId).label}`
+                  }
+                  aria-label="Device viewport"
+                  className={`size-7 shrink-0 rounded-md hover:bg-accent ${
+                    deviceId === RESPONSIVE_DEVICE.id
+                      ? "text-muted-foreground hover:text-foreground"
+                      : "text-indigo-600 dark:text-indigo-400"
+                  }`}
+                >
+                  <HugeiconsIcon
+                    icon={ComputerPhoneSyncIcon}
+                    size={14}
+                    strokeWidth={1.75}
+                  />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="min-w-48">
+                {DEVICE_PRESETS.map((preset) => (
+                  <DropdownMenuItem
+                    key={preset.id}
+                    onSelect={() => onDevice(preset.id)}
+                    className={
+                      preset.id === deviceId ? "text-foreground" : undefined
+                    }
+                  >
+                    <span className="flex-1">{preset.label}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {preset.width > 0
+                        ? `${preset.width}x${preset.height}`
+                        : "off"}
+                    </span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -233,8 +301,16 @@ export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
               </div>
             )}
           </div>
-          {onZoom && zoom !== undefined && (
-            <div className="flex shrink-0 items-center gap-0.5 border-l border-border/50 pl-1 mr-1">
+          {emulatedFit ? (
+            <div
+              className="flex shrink-0 items-center px-1 text-[10px] font-medium text-indigo-600 dark:text-indigo-400"
+              title="Scaled so the whole emulated viewport fits this pane"
+            >
+              {Math.round(emulatedFit * 100)}%
+            </div>
+          ) : null}
+          {!emulatedFit && onZoom && zoom !== undefined && (
+            <div className="flex shrink-0 items-center gap-0.5 pl-1 mr-1">
               <Button
                 type="button"
                 variant="ghost"

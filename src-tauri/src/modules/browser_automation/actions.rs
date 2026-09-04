@@ -1053,6 +1053,88 @@ async fn handle_action_inner(
             }))
         }
 
+        "emulate" => {
+            let tab_id = extract_tab_id(&params)?;
+            let width = params.get("width").and_then(Value::as_u64).unwrap_or(0);
+            let height = params.get("height").and_then(Value::as_u64).unwrap_or(0);
+            let scale = params
+                .get("scale")
+                .and_then(Value::as_f64)
+                .unwrap_or(1.0);
+            let mobile = params
+                .get("mobile")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            // An agent asking for a desktop viewport inside a narrow pane wants
+            // the whole layout, not a crop, so it can pass a fit the same way
+            // the tab UI does.
+            let fit = params
+                .get("fit")
+                .and_then(Value::as_f64)
+                .unwrap_or(1.0);
+            if !(0.05..=1.0).contains(&fit) {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    "viewport fit is outside the supported range".to_string(),
+                ));
+            }
+            if width > 10_000 || height > 10_000 {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    "viewport is outside the supported range".to_string(),
+                ));
+            }
+            if width > 0 && height == 0 {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    "an emulated viewport needs a height".to_string(),
+                ));
+            }
+            if !(0.1..=4.0).contains(&scale) {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    "viewport scale is outside the supported range".to_string(),
+                ));
+            }
+            let tab_lock = get_tab_lock(tab_id);
+            let _lock = tab_lock.lock().await;
+            let webview = get_embed_webview(app, tab_id)
+                .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
+            crate::modules::browser::embed::apply_viewport(
+                &webview,
+                width as u32,
+                height as u32,
+                scale,
+                mobile,
+                fit,
+            )
+            .await
+            .map_err(|e| (error_codes::INTERNAL.to_string(), e))?;
+            // Report what the page ended up with, not just what was asked
+            // for: an override that silently failed to apply would otherwise
+            // look identical to one that worked.
+            let applied = call_devtools_protocol_method(
+                &webview,
+                "Page.getLayoutMetrics",
+                "{}",
+                SCRIPT_POLL_TIMEOUT,
+            )
+            .await
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .and_then(|metrics| metrics.get("cssVisualViewport").cloned());
+            Ok(json!({
+                "tabId": tab_id,
+                "emulating": width > 0,
+                "width": width,
+                "height": height,
+                "scale": scale,
+                "mobile": mobile,
+                "fit": fit,
+                "applied": applied,
+            }))
+        }
+
         "screenshot" => {
             let tab_id = extract_tab_id(&params)?;
             let tab_lock = get_tab_lock(tab_id);

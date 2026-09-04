@@ -53,6 +53,7 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_tabs", "description": "List active native browser tabs with foreground, workspace, space, loading, pendingUrl, automation-target, automation-activity, and durationMs metadata. While loading, url remains the last committed URL and pendingUrl identifies the target when known.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "browser_get_url", "description": "Get the current URL of a browser tab.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_navigate", "description": "Start navigating a browser tab to an http(s) URL and return immediately. Use browser_wait or browser_tabs to observe completion; browser_stop can interrupt the active load.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "url": { "type": "string" } }, "required": ["tabId", "url"] } },
+        { "name": "browser_emulate", "description": "Emulate a device viewport on a browser tab so the page lays out as it would on that device. Pass width 0 to clear the emulation. Sets the device pixel ratio and, for mobile, touch support. The emulation survives navigation until cleared.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "width": { "type": "integer", "minimum": 0, "maximum": 10000, "description": "CSS pixels wide. 0 clears the emulation." }, "height": { "type": "integer", "minimum": 0, "maximum": 10000 }, "scale": { "type": "number", "minimum": 0.1, "maximum": 4, "default": 1, "description": "Device pixel ratio." }, "mobile": { "type": "boolean", "default": false, "description": "Report a mobile device and enable touch." }, "fit": { "type": "number", "minimum": 0.05, "maximum": 1, "default": 1, "description": "Shrink the painted result so a viewport wider than the pane is shown whole instead of cropped." } }, "required": ["tabId", "width", "height"] } },
         { "name": "browser_reload", "description": "Start reloading a browser tab and return immediately. Use browser_wait or browser_tabs to observe completion.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_back", "description": "Start navigating a browser tab back in history and return immediately.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_forward", "description": "Start navigating a browser tab forward in history and return immediately.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
@@ -106,6 +107,7 @@ pub fn tool_name_to_method(name: &str) -> Option<&'static str> {
         "browser_tabs" => "list_tabs",
         "browser_get_url" => "get_url",
         "browser_navigate" => "navigate",
+        "browser_emulate" => "emulate",
         "browser_reload" => "reload",
         "browser_back" => "back",
         "browser_forward" => "forward",
@@ -159,7 +161,7 @@ mod tests {
     #[test]
     fn tools_have_capability_prefixes_and_unique_names() {
         let tools = tool_definitions().as_array().unwrap().clone();
-        assert_eq!(tools.len(), 47);
+        assert_eq!(tools.len(), 48);
         let mut names = std::collections::HashSet::new();
         for t in &tools {
             let n = t.get("name").and_then(|v| v.as_str()).unwrap();

@@ -1129,6 +1129,187 @@ pub async fn browser_embed_set_zoom(
     Ok(())
 }
 
+/// Emulate a device viewport, or clear the emulation when `width` is zero.
+///
+/// This overrides what the page believes it is being shown in rather than
+/// resizing the native child. A site's own breakpoints, `matchMedia` and
+/// `visualViewport` all follow the override, which is the whole point: a
+/// letterboxed child window would look the same and prove nothing.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewportRequest {
+    /// Zero clears the emulation and hands the page back its real size.
+    width: u32,
+    height: u32,
+    scale: f64,
+    mobile: bool,
+    /// Shrinks the rendered result so a viewport wider than the pane is shown
+    /// whole instead of cropped. 1.0 renders at full size.
+    fit_scale: Option<f64>,
+}
+
+#[tauri::command]
+pub async fn browser_embed_set_viewport(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    tab_id: i64,
+    instance_id: String,
+    owner_id: String,
+    viewport: ViewportRequest,
+) -> Result<(), String> {
+    ensure_main_window(&window)?;
+    validate_tab_id(tab_id)?;
+    validate_token(&instance_id)?;
+    validate_token(&owner_id)?;
+    let ViewportRequest {
+        width,
+        height,
+        scale,
+        mobile,
+        fit_scale,
+    } = viewport;
+    let fit_scale = fit_scale.unwrap_or(1.0);
+    if !(0.05..=1.0).contains(&fit_scale) {
+        return Err("viewport fit is outside the supported range".to_string());
+    }
+    if width > 0 && (height == 0 || width > MAX_VIEWPORT_EDGE || height > MAX_VIEWPORT_EDGE) {
+        return Err("viewport is outside the supported range".to_string());
+    }
+    if !(0.1..=4.0).contains(&scale) {
+        return Err("viewport scale is outside the supported range".to_string());
+    }
+    let webview = {
+        let _lifecycle = LIFECYCLE_LOCK.lock().await;
+        ensure_current_instance(&instance_id)?;
+        if !is_active(tab_id, &instance_id, Some(&owner_id)) {
+            return Ok(());
+        }
+        let Some(webview) = app.get_webview(&embed_label(tab_id)) else {
+            return Ok(());
+        };
+        webview
+    };
+    apply_viewport(&webview, width, height, scale, mobile, fit_scale).await
+}
+
+/// Widest viewport we will ask a page to lay out at. Well past any real device,
+/// and low enough that a typo cannot ask WebView2 for a surface it will refuse.
+const MAX_VIEWPORT_EDGE: u32 = 10_000;
+
+#[cfg(windows)]
+pub(crate) async fn apply_viewport(
+    webview: &tauri::Webview,
+    width: u32,
+    height: u32,
+    scale: f64,
+    mobile: bool,
+    fit_scale: f64,
+) -> Result<(), String> {
+    use crate::modules::browser_automation::cdp::call_devtools_protocol_method;
+    const CDP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    let (method, params) = if width == 0 {
+        (
+            "Emulation.clearDeviceMetricsOverride",
+            "{}".to_string(),
+        )
+    } else {
+        (
+            "Emulation.setDeviceMetricsOverride",
+            serde_json::json!({
+                // Zoom divides the override, so the page ends up laying out at
+                // `width / fit`. Pre-multiplying by the same factor lands it
+                // back on exactly `width`: a full desktop layout, painted small
+                // enough to be seen whole in a narrow pane.
+                "width": ((width as f64) * fit_scale).round().max(1.0) as u32,
+                "height": ((height as f64) * fit_scale).round().max(1.0) as u32,
+                "deviceScaleFactor": scale,
+                "mobile": mobile,
+            })
+            .to_string(),
+        )
+    };
+    call_devtools_protocol_method(webview, method, &params, CDP_TIMEOUT).await?;
+    // WebView2's own zoom control fights the fit: a Ctrl+scroll or Ctrl+minus
+    // rewrites the zoom this function just set, and nothing re-asserts it until
+    // the next resize or navigation. Take the control away while emulating and
+    // hand it back when the emulation is cleared.
+    set_zoom_control(webview, width == 0);
+    // WebView2 honours neither the metrics override's own `scale` field nor
+    // Emulation.setPageScaleFactor; both were measured leaving cssVisualViewport
+    // at scale 1. Native zoom is the one control that does shrink the painted
+    // result, and because the override pins the layout width the page still
+    // lays out as the device while being drawn small enough to be seen whole.
+    let _ = webview.set_zoom(if width > 0 { fit_scale } else { 1.0 });
+    // Touch has to follow the device, or a phone viewport keeps answering
+    // hover-only media queries and sites serve their desktop behaviour anyway.
+    let touch = serde_json::json!({
+        "enabled": width > 0 && mobile,
+        "maxTouchPoints": if mobile { 5 } else { 1 },
+    })
+    .to_string();
+    let _ = call_devtools_protocol_method(
+        webview,
+        "Emulation.setTouchEmulationEnabled",
+        &touch,
+        CDP_TIMEOUT,
+    )
+    .await;
+    Ok(())
+}
+
+/// Tabs whose built-in zoom is currently switched off.
+#[cfg(windows)]
+static ZOOM_DISABLED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+/// Enable or disable the browser's built-in Ctrl+scroll / Ctrl+/- zoom.
+///
+/// `with_webview` queues onto the main thread, and this runs on every re-fit,
+/// which includes every settled resize. Repeating a setting that already holds
+/// would put main-thread work on the path that once turned a workspace switch
+/// into a whole-desktop stall, so only an actual change is worth dispatching.
+#[cfg(windows)]
+fn set_zoom_control(webview: &tauri::Webview, enabled: bool) {
+    let label = webview.label().to_string();
+    {
+        let disabled = ZOOM_DISABLED.get_or_init(|| Mutex::new(HashSet::new()));
+        let Ok(mut disabled) = disabled.lock() else {
+            return;
+        };
+        let changed = if enabled {
+            disabled.remove(&label)
+        } else {
+            disabled.insert(label)
+        };
+        if !changed {
+            return;
+        }
+    }
+    let _ = webview.with_webview(move |platform| {
+        let controller = platform.controller();
+        let Ok(core) = (unsafe { controller.CoreWebView2() }) else {
+            return;
+        };
+        let Ok(settings) = (unsafe { core.Settings() }) else {
+            return;
+        };
+        // Losing this is a papercut, never a reason to refuse the emulation.
+        let _ = unsafe { settings.SetIsZoomControlEnabled(enabled) };
+    });
+}
+
+#[cfg(not(windows))]
+pub(crate) async fn apply_viewport(
+    _webview: &tauri::Webview,
+    _width: u32,
+    _height: u32,
+    _scale: f64,
+    _mobile: bool,
+    _fit_scale: f64,
+) -> Result<(), String> {
+    Err("device emulation requires WebView2".to_string())
+}
+
 type PreparedEmbed = (
     Arc<Mutex<Option<PathBuf>>>,
     Arc<AtomicBool>,

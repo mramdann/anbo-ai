@@ -307,6 +307,37 @@ export async function browserEmbedSetZoom(
   });
 }
 
+/**
+ * Make the page believe it is being shown on another device, or clear that
+ * belief by passing a zero-width preset. The native child window keeps its own
+ * size either way; only what the page measures changes.
+ */
+export async function browserEmbedSetViewport(
+  id: number,
+  ownerId: string,
+  viewport: {
+    width: number;
+    height: number;
+    scale: number;
+    mobile: boolean;
+    fitScale?: number;
+  },
+): Promise<void> {
+  await ensureBrowserSession();
+  await invoke("browser_embed_set_viewport", {
+    tabId: id,
+    instanceId: BROWSER_INSTANCE_ID,
+    ownerId,
+    viewport: {
+      width: Math.round(viewport.width),
+      height: Math.round(viewport.height),
+      scale: viewport.scale,
+      mobile: viewport.mobile,
+      fitScale: viewport.fitScale ?? 1,
+    },
+  });
+}
+
 /** A rectangular hole in physical pixels relative to the browser webview. */
 export type PunchHole = {
   x: number;

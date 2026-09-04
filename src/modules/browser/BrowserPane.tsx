@@ -15,10 +15,17 @@ import {
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { useBrowserAutomationActivity } from "./automationActivity";
+import {
+  devicePreset,
+  isEmulating,
+  RESPONSIVE_DEVICE,
+  viewportFor,
+} from "./devices";
 import {
   BrowserAddressBar,
   type BrowserAddressBarHandle,
@@ -35,6 +42,7 @@ import {
   browserEmbedRelease,
   browserEmbedSetPunchHole,
   browserEmbedSetUiOverlay,
+  browserEmbedSetViewport,
   browserEmbedSetZoom,
   browserEmbedSnapshot,
   browserEmbedUpdate,
@@ -160,12 +168,84 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     const boundsErrorRef = useRef(false);
     const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [zoom, setZoom] = useState(1.0);
+    const [deviceId, setDeviceId] = useState(RESPONSIVE_DEVICE.id);
+    const device = useMemo(() => devicePreset(deviceId), [deviceId]);
+    const deviceRef = useRef(device);
+    deviceRef.current = device;
+    // CSS size of the pane, kept from the bounds we already measure so the
+    // emulated viewport can be scaled down to fit inside it.
+    const paneCssRef = useRef({ width: 0, height: 0 });
+    const sentViewportRef = useRef("");
+    const [emulatedFit, setEmulatedFit] = useState<number | null>(null);
+    const applyViewportRef = useRef<(force?: boolean) => void>(() => {});
+    const zoomRef = useRef(1);
+    const scheduleViewportRef = useRef<() => void>(() => {});
+    const viewportTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const aiAction = useBrowserAutomationActivity(id);
     const [loading, setLoading] = useState(initialLoading);
     const onLoadingChangeRef = useRef(onLoadingChange);
     const lastHoleRef = useRef("");
     const retryAttemptRef = useRef(0);
     const urlError = browserUrlError(url);
+
+    /**
+     * Push the current device and fit to the tab, skipping the call when
+     * nothing about it changed. Resizing a split pane produces a stream of
+     * bounds updates, and a CDP round trip per frame is exactly the kind of
+     * per-frame native work that made the whole desktop crawl before.
+     */
+    const applyViewport = useCallback(
+      (force = false) => {
+        if (!native || disposedRef.current) return;
+        const preset = deviceRef.current;
+        const pane = paneCssRef.current;
+        const viewport = viewportFor(preset, pane.width, pane.height);
+        const emulating = isEmulating(preset);
+        const key = emulating
+          ? `${preset.id}:${viewport.fitScale}:${viewport.height}`
+          : "off";
+        if (!force && key === sentViewportRef.current) return;
+        sentViewportRef.current = key;
+        setEmulatedFit(emulating ? viewport.fitScale : null);
+        browserEmbedSetViewport(
+          id,
+          ownerIdRef.current,
+          emulating ? viewport : { ...preset, fitScale: 1 },
+        )
+          .then(() => {
+            // Clearing resets the tab to 100%, so give the user back the zoom
+            // they had chosen before the emulation borrowed it.
+            if (!emulating && zoomRef.current !== 1) {
+              return browserEmbedSetZoom(id, ownerIdRef.current, zoomRef.current);
+            }
+          })
+          .catch(console.error);
+      },
+      [id, native],
+    );
+
+    /** Coalesce a burst of resize events into one call once it settles. */
+    const scheduleViewport = useCallback(() => {
+      if (!native || !isEmulating(deviceRef.current)) return;
+      if (viewportTimerRef.current) clearTimeout(viewportTimerRef.current);
+      viewportTimerRef.current = setTimeout(() => {
+        viewportTimerRef.current = null;
+        applyViewport();
+      }, 150);
+    }, [applyViewport, native]);
+
+    const handleDevice = useCallback(
+      (nextId: string) => {
+        setDeviceId(nextId);
+        deviceRef.current = devicePreset(nextId);
+        if (viewportTimerRef.current) {
+          clearTimeout(viewportTimerRef.current);
+          viewportTimerRef.current = null;
+        }
+        applyViewport();
+      },
+      [applyViewport],
+    );
 
     const handleZoom = useCallback(
       (newZoom: number) => {
@@ -179,6 +259,9 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       [id, native],
     );
 
+    applyViewportRef.current = applyViewport;
+    scheduleViewportRef.current = scheduleViewport;
+    zoomRef.current = zoom;
     onUrlChangeRef.current = onUrlChange;
     onTitleChangeRef.current = onTitleChange;
     urlPropRef.current = url;
@@ -329,6 +412,14 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
         suppressionReadyRef.current,
       );
       if (shouldShow) lastVisibleBrowserBounds.set(id, bounds);
+      // Physical bounds divided by the ratio they were scaled by gives the
+      // CSS size the child webview lays out in.
+      const dprNow = window.devicePixelRatio || 1;
+      paneCssRef.current = {
+        width: bounds.width / dprNow,
+        height: bounds.height / dprNow,
+      };
+      scheduleViewportRef.current();
       desiredRef.current = {
         key: shouldShow
           ? `show:${bounds.x},${bounds.y},${bounds.width},${bounds.height}:${currentUrl}`
@@ -425,6 +516,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       return () => {
         disposedRef.current = true;
         if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+        if (viewportTimerRef.current) clearTimeout(viewportTimerRef.current);
         const ownerId = ownerIdRef.current;
         const remaining = Math.max(0, (mountedOwnerCounts.get(id) ?? 1) - 1);
         if (remaining > 0) {
@@ -536,6 +628,9 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
         } else if (payload.kind === "loaded") {
           setLoading(false);
           recordBrowserVisit(payload.url);
+          // The device belongs to the tab, not to one document, so re-assert it
+          // rather than letting a new page quietly come back full size.
+          if (isEmulating(deviceRef.current)) applyViewportRef.current(true);
           return;
         }
         if (payload.kind === "title" && payload.title?.trim()) {
@@ -650,6 +745,9 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
           onReload={() => dispatch("reload")}
           zoom={zoom}
           onZoom={handleZoom}
+          emulatedFit={emulatedFit}
+          deviceId={deviceId}
+          onDevice={handleDevice}
           aiAction={aiAction}
         />
         {showXfoHint ? (
