@@ -1,0 +1,55 @@
+html,
+body,
+#voice-root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent !important;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The compact overlay keeps theme variables, but never paints the app backdrop. */
+.anbo-bg-surface {
+  display: none !important;
+}
+
+/* Motion is the only room left to signal work: the window is fixed at 122x42,
+   the logo must stay untouched, and the label is hidden while busy. */
+.anbo-voice-busy-ring {
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg 190deg,
+    color-mix(in oklab, var(--primary) 90%, transparent) 340deg,
+    transparent 360deg
+  );
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 2px),
+    #000 calc(100% - 2px)
+  );
+  mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 2px),
+    #000 calc(100% - 2px)
+  );
+  animation: anbo-voice-busy-spin 900ms linear infinite;
+}
+
+@keyframes anbo-voice-busy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Slow it down rather than stopping it, so the state stays observable. */
+@media (prefers-reduced-motion: reduce) {
+  .anbo-voice-busy-ring {
+    animation-duration: 2600ms;
+  }
+}

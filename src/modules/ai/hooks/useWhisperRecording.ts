@@ -1,10 +1,10 @@
+import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { useChatStore } from "../store/chatStore";
-import { usePreferencesStore } from "@/modules/settings/preferences";
-import { transcribeAudio, type SttOptions } from "../lib/stt";
 import type { SttProvider } from "../config";
 import { createAudioMeter } from "../lib/audioMeter";
+import { type SttOptions, transcribeAudio } from "../lib/stt";
+import { useChatStore } from "../store/chatStore";
 
 const MIME_CANDIDATES = [
   "audio/webm;codecs=opus",
@@ -39,8 +39,12 @@ type State = "idle" | "requesting" | "recording" | "transcribing";
 
 export function useWhisperRecording({
   onResult,
+  onError,
+  onSettled,
 }: {
-  onResult: (text: string) => void;
+  onResult: (text: string) => void | Promise<void>;
+  onError?: (message: string) => void;
+  onSettled?: () => void;
 }) {
   const apiKeys = useChatStore((s) => s.apiKeys);
   const sttProvider = usePreferencesStore((s) => s.sttProvider);
@@ -52,6 +56,8 @@ export function useWhisperRecording({
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const resultRef = useRef(onResult);
+  const errorRef = useRef(onError);
+  const settledRef = useRef(onSettled);
   const sessionResultRef = useRef(onResult);
   const cancelledRef = useRef(false);
   const mountedRef = useRef(true);
@@ -59,6 +65,8 @@ export function useWhisperRecording({
   const generationRef = useRef(0);
   const recordingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   resultRef.current = onResult;
+  errorRef.current = onError;
+  settledRef.current = onSettled;
 
   const needsKey = providerNeedsKey(sttProvider);
   const providerKey = needsKey ? getApiKeyForStt(apiKeys, sttProvider) : null;
@@ -151,6 +159,7 @@ export function useWhisperRecording({
         rec.onerror = () => {
           if (generationRef.current !== generation) return;
           cancelledRef.current = true;
+          errorRef.current?.("Microphone recording failed");
           toast.error("Microphone recording failed");
           if (rec.state !== "inactive") rec.stop();
           else {
@@ -172,6 +181,7 @@ export function useWhisperRecording({
             cancelledRef.current = false;
             activeRef.current = false;
             if (mountedRef.current) setState("idle");
+            settledRef.current?.();
             return;
           }
           if (mountedRef.current) setState("transcribing");
@@ -188,17 +198,19 @@ export function useWhisperRecording({
               text.trim() &&
               mountedRef.current
             ) {
-              sessionResultRef.current(text.trim());
+              await sessionResultRef.current(text.trim());
             }
           } catch (e) {
             console.error("stt.transcribe", e);
-            toast.error(
-              e instanceof Error ? e.message : "Transcription failed",
-            );
+            const detail =
+              e instanceof Error ? e.message : "Transcription failed";
+            errorRef.current?.(detail);
+            toast.error(detail);
           } finally {
             if (generationRef.current === generation) {
               activeRef.current = false;
               if (mountedRef.current) setState("idle");
+              settledRef.current?.();
             }
           }
         };
@@ -220,6 +232,7 @@ export function useWhisperRecording({
           return false;
         }
         console.error("stt.getUserMedia", e);
+        errorRef.current?.("Microphone access failed");
         toast.error("Microphone access failed");
         activeRef.current = false;
         recRef.current = null;

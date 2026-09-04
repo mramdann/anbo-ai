@@ -3,6 +3,7 @@
   "entry": [
     "src/main.tsx",
     "src/settings/main.tsx",
+    "src/voice/main.tsx",
     "scripts/*.mjs",
     "vite.config.ts",
     "src/styles/globals.css"

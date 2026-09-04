@@ -163,9 +163,10 @@ import {
   AnboVoice,
   captureDomVoiceTarget,
   failedVoiceInsert,
+  GlobalVoiceBridge,
   successfulVoiceInsert,
-  type VoiceTarget,
   useVoiceVisibility,
+  type VoiceTarget,
   WhisperRuntimeBridge,
 } from "@/modules/voice";
 import { useWorkspaceEnvStore, type WorkspaceEnv } from "@/modules/workspace";
@@ -281,6 +282,9 @@ export default function App() {
   activeIdRef.current = activeId;
   const customCliAgents = usePreferencesStore((s) => s.customCliAgents);
   const agentMcpEnabled = usePreferencesStore((s) => s.agentMcpEnabled);
+  const globalVoiceEnabled = usePreferencesStore(
+    (state) => state.globalVoiceEnabled,
+  );
 
   const activeTerminalTab = useMemo(() => {
     const t = tabs.find((x) => x.id === activeId);
@@ -2691,9 +2695,10 @@ export default function App() {
                 onExit={handleAgentExited}
               />
               <WhisperRuntimeBridge />
+              <GlobalVoiceBridge visible={voiceVisibility.visible} />
               <Toaster position="bottom-right" />
               <AnboVoice
-                visible={voiceVisibility.visible}
+                visible={voiceVisibility.visible && !globalVoiceEnabled}
                 onHide={() => voiceVisibility.setVisible(false)}
                 captureTarget={captureVoiceTarget}
               />

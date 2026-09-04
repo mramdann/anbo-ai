@@ -1,14 +1,14 @@
 pub mod modules;
 
 use modules::{
-    agent, anbo, app_data, browser, browser_automation, fs, git, history, lsp, net, proc,
-    project_memory, pty, secrets, shell, voice_runtime, workspace,
+    agent, anbo, app_data, browser, browser_automation, fs, git, global_voice, history, lsp, net,
+    proc, project_memory, pty, secrets, shell, voice_runtime, workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 #[cfg(target_os = "macos")]
-use tauri::{PhysicalPosition, WindowEvent};
+use tauri::PhysicalPosition;
+use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
 
 /// Drained on first read so HMR / re-mounts can't replay the launch dir.
@@ -223,6 +223,22 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     let builder = builder.plugin(tauri_plugin_clipboard_manager::init());
     builder
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        let Ok(expected) = global_voice::SHORTCUT
+                            .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                        else {
+                            return;
+                        };
+                        if shortcut.id() == expected.id() {
+                            global_voice::handle_shortcut(app);
+                        }
+                    }
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         // Skip restoring VISIBLE — frontend calls window.show() after first
@@ -279,6 +295,14 @@ pub fn run() {
                     }
                 });
             }
+            if let Some(main) = _app.get_webview_window("main") {
+                let handle = _app.handle().clone();
+                main.on_window_event(move |event| {
+                    if matches!(event, WindowEvent::Destroyed) {
+                        global_voice::shutdown(&handle);
+                    }
+                });
+            }
             Ok(())
         })
         .manage(pty::PtyState::default())
@@ -288,6 +312,7 @@ pub fn run() {
         .manage(history::HistoryState::default())
         .manage(lsp::LspState::default())
         .manage(voice_runtime::WhisperRuntimeState::default())
+        .manage(global_voice::GlobalVoiceState::default())
         .manage(fs::grep::ContentSearchState::default())
         .manage({
             let registry = workspace::WorkspaceRegistry::default();
@@ -415,6 +440,12 @@ pub fn run() {
             voice_runtime::whisper_runtime_start,
             voice_runtime::whisper_runtime_stop,
             voice_runtime::whisper_runtime_uninstall,
+            global_voice::global_voice_status,
+            global_voice::global_voice_set_enabled,
+            global_voice::global_voice_capture_target,
+            global_voice::global_voice_clear_target,
+            global_voice::global_voice_remember_foreground,
+            global_voice::global_voice_insert_text,
         ])
         .build(context)
         .expect("error while building tauri application")

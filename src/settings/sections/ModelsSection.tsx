@@ -80,7 +80,7 @@ import {
   setRecentModelIds,
   setSttProvider,
 } from "@/modules/settings/store";
-import { WhisperRuntimeSettings } from "@/modules/voice";
+import { GlobalVoiceSettings, WhisperRuntimeSettings } from "@/modules/voice";
 import {
   Add01Icon,
   ArrowDown01Icon,
@@ -1720,6 +1720,8 @@ function VoiceBlock() {
         {sttProvider === "whispercpp" &&
           "Connects to a local Whisper.cpp server for fully offline transcription."}
       </p>
+
+      <GlobalVoiceSettings />
 
       {sttProvider === "groq" && (
         <div className="flex flex-col gap-2.5">

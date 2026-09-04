@@ -7,6 +7,7 @@ pub mod fs;
 
 pub mod browser;
 pub mod git;
+pub mod global_voice;
 pub mod history;
 pub mod lsp;
 pub mod net;

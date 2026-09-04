@@ -19,6 +19,7 @@ import {
   DEFAULT_STT_PROVIDER,
   isCompatModelId,
   isKnownModelId,
+  isWhispercppModel,
   LMSTUDIO_DEFAULT_BASE_URL,
   MLX_DEFAULT_BASE_URL,
   migrateLegacyCompatEndpoint,
@@ -28,7 +29,6 @@ import {
   WHISPERCPP_DEFAULT_BASE_URL,
   WHISPERCPP_DEFAULT_MODEL,
   type WhispercppModel,
-  isWhispercppModel,
 } from "@/modules/ai/config";
 import type { KeyBinding, ShortcutId } from "@/modules/shortcuts/shortcuts";
 import { invoke } from "@tauri-apps/api/core";
@@ -163,6 +163,7 @@ export type Preferences = {
   whispercppBaseURL: string;
   whispercppModel: WhispercppModel;
   whispercppAutoStart: boolean;
+  globalVoiceEnabled: boolean;
   favoriteModelIds: string[];
   recentModelIds: string[];
   vimMode: boolean;
@@ -259,6 +260,7 @@ const KEY_GROQ_STT_MODEL = "groqSttModel";
 const KEY_WHISPERCPP_BASE_URL = "whispercppBaseURL";
 const KEY_WHISPERCPP_MODEL = "whispercppModel";
 const KEY_WHISPERCPP_AUTO_START = "whispercppAutoStart";
+const KEY_GLOBAL_VOICE_ENABLED = "globalVoiceEnabled";
 const KEY_FAVORITE_MODELS = "favoriteModelIds";
 const KEY_RECENT_MODELS = "recentModelIds";
 const KEY_VIM_MODE = "vimMode";
@@ -352,6 +354,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   whispercppBaseURL: WHISPERCPP_DEFAULT_BASE_URL,
   whispercppModel: WHISPERCPP_DEFAULT_MODEL,
   whispercppAutoStart: true,
+  globalVoiceEnabled: false,
   favoriteModelIds: [],
   recentModelIds: [],
   vimMode: false,
@@ -511,6 +514,9 @@ export async function loadPreferences(): Promise<Preferences> {
     whispercppAutoStart:
       get<boolean>(KEY_WHISPERCPP_AUTO_START) ??
       DEFAULT_PREFERENCES.whispercppAutoStart,
+    globalVoiceEnabled:
+      get<boolean>(KEY_GLOBAL_VOICE_ENABLED) ??
+      DEFAULT_PREFERENCES.globalVoiceEnabled,
     favoriteModelIds: (
       get<string[]>(KEY_FAVORITE_MODELS) ?? DEFAULT_PREFERENCES.favoriteModelIds
     ).filter(isKnownModelId),
@@ -800,6 +806,10 @@ export async function setWhispercppAutoStart(value: boolean): Promise<void> {
   await writePref(KEY_WHISPERCPP_AUTO_START, value);
 }
 
+export async function setGlobalVoiceEnabled(value: boolean): Promise<void> {
+  await writePref(KEY_GLOBAL_VOICE_ENABLED, value);
+}
+
 export async function setFavoriteModelIds(value: string[]): Promise<void> {
   await writePref(KEY_FAVORITE_MODELS, value);
 }
@@ -1025,6 +1035,7 @@ export async function onPreferencesChange(
     [KEY_WHISPERCPP_BASE_URL]: "whispercppBaseURL",
     [KEY_WHISPERCPP_MODEL]: "whispercppModel",
     [KEY_WHISPERCPP_AUTO_START]: "whispercppAutoStart",
+    [KEY_GLOBAL_VOICE_ENABLED]: "globalVoiceEnabled",
     [KEY_FAVORITE_MODELS]: "favoriteModelIds",
     [KEY_RECENT_MODELS]: "recentModelIds",
     [KEY_VIM_MODE]: "vimMode",
