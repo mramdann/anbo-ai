@@ -12,6 +12,7 @@ import {
   insertGlobalVoiceText,
   rememberGlobalVoiceForeground,
 } from "@/modules/voice/lib/globalVoice";
+import { resolveVoicePress } from "@/modules/voice/lib/voicePress";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
@@ -59,6 +60,7 @@ export function GlobalVoiceApp() {
   const visualRef = useRef<HTMLDivElement>(null);
   const targetRef = useRef<GlobalVoiceTarget | null>(null);
   const actionRef = useRef(false);
+  const abortStartRef = useRef(false);
   const targetPreparationRef = useRef<Promise<void> | null>(null);
   const hoveredRef = useRef(false);
   const suppressClickRef = useRef(false);
@@ -69,6 +71,7 @@ export function GlobalVoiceApp() {
     dragging: boolean;
   } | null>(null);
   const [inserting, setInserting] = useState(false);
+  const [preparing, setPreparing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fallbackTranscript, setFallbackTranscript] = useState<string | null>(
     null,
@@ -235,15 +238,25 @@ export function GlobalVoiceApp() {
   }, [prepareTarget, voice]);
 
   const toggle = useCallback(async () => {
-    if (voice.recording) {
+    const action = resolveVoicePress({
+      recording: voice.recording,
+      requesting: voice.requesting,
+      transcribing: voice.transcribing,
+      inserting,
+      starting: actionRef.current,
+    });
+    if (action === "stop") {
       voice.stop();
       return;
     }
-    if (voice.requesting || voice.transcribing || inserting) {
+    if (action === "cancel") {
       cancel();
       return;
     }
-    if (actionRef.current) return;
+    if (action === "abortStart") {
+      abortStartRef.current = true;
+      return;
+    }
     if (!voice.supported) {
       setError(
         "Microphone recording is not supported by this Windows WebView.",
@@ -256,13 +269,21 @@ export function GlobalVoiceApp() {
     }
 
     actionRef.current = true;
+    abortStartRef.current = false;
+    setPreparing(true);
     setError(null);
     setFallbackTranscript(null);
     try {
       const target = await captureGlobalVoiceTarget();
+      if (abortStartRef.current) {
+        targetRef.current = null;
+        await clearGlobalVoiceTarget();
+        return;
+      }
       targetRef.current = target;
       const started = await voice.start(finishInsert);
-      if (!started) {
+      if (!started || abortStartRef.current) {
+        if (started) voice.cancel();
         targetRef.current = null;
         await clearGlobalVoiceTarget();
       }
@@ -271,15 +292,23 @@ export function GlobalVoiceApp() {
       setError(message(cause));
       await clearGlobalVoiceTarget();
     } finally {
+      abortStartRef.current = false;
       actionRef.current = false;
+      setPreparing(false);
     }
   }, [cancel, finishInsert, inserting, voice]);
 
+  const toggleRef = useRef(toggle);
+  toggleRef.current = toggle;
+
+  // Registered once. Keying this on `toggle` tore the listener down on every
+  // render and re-armed it across an async round trip, dropping any hotkey
+  // press that landed in the gap.
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen(GLOBAL_VOICE_TOGGLE_EVENT, () => {
-      void toggle();
+      void toggleRef.current();
     }).then((dispose) => {
       if (disposed) dispose();
       else unlisten = dispose;
@@ -288,7 +317,7 @@ export function GlobalVoiceApp() {
       disposed = true;
       unlisten?.();
     };
-  }, [toggle]);
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -299,6 +328,10 @@ export function GlobalVoiceApp() {
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [cancel]);
+
+  const pending =
+    preparing || voice.requesting || voice.transcribing || inserting;
+  const busy = voice.recording || pending;
 
   const onPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
     // Prevent the button's default focus action from activating this
@@ -317,6 +350,10 @@ export function GlobalVoiceApp() {
   const onPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId || drag.dragging) return;
+    // While busy the orb is a stop control. A few pixels of hand drift would
+    // otherwise start a window drag, suppress the click, and leave the
+    // recording running to the five minute cap with no visible change.
+    if (busy) return;
     if (
       Math.hypot(event.screenX - drag.x, event.screenY - drag.y) <
       DRAG_THRESHOLD_PX
@@ -348,14 +385,12 @@ export function GlobalVoiceApp() {
     })();
   };
 
-  const pending = voice.requesting || voice.transcribing || inserting;
-  const busy = voice.recording || pending;
   const label = error
     ? `AnboVoice error: ${error}`
     : voice.recording
       ? `Stop AnboVoice recording for ${targetRef.current?.windowTitle ?? "focused app"}`
-      : voice.requesting
-        ? "AnboVoice is requesting the microphone"
+      : preparing || voice.requesting
+        ? "AnboVoice is starting"
         : voice.transcribing || inserting
           ? "AnboVoice is transcribing"
           : "Start global AnboVoice";

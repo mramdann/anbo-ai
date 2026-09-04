@@ -64,6 +64,8 @@ export function useWhisperRecording({
   const activeRef = useRef(false);
   const generationRef = useRef(0);
   const recordingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
   resultRef.current = onResult;
   errorRef.current = onError;
   settledRef.current = onSettled;
@@ -95,13 +97,22 @@ export function useWhisperRecording({
   }, [audioMeter]);
 
   const stop = useCallback(() => {
-    if (recordingTimerRef.current) {
-      clearTimeout(recordingTimerRef.current);
-      recordingTimerRef.current = null;
-    }
     const rec = recRef.current;
-    if (rec && rec.state !== "inactive") rec.stop();
-  }, []);
+    if (rec && rec.state !== "inactive") {
+      if (recordingTimerRef.current) {
+        clearTimeout(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+      rec.stop();
+      return;
+    }
+    // Never drop the runaway watchdog for a stop that stopped nothing, and never
+    // leave the caller stranded in "recording" with no recorder behind it.
+    if (stateRef.current !== "recording") return;
+    activeRef.current = false;
+    teardownStream();
+    if (mountedRef.current) setState("idle");
+  }, [teardownStream]);
 
   const cancel = useCallback(() => {
     generationRef.current += 1;
@@ -109,11 +120,12 @@ export function useWhisperRecording({
     cancelledRef.current = true;
     chunksRef.current = [];
     const rec = recRef.current;
+    recRef.current = null;
     if (rec && rec.state !== "inactive") rec.stop();
-    else {
-      teardownStream();
-      if (mountedRef.current) setState("idle");
-    }
+    // The bumped generation makes onstop bail before its own reset, so cancel
+    // has to land the state machine back on idle itself.
+    teardownStream();
+    if (mountedRef.current) setState("idle");
   }, [teardownStream]);
 
   const start = useCallback(
