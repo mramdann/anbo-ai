@@ -191,6 +191,42 @@ describe("agent messages", () => {
     ).toBe(false);
   });
 
+  it("reports the callsign the workspace gave the agent, not the CLI label", () => {
+    // "codex:11" says which CLI and which tab. It is an address, not a name.
+    const space = { id: "sp-1", root: "C:/work" };
+    const tabs = [
+      {
+        id: 7,
+        kind: "terminal",
+        spaceId: "sp-1",
+        activeLeafId: 8,
+        paneTree: { kind: "leaf", id: 8 },
+        agent: {
+          launcherId: "codex",
+          icon: "codex",
+          label: "Codex",
+          name: "Alnilam",
+        },
+      },
+    ] as never;
+    const sessions = {
+      8: {
+        tabId: 7,
+        leafId: 8,
+        name: "Codex",
+        agent: "codex",
+        status: "waiting",
+        startedAt: 1,
+        lastActivityAt: 2,
+      },
+    } as never;
+
+    const [agent] = collectWorkspaceAgents(tabs, sessions, space);
+    expect(agent.name).toBe("Alnilam");
+    expect(agent.cli).toBe("codex");
+    expect(agent.agentId).toContain("codex");
+  });
+
   it("verifies an input echo even when a TUI inserts ANSI repaint codes", async () => {
     const writes: string[] = [];
     let reads = 0;

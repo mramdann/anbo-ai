@@ -190,7 +190,10 @@ export function collectWorkspaceAgents(
       return [
         {
           agentId: agentIdFor(session.name, session.agent, session.tabId),
-          name: session.name,
+          // The callsign the workspace gave this agent — what a person calls
+          // it. `codex:11` says which CLI and which tab, which is an address,
+          // not a name.
+          name: tab.agent?.name ?? session.name,
           cli: session.agent,
           status: session.status,
           phase:
@@ -521,7 +524,10 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       return (
         candidate.agentId === agentId ||
         provisionalId === agentId ||
-        legacyId === agentId
+        legacyId === agentId ||
+        // A callsign addresses the agent as readily as its id does. Names are
+        // unique within a workspace, so this cannot become ambiguous.
+        candidate.name.toLocaleLowerCase() === agentId.toLocaleLowerCase()
       );
     });
     if (!agent) {
