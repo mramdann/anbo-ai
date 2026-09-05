@@ -11,9 +11,12 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import {
+  resolveWhispercppModel,
   type WhispercppAcceleration,
   type WhispercppModel,
+  type WhispercppModelChoice,
   WHISPERCPP_DEFAULT_BASE_URL,
+  WHISPERCPP_MODEL_CHOICES,
 } from "@/modules/ai/config";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -95,7 +98,7 @@ function errorMessage(error: unknown): string {
 }
 
 export function WhisperRuntimeSettings() {
-  const model = usePreferencesStore((state) => state.whispercppModel);
+  const choice = usePreferencesStore((state) => state.whispercppModel);
   const acceleration = usePreferencesStore(
     (state) => state.whispercppAcceleration,
   );
@@ -150,6 +153,9 @@ export function WhisperRuntimeSettings() {
     };
   }, [refresh]);
 
+  // "auto" follows the machine, so everything downstream works with the model
+  // that will actually be installed and run.
+  const model = resolveWhispercppModel(choice, status?.recommendedModel);
   const selectedInstalled = status?.installedModels.includes(model) ?? false;
   const busy = operation !== null || status?.installing === true;
   const installingNow = status?.installing === true || operation === "install";
@@ -182,15 +188,17 @@ export function WhisperRuntimeSettings() {
         ? `${(status.machineRamMb / 1024).toFixed(1)} GB RAM`
         : null;
     const suits =
-      status.recommendedModel && status.recommendedModel !== model
-        ? `${MODEL_META[status.recommendedModel].label} suits it best`
-        : "this is the best fit here";
+      choice === "auto"
+        ? `${MODEL_META[model].label} chosen for it`
+        : status.recommendedModel && status.recommendedModel !== model
+          ? `${MODEL_META[status.recommendedModel].label} suits it best`
+          : "this is the best fit here";
     return [
       [`${status.machineCores} cores`, ram].filter(Boolean).join(", "),
       `${status.threads} threads`,
       suits,
     ].join(" / ");
-  }, [status, model]);
+  }, [status, model, choice]);
   const hasFilesOnDisk =
     (status?.installed ?? false) || (status?.sizeBytes ?? 0) > 0;
   const progressPercent = useMemo(() => {
@@ -288,9 +296,9 @@ export function WhisperRuntimeSettings() {
             Model
           </span>
           <Select
-            value={model}
+            value={choice}
             onValueChange={(value) =>
-              void setWhispercppModel(value as WhispercppModel)
+              void setWhispercppModel(value as WhispercppModelChoice)
             }
             disabled={busy}
           >
@@ -301,12 +309,21 @@ export function WhisperRuntimeSettings() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {(Object.keys(MODEL_META) as WhispercppModel[]).map((id) => (
-                <SelectItem key={id} value={id} className="text-[11px]">
-                  {MODEL_META[id].label} ({MODEL_META[id].download})
-                  {id === status?.recommendedModel ? " / Recommended" : ""}
-                </SelectItem>
-              ))}
+              {WHISPERCPP_MODEL_CHOICES.map((id) =>
+                id === "auto" ? (
+                  <SelectItem key={id} value={id} className="text-[11px]">
+                    Automatic
+                    {status?.recommendedModel
+                      ? ` (${MODEL_META[status.recommendedModel].label})`
+                      : ""}
+                  </SelectItem>
+                ) : (
+                  <SelectItem key={id} value={id} className="text-[11px]">
+                    {MODEL_META[id].label} ({MODEL_META[id].download})
+                    {id === status?.recommendedModel ? " / Recommended" : ""}
+                  </SelectItem>
+                ),
+              )}
             </SelectContent>
           </Select>
         </div>

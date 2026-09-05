@@ -932,6 +932,41 @@ export const STT_PROVIDER_LABELS: Record<SttProvider, string> = {
 export const DEFAULT_STT_PROVIDER: SttProvider = "openai";
 export const WHISPERCPP_DEFAULT_BASE_URL = "http://127.0.0.1:8080";
 export const WHISPERCPP_DEFAULT_MODEL: WhispercppModel = "base";
+
+/**
+ * What the user picked, which may be "let the machine decide".
+ *
+ * Three sizes with no guidance is a guess, and the runtime already knows how
+ * much memory the machine has. Following it is the better default; an explicit
+ * choice is always honoured.
+ */
+export const WHISPERCPP_MODEL_CHOICES = [
+  "auto",
+  ...WHISPERCPP_MODELS,
+] as const;
+export type WhispercppModelChoice = (typeof WHISPERCPP_MODEL_CHOICES)[number];
+
+export function isWhispercppModelChoice(
+  value: unknown,
+): value is WhispercppModelChoice {
+  return (
+    typeof value === "string" &&
+    (WHISPERCPP_MODEL_CHOICES as readonly string[]).includes(value)
+  );
+}
+
+export const WHISPERCPP_DEFAULT_MODEL_CHOICE: WhispercppModelChoice = "auto";
+
+/** The model to actually install and run. */
+export function resolveWhispercppModel(
+  choice: WhispercppModelChoice,
+  recommended: WhispercppModel | null | undefined,
+): WhispercppModel {
+  if (choice !== "auto") return choice;
+  // The recommendation is absent until the runtime has answered once, and a
+  // missing answer must not turn into a missing model.
+  return isWhispercppModel(recommended) ? recommended : WHISPERCPP_DEFAULT_MODEL;
+}
 export const LMSTUDIO_DEFAULT_BASE_URL = "http://localhost:1234/v1";
 export const MLX_DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1";
 export const OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1";

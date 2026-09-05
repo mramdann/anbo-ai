@@ -20,7 +20,7 @@ import {
   isCompatModelId,
   isKnownModelId,
   isWhispercppAcceleration,
-  isWhispercppModel,
+  isWhispercppModelChoice,
   LMSTUDIO_DEFAULT_BASE_URL,
   MLX_DEFAULT_BASE_URL,
   migrateLegacyCompatEndpoint,
@@ -30,9 +30,9 @@ import {
   WHISPERCPP_DEFAULT_BASE_URL,
   DEFAULT_OPEN_LINKS_IN_ANBO,
   WHISPERCPP_DEFAULT_ACCELERATION,
-  WHISPERCPP_DEFAULT_MODEL,
+  WHISPERCPP_DEFAULT_MODEL_CHOICE,
   type WhispercppAcceleration,
-  type WhispercppModel,
+  type WhispercppModelChoice,
 } from "@/modules/ai/config";
 import type { KeyBinding, ShortcutId } from "@/modules/shortcuts/shortcuts";
 import { invoke } from "@tauri-apps/api/core";
@@ -165,7 +165,7 @@ export type Preferences = {
   sttProvider: SttProvider;
   groqSttModel: string;
   whispercppBaseURL: string;
-  whispercppModel: WhispercppModel;
+  whispercppModel: WhispercppModelChoice;
   whispercppAcceleration: WhispercppAcceleration;
   openLinksInAnbo: boolean;
   whispercppAutoStart: boolean;
@@ -360,7 +360,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   sttProvider: DEFAULT_STT_PROVIDER,
   groqSttModel: "whisper-large-v3-turbo",
   whispercppBaseURL: WHISPERCPP_DEFAULT_BASE_URL,
-  whispercppModel: WHISPERCPP_DEFAULT_MODEL,
+  whispercppModel: WHISPERCPP_DEFAULT_MODEL_CHOICE,
   whispercppAcceleration: WHISPERCPP_DEFAULT_ACCELERATION,
   openLinksInAnbo: DEFAULT_OPEN_LINKS_IN_ANBO,
   whispercppAutoStart: true,
@@ -517,7 +517,7 @@ export async function loadPreferences(): Promise<Preferences> {
       DEFAULT_PREFERENCES.whispercppBaseURL,
     whispercppModel: (() => {
       const stored = get<unknown>(KEY_WHISPERCPP_MODEL);
-      return isWhispercppModel(stored)
+      return isWhispercppModelChoice(stored)
         ? stored
         : DEFAULT_PREFERENCES.whispercppModel;
     })(),
@@ -816,7 +816,7 @@ export async function setWhispercppBaseURL(value: string): Promise<void> {
 }
 
 export async function setWhispercppModel(
-  value: WhispercppModel,
+  value: WhispercppModelChoice,
 ): Promise<void> {
   await writePref(KEY_WHISPERCPP_MODEL, value);
 }

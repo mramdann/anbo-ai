@@ -1,3 +1,4 @@
+import { resolveWhispercppModel } from "@/modules/ai/config";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { setWhispercppBaseURL } from "@/modules/settings/store";
 import {
@@ -11,7 +12,7 @@ export function WhisperRuntimeBridge() {
   const hydrated = usePreferencesStore((state) => state.hydrated);
   const provider = usePreferencesStore((state) => state.sttProvider);
   const autoStart = usePreferencesStore((state) => state.whispercppAutoStart);
-  const model = usePreferencesStore((state) => state.whispercppModel);
+  const choice = usePreferencesStore((state) => state.whispercppModel);
   const attemptedModelRef = useRef<string | null>(null);
 
   // Leaving the local provider hides the whole runtime panel, and with it the
@@ -39,11 +40,14 @@ export function WhisperRuntimeBridge() {
       attemptedModelRef.current = null;
       return;
     }
-    if (attemptedModelRef.current === model) return;
-    attemptedModelRef.current = model;
+    if (attemptedModelRef.current === choice) return;
+    attemptedModelRef.current = choice;
     let disposed = false;
     void getWhisperRuntimeStatus()
       .then((status) => {
+        // "auto" is only resolvable once the runtime has said what this
+        // machine can hold, which is why it happens here rather than above.
+        const model = resolveWhispercppModel(choice, status.recommendedModel);
         if (
           disposed ||
           status.running ||
@@ -64,7 +68,7 @@ export function WhisperRuntimeBridge() {
     return () => {
       disposed = true;
     };
-  }, [autoStart, hydrated, model, provider]);
+  }, [autoStart, choice, hydrated, provider]);
 
   return null;
 }
