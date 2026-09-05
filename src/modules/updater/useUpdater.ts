@@ -1,5 +1,4 @@
-import { relaunch } from "@tauri-apps/plugin-process";
-import { check, type Update } from "@tauri-apps/plugin-updater";
+import type { Update } from "@tauri-apps/plugin-updater";
 import { useCallback, useEffect, useState } from "react";
 import { IS_WINDOWS } from "@/lib/platform";
 
@@ -78,6 +77,10 @@ export function useUpdater({ autoCheck = true }: HookOptions = {}) {
     }
     setStatus({ kind: "checking" });
     try {
+      // Loaded on use. Neither plugin is needed to draw the app, and carrying
+      // them through the header would put them in the startup budget for a
+      // check that happens once every thirty minutes.
+      const { check } = await import("@tauri-apps/plugin-updater");
       const update = await check();
       if (update) {
         // Nothing here interrupts anyone: an available update only lights the
@@ -99,6 +102,7 @@ export function useUpdater({ autoCheck = true }: HookOptions = {}) {
     let downloaded = 0;
     setStatus({ kind: "downloading", downloaded: 0, contentLength: null });
     try {
+      const { relaunch } = await import("@tauri-apps/plugin-process");
       await update.downloadAndInstall((event) => {
         if (event.event === "Started") {
           total = event.data.contentLength ?? null;

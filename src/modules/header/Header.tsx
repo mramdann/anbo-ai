@@ -1,4 +1,8 @@
-import { UpdateButton } from "@/modules/updater";
+const UpdateButton = lazy(() =>
+  import("@/modules/updater/UpdateButton").then((m) => ({
+    default: m.UpdateButton,
+  })),
+);
 import { Button } from "@/components/ui/button";
 import { WindowControls } from "@/components/WindowControls";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
@@ -12,13 +16,7 @@ import {
   SidebarLeftIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  type ReactNode,
-  type RefObject,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { lazy, type ReactNode, type RefObject, useEffect, useRef, useState, Suspense } from "react";
 import {
   SearchInline,
   type SearchInlineHandle,
@@ -146,7 +144,11 @@ export function Header({
         data-tauri-drag-region
       >
         {spaceSwitcher}
-        <UpdateButton />
+        {/* Nothing about an update is needed to draw the app, so it arrives
+            after the first paint rather than in the startup bundle. */}
+        <Suspense fallback={null}>
+          <UpdateButton />
+        </Suspense>
         <div data-tauri-drag-region className="h-full min-w-2 flex-1" />
       </div>
 
