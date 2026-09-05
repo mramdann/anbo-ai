@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.24.0](https://github.com/mramdann/anbo-ai/compare/v0.23.0...v0.24.0) (2026-09-05)
+
+
+### Features
+
+* **agents:** call an agent by its name, not its address ([22f5f75](https://github.com/mramdann/anbo-ai/commit/22f5f750f04133ea1af3d98e0db8833e8d5f8723))
+* **mcp:** give agents skills, and one that explains Anbo ([c2ef515](https://github.com/mramdann/anbo-ai/commit/c2ef51585938cbfa050edb179f5f6727019784e5))
+* **mcp:** tell every agent about its skills on connect ([9e0050f](https://github.com/mramdann/anbo-ai/commit/9e0050fcb32aa23b6d7afa05b59eddc550bd5d69))
+* **voice:** fit the local runtime to the machine it runs on ([ad5e32a](https://github.com/mramdann/anbo-ai/commit/ad5e32abaabcff69889c3930a9bd84e4e39bcaf6))
+* **voice:** let the model follow the machine by default ([2758c25](https://github.com/mramdann/anbo-ai/commit/2758c25936ff19e201d0dc21a870aacc66283da2))
+
+
+### Bug Fixes
+
+* **release:** restore the version marker cargo stripped from Cargo.lock ([4d3b06d](https://github.com/mramdann/anbo-ai/commit/4d3b06d15d670447e8f35a42d841dc1d939ee4c7))
+
+
+### Performance Improvements
+
+* **voice:** stop paying for the same answer every two seconds ([1f0387c](https://github.com/mramdann/anbo-ai/commit/1f0387c115d0bcbe11fc6e9bbc27d6bd062aa0a3))
+
 ## [0.23.0](https://github.com/mramdann/anbo-ai/compare/v0.22.0...v0.23.0) (2026-09-05)
 
 
