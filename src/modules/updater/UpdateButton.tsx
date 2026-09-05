@@ -1,5 +1,4 @@
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 import { ArrowUp01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { lazy, Suspense, useState } from "react";
@@ -36,21 +35,24 @@ export function UpdateButton() {
 
   return (
     <>
+      {/* Same shape as the Ports button, and the same way the notification
+          bell marks news: a muted control with one primary dot. */}
       <Button
+        type="button"
         variant="ghost"
         size="sm"
         onClick={() => setOpen(true)}
         title={label}
         aria-label={label}
-        className={cn(
-          "h-7 shrink-0 gap-1 rounded-md px-1.5 text-[11px]",
-          "text-primary hover:bg-primary/10 hover:text-primary",
-        )}
+        className="relative h-7 shrink-0 gap-1 rounded-md px-1.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
       >
-        <HugeiconsIcon icon={ArrowUp01Icon} size={13} strokeWidth={2} />
+        <HugeiconsIcon icon={ArrowUp01Icon} size={13} strokeWidth={1.75} />
         <span className="hidden sm:inline">
           {ready ? "Restart" : busy ? "Updating…" : "Update"}
         </span>
+        {busy ? null : (
+          <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-primary" />
+        )}
       </Button>
       {open && (
         <Suspense fallback={null}>
