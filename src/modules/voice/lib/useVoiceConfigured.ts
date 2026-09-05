@@ -37,8 +37,12 @@ export function useVoiceConfigured(): boolean {
     };
     refresh();
     let unlisten: (() => void) | undefined;
-    // An install finishing is the one moment this answer changes on its own.
-    void listen(WHISPER_RUNTIME_PROGRESS_EVENT, refresh).then((stop) => {
+    // An install finishing is the one moment this answer changes on its own,
+    // and "finalizing" is that moment. Refreshing on every tick would put a
+    // status round trip behind each 150 ms of a 465 MB download.
+    void listen<{ phase?: string }>(WHISPER_RUNTIME_PROGRESS_EVENT, (event) => {
+      if (event.payload?.phase === "finalizing") refresh();
+    }).then((stop) => {
       if (disposed) stop();
       else unlisten = stop;
     });

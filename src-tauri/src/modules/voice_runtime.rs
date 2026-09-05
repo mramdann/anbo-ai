@@ -8,7 +8,7 @@ use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -319,10 +319,24 @@ fn total_ram_mb() -> u64 {
     0
 }
 
+/// Cores and physical memory, read once.
+///
+/// Neither changes while the app runs, and the status they feed is polled
+/// every two seconds by the settings panel. Reading them per poll spends an
+/// FFI call to learn something already known.
+static MACHINE_FACTS: OnceLock<(usize, u64)> = OnceLock::new();
+
+fn machine_facts() -> (usize, u64) {
+    *MACHINE_FACTS.get_or_init(|| {
+        let cores = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1);
+        (cores, total_ram_mb())
+    })
+}
+
 fn machine_cores() -> usize {
-    std::thread::available_parallelism()
-        .map(|count| count.get())
-        .unwrap_or(1)
+    machine_facts().0
 }
 
 fn variant_spec(id: &str) -> Option<&'static RuntimeVariant> {
@@ -431,6 +445,37 @@ fn installed_models(root: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Size of the install, cached between the events that can change it.
+///
+/// Computing it walks every file in the runtime — around fifty stat calls with
+/// a model on disk — and the answer only moves when an install or uninstall
+/// happens. Doing that on each poll is work spent to learn the same number.
+static INSTALL_SIZE: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
+
+fn install_size_cache() -> &'static Mutex<Option<u64>> {
+    INSTALL_SIZE.get_or_init(|| Mutex::new(None))
+}
+
+fn cached_directory_size(path: &Path) -> u64 {
+    if let Ok(cache) = install_size_cache().lock() {
+        if let Some(size) = *cache {
+            return size;
+        }
+    }
+    let size = directory_size(path);
+    if let Ok(mut cache) = install_size_cache().lock() {
+        *cache = Some(size);
+    }
+    size
+}
+
+/// Called wherever the runtime directory is written to or removed.
+fn forget_install_size() {
+    if let Ok(mut cache) = install_size_cache().lock() {
+        *cache = None;
+    }
+}
+
 fn directory_size(path: &Path) -> u64 {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return 0;
@@ -507,7 +552,7 @@ fn status_from_inner(inner: &WhisperRuntimeInner) -> Result<WhisperRuntimeStatus
             .map(|running| format!("http://127.0.0.1:{}", running.port)),
         pid: process.as_ref().map(|running| running.child.id()),
         install_dir: root.to_string_lossy().into_owned(),
-        size_bytes: directory_size(&root),
+        size_bytes: cached_directory_size(&root),
         variant: variant.map(|found| found.id.to_string()),
         variant_label: variant.map(|found| found.label.to_string()),
         gpu: variant.is_some_and(|found| found.gpu),
@@ -1023,6 +1068,8 @@ async fn install_runtime(
         replace_file(&temporary, &model_destination)?;
     }
     emit_progress(app, &state.inner, "finalizing", model.id, total, total);
+    // The install just changed what is on disk.
+    forget_install_size();
     write_manifest(&root, variant)
 }
 
@@ -1047,8 +1094,10 @@ fn stop_runtime(inner: &WhisperRuntimeInner) {
     }
 }
 
+/// Async so Tauri runs it off the main thread: a synchronous command would
+/// put this poll's remaining file reads on the thread that paints the window.
 #[tauri::command]
-pub fn whisper_runtime_status(
+pub async fn whisper_runtime_status(
     state: State<'_, WhisperRuntimeState>,
 ) -> Result<WhisperRuntimeStatus, String> {
     status_from_inner(&state.inner)
@@ -1249,6 +1298,7 @@ pub async fn whisper_runtime_uninstall(
     tokio::task::spawn_blocking(move || remove_directory(&root))
         .await
         .map_err(|error| format!("uninstall Whisper task: {error}"))??;
+    forget_install_size();
     set_error(&state.inner, None);
     status_from_inner(&state.inner)
 }
@@ -1332,6 +1382,26 @@ mod tests {
         let current = temp.path().join("com.anbo.desktop").join("whisper.cpp");
         assert!(!migrate_runtime_dir(&legacy, &current).unwrap());
         assert!(!current.exists());
+    }
+
+    #[test]
+    fn the_install_size_is_computed_once_and_dropped_when_it_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("a.bin"), vec![0_u8; 1024]).unwrap();
+
+        super::forget_install_size();
+        let first = super::cached_directory_size(temp.path());
+        assert_eq!(first, 1024);
+
+        // A second file is deliberately not seen: the point of the cache is
+        // that a poll every two seconds does not walk the directory again.
+        fs::write(temp.path().join("b.bin"), vec![0_u8; 2048]).unwrap();
+        assert_eq!(super::cached_directory_size(temp.path()), 1024);
+
+        // Install and uninstall drop it, and then the truth is read again.
+        super::forget_install_size();
+        assert_eq!(super::cached_directory_size(temp.path()), 3072);
+        super::forget_install_size();
     }
 
     #[cfg(windows)]

@@ -2732,7 +2732,7 @@ export default function App() {
                 onExit={handleAgentExited}
               />
               <WhisperRuntimeBridge />
-              <GlobalVoiceBridge />
+              <GlobalVoiceBridge configured={voiceConfigured} />
               <Toaster position="bottom-right" />
               <AnboVoice
                 visible={voiceVisibility.visible && voiceConfigured}

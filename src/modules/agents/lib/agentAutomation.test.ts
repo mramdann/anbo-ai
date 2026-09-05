@@ -221,7 +221,7 @@ describe("agent messages", () => {
       },
     } as never;
 
-    const [agent] = collectWorkspaceAgents(tabs, sessions, space);
+    const [agent] = collectWorkspaceAgents(tabs, sessions, space, null);
     expect(agent.name).toBe("Alnilam");
     expect(agent.cli).toBe("codex");
     expect(agent.agentId).toContain("codex");

@@ -1,5 +1,4 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { useVoiceConfigured } from "@/modules/voice/lib/useVoiceConfigured";
 import { setGlobalVoiceRuntimeEnabled } from "@/modules/voice/lib/globalVoice";
 import { useEffect, useRef } from "react";
 
@@ -20,10 +19,11 @@ function clearInternalVoiceTarget() {
     });
 }
 
-export function GlobalVoiceBridge() {
+/** `configured` comes from the shell, which already asked. Asking again here
+ * would double every status round trip for one answer. */
+export function GlobalVoiceBridge({ configured }: { configured: boolean }) {
   const hydrated = usePreferencesStore((state) => state.hydrated);
   const enabled = usePreferencesStore((state) => state.globalVoiceEnabled);
-  const configured = useVoiceConfigured();
   // An orb that cannot transcribe is worse than no orb: the take is recorded
   // and then lost. Keep it away until voice has been set up.
   const runtimeEnabled = enabled && configured;
