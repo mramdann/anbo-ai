@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.23.0](https://github.com/mramdann/anbo-ai/compare/v0.22.0...v0.23.0) (2026-09-05)
+
+
+### Features
+
+* **updater:** announce updates with a button, not a popup ([98ee285](https://github.com/mramdann/anbo-ai/commit/98ee285119ea769d4157826547459d0fd3bf03b0))
+
+
+### Bug Fixes
+
+* **header:** keep the update button out of the startup budget ([f84f20e](https://github.com/mramdann/anbo-ai/commit/f84f20e44115e9598c54c9d1d26460fa618abce5))
+* **release:** put the changelog in the update the user sees ([7553cae](https://github.com/mramdann/anbo-ai/commit/7553cae388f260625d843065302e2cd644a221b4))
+
 ## [0.22.0](https://github.com/mramdann/anbo-ai/compare/v0.21.0...v0.22.0) (2026-09-04)
 
 
