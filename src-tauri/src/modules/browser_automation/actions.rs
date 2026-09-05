@@ -1053,6 +1053,42 @@ async fn handle_action_inner(
             }))
         }
 
+        "skills_list" | "skills_read" => {
+            // Purely a read of the workspace's own files, so this needs neither
+            // a tab nor the UI: it answers here rather than crossing to the
+            // frontend the way agent and terminal tools must.
+            let workspace = params
+                .get("workspace")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    (
+                        error_codes::INVALID_REQUEST.to_string(),
+                        "skills tools require the agent's own workspace root".to_string(),
+                    )
+                })?;
+            let root = PathBuf::from(workspace);
+            if !root.is_dir() {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    format!("workspace is not a directory: {workspace}"),
+                ));
+            }
+            if method == "skills_list" {
+                let skills = crate::modules::skills::list_skills(&root)
+                    .map_err(|e| (error_codes::INTERNAL.to_string(), e))?;
+                return Ok(json!({ "workspace": workspace, "skills": skills }));
+            }
+            let name = params
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let skill = crate::modules::skills::read_skill(&root, name)
+                .map_err(|e| (error_codes::INVALID_REQUEST.to_string(), e))?;
+            Ok(serde_json::to_value(skill).unwrap_or_default())
+        }
+
         "emulate" => {
             let tab_id = extract_tab_id(&params)?;
             let width = params.get("width").and_then(Value::as_u64).unwrap_or(0);

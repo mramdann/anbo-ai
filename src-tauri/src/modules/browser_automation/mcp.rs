@@ -48,6 +48,8 @@ pub fn tool_definitions() -> Value {
     let agent_id = agent_id_prop();
     let terminal_id = terminal_id_prop();
     tool_array![
+        { "name": "skills_list", "description": "List the skills available in a workspace: project procedures kept in .anbo/skills, plus the skills Anbo ships. Returns names and one-line descriptions only, so it stays cheap to scan. Check this before solving a task from first principles.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
+        { "name": "skills_read", "description": "Read one skill in full and follow it. Names come from skills_list.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "name": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Skill name from skills_list." } }, "required": ["workspace", "name"] } },
         { "name": "browser_open", "description": "Open a native browser tab without focusing it in an explicitly selected Anbo workspace. Pass the agent's workspace root or a space id; UI focus is never used as a fallback.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["url", "workspace"] } },
         { "name": "browser_close", "description": "Close a native browser tab in an explicitly selected Anbo workspace.", "annotations": { "destructiveHint": true, "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["tabId", "workspace"] } },
         { "name": "browser_tabs", "description": "List active native browser tabs with foreground, workspace, space, loading, pendingUrl, automation-target, automation-activity, and durationMs metadata. While loading, url remains the last committed URL and pendingUrl identifies the target when known.", "inputSchema": { "type": "object", "properties": {} } },
@@ -102,6 +104,8 @@ pub fn tool_definitions() -> Value {
 /// Map an MCP tool name to the `handle_action` method it dispatches to.
 pub fn tool_name_to_method(name: &str) -> Option<&'static str> {
     Some(match name {
+        "skills_list" => "skills_list",
+        "skills_read" => "skills_read",
         "browser_open" => "open",
         "browser_close" => "close",
         "browser_tabs" => "list_tabs",
@@ -161,12 +165,15 @@ mod tests {
     #[test]
     fn tools_have_capability_prefixes_and_unique_names() {
         let tools = tool_definitions().as_array().unwrap().clone();
-        assert_eq!(tools.len(), 48);
+        assert_eq!(tools.len(), 50);
         let mut names = std::collections::HashSet::new();
         for t in &tools {
             let n = t.get("name").and_then(|v| v.as_str()).unwrap();
             assert!(
-                n.starts_with("browser_") || n.starts_with("agent_") || n.starts_with("terminal_"),
+                n.starts_with("browser_")
+                    || n.starts_with("agent_")
+                    || n.starts_with("terminal_")
+                    || n.starts_with("skills_"),
                 "{n} missing capability prefix"
             );
             assert!(names.insert(n), "duplicate tool name {n}");
