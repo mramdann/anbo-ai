@@ -40,6 +40,12 @@ export type WhisperRuntimeStatus = {
   /// Whether this machine has an NVIDIA driver at all.
   gpuAvailable: boolean;
   recommendedVariant: WhispercppAcceleration;
+  /// The model this machine can hold comfortably.
+  recommendedModel: WhispercppModel;
+  machineCores: number;
+  machineRamMb: number;
+  /// Threads the server will be given when it starts.
+  threads: number;
   progress: WhisperInstallProgress | null;
   error: string | null;
 };

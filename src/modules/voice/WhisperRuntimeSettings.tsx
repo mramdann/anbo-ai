@@ -173,6 +173,24 @@ export function WhisperRuntimeSettings() {
     status?.variant != null &&
     wantedVariant != null &&
     status.variant !== wantedVariant;
+  // Say what the machine is and what suits it, so the choice is informed
+  // rather than a guess between three sizes.
+  const machineNote = useMemo(() => {
+    if (!status || status.machineCores <= 0) return null;
+    const ram =
+      status.machineRamMb > 0
+        ? `${(status.machineRamMb / 1024).toFixed(1)} GB RAM`
+        : null;
+    const suits =
+      status.recommendedModel && status.recommendedModel !== model
+        ? `${MODEL_META[status.recommendedModel].label} suits it best`
+        : "this is the best fit here";
+    return [
+      [`${status.machineCores} cores`, ram].filter(Boolean).join(", "),
+      `${status.threads} threads`,
+      suits,
+    ].join(" / ");
+  }, [status, model]);
   const hasFilesOnDisk =
     (status?.installed ?? false) || (status?.sizeBytes ?? 0) > 0;
   const progressPercent = useMemo(() => {
@@ -286,6 +304,7 @@ export function WhisperRuntimeSettings() {
               {(Object.keys(MODEL_META) as WhispercppModel[]).map((id) => (
                 <SelectItem key={id} value={id} className="text-[11px]">
                   {MODEL_META[id].label} ({MODEL_META[id].download})
+                  {id === status?.recommendedModel ? " / Recommended" : ""}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -295,6 +314,11 @@ export function WhisperRuntimeSettings() {
           {MODEL_META[model].note}
           {selectedInstalled ? " / Installed" : ""}
         </p>
+        {machineNote ? (
+          <p className="ml-18 mt-1 text-[9.5px] text-muted-foreground">
+            {machineNote}
+          </p>
+        ) : null}
 
         <div className="mt-2 flex items-center gap-2">
           <span className="w-16 shrink-0 text-[10.5px] text-muted-foreground">

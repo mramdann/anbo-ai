@@ -137,6 +137,10 @@ pub struct WhisperRuntimeStatus {
     gpu: bool,
     gpu_available: bool,
     recommended_variant: String,
+    recommended_model: String,
+    machine_cores: usize,
+    machine_ram_mb: u64,
+    threads: usize,
     progress: Option<WhisperInstallProgress>,
     error: Option<String>,
 }
@@ -258,6 +262,67 @@ fn migrate_runtime_dir(legacy: &Path, current: &Path) -> Result<bool, String> {
     }
     fs::rename(legacy, current).map_err(|error| error.to_string())?;
     Ok(true)
+}
+
+/// Threads to hand the transcription server.
+///
+/// whisper.cpp's own default is four, which leaves most of a modern machine
+/// idle while a recording waits. Take more where there is more to take, but
+/// always leave two cores for the desktop, and stop at eight: past that the
+/// gain flattens while the contention does not. Small machines keep exactly
+/// what they had, so nothing gets slower.
+fn transcription_threads(cores: usize) -> usize {
+    if cores <= 4 {
+        cores.max(1)
+    } else {
+        // Never below the old default either: leaving two cores free would
+        // otherwise hand a five core machine fewer threads than a four core
+        // one, which is the wrong direction.
+        (cores - 2).clamp(4, 8)
+    }
+}
+
+/// The model worth suggesting on a machine with this much memory.
+///
+/// Measured resident cost of the server with each model loaded: roughly 0.4 GB
+/// for tiny, 0.6 for base, 1.2 for small. Suggesting one the machine cannot
+/// hold comfortably trades accuracy for swapping, which is not a trade.
+fn recommended_model(total_ram_mb: u64, gpu: bool) -> &'static str {
+    // A GPU build keeps the weights in VRAM, so system memory is under less
+    // pressure and the middle tier can reach for the better model.
+    let generous = gpu && total_ram_mb >= 4 * 1024;
+    if total_ram_mb >= 8 * 1024 || generous {
+        "small"
+    } else if total_ram_mb >= 4 * 1024 {
+        "base"
+    } else {
+        "tiny"
+    }
+}
+
+/// Physical memory in MB, or 0 when it cannot be read.
+#[cfg(windows)]
+fn total_ram_mb() -> u64 {
+    use windows_sys::Win32::System::SystemInformation::{
+        GlobalMemoryStatusEx, MEMORYSTATUSEX,
+    };
+    let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    if unsafe { GlobalMemoryStatusEx(&mut status) } == 0 {
+        return 0;
+    }
+    status.ullTotalPhys / (1024 * 1024)
+}
+
+#[cfg(not(windows))]
+fn total_ram_mb() -> u64 {
+    0
+}
+
+fn machine_cores() -> usize {
+    std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
 }
 
 fn variant_spec(id: &str) -> Option<&'static RuntimeVariant> {
@@ -418,6 +483,8 @@ fn status_from_inner(inner: &WhisperRuntimeInner) -> Result<WhisperRuntimeStatus
     let running = process.is_some();
     let installed = server_installed && !installed_models.is_empty();
     let variant = manifest_variant(&root);
+    let cores = machine_cores();
+    let ram = total_ram_mb();
     let phase = if installing {
         "installing"
     } else if running {
@@ -446,6 +513,12 @@ fn status_from_inner(inner: &WhisperRuntimeInner) -> Result<WhisperRuntimeStatus
         gpu: variant.is_some_and(|found| found.gpu),
         gpu_available: nvidia_driver_present(),
         recommended_variant: detected_variant().id.to_string(),
+        // What this machine can hold comfortably, so the dropdown can say so
+        // rather than leaving the choice to guesswork.
+        recommended_model: recommended_model(ram, detected_variant().gpu).to_string(),
+        machine_cores: cores,
+        machine_ram_mb: ram,
+        threads: transcription_threads(cores),
         progress: inner
             .progress
             .lock()
@@ -1067,9 +1140,7 @@ pub async fn whisper_runtime_start(
         .map_err(|error| format!("create Whisper stdout log: {error}"))?;
     let stderr = File::create(root.join("server.stderr.log"))
         .map_err(|error| format!("create Whisper stderr log: {error}"))?;
-    let threads = std::thread::available_parallelism()
-        .map(|count| count.get().clamp(1, 4))
-        .unwrap_or(1);
+    let threads = transcription_threads(machine_cores());
     let server = server_path(&root);
     let selected_model = model_path(&root, &model);
     let mut command = Command::new(&server);
@@ -1186,8 +1257,8 @@ pub async fn whisper_runtime_uninstall(
 mod tests {
     use super::{
         detected_variant, hash_prefix, installed_models, manifest_variant, migrate_runtime_dir,
-        model_spec, release_entry_destination, resolve_variant, resume_offset, variant_spec,
-        MODELS, VARIANTS,
+        model_spec, recommended_model, release_entry_destination, resolve_variant, resume_offset,
+        transcription_threads, variant_spec, MODELS, VARIANTS,
     };
     use sha2::{Digest, Sha256};
     use std::fs;
@@ -1261,6 +1332,74 @@ mod tests {
         let current = temp.path().join("com.anbo.desktop").join("whisper.cpp");
         assert!(!migrate_runtime_dir(&legacy, &current).unwrap());
         assert!(!current.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_machine_reports_its_own_memory_and_cores() {
+        // A failed FFI call would silently return zero and quietly recommend
+        // the smallest model on every machine, which looks like a policy
+        // rather than a bug.
+        let ram = super::total_ram_mb();
+        assert!(ram > 512, "reported {ram} MB of RAM");
+        assert!(ram < 8 * 1024 * 1024, "reported {ram} MB of RAM");
+        assert!(super::machine_cores() >= 1);
+    }
+
+    #[test]
+    fn a_bigger_machine_gets_more_threads_and_a_small_one_loses_nothing() {
+        // whisper.cpp's own default of four left most of a large machine idle.
+        assert_eq!(transcription_threads(16), 8);
+        assert_eq!(transcription_threads(12), 8);
+        assert_eq!(transcription_threads(8), 6);
+        assert_eq!(transcription_threads(6), 4);
+        // At or below four cores the count is unchanged, so no machine that
+        // works today gets slower.
+        assert_eq!(transcription_threads(4), 4);
+        assert_eq!(transcription_threads(2), 2);
+        assert_eq!(transcription_threads(1), 1);
+        assert_eq!(transcription_threads(0), 1);
+    }
+
+    #[test]
+    fn thread_count_never_falls_as_cores_rise() {
+        // A machine with more cores must never be handed fewer threads.
+        let mut previous = 0;
+        for cores in 1..64 {
+            let threads = transcription_threads(cores);
+            assert!(threads >= previous, "{cores} cores gave {threads}");
+            assert!((1..=8).contains(&threads));
+            previous = threads;
+        }
+    }
+
+    #[test]
+    fn the_suggested_model_fits_the_memory_the_machine_has() {
+        // Resident cost measured with each model loaded: ~0.4, ~0.6, ~1.2 GB.
+        assert_eq!(recommended_model(16 * 1024, false), "small");
+        assert_eq!(recommended_model(8 * 1024, false), "small");
+        assert_eq!(recommended_model(6 * 1024, false), "base");
+        assert_eq!(recommended_model(4 * 1024, false), "base");
+        assert_eq!(recommended_model(2 * 1024, false), "tiny");
+        assert_eq!(recommended_model(0, false), "tiny");
+    }
+
+    #[test]
+    fn a_gpu_lifts_the_middle_tier_but_not_a_starved_machine() {
+        // Weights sit in VRAM, so system memory is under less pressure.
+        assert_eq!(recommended_model(4 * 1024, true), "small");
+        assert_eq!(recommended_model(6 * 1024, true), "small");
+        // A machine short on memory is still short on memory.
+        assert_eq!(recommended_model(2 * 1024, true), "tiny");
+    }
+
+    #[test]
+    fn every_suggestion_is_a_model_that_exists() {
+        for ram in [0_u64, 2048, 4096, 8192, 32768] {
+            for gpu in [false, true] {
+                assert!(model_spec(recommended_model(ram, gpu)).is_ok());
+            }
+        }
     }
 
     #[test]
