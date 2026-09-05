@@ -305,9 +305,16 @@ jobs:
           EXE_FILE=$(basename "$SIG_FILE" .sig)
           DOWNLOAD="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
 
+          # tauri-action leaves notes empty, and the updater dialog shows this
+          # field as the changelog. Without it the release lands with nothing
+          # to read but a version number.
+          NOTES=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"             --json body --jq '.body // ""' | head -c 8000)
+          test -n "$NOTES"             || { echo "Release body is empty; the updater would show no changelog"; exit 1; }
+
           jq -e 'has("version") and has("platforms")' latest.json >/dev/null
-          jq --arg sig "$EXE_SIG" --arg url "$DOWNLOAD/$EXE_FILE" '
-            .platforms["windows-x86_64"] += {signature: $sig, url: $url}
+          jq --arg sig "$EXE_SIG" --arg url "$DOWNLOAD/$EXE_FILE"              --arg notes "$NOTES" '
+            .notes = $notes
+            | .platforms["windows-x86_64"] += {signature: $sig, url: $url}
             | .platforms["windows-x86_64-nsis"] += {signature: $sig, url: $url}
             | del(.platforms["windows-x86_64-msi"])
           ' latest.json > latest.json.tmp
@@ -357,6 +364,7 @@ jobs:
             and (.platforms["windows-x86_64-nsis"].signature | length > 0)
             and (.platforms["windows-x86_64"].url | endswith("_x64-setup.exe"))
             and (.platforms["windows-x86_64-nsis"].url | endswith("_x64-setup.exe"))
+            and (.notes | length > 0)
           ' final-assets/latest.json >/dev/null
 
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
