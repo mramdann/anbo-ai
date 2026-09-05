@@ -165,7 +165,6 @@ import {
   writeToSession,
 } from "@/modules/terminal";
 import { ThemeProvider, useThemeFileEditing } from "@/modules/theme";
-import { UpdaterDialog } from "@/modules/updater";
 import {
   AnboVoice,
   captureDomVoiceTarget,
@@ -2788,7 +2787,6 @@ export default function App() {
                 onCreated={(path) => openFileTab(path)}
               />
 
-              <UpdaterDialog />
 
               <CloseDialogs
                 tabs={tabs}

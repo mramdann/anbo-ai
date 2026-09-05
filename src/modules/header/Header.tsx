@@ -1,3 +1,4 @@
+import { UpdateButton } from "@/modules/updater";
 import { Button } from "@/components/ui/button";
 import { WindowControls } from "@/components/WindowControls";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
@@ -145,6 +146,7 @@ export function Header({
         data-tauri-drag-region
       >
         {spaceSwitcher}
+        <UpdateButton />
         <div data-tauri-drag-region className="h-full min-w-2 flex-1" />
       </div>
 

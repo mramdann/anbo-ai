@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   isNewer,
   isUpdaterPlatformSupported,
-  shouldShowUpdate,
+  shouldOfferUpdate,
+  type UpdaterStatus,
 } from "./useUpdater";
 
 describe("isNewer", () => {
@@ -35,32 +36,44 @@ describe("isNewer", () => {
   });
 });
 
-describe("shouldShowUpdate", () => {
-  it("surfaces an update when nothing has been dismissed", () => {
-    expect(shouldShowUpdate("0.12.1", null, false)).toBe(true);
-  });
-
-  it("suppresses an automatic poll for the exact dismissed version", () => {
-    // The core fix: polling every CHECK_INTERVAL_MS must not re-open the modal
-    // for a version the user already deferred with "Later".
-    expect(shouldShowUpdate("0.12.1", "0.12.1", false)).toBe(false);
-  });
-
-  it("re-arms when a newer version than the dismissed one ships", () => {
-    expect(shouldShowUpdate("0.12.2", "0.12.1", false)).toBe(true);
-  });
-
-  it("always surfaces the update on a manual check, even if dismissed", () => {
-    // The Settings "Check for updates" button calls check({ manual: true }) and
-    // must never be silenced by a prior dismissal of the same version.
-    expect(shouldShowUpdate("0.12.1", "0.12.1", true)).toBe(true);
-  });
-});
-
 describe("isUpdaterPlatformSupported", () => {
   it("matches the platform built by the release workflow", () => {
     expect(isUpdaterPlatformSupported("windows")).toBe(true);
     expect(isUpdaterPlatformSupported("linux")).toBe(false);
     expect(isUpdaterPlatformSupported("macos")).toBe(false);
+  });
+});
+
+describe("shouldOfferUpdate", () => {
+  const update = { version: "0.23.0" } as unknown as never;
+
+  it("offers the button once a release is found", () => {
+    expect(shouldOfferUpdate({ kind: "available", update })).toBe(true);
+  });
+
+  it("keeps the button through the download and the restart prompt", () => {
+    // It is the only route back to the dialog, so losing it mid-update would
+    // leave no way to see progress or to restart.
+    expect(
+      shouldOfferUpdate({
+        kind: "downloading",
+        downloaded: 1,
+        contentLength: 2,
+      }),
+    ).toBe(true);
+    expect(shouldOfferUpdate({ kind: "ready" })).toBe(true);
+  });
+
+  it("shows nothing when there is no update to offer", () => {
+    const quiet: UpdaterStatus[] = [
+      { kind: "idle" },
+      { kind: "checking" },
+      { kind: "uptodate" },
+      { kind: "unsupported" },
+      { kind: "error", message: "boom" },
+    ];
+    for (const status of quiet) {
+      expect(shouldOfferUpdate(status)).toBe(false);
+    }
   });
 });

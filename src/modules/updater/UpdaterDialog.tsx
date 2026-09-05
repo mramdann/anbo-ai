@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import { lazy, Suspense } from "react";
-import { useUpdater } from "./useUpdater";
+import type { UpdaterStatus } from "./useUpdater";
 
 const Streamdown = lazy(() =>
   import("streamdown").then((module) => ({ default: module.Streamdown })),
@@ -21,14 +21,21 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function UpdaterDialog() {
-  const { status, install, dismiss } = useUpdater();
+type Props = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  status: UpdaterStatus;
+  install: () => void | Promise<void>;
+};
 
-  const open =
-    status.kind === "available" ||
-    status.kind === "downloading" ||
-    status.kind === "ready";
-
+/**
+ * The update details, shown only when the user asks for them.
+ *
+ * This used to open itself the moment a release was found, which interrupted
+ * whatever was on screen to deliver news that was never urgent. It is now
+ * opened from the button in the header.
+ */
+export function UpdaterDialog({ open, onOpenChange, status, install }: Props) {
   if (!open) return null;
 
   const update = status.kind === "available" ? status.update : null;
@@ -41,16 +48,7 @@ export function UpdaterDialog() {
       : null;
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(o) => {
-        if (
-          !o &&
-          status.kind === "available"
-        )
-          dismiss();
-      }}
-    >
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[440px]">
         <DialogHeader>
           <DialogTitle>
@@ -91,7 +89,13 @@ export function UpdaterDialog() {
         <DialogFooter>
           {status.kind === "available" && (
             <>
-              <Button variant="ghost" size="sm" onClick={dismiss}>
+              {/* Closing leaves the header button in place, so the update is
+                  never lost, only postponed. */}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onOpenChange(false)}
+              >
                 Later
               </Button>
               <Button size="sm" onClick={() => void install()}>

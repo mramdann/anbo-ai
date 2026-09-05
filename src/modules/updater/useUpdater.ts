@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from "react";
 import { IS_WINDOWS } from "@/lib/platform";
 
 const LAST_CHECK_KEY = "anbo:updater:last-check";
-const DISMISSED_VERSION_KEY = "anbo:updater:dismissed-version";
 const CHECK_INTERVAL_MS = 30 * 60 * 1000;
 export type UpdaterStatus =
   | { kind: "idle" }
@@ -37,17 +36,18 @@ export function isNewer(remote: string, current: string): boolean {
 }
 
 /**
- * Whether an available update should be surfaced to the user. Automatic polling
- * suppresses a version the user explicitly deferred with "Later"; a manual check
- * always shows it, and any newer version (different version string) re-arms it.
+ * Whether the header should carry the update button.
+ *
+ * A download in flight and a finished one both keep it: the button is the only
+ * way back to the dialog, and losing it mid-update would strand the user with
+ * no way to see progress or restart.
  */
-export function shouldShowUpdate(
-  foundVersion: string,
-  dismissedVersion: string | null,
-  manual?: boolean,
-): boolean {
-  if (manual) return true;
-  return foundVersion !== dismissedVersion;
+export function shouldOfferUpdate(status: UpdaterStatus): boolean {
+  return (
+    status.kind === "available" ||
+    status.kind === "downloading" ||
+    status.kind === "ready"
+  );
 }
 
 export function isUpdaterPlatformSupported(platform: string): boolean {
@@ -77,15 +77,11 @@ export function useUpdater({ autoCheck = true }: HookOptions = {}) {
       if (Date.now() - last < CHECK_INTERVAL_MS) return;
     }
     setStatus({ kind: "checking" });
-    const dismissedVersion = localStorage.getItem(DISMISSED_VERSION_KEY);
     try {
       const update = await check();
       if (update) {
-        if (!shouldShowUpdate(update.version, dismissedVersion, manual)) {
-          // Deferred this exact version; stay quiet until a newer one ships.
-          setStatus({ kind: "idle" });
-          return;
-        }
+        // Nothing here interrupts anyone: an available update only lights the
+        // button in the header, and the user opens it when they choose to.
         setStatus({ kind: "available", update });
       } else {
         localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
@@ -124,13 +120,6 @@ export function useUpdater({ autoCheck = true }: HookOptions = {}) {
     }
   }, [status]);
 
-  const dismiss = useCallback(() => {
-    if (status.kind === "available") {
-      localStorage.setItem(DISMISSED_VERSION_KEY, status.update.version);
-    }
-    setStatus({ kind: "idle" });
-  }, [status]);
-
   useEffect(() => {
     if (!autoCheck || !IS_WINDOWS) return;
     void runCheck();
@@ -140,5 +129,5 @@ export function useUpdater({ autoCheck = true }: HookOptions = {}) {
     return () => window.clearInterval(interval);
   }, [autoCheck, runCheck]);
 
-  return { status, check: runCheck, install, dismiss };
+  return { status, check: runCheck, install };
 }
