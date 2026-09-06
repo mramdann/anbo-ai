@@ -2467,12 +2467,16 @@ export default function App() {
       <TooltipProvider>
         <div className="anbo-app-shell relative flex h-full flex-col overflow-hidden bg-background text-foreground">
           {showLanding ? (
-            <LandingPage
-              onPick={handlePickFolder}
-              onUseHome={handleUseHome}
-              home={home}
-              showWindowControls
-            />
+            // The same zoom wrapper <main> carries, so the first-run page
+            // follows the UI zoom setting like everything after it does.
+            <div className="zoom-content flex min-h-0 flex-1 flex-col">
+              <LandingPage
+                onPick={handlePickFolder}
+                onUseHome={handleUseHome}
+                home={home}
+                showWindowControls
+              />
+            </div>
           ) : (
             <>
               {!zenMode && (
