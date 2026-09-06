@@ -89,6 +89,39 @@ let recyclerEl: HTMLDivElement | null = null;
 let adapter: SlotAdapter | null = null;
 let configuredFont: RendererFont | null = null;
 
+// Glyphs are drawn on a canvas and kept in a texture atlas shared by every
+// terminal. A glyph drawn while its font face is not available is drawn with
+// the fallback face and stays that way: the atlas never hears that the real
+// face has arrived, so only cells drawn afresh (a selection, new output) come
+// out right. Two guards. Whenever the document finishes loading fonts, drop
+// the cached glyphs and repaint. And each time a renderer is attached, ask
+// for the terminal font, so a face that is declared but not loaded (the dev
+// server re-declares them on every stylesheet edit) is fetched rather than
+// silently substituted — the fetch ends in the same loadingdone event.
+function refreshGlyphsAfterFontLoad(): void {
+  for (const slot of slots) {
+    if (slot.currentLeafId === null || slot.parked) continue;
+    try {
+      slot.term.clearTextureAtlas();
+      slot.term.refresh(0, slot.term.rows - 1);
+    } catch {}
+  }
+}
+
+function requestTerminalFont(term: Terminal): void {
+  const fonts = typeof document === "undefined" ? undefined : document.fonts;
+  if (!fonts?.load) return;
+  const { fontFamily, fontSize, fontWeight } = term.options;
+  if (!fontFamily) return;
+  void fonts
+    .load(`${fontWeight ?? 400} ${fontSize ?? 14}px ${fontFamily}`)
+    .catch(() => {});
+}
+
+if (typeof document !== "undefined" && document.fonts?.addEventListener) {
+  document.fonts.addEventListener("loadingdone", refreshGlyphsAfterFontLoad);
+}
+
 type RendererFont = {
   fontFamily: string;
   fontWeight: string;
@@ -1059,6 +1092,7 @@ function attachWebgl(slot: Slot): void {
   const before = new Set<HTMLCanvasElement>(
     elem.querySelectorAll<HTMLCanvasElement>("canvas"),
   );
+  requestTerminalFont(slot.term);
   try {
     const webgl = new WebglAddon();
     webgl.onContextLoss(() => {

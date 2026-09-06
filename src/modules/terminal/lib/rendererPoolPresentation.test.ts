@@ -30,7 +30,31 @@ describe("terminal window restore", () => {
   it("repaints a parked terminal without invalidating the shared atlas", () => {
     expect(source).toContain("scheduleRevealRepair(slot, leafId)");
     expect(source).toContain("slot.currentLeafId !== leafId || slot.parked");
-    expect(source).not.toContain("clearTextureAtlas");
+    expect(
+      sourceBetween(
+        "function scheduleRevealRepair",
+        "function cancelRevealRepair",
+      ),
+    ).not.toContain("clearTextureAtlas");
+  });
+
+  it("drops cached glyphs once the document finishes loading fonts", () => {
+    // A glyph drawn while its face was unavailable is drawn with the fallback
+    // face and cached; nothing but a fresh rasterization ever corrects it.
+    expect(source).toContain(
+      'document.fonts.addEventListener("loadingdone", refreshGlyphsAfterFontLoad)',
+    );
+    const refresh = sourceBetween(
+      "function refreshGlyphsAfterFontLoad",
+      "function requestTerminalFont",
+    );
+    expect(refresh).toContain("slot.term.clearTextureAtlas()");
+    expect(refresh).toContain("slot.term.refresh(0, slot.term.rows - 1)");
+    // Attaching a renderer asks for the font, so a declared-but-unloaded face
+    // is fetched instead of substituted.
+    expect(
+      sourceBetween("function attachWebgl", "function disposeSlotWebgl"),
+    ).toContain("requestTerminalFont(slot.term)");
   });
 
   it("repairs a stale WebGL frame after a visible pane resize settles", () => {
