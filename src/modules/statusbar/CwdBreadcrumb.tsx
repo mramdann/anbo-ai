@@ -1,4 +1,3 @@
-import { Badge } from "@/components/ui/badge";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -24,7 +23,16 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
+import { DENSE_MENU, DENSE_MENU_ICON, DENSE_MENU_ITEM } from "./lib/denseMenu";
 import { segmentsFromCwd } from "./lib/pathUtils";
+
+// One chip per path segment, on the status bar's own 11px scale: a hairline
+// border, 20px tall, so the row reads as a path rather than a row of pills.
+const CHIP =
+  "inline-flex h-5 items-center gap-1 rounded-md border border-border/60 px-1.5 text-[11px] leading-none text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
+// No gap of its own: the chevron box between two chips is all the room
+// they get.
+const LIST = "gap-0 text-[11px] sm:gap-0";
 
 type Props = {
   cwd: string | null;
@@ -54,7 +62,7 @@ export function CwdBreadcrumb({ cwd, filePath, home, onCd }: Props) {
     const middle = segments.slice(1);
     return (
       <Breadcrumb>
-        <BreadcrumbList className="gap-1 text-xs sm:gap-1.5">
+        <BreadcrumbList className={LIST}>
           {first ? (
             <BreadcrumbSegment
               label={first.label}
@@ -75,7 +83,9 @@ export function CwdBreadcrumb({ cwd, filePath, home, onCd }: Props) {
             </span>
           ))}
           <BreadcrumbItem>
-            <BreadcrumbPage className="text-foreground">{name}</BreadcrumbPage>
+            <BreadcrumbPage className="px-1 text-[11px] text-foreground">
+              {name}
+            </BreadcrumbPage>
           </BreadcrumbItem>
         </BreadcrumbList>
       </Breadcrumb>
@@ -84,7 +94,7 @@ export function CwdBreadcrumb({ cwd, filePath, home, onCd }: Props) {
 
   if (!cwd) {
     return (
-      <span className="text-xs text-muted-foreground/70">no directory</span>
+      <span className="text-[11px] text-muted-foreground/70">no directory</span>
     );
   }
 
@@ -96,7 +106,7 @@ export function CwdBreadcrumb({ cwd, filePath, home, onCd }: Props) {
   const middleParents = parents.slice(1);
   return (
     <Breadcrumb>
-      <BreadcrumbList className="gap-1 text-xs sm:gap-1.5">
+      <BreadcrumbList className={LIST}>
         {firstParent ? (
           <BreadcrumbSegment
             label={firstParent.label}
@@ -141,24 +151,19 @@ function BreadcrumbSegment({
     <>
       <BreadcrumbItem>
         <BreadcrumbLink asChild>
-          <button type="button" onClick={onClick} className="cursor-pointer">
-            <Badge
-              variant="outline"
-              className="gap-1 text-muted-foreground hover:text-foreground"
-            >
-              {isHome ? (
-                <HugeiconsIcon
-                  icon={Home03Icon}
-                  className="size-3"
-                  strokeWidth={1.75}
-                />
-              ) : null}
-              {isHome ? "Home" : label}
-            </Badge>
+          <button type="button" onClick={onClick} className={CHIP}>
+            {isHome ? (
+              <HugeiconsIcon
+                icon={Home03Icon}
+                className="size-3"
+                strokeWidth={1.75}
+              />
+            ) : null}
+            {isHome ? "Home" : label}
           </button>
         </BreadcrumbLink>
       </BreadcrumbItem>
-      <BreadcrumbSeparator className="[&>svg]:size-3" />
+      <BreadcrumbSeparator className="size-3.5 opacity-60 [&>svg]:size-3" />
     </>
   );
 }
@@ -199,7 +204,7 @@ function CurrentSegmentDropdown({
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
-        <BreadcrumbPage className="flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-foreground hover:bg-accent">
+        <BreadcrumbPage className="flex h-5 cursor-pointer items-center gap-1 rounded-md px-1.5 text-[11px] leading-none text-foreground hover:bg-accent">
           {label === "~" ? (
             <>
               <HugeiconsIcon
@@ -219,26 +224,30 @@ function CurrentSegmentDropdown({
           />
         </BreadcrumbPage>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="max-h-72 overflow-y-auto">
+      <DropdownMenuContent
+        align="start"
+        className={`${DENSE_MENU} max-h-72 overflow-y-auto`}
+      >
         {children === null ? (
-          <div className="px-2 py-1.5 text-xs text-muted-foreground">
+          <div className="px-2 py-1 text-xs text-muted-foreground">
             Loading…
           </div>
         ) : children.length === 0 ? (
-          <div className="px-2 py-1.5 text-xs text-muted-foreground">
+          <div className="px-2 py-1 text-xs text-muted-foreground">
             {error ?? "No subfolders"}
           </div>
         ) : (
           children.map((name) => (
             <DropdownMenuItem
               key={name}
+              className={DENSE_MENU_ITEM}
               onSelect={() =>
                 onCd(path.endsWith("/") ? `${path}${name}` : `${path}/${name}`)
               }
             >
               <HugeiconsIcon
                 icon={Folder01Icon}
-                className="size-3.5 text-muted-foreground"
+                className={DENSE_MENU_ICON}
                 strokeWidth={1.75}
               />
               {name}
@@ -264,8 +273,8 @@ function CollapsedSegments({
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              title="Show hidden folders"
-              className="flex items-center rounded-sm px-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+              title="Folders between"
+              className="flex h-5 items-center rounded-md px-1 text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <HugeiconsIcon
                 icon={MoreHorizontalIcon}
@@ -274,15 +283,16 @@ function CollapsedSegments({
               />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="min-w-44">
+          <DropdownMenuContent align="start" className={DENSE_MENU}>
             {segments.map((s) => (
               <DropdownMenuItem
                 key={s.fullPath}
+                className={DENSE_MENU_ITEM}
                 onSelect={() => onCd(s.fullPath)}
               >
                 <HugeiconsIcon
                   icon={s.isHome ? Home03Icon : Folder01Icon}
-                  className="size-3.5 text-muted-foreground"
+                  className={DENSE_MENU_ICON}
                   strokeWidth={1.75}
                 />
                 <span className="truncate">{s.isHome ? "Home" : s.label}</span>
@@ -291,7 +301,7 @@ function CollapsedSegments({
           </DropdownMenuContent>
         </DropdownMenu>
       </BreadcrumbItem>
-      <BreadcrumbSeparator className="[&>svg]:size-3" />
+      <BreadcrumbSeparator className="size-3.5 opacity-60 [&>svg]:size-3" />
     </span>
   );
 }

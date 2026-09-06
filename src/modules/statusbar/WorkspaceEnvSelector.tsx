@@ -13,6 +13,12 @@ import {
 } from "@/modules/workspace";
 import { Refresh01Icon, ServerStack03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  DENSE_MENU,
+  DENSE_MENU_ICON,
+  DENSE_MENU_ITEM,
+  DENSE_MENU_SEPARATOR,
+} from "./lib/denseMenu";
 
 type Props = {
   onSelect: (env: WorkspaceEnv) => void;
@@ -51,13 +57,16 @@ export function WorkspaceEnvSelector({ onSelect }: Props) {
           <span className="max-w-28 truncate">{label}</span>
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-48">
-        <DropdownMenuItem onSelect={() => onSelect(LOCAL_WORKSPACE)}>
+      <DropdownMenuContent align="start" className={DENSE_MENU}>
+        <DropdownMenuItem
+          className={DENSE_MENU_ITEM}
+          onSelect={() => onSelect(LOCAL_WORKSPACE)}
+        >
           Windows Local
         </DropdownMenuItem>
-        <DropdownMenuSeparator />
+        <DropdownMenuSeparator className={DENSE_MENU_SEPARATOR} />
         {distros.length === 0 ? (
-          <DropdownMenuItem disabled>
+          <DropdownMenuItem className={DENSE_MENU_ITEM} disabled>
             {loading
               ? "Loading WSL distros..."
               : error
@@ -68,15 +77,24 @@ export function WorkspaceEnvSelector({ onSelect }: Props) {
           distros.map((distro) => (
             <DropdownMenuItem
               key={distro.name}
+              className={DENSE_MENU_ITEM}
               onSelect={() => onSelect({ kind: "wsl", distro: distro.name })}
             >
               WSL: {distro.name}
             </DropdownMenuItem>
           ))
         )}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => void refreshDistros()}>
-          <HugeiconsIcon icon={Refresh01Icon} size={13} strokeWidth={1.75} />
+        <DropdownMenuSeparator className={DENSE_MENU_SEPARATOR} />
+        <DropdownMenuItem
+          className={DENSE_MENU_ITEM}
+          onSelect={() => void refreshDistros()}
+        >
+          <HugeiconsIcon
+            icon={Refresh01Icon}
+            size={13}
+            strokeWidth={1.75}
+            className={DENSE_MENU_ICON}
+          />
           Refresh
         </DropdownMenuItem>
       </DropdownMenuContent>
