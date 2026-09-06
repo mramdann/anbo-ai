@@ -179,16 +179,34 @@ import { useWorkspaceEnvStore, type WorkspaceEnv } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import type { SearchAddon } from "@xterm/addon-search";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { CloseDialogs } from "./components/CloseDialogs";
-import { LandingPage } from "./components/LandingPage";
 import {
   TOGGLE_BLOCK_INPUT_EVENT,
   WorkspaceInputBar,
 } from "./components/WorkspaceInputBar";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
-import { WorkspaceWelcome } from "./components/WorkspaceWelcome";
+
+// The launch deck and the landing page are what an empty workspace or a first
+// run shows. A workspace with tabs never needs either, so they stay out of the
+// startup bundle and arrive the moment a screen actually calls for them.
+const LandingPage = lazy(() =>
+  import("./components/LandingPage").then((m) => ({ default: m.LandingPage })),
+);
+const WorkspaceWelcome = lazy(() =>
+  import("./components/WorkspaceWelcome").then((m) => ({
+    default: m.WorkspaceWelcome,
+  })),
+);
 import { useAppCloseGuard } from "./hooks/useAppCloseGuard";
 import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
 import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
@@ -2498,12 +2516,14 @@ export default function App() {
             // The same zoom wrapper <main> carries, so the first-run page
             // follows the UI zoom setting like everything after it does.
             <div className="zoom-content flex min-h-0 flex-1 flex-col">
-              <LandingPage
-                onPick={handlePickFolder}
-                onUseHome={handleUseHome}
-                home={home}
-                showWindowControls
-              />
+              <Suspense fallback={null}>
+                <LandingPage
+                  onPick={handlePickFolder}
+                  onUseHome={handleUseHome}
+                  home={home}
+                  showWindowControls
+                />
+              </Suspense>
             </div>
           ) : (
             <>
@@ -2696,33 +2716,37 @@ export default function App() {
                         ) : null}
                         {spacesHydrated && showWorkspaceWelcome ? (
                           <div className="absolute inset-0 z-10 bg-background">
-                            {activeSpaceRoot ? (
-                              <WorkspaceWelcome
-                                name={activeSpaceName}
-                                folder={activeSpaceRoot}
-                                branch={sourceControl.status?.branch ?? null}
-                                ahead={sourceControl.ahead}
-                                behind={sourceControl.behind}
-                                changedCount={sourceControl.changedCount}
-                                onNew={() => newTab(activeSpaceRoot)}
-                                onNewBlock={() => newBlockTab(activeSpaceRoot)}
-                                onNewPrivate={() =>
-                                  newPrivateTab(activeSpaceRoot)
-                                }
-                                onNewBrowser={() => openBrowserTab("")}
-                                onNewEditor={() => setNewEditorOpen(true)}
-                                onNewGitGraph={openGitGraphFromContext}
-                                onLaunchAgents={launchAgentGroup}
-                              />
-                            ) : (
-                              <LandingPage
-                                title={activeSpaceName ?? "New workspace"}
-                                description="Choose a folder for this workspace before opening tabs."
-                                onPick={handleConfigureActiveSpace}
-                                onUseHome={handleUseHomeForActiveSpace}
-                                home={home}
-                              />
-                            )}
+                            <Suspense fallback={null}>
+                              {activeSpaceRoot ? (
+                                <WorkspaceWelcome
+                                  name={activeSpaceName}
+                                  folder={activeSpaceRoot}
+                                  branch={sourceControl.status?.branch ?? null}
+                                  ahead={sourceControl.ahead}
+                                  behind={sourceControl.behind}
+                                  changedCount={sourceControl.changedCount}
+                                  onNew={() => newTab(activeSpaceRoot)}
+                                  onNewBlock={() =>
+                                    newBlockTab(activeSpaceRoot)
+                                  }
+                                  onNewPrivate={() =>
+                                    newPrivateTab(activeSpaceRoot)
+                                  }
+                                  onNewBrowser={() => openBrowserTab("")}
+                                  onNewEditor={() => setNewEditorOpen(true)}
+                                  onNewGitGraph={openGitGraphFromContext}
+                                  onLaunchAgents={launchAgentGroup}
+                                />
+                              ) : (
+                                <LandingPage
+                                  title={activeSpaceName ?? "New workspace"}
+                                  description="Choose a folder for this workspace before opening tabs."
+                                  onPick={handleConfigureActiveSpace}
+                                  onUseHome={handleUseHomeForActiveSpace}
+                                  home={home}
+                                />
+                              )}
+                            </Suspense>
                           </div>
                         ) : null}
                       </div>
