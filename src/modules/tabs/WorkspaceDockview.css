@@ -53,7 +53,11 @@
 }
 
 .dockview-theme-anbo-workspace .dv-tabs-container {
-  gap: 8px;
+  /* The tabs carry their spacing in their own padding; this is the other half
+   * of the shoulder room for the first and last of them. Padding on the
+   * scroll box itself, since that box is what clips. */
+  gap: 0;
+  padding: 0 4px;
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
@@ -77,7 +81,12 @@
 .dockview-theme-anbo-workspace .dv-tab {
   height: 33px;
   max-width: 320px;
-  padding: 0;
+  /* Half the room a shoulder needs on either side. An active tab draws its
+   * shoulders eight pixels outside its surface; between two tabs the four
+   * pixels each contributes add up to exactly that, and at the ends of the
+   * strip the strip's own padding supplies the other half — so no tab is ever
+   * clipped, and the spacing stays what it was. */
+  padding: 0 4px;
   border-radius: 8px 8px 0 0;
   background: transparent;
 }
@@ -90,25 +99,6 @@
 .dockview-theme-anbo-workspace .dv-tab:focus-visible {
   outline: 1px solid var(--ring);
   outline-offset: -1px;
-}
-
-@keyframes anbo-workspace-active-tab-focus-pulse {
-  0%,
-  100% {
-    box-shadow:
-      inset 0 0.5px 0 color-mix(in oklab, var(--primary) 38%, transparent),
-      0 2px 0 var(--anbo-chrome-tab-surface),
-      0 -1px 2px color-mix(in oklab, var(--foreground) 4%, transparent),
-      0 0 0 0 color-mix(in oklab, var(--primary) 0%, transparent);
-  }
-
-  50% {
-    box-shadow:
-      inset 0 0.5px 0 color-mix(in oklab, var(--primary) 88%, transparent),
-      0 2px 0 var(--anbo-chrome-tab-surface),
-      0 -1px 4px color-mix(in oklab, var(--primary) 20%, transparent),
-      0 0 0 2px color-mix(in oklab, var(--primary) 8%, transparent);
-  }
 }
 
 .dockview-theme-anbo-workspace .dv-tab.dv-active-tab {
@@ -124,47 +114,80 @@
 }
 
 .dockview-theme-anbo-workspace
+  .dv-groupview.dv-active-group
+  > .dv-tabs-and-actions-container
   .dv-tab.dv-active-tab
   .anbo-workspace-dockview-tab {
+  /* Only the focused group's active tab gets any of this. With several
+   * panels open every group has an active tab, and painting them all left
+   * nothing to say which one the keys go to; the others now look like any
+   * other tab, and the panel beneath says what they show. */
   --anbo-chrome-tab-surface: var(--background);
 
   position: relative;
   z-index: 2;
   border-radius: 8px 8px 0 0;
   background: var(--anbo-chrome-tab-surface);
+  /* The accent line along the top edge — a border rather than an inset
+   * shadow, so it keeps its weight round the corners — with a glow above it.
+   * Two pixels of the same surface below join the tab to its content as one
+   * shape. */
+  border-top: 2px solid var(--primary);
   box-shadow:
-    inset 0 1px 0 color-mix(in oklab, var(--foreground) 10%, transparent),
     0 2px 0 var(--anbo-chrome-tab-surface),
-    0 -1px 2px color-mix(in oklab, var(--foreground) 4%, transparent);
+    0 -1px 6px color-mix(in oklab, var(--primary) 14%, transparent);
+  animation: anbo-workspace-active-tab-focus-pulse 1.8s ease-in-out infinite;
   transition:
     background-color var(--dur-base) var(--ease-soft),
-    box-shadow var(--dur-base) var(--ease-soft);
-}
-
-.dockview-theme-anbo-workspace
-  .dv-tab.dv-active-tab
-  .anbo-workspace-dockview-tab[data-workspace-dockview-tab-kind="terminal"] {
-  --anbo-chrome-tab-surface: var(--terminal-background);
-}
-
-.dockview-theme-anbo-workspace
-  .dv-tab.dv-active-tab
-  .anbo-workspace-dockview-tab[data-workspace-dockview-tab-kind="browser"] {
-  --anbo-chrome-tab-surface: var(--card);
+    border-color var(--dur-base) var(--ease-soft);
 }
 
 .dockview-theme-anbo-workspace
   .dv-groupview.dv-active-group
   > .dv-tabs-and-actions-container
   .dv-tab.dv-active-tab
-  .anbo-workspace-dockview-tab {
-  animation: anbo-workspace-active-tab-focus-pulse 1.8s ease-in-out infinite;
+  .anbo-workspace-dockview-tab[data-workspace-dockview-tab-kind="terminal"] {
+  --anbo-chrome-tab-surface: var(--terminal-background);
 }
 
 .dockview-theme-anbo-workspace
+  .dv-groupview.dv-active-group
+  > .dv-tabs-and-actions-container
+  .dv-tab.dv-active-tab
+  .anbo-workspace-dockview-tab[data-workspace-dockview-tab-kind="browser"] {
+  --anbo-chrome-tab-surface: var(--card);
+}
+
+/* The focused tab breathes: the line brightens and a faint ring swells, so
+ * a glance finds the panel the keys go to. Border colour and shadow only; the
+ * surface never changes and the shape never moves. */
+@keyframes anbo-workspace-active-tab-focus-pulse {
+  0%,
+  100% {
+    border-top-color: color-mix(in oklab, var(--primary) 60%, transparent);
+    box-shadow:
+      0 2px 0 var(--anbo-chrome-tab-surface),
+      0 -1px 6px color-mix(in oklab, var(--primary) 14%, transparent),
+      0 0 0 0 color-mix(in oklab, var(--primary) 0%, transparent);
+  }
+
+  50% {
+    border-top-color: var(--primary);
+    box-shadow:
+      0 2px 0 var(--anbo-chrome-tab-surface),
+      0 -1px 8px color-mix(in oklab, var(--primary) 34%, transparent),
+      0 0 0 2px color-mix(in oklab, var(--primary) 9%, transparent);
+  }
+}
+
+.dockview-theme-anbo-workspace
+  .dv-groupview.dv-active-group
+  > .dv-tabs-and-actions-container
   .dv-tab.dv-active-tab
   .anbo-workspace-dockview-tab::before,
 .dockview-theme-anbo-workspace
+  .dv-groupview.dv-active-group
+  > .dv-tabs-and-actions-container
   .dv-tab.dv-active-tab
   .anbo-workspace-dockview-tab::after {
   position: absolute;
@@ -178,27 +201,45 @@
 }
 
 .dockview-theme-anbo-workspace
+  .dv-groupview.dv-active-group
+  > .dv-tabs-and-actions-container
   .dv-tab.dv-active-tab
   .anbo-workspace-dockview-tab::before {
   left: -8px;
-  border-bottom-right-radius: 8px;
-  background: transparent;
-  box-shadow: 4px 4px 0 4px var(--anbo-chrome-tab-surface);
+  /* A square of surface with a quarter circle cut from its outer top corner.
+   * Drawn as a gradient rather than a shadow cast from a rounded box: the
+   * shadow trick left seams wherever the UI zoom made the pixels fractional. */
+  background: radial-gradient(
+    circle at 0 0,
+    transparent 7.5px,
+    var(--anbo-chrome-tab-surface) 8.5px
+  );
 }
 
 .dockview-theme-anbo-workspace
+  .dv-groupview.dv-active-group
+  > .dv-tabs-and-actions-container
   .dv-tab.dv-active-tab
   .anbo-workspace-dockview-tab::after {
   right: -8px;
-  border-bottom-left-radius: 8px;
-  background: transparent;
-  box-shadow: -4px 4px 0 4px var(--anbo-chrome-tab-surface);
+  background: radial-gradient(
+    circle at 100% 0,
+    transparent 7.5px,
+    var(--anbo-chrome-tab-surface) 8.5px
+  );
 }
 
 .dockview-theme-anbo-workspace .dv-tab.dv-inactive-tab:hover {
+  color: color-mix(in oklab, var(--foreground) 82%, transparent);
+}
+
+/* The hover pill sits on the inner element, not the padded wrapper, so it
+ * hugs the label rather than the shoulder room around it. */
+.dockview-theme-anbo-workspace
+  .dv-tab.dv-inactive-tab:hover
+  .anbo-workspace-dockview-tab {
   border-radius: 8px;
   background: color-mix(in oklab, var(--foreground) 5%, transparent);
-  color: color-mix(in oklab, var(--foreground) 82%, transparent);
 }
 
 .dockview-theme-anbo-workspace .dv-content-container {
@@ -441,10 +482,10 @@
     .dv-tab.dv-active-tab
     .anbo-workspace-dockview-tab {
     animation: none;
+    border-top-color: var(--primary);
     box-shadow:
-      inset 0 0.5px 0 color-mix(in oklab, var(--primary) 62%, transparent),
       0 2px 0 var(--anbo-chrome-tab-surface),
-      0 -1px 2px color-mix(in oklab, var(--foreground) 4%, transparent);
+      0 -1px 6px color-mix(in oklab, var(--primary) 30%, transparent);
   }
 
   .anbo-browser-automation-indicator::before {
