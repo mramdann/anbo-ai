@@ -438,43 +438,24 @@ export function createTerminalTab(
   };
 }
 
-function coldTerminalTab(
-  tabId: number,
-  leafId: number,
-  spaceId: string,
-  cwd?: string,
-): TerminalTab {
-  return createTerminalTab(tabId, leafId, spaceId, cwd);
-}
-
-// Plans the removal of a deleted space's tabs while keeping the invariant that
-// the now-active `fallbackSpaceId` always has at least one tab (a cold one is
-// spawned when it would be left empty). Returns null when nothing to remove.
 export function planSpaceRemoval(
   tabs: Tab[],
   currentActiveId: number,
   spaceId: string,
   fallbackSpaceId: string,
-  fallbackCwd: string | undefined,
-  allocId: () => number,
 ): { tabs: Tab[]; disposeLeafIds: number[]; activeId: number } | null {
   const removed = tabs.filter((t) => t.spaceId === spaceId);
   if (removed.length === 0) return null;
   const disposeLeafIds = removed
     .filter((t) => t.kind === "terminal")
     .flatMap((t) => leafIds((t as TerminalTab).paneTree));
-  let next = tabs.filter((t) => t.spaceId !== spaceId);
+  const next = tabs.filter((t) => t.spaceId !== spaceId);
   let activeId = currentActiveId;
-  if (!next.some((t) => t.spaceId === fallbackSpaceId)) {
-    const tabId = allocId();
-    next = [
-      ...next,
-      coldTerminalTab(tabId, allocId(), fallbackSpaceId, fallbackCwd),
-    ];
-    activeId = tabId;
-  } else if (!next.some((t) => t.id === currentActiveId)) {
+  if (!next.some((t) => t.id === currentActiveId)) {
+    // The fallback space's last tab, or nothing at all: a space left empty
+    // shows its launch deck rather than a shell nobody asked for.
     const inFallback = next.filter((t) => t.spaceId === fallbackSpaceId);
-    activeId = inFallback[inFallback.length - 1].id;
+    activeId = inFallback.length ? inFallback[inFallback.length - 1].id : -1;
   }
   return { tabs: next, disposeLeafIds, activeId };
 }
@@ -683,7 +664,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   );
 
   const removeTabsForSpace = useCallback(
-    (spaceId: string, fallbackSpaceId: string, fallbackCwd?: string) => {
+    (spaceId: string, fallbackSpaceId: string) => {
       let toDispose: number[] = [];
       setTabs((curr) => {
         const plan = planSpaceRemoval(
@@ -691,8 +672,6 @@ export function useTabs(initial?: Partial<TerminalTab>) {
           activeIdRef.current,
           spaceId,
           fallbackSpaceId,
-          fallbackCwd,
-          () => nextIdRef.current++,
         );
         if (!plan) return curr;
         toDispose = plan.disposeLeafIds;

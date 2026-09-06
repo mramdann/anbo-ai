@@ -50,12 +50,17 @@ describe("newSpaceDefaults", () => {
 
 describe("shouldCreateFreshTerminal", () => {
   it("keeps an unconfigured space empty across restart", () => {
-    expect(shouldCreateFreshTerminal(null, false)).toBe(false);
+    expect(shouldCreateFreshTerminal(null, false, true)).toBe(false);
   });
 
-  it("retains the configured workspace startup fallback", () => {
-    expect(shouldCreateFreshTerminal("C:/work", false)).toBe(true);
-    expect(shouldCreateFreshTerminal("C:/work", true)).toBe(false);
+  it("leaves a configured workspace on its launch deck rather than opening a shell", () => {
+    expect(shouldCreateFreshTerminal("C:/work", false, false)).toBe(false);
+    expect(shouldCreateFreshTerminal("C:/work", true, false)).toBe(false);
+  });
+
+  it("opens a shell only when a folder was asked for on the command line", () => {
+    expect(shouldCreateFreshTerminal("C:/work", false, true)).toBe(true);
+    expect(shouldCreateFreshTerminal("C:/work", true, true)).toBe(false);
   });
 });
 

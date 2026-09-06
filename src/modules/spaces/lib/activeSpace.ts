@@ -9,11 +9,20 @@ export function newSpaceDefaults(position: number, env: WorkspaceEnv) {
   };
 }
 
+/**
+ * Whether boot should open a shell in the active workspace.
+ *
+ * A workspace with nothing open shows its launch deck, and nothing is spawned
+ * on its behalf. The one exception is a folder asked for on the command line:
+ * `anbo <dir>` is a request for a shell there, so it gets one when there is
+ * nothing to restore.
+ */
 export function shouldCreateFreshTerminal(
   spaceRoot: string | null,
   hasRestoredTab: boolean,
+  explicitLaunchDir: boolean,
 ): boolean {
-  return !!spaceRoot && !hasRestoredTab;
+  return explicitLaunchDir && !!spaceRoot && !hasRestoredTab;
 }
 
 export function findActiveSpace(

@@ -112,9 +112,9 @@ export function useSpacesBoot({
         const restoredHome = await adoptWorkspaceEnv(env);
 
         const activeSpace = spaces.find((space) => space.id === active);
-        // Configured workspaces retain the historical fresh-terminal fallback.
-        // An unconfigured new workspace must stay empty so its folder landing
-        // survives an app restart.
+        // A workspace with nothing open shows its launch deck; nothing is
+        // spawned on its behalf. The one exception is a folder asked for on
+        // the command line, which is a request for a shell there.
         const hasRestoredActiveTab = restored.some(
           (tab) => tab.spaceId === active,
         );
@@ -122,6 +122,7 @@ export function useSpacesBoot({
           shouldCreateFreshTerminal(
             activeSpace?.root ?? null,
             hasRestoredActiveTab,
+            hasExplicitLaunchDir,
           ) &&
           activeSpace?.root
         ) {
