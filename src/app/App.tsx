@@ -2176,13 +2176,15 @@ export default function App() {
         return;
       }
       const nextSpaceId = useSpaces.getState().remove(id);
-      if (!nextSpaceId) return;
-      const root = useSpaces
-        .getState()
-        .spaces.find((s) => s.id === nextSpaceId)?.root;
-      removeTabsForSpace(id, nextSpaceId, root ?? undefined);
+      if (nextSpaceId) {
+        removeTabsForSpace(id, nextSpaceId);
+      } else {
+        // That was the last workspace. There is nothing to fall back to, so
+        // every tab goes and the landing page takes the window.
+        clearTabs();
+      }
     },
-    [removeTabsForSpace],
+    [removeTabsForSpace, clearTabs],
   );
 
   const handleMoveTab = useCallback(

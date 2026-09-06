@@ -268,7 +268,6 @@ export function SpaceSwitcher({
               space={sp}
               tabs={tabsBySpace.get(sp.id) ?? []}
               isActive={sp.id === activeId}
-              canDelete={spaces.length > 1}
               expanded={expanded.has(sp.id)}
               editing={editingId === sp.id}
               dragging={dragging}
@@ -335,7 +334,6 @@ type SpaceRowProps = {
   space: SpaceMeta;
   tabs: Tab[];
   isActive: boolean;
-  canDelete: boolean;
   expanded: boolean;
   editing: boolean;
   dragging: { kind: "space" | "tab"; id: string | number } | null;
@@ -363,7 +361,6 @@ function SpaceRow({
   space,
   tabs,
   isActive,
-  canDelete,
   expanded,
   editing,
   dragging,
@@ -466,14 +463,12 @@ function SpaceRow({
                 label="New tab"
                 onClick={onNewTab}
               />
-              {canDelete && (
-                <RowAction
-                  icon={Delete02Icon}
-                  label="Delete space"
-                  destructive
-                  onClick={onDelete}
-                />
-              )}
+              <RowAction
+                icon={Delete02Icon}
+                label="Delete space"
+                destructive
+                onClick={onDelete}
+              />
             </div>
           </div>
         )}
