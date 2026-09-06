@@ -15,7 +15,7 @@ use crate::modules::workspace::{authorize_existing_path, WorkspaceEnv, Workspace
 use base64::Engine;
 #[cfg(windows)]
 use webview2_com::{
-    CapturePreviewCompletedHandler,
+    CapturePreviewCompletedHandler, FocusChangedEventHandler,
     Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG,
 };
 #[cfg(windows)]
@@ -34,6 +34,11 @@ use windows::Win32::{
 };
 
 const BROWSER_NAV_EVENT: &str = "anbo:browser-nav";
+/// Raised when a tab's page takes keyboard focus. A click inside the page lands
+/// in a native child window the host document never hears about, so this is
+/// the only way the shell can tell that the panel is the one being used.
+#[cfg(windows)]
+const BROWSER_FOCUS_EVENT: &str = "anbo:browser-focus";
 pub(crate) const BROWSER_POPUP_REQUEST_EVENT: &str = "anbo:browser-popup-request";
 const MAX_ACTIVE_EMBEDS: usize = 256;
 const MAX_CLOSED_EMBEDS: usize = 16 * 1024;
@@ -44,6 +49,15 @@ const MAX_PUNCH_HOLES: usize = 8;
 #[cfg(any(target_os = "linux", test))]
 const fn browser_child_transparent() -> bool {
     cfg!(target_os = "linux")
+}
+
+#[cfg(windows)]
+#[derive(Clone, serde::Serialize)]
+struct BrowserFocusEvent {
+    #[serde(rename = "tabId")]
+    tab_id: i64,
+    #[serde(rename = "ownerId")]
+    owner_id: String,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -669,9 +683,31 @@ fn spawn_browser_child(
         }
         #[cfg(not(windows))]
         let _ = &host_window;
+        #[cfg(windows)]
+        register_focus_handler(&webview, tab_id);
         set_embed_presentation(&webview, visible)?;
     }
     Ok(())
+}
+
+/// Have WebView2 tell the shell whenever this tab's page takes focus.
+///
+/// The registration token is dropped on purpose: the handler should live as
+/// long as the controller does, and removing it early would only bring back
+/// the silence this exists to end.
+#[cfg(windows)]
+fn register_focus_handler(webview: &tauri::Webview, tab_id: i64) {
+    let app = webview.app_handle().clone();
+    let _ = webview.with_webview(move |platform| {
+        let handler = FocusChangedEventHandler::create(Box::new(move |_sender, _args| {
+            if let Some(owner_id) = active_owner(tab_id) {
+                let _ = app.emit(BROWSER_FOCUS_EVENT, BrowserFocusEvent { tab_id, owner_id });
+            }
+            Ok(())
+        }));
+        let mut token: i64 = 0;
+        let _ = unsafe { platform.controller().add_GotFocus(&handler, &mut token) };
+    });
 }
 
 #[cfg(windows)]
@@ -1451,7 +1487,6 @@ pub async fn browser_embed_update(
         }
         return Ok(());
     };
-
 
     let target = if url.is_empty() {
         None

@@ -33,9 +33,12 @@ import {
 import { BrowserStartPage } from "./BrowserStartPage";
 import { recordBrowserVisit } from "./history";
 import {
+  BROWSER_FOCUS_EVENT,
   BROWSER_NAV_EVENT,
   BROWSER_LOADING_FALLBACK_MS,
+  type BrowserFocusEvent,
   type BrowserNavEvent,
+  isOwnBrowserFocusEvent,
   browserEmbedDispatch,
   browserEmbedInsertText,
   browserEmbedNavigate,
@@ -84,6 +87,8 @@ type Props = {
   onUrlChange: (url: string) => void;
   onTitleChange: (title: string) => void;
   onLoadingChange?: (loading: boolean) => void;
+  /** The page took focus: this tab is the one being used. */
+  onActivate?: () => void;
 };
 
 type DesiredBounds = {
@@ -136,6 +141,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       onUrlChange,
       onTitleChange,
       onLoadingChange,
+      onActivate,
     },
     ref,
   ) {
@@ -151,6 +157,10 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     const urlPropRef = useRef(url);
     const onUrlChangeRef = useRef(onUrlChange);
     const onTitleChangeRef = useRef(onTitleChange);
+    const onActivateRef = useRef(onActivate);
+    useEffect(() => {
+      onActivateRef.current = onActivate;
+    }, [onActivate]);
     const visibleRef = useRef(visible);
     const overlayOpen = useNativeBrowserOverlayOpen(
       contentRef,
@@ -216,7 +226,11 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
             // Clearing resets the tab to 100%, so give the user back the zoom
             // they had chosen before the emulation borrowed it.
             if (!emulating && zoomRef.current !== 1) {
-              return browserEmbedSetZoom(id, ownerIdRef.current, zoomRef.current);
+              return browserEmbedSetZoom(
+                id,
+                ownerIdRef.current,
+                zoomRef.current,
+              );
             }
           })
           .catch(console.error);
@@ -306,11 +320,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       )
         .then(() => {
           if (disposedRef.current) return;
-          if (
-            IS_WINDOWS &&
-            desired.visible &&
-            lastHoleRef.current !== "none"
-          ) {
+          if (IS_WINDOWS && desired.visible && lastHoleRef.current !== "none") {
             // Restoring the native paint region also resets any AI mini-window
             // punch hole. Recompute it only after the visible bounds update has
             // completed so the final region cannot be overwritten by a race.
@@ -610,6 +620,27 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
         if (frame) cancelAnimationFrame(frame);
       };
     }, [dragActive, id, native, syncBounds, visible]);
+
+    // A click inside the page never reaches the document, so the shell cannot
+    // see that this panel is the one in use. WebView2 says so; pass it on —
+    // but only while the pane is shown, since a page focused out of sight
+    // (automation typing into a background tab) must not pull the tab forward.
+    useEffect(() => {
+      if (!native || !visible) return;
+      let unlisten: UnlistenFn | undefined;
+      let alive = true;
+      void listen<BrowserFocusEvent>(BROWSER_FOCUS_EVENT, ({ payload }) => {
+        if (!isOwnBrowserFocusEvent(payload, id, ownerIdRef.current)) return;
+        onActivateRef.current?.();
+      }).then((stop) => {
+        if (alive) unlisten = stop;
+        else stop();
+      });
+      return () => {
+        alive = false;
+        unlisten?.();
+      };
+    }, [id, native, visible]);
 
     useEffect(() => {
       if (!native) return;

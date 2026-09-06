@@ -2228,6 +2228,17 @@ export default function App() {
     [newTabInSpace],
   );
 
+  // A browser page took focus. Make its tab the active one so the group it
+  // sits in is marked as the one being used; nothing else about the layout
+  // changes.
+  const handleBrowserActivate = useCallback(
+    (tabId: number) => {
+      if (activeIdRef.current === tabId) return;
+      setActiveId(tabId);
+    },
+    [setActiveId],
+  );
+
   const jumpToTab = useCallback(
     (tabId: number) => {
       const t = tabsRef.current.find((x) => x.id === tabId);
@@ -2615,6 +2626,7 @@ export default function App() {
                                 onBrowserUrlChange={handleBrowserUrl}
                                 onBrowserTitleChange={handleBrowserTitle}
                                 onBrowserLoadingChange={handleBrowserLoading}
+                                onBrowserActivate={handleBrowserActivate}
                                 getBrowserWorkspaceContext={
                                   browserWorkspaceContext
                                 }

@@ -6,6 +6,7 @@ import {
   canMeasureBrowserPane,
   createBrowserOwnerId,
   forgetBrowserOwnerId,
+  isOwnBrowserFocusEvent,
   isReportableBrowserNavUrl,
   isSelfReferenceUrl,
   isSupportedBrowserUrl,
@@ -119,5 +120,26 @@ describe("native browser ownership", () => {
     expect(replacement).not.toBe(first);
     forgetBrowserOwnerId(17, replacement);
     forgetBrowserOwnerId(18, other);
+  });
+});
+
+describe("isOwnBrowserFocusEvent", () => {
+  it("accepts a report for this tab from its current owner", () => {
+    expect(
+      isOwnBrowserFocusEvent({ tabId: 7, ownerId: "owner-a" }, 7, "owner-a"),
+    ).toBe(true);
+  });
+
+  it("ignores another tab, a stale owner, and no report at all", () => {
+    // A focus report must never pull a tab forward on someone else's behalf:
+    // not another tab's, and not one from an embed this pane already let go.
+    expect(
+      isOwnBrowserFocusEvent({ tabId: 8, ownerId: "owner-a" }, 7, "owner-a"),
+    ).toBe(false);
+    expect(
+      isOwnBrowserFocusEvent({ tabId: 7, ownerId: "owner-old" }, 7, "owner-a"),
+    ).toBe(false);
+    expect(isOwnBrowserFocusEvent(null, 7, "owner-a")).toBe(false);
+    expect(isOwnBrowserFocusEvent(undefined, 7, "owner-a")).toBe(false);
   });
 });

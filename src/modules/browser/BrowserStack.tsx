@@ -10,6 +10,8 @@ type Props = {
   onUrlChange: (id: number, url: string) => void;
   onTitleChange: (id: number, title: string) => void;
   onLoadingChange: (id: number, loading: boolean) => void;
+  /** A tab's page took focus, so that tab is the one being used. */
+  onActivate?: (id: number) => void;
   getWorkspaceContext: (spaceId: string) => BrowserWorkspaceContext;
   registerHandle: (
     id: number,
@@ -38,6 +40,7 @@ export function BrowserStack({
   onUrlChange,
   onTitleChange,
   onLoadingChange,
+  onActivate,
   getWorkspaceContext,
   registerHandle,
 }: Props) {
@@ -49,6 +52,10 @@ export function BrowserStack({
   const urlChangeRef = useRef(onUrlChange);
   const titleChangeRef = useRef(onTitleChange);
   const loadingChangeRef = useRef(onLoadingChange);
+  const activateRef = useRef(onActivate);
+  useEffect(() => {
+    activateRef.current = onActivate;
+  }, [onActivate]);
   useEffect(() => {
     registerRef.current = registerHandle;
   }, [registerHandle]);
@@ -151,6 +158,7 @@ export function BrowserStack({
               onUrlChange={getUrlCallback(t.id)}
               onTitleChange={getTitleCallback(t.id)}
               onLoadingChange={getLoadingCallback(t.id)}
+              onActivate={() => activateRef.current?.(t.id)}
             />
           </div>
         );

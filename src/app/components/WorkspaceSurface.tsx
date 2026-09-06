@@ -31,6 +31,7 @@ type Props = {
   onBrowserUrlChange: BrowserStackProps["onUrlChange"];
   onBrowserTitleChange: BrowserStackProps["onTitleChange"];
   onBrowserLoadingChange: BrowserStackProps["onLoadingChange"];
+  onBrowserActivate?: BrowserStackProps["onActivate"];
   getBrowserWorkspaceContext: BrowserStackProps["getWorkspaceContext"];
   onAiDiffAccept: AiDiffStackProps["onAccept"];
   onAiDiffReject: AiDiffStackProps["onReject"];
@@ -61,6 +62,7 @@ export function WorkspaceSurface({
   onBrowserUrlChange,
   onBrowserTitleChange,
   onBrowserLoadingChange,
+  onBrowserActivate,
   getBrowserWorkspaceContext,
   onAiDiffAccept,
   onAiDiffReject,
@@ -132,6 +134,7 @@ export function WorkspaceSurface({
           onUrlChange={onBrowserUrlChange}
           onTitleChange={onBrowserTitleChange}
           onLoadingChange={onBrowserLoadingChange}
+          onActivate={onBrowserActivate}
           getWorkspaceContext={getBrowserWorkspaceContext}
         />
       </div>

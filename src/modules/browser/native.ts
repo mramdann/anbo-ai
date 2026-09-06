@@ -12,6 +12,31 @@ export type BrowserNavEvent = {
   title?: string;
 };
 
+/**
+ * The page in a tab took keyboard focus. Clicks inside the page land in a
+ * native child window the document never hears about, so this is how the
+ * shell learns which panel is being used.
+ */
+export const BROWSER_FOCUS_EVENT = "anbo:browser-focus";
+
+export type BrowserFocusEvent = {
+  tabId: number;
+  ownerId: string;
+};
+
+/**
+ * Whether a focus report is about this pane: the same tab, and the same owner
+ * generation, so a report from an embed this pane has since released cannot
+ * pull its tab forward.
+ */
+export function isOwnBrowserFocusEvent(
+  payload: BrowserFocusEvent | null | undefined,
+  tabId: number,
+  ownerId: string,
+): boolean {
+  return !!payload && payload.tabId === tabId && payload.ownerId === ownerId;
+}
+
 export type EmbedBounds = {
   x: number;
   y: number;
