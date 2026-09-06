@@ -900,6 +900,55 @@ html *::-webkit-scrollbar {
   animation: anbo-shimmer var(--shimmer-duration, 2s) linear infinite;
 }
 
+/* A light sweeping left to right across a solid control. The update button is
+ * the only thing in the header carrying news, and this is how it says so
+ * without taking over the screen. The band is drawn in the control's own text
+ * colour, so it stays visible whichever way the theme runs: a white shine on a
+ * dark pill, a soft glint on a light one. Transform-only, and at rest most of
+ * the time — it crosses once and then waits, leaving the compositor idle
+ * between passes rather than animating forever. */
+@keyframes anbo-sheen {
+  0% {
+    transform: translateX(-140%) skewX(-14deg);
+  }
+  28%,
+  100% {
+    transform: translateX(320%) skewX(-14deg);
+  }
+}
+.anbo-sheen {
+  position: relative;
+  overflow: hidden;
+}
+.anbo-sheen::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 42%;
+  pointer-events: none;
+  /* Two stacked bands. The white one is the light itself and does the work on
+   * any fill with room to brighten; on a theme whose fill is already near
+   * white it simply has no effect, and the second band — drawn in the
+   * control's own text colour, so it contrasts by construction — carries the
+   * sweep instead. Between them every theme gets a visible pass without any
+   * colour being pinned here. */
+  background-image:
+    linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in oklab, white 42%, transparent),
+      transparent
+    ),
+    linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in oklab, currentColor 16%, transparent),
+      transparent
+    );
+  animation: anbo-sheen 4.6s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root {
     --dur-fast: 0.01ms;
@@ -912,5 +961,9 @@ html *::-webkit-scrollbar {
   .anbo-shimmer {
     animation: none;
     background-position: 0% center;
+  }
+  .anbo-sheen::after {
+    animation: none;
+    opacity: 0;
   }
 }
