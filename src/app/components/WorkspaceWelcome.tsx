@@ -1,14 +1,23 @@
+import { Kbd } from "@/components/ui/kbd";
 import { AgentLauncherPanel } from "@/modules/agents/components/AgentLauncherPanel";
-import type { AgentLaunchRequest } from "@/modules/agents/lib/launcher";
+import {
+  type AgentLaunchRequest,
+  getAgentLaunchers,
+} from "@/modules/agents/lib/launcher";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import { useShortcutLabel } from "@/modules/shortcuts";
 import {
   ComputerTerminal02Icon,
+  DashboardSquare01Icon,
   GitBranchIcon,
   Globe02Icon,
   IncognitoIcon,
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import type { CSSProperties } from "react";
 import { WorkspaceConstellation } from "./WorkspaceConstellation";
+import { daySeed, greetingFor, taglineFor } from "./workspaceWelcomeCopy";
 
 type WorkspaceWelcomeProps = {
   name: string | null;
@@ -20,12 +29,35 @@ type WorkspaceWelcomeProps = {
   onNewEditor: () => void;
   onNewGitGraph: () => void;
   onLaunchAgents: (request: AgentLaunchRequest) => void;
+  /** Live repository facts for the header, when the folder is a checkout. */
+  branch?: string | null;
+  ahead?: number;
+  behind?: number;
+  changedCount?: number;
 };
 
+type TabAction = {
+  id: string;
+  icon: IconSvgElement;
+  label: string;
+  keys: string;
+  run: () => void;
+};
+
+/** Staggered entrance: each block rises a beat after the one above it. */
+function enter(delayMs: number): CSSProperties {
+  return { animationDelay: `${delayMs}ms`, animationFillMode: "backwards" };
+}
+
 /**
- * A workspace is open but no tab is open yet. Offer the same actions as the
- * "new tab" menu (terminal / blocks / agents / privacy / editor / browser /
- * git graph) instead of auto-spawning a terminal on workspace creation.
+ * A workspace is open but no tab is open yet.
+ *
+ * Anbo exists to run agents, so this is a launch deck rather than a menu: the
+ * workspace's name and the live state of its repository at the top, the agents
+ * installed on this machine as a roster of marks — pick one, set the command
+ * and the count, launch — and the plainer tab types along the bottom edge with
+ * the keys that open them. The launcher keeps its own state and logic; only
+ * its shape is different here.
  */
 export function WorkspaceWelcome({
   name,
@@ -37,17 +69,75 @@ export function WorkspaceWelcome({
   onNewEditor,
   onNewGitGraph,
   onLaunchAgents,
+  branch = null,
+  ahead = 0,
+  behind = 0,
+  changedCount = 0,
 }: WorkspaceWelcomeProps) {
-  const secondaryActions = [
-    { label: "Blocks", icon: ComputerTerminal02Icon, onClick: onNewBlock },
-    { label: "Privacy", icon: IncognitoIcon, onClick: onNewPrivate },
-    { label: "Editor", icon: PencilEdit02Icon, onClick: onNewEditor },
-    { label: "Browser", icon: Globe02Icon, onClick: onNewBrowser },
-    { label: "Git graph", icon: GitBranchIcon, onClick: onNewGitGraph },
+  // Real bindings, so a rebound key shows the key the user actually presses.
+  const kTerminal = useShortcutLabel("tab.new");
+  const kBlocks = useShortcutLabel("tab.newBlock");
+  const kEditor = useShortcutLabel("tab.newEditor");
+  const kBrowser = useShortcutLabel("tab.newBrowser");
+  const kPrivate = useShortcutLabel("tab.newPrivate");
+  const kPalette = useShortcutLabel("commandPalette.open");
+
+  // The words. The greeting follows the clock; the line beneath the name is
+  // chosen by workspace and day, so it holds still while you read it and is
+  // different tomorrow, and it knows how many agents are on the bench.
+  const customCliAgents = usePreferencesStore((s) => s.customCliAgents);
+  const agentCount = getAgentLaunchers(customCliAgents).length;
+  const now = new Date();
+  const greeting = greetingFor(now.getHours());
+  const tagline = taglineFor(daySeed(name, now), agentCount);
+
+  const tabs: TabAction[] = [
+    {
+      id: "terminal",
+      icon: ComputerTerminal02Icon,
+      label: "Terminal",
+      keys: kTerminal,
+      run: onNew,
+    },
+    {
+      id: "blocks",
+      icon: DashboardSquare01Icon,
+      label: "Blocks",
+      keys: kBlocks,
+      run: onNewBlock,
+    },
+    {
+      id: "editor",
+      icon: PencilEdit02Icon,
+      label: "Editor",
+      keys: kEditor,
+      run: onNewEditor,
+    },
+    {
+      id: "browser",
+      icon: Globe02Icon,
+      label: "Browser",
+      keys: kBrowser,
+      run: onNewBrowser,
+    },
+    {
+      id: "private",
+      icon: IncognitoIcon,
+      label: "Private",
+      keys: kPrivate,
+      run: onNewPrivate,
+    },
+    {
+      id: "git",
+      icon: GitBranchIcon,
+      label: "Git graph",
+      keys: "",
+      run: onNewGitGraph,
+    },
   ];
 
   return (
-    <div className="relative h-full w-full overflow-y-auto bg-background">
+    <div className="relative flex h-full w-full overflow-y-auto bg-background">
       <WorkspaceConstellation />
       <div
         className="pointer-events-none absolute inset-0"
@@ -57,78 +147,119 @@ export function WorkspaceWelcome({
         }}
       />
 
-      <div className="relative mx-auto flex min-h-full w-full max-w-xl flex-col justify-center px-5 py-10 sm:px-8">
-        <header className="flex flex-col items-center text-center">
-          <div className="flex items-center gap-2.5">
-            <img src="/logo.svg" alt="" className="size-8" />
-            <span className="font-mono text-2xl font-semibold tracking-[0.08em] text-foreground">
-              anbo
-            </span>
+      {/* Centred with auto margins rather than justify-center: when the window
+          is shorter than this block, centring by justify-content pushes its top
+          past the edge of the scroll box, out of reach of the scrollbar. */}
+      <div className="@container relative m-auto w-full max-w-[46rem] px-6 py-12">
+        <header className="anbo-pill-in text-center" style={enter(0)}>
+          <div className="text-[10px] font-medium tracking-[0.28em] text-muted-foreground/60 uppercase">
+            {greeting}
           </div>
-          <h1 className="mt-4 font-heading text-xl font-medium tracking-tight text-foreground">
-            Deploy your workspace
+          <h1 className="mt-2 truncate font-heading text-[34px] font-semibold tracking-[-0.02em] text-foreground">
+            {name ?? "Untitled"}
           </h1>
-          <p className="mt-1.5 max-w-md text-sm text-muted-foreground">
-            <span className="font-medium text-foreground">
-              {name ?? "Workspace ready"}
-            </span>{" "}
-            is ready. Start a shell or assemble an agent layout.
+          {/* Facts, not decoration: the path, and when it is a repository,
+              the branch with how far it is from its upstream and how much is
+              uncommitted. Each one is omitted rather than shown empty. */}
+          <div className="mt-2 flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1 font-mono text-[11px] text-muted-foreground/70">
+            {folder ? (
+              <span className="max-w-full truncate" title={folder}>
+                {folder}
+              </span>
+            ) : null}
+            {branch ? (
+              <>
+                <span aria-hidden="true" className="text-muted-foreground/40">
+                  ·
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <HugeiconsIcon
+                    icon={GitBranchIcon}
+                    size={11}
+                    strokeWidth={1.75}
+                  />
+                  {branch}
+                  {ahead > 0 ? (
+                    <span className="text-muted-foreground/55">↑{ahead}</span>
+                  ) : null}
+                  {behind > 0 ? (
+                    <span className="text-muted-foreground/55">↓{behind}</span>
+                  ) : null}
+                </span>
+              </>
+            ) : null}
+            {changedCount > 0 ? (
+              <>
+                <span aria-hidden="true" className="text-muted-foreground/40">
+                  ·
+                </span>
+                <span>{changedCount} changed</span>
+              </>
+            ) : null}
+          </div>
+          <p className="mx-auto mt-4 max-w-md font-heading text-[13.5px] leading-relaxed text-muted-foreground/85">
+            {tagline}
           </p>
-          {folder ? (
-            <code
-              className="mt-2 max-w-full truncate rounded-md border border-border/60 bg-background/60 px-2 py-1 font-mono text-[10px] text-muted-foreground"
-              title={folder}
-            >
-              {folder}
-            </code>
-          ) : null}
         </header>
 
-        <div className="mt-7 overflow-hidden rounded-3xl border border-border/70 bg-card/95 shadow-[0_24px_80px_-40px_color-mix(in_oklab,var(--foreground)_30%,transparent)]">
-          <button
-            type="button"
-            onClick={onNew}
-            className="group flex w-full items-center gap-3 border-b border-border/70 bg-primary/[0.045] px-5 py-4 text-left outline-none transition-colors hover:bg-primary/[0.08] focus-visible:bg-primary/[0.08]"
-          >
-            <span className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-background/70 text-foreground shadow-sm">
-              <HugeiconsIcon
-                icon={ComputerTerminal02Icon}
-                size={17}
-                strokeWidth={1.8}
-              />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-medium text-foreground">
-                Terminal
-              </span>
-              <span className="block text-[11px] text-muted-foreground">
-                Open the default shell in this workspace
-              </span>
-            </span>
-            <span className="font-mono text-[10px] text-muted-foreground transition-colors group-hover:text-foreground">
-              shell
-            </span>
-          </button>
-
-          <div className="p-4 sm:p-5">
-            <AgentLauncherPanel variant="embedded" onLaunch={onLaunchAgents} />
+        <section className="anbo-pill-in mt-9" style={enter(70)}>
+          <Kicker>Launch an agent</Kicker>
+          <div className="mt-4">
+            <AgentLauncherPanel variant="deck" onLaunch={onLaunchAgents} />
           </div>
-        </div>
+        </section>
 
-        <div className="mt-3 grid grid-cols-2 gap-1.5 sm:grid-cols-5">
-          {secondaryActions.map((action) => (
-            <button
-              key={action.label}
-              type="button"
-              onClick={action.onClick}
-              className="flex h-9 items-center justify-center gap-1.5 rounded-xl border border-border/60 bg-background/55 px-2 text-[11px] font-medium text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/25"
-            >
-              <HugeiconsIcon icon={action.icon} size={13} strokeWidth={1.75} />
-              {action.label}
-            </button>
-          ))}
+        {/* Six actions on a grid of three, never a flowing row: a row wraps
+            wherever it runs out of width, and six of these ran out one short,
+            leaving the last alone on a line. Three by two is always whole. */}
+        <div className="anbo-pill-in mt-8" style={enter(150)}>
+          <Kicker>Or open a tab</Kicker>
+          <nav
+            aria-label="New tab"
+            className="mt-3 grid grid-cols-2 justify-items-center gap-y-1 @[28rem]:grid-cols-3"
+          >
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={tab.run}
+                className="group flex h-8 items-center gap-1.5 rounded-lg px-2 text-[12px] text-muted-foreground outline-none transition-colors hover:bg-foreground/[0.05] hover:text-foreground focus-visible:bg-foreground/[0.05] focus-visible:text-foreground"
+              >
+                <HugeiconsIcon
+                  icon={tab.icon}
+                  size={14}
+                  strokeWidth={1.75}
+                  className="opacity-70 transition-opacity group-hover:opacity-100"
+                />
+                {tab.label}
+                {tab.keys ? (
+                  <Kbd className="hidden h-4 min-w-0 rounded-md bg-muted/60 px-1 font-mono text-[9px] font-normal lowercase text-muted-foreground/70 @[40rem]:inline-flex">
+                    {tab.keys}
+                  </Kbd>
+                ) : null}
+              </button>
+            ))}
+          </nav>
+          <p className="mt-6 text-center text-[11px] text-muted-foreground/55">
+            Everything else is{" "}
+            <Kbd className="h-4 min-w-0 rounded-md bg-muted/60 px-1 font-mono text-[9px] font-normal lowercase text-muted-foreground/75">
+              {kPalette}
+            </Kbd>{" "}
+            away.
+          </p>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** A section label with a hairline either side: a beat between the parts. */
+function Kicker({ children }: { children: string }) {
+  return (
+    <div className="flex items-center gap-3 text-[10px] font-medium tracking-[0.24em] text-muted-foreground/55 uppercase">
+      <span className="h-px flex-1 bg-gradient-to-r from-transparent to-border/70" />
+      <span className="shrink-0">{children}</span>
+      <span className="h-px flex-1 bg-gradient-to-l from-transparent to-border/70" />
     </div>
   );
 }

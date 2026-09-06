@@ -2667,6 +2667,10 @@ export default function App() {
                               <WorkspaceWelcome
                                 name={activeSpaceName}
                                 folder={activeSpaceRoot}
+                                branch={sourceControl.status?.branch ?? null}
+                                ahead={sourceControl.ahead}
+                                behind={sourceControl.behind}
+                                changedCount={sourceControl.changedCount}
                                 onNew={() => newTab(activeSpaceRoot)}
                                 onNewBlock={() => newBlockTab(activeSpaceRoot)}
                                 onNewPrivate={() =>
@@ -2788,7 +2792,6 @@ export default function App() {
                 rootPath={explorerRoot ?? home}
                 onCreated={(path) => openFileTab(path)}
               />
-
 
               <CloseDialogs
                 tabs={tabs}

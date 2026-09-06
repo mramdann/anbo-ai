@@ -1,4 +1,11 @@
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { AgentIcon } from "@/modules/agents/lib/agentIcon";
@@ -18,7 +25,10 @@ import {
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { setAgentLaunchCommands } from "@/modules/settings/store";
 import {
+  ArrowDown01Icon,
   ArrowLeft01Icon,
+  ArrowRight01Icon,
+  PencilEdit02Icon,
   PlayIcon,
   Refresh01Icon,
 } from "@hugeicons/core-free-icons";
@@ -28,7 +38,11 @@ import { useEffect, useRef, useState } from "react";
 type Props = {
   onBack?: () => void;
   onLaunch: (request: AgentLaunchRequest) => void;
-  variant?: "popover" | "embedded";
+  /**
+   * "deck" is the empty-workspace arrangement: agents as a row of marks with
+   * the launch controls on one line beneath. Same state, different shape.
+   */
+  variant?: "popover" | "embedded" | "deck";
 };
 
 const INSTANCE_COUNTS: AgentInstanceCount[] = [1, 2, 3, 4];
@@ -68,6 +82,70 @@ export function AgentLauncherPanel({
     if (!resolvedLauncher) setAgentId("claude");
   }, [resolvedLauncher]);
 
+  // The deck roster is one row that scrolls sideways rather than wrapping
+  // downward: the list of agents only grows, and a pane can be narrow. These
+  // track whether anything is hidden past either edge, which is what decides
+  // whether an arrow is drawn there.
+  const rosterRef = useRef<HTMLDivElement>(null);
+  const [hidden, setHidden] = useState({ left: false, right: false });
+  // The deck shows the command as a line of text and only becomes a field when
+  // asked: a box wide enough for a long command is mostly empty for "pi".
+  const [editing, setEditing] = useState(false);
+
+  useEffect(() => {
+    const roster = rosterRef.current;
+    if (!roster) return;
+    const measure = () => {
+      setHidden({
+        left: roster.scrollLeft > 1,
+        right: roster.scrollLeft + roster.clientWidth < roster.scrollWidth - 1,
+      });
+    };
+    measure();
+    roster.addEventListener("scroll", measure, { passive: true });
+    // The box and the track inside it: the box changes with the pane, the
+    // track with the number of agents, and either can put something out of
+    // view or bring it back.
+    const observer = new ResizeObserver(measure);
+    observer.observe(roster);
+    if (roster.firstElementChild) observer.observe(roster.firstElementChild);
+    // A vertical wheel over the roster moves it sideways, since sideways is
+    // the only way it goes. Only while there is somewhere to go, so the page
+    // keeps its own scrolling when everything already fits.
+    const onWheel = (event: WheelEvent) => {
+      if (roster.scrollWidth <= roster.clientWidth) return;
+      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      event.preventDefault();
+      roster.scrollLeft += event.deltaY;
+    };
+    roster.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      roster.removeEventListener("scroll", measure);
+      roster.removeEventListener("wheel", onWheel);
+      observer.disconnect();
+    };
+  }, []);
+
+  // Keep the chosen agent in view, including on first paint when it may sit
+  // past the edge.
+  useEffect(() => {
+    const roster = rosterRef.current;
+    if (!roster) return;
+    const chosen = roster.querySelector<HTMLElement>(
+      `[data-agent-id="${CSS.escape(selectedId)}"]`,
+    );
+    chosen?.scrollIntoView({ inline: "nearest", block: "nearest" });
+  }, [selectedId]);
+
+  const scrollRoster = (direction: -1 | 1) => {
+    const roster = rosterRef.current;
+    if (!roster) return;
+    roster.scrollBy({
+      left: direction * Math.max(160, roster.clientWidth * 0.6),
+      behavior: "smooth",
+    });
+  };
+
   const save = (next: AgentLaunchCommands) => {
     const changed = AGENT_LAUNCHERS.some(
       ({ id }) => next[id] !== persistedRef.current[id],
@@ -96,6 +174,7 @@ export function AgentLauncherPanel({
   const selectAgent = (id: AgentLauncherId) => {
     if (isBuiltInAgentLauncherId(selectedId)) persist(selectedId, command);
     setAgentId(id);
+    setEditing(false);
   };
 
   const resetCommand = () => {
@@ -121,6 +200,219 @@ export function AgentLauncherPanel({
       instances,
     });
   };
+
+  if (variant === "deck") {
+    return (
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
+        }}
+      >
+        {/* The roster. Marks rather than labelled rows: at this size the
+            brand is the label, and the selected one lifts and lights. One
+            row, scrolled sideways when it overflows. The inner track carries
+            auto margins so it sits centred while it fits and simply scrolls
+            once it does not — centring the scroll box itself would push the
+            first agents past the left edge where no scrolling reaches them. */}
+        <div className="relative">
+          {hidden.left ? (
+            <RosterEdge side="left" onClick={() => scrollRoster(-1)} />
+          ) : null}
+          {hidden.right ? (
+            <RosterEdge side="right" onClick={() => scrollRoster(1)} />
+          ) : null}
+          <div
+            ref={rosterRef}
+            className="flex overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
+            <div className="mx-auto flex gap-x-1.5 px-1 py-1">
+              {launchers.map((agent) => {
+                const selected = agent.id === selectedId;
+                return (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    disabled={!hydrated}
+                    aria-pressed={selected}
+                    data-agent-id={agent.id}
+                    onClick={() => selectAgent(agent.id)}
+                    className={cn(
+                      "group flex min-w-[4.75rem] max-w-[6.5rem] shrink-0 flex-col items-center gap-1.5 rounded-xl px-1.5 pt-1.5 pb-1 outline-none transition-opacity duration-200 focus-visible:ring-2 focus-visible:ring-ring/25 disabled:pointer-events-none disabled:opacity-50",
+                      selected ? "" : "opacity-65 hover:opacity-100",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "flex size-12 items-center justify-center rounded-2xl border transition-[border-color,box-shadow,transform,background-color] duration-200",
+                        selected
+                          ? "-translate-y-0.5 border-primary/60 bg-background shadow-[0_0_0_4px_color-mix(in_oklab,var(--primary)_18%,transparent),0_14px_32px_-16px_color-mix(in_oklab,var(--primary)_65%,transparent)]"
+                          : "border-border/60 bg-background/70 group-hover:-translate-y-0.5 group-hover:border-border",
+                      )}
+                    >
+                      <AgentIcon agent={agent.icon} size={22} tone="brand" />
+                    </span>
+                    <span
+                      className={cn(
+                        "max-w-full truncate text-[11px] font-medium",
+                        selected ? "text-foreground" : "text-muted-foreground",
+                      )}
+                    >
+                      {agent.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* No box. The command is a quiet line beneath the roster and the
+            action is one button, large and centred, that names the agent it
+            will launch. The count rides on the end of the button as a menu
+            rather than sitting beside it as a control: it is a detail of the
+            launch, not a peer of it. Nothing here needs a second layout for a
+            narrow pane — a centred column simply gets narrower. */}
+        <div className="mt-5 flex flex-col items-center gap-4">
+          <div className="flex max-w-full min-w-0 items-baseline gap-2 px-2 font-mono text-[13px]">
+            <span aria-hidden="true" className="shrink-0 text-primary">
+              $
+            </span>
+            {editing ? (
+              <Input
+                id="agent-start-command"
+                aria-label="Start command"
+                autoFocus
+                disabled={!hydrated}
+                value={command}
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                aria-invalid={!validation.ok}
+                onChange={(event) => {
+                  setDrafts((current) => ({
+                    ...current,
+                    [selectedId]: event.target.value,
+                  }));
+                }}
+                onBlur={() => {
+                  if (builtInSelected) persist(selectedId, command);
+                  if (validation.ok) setEditing(false);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    // Commit the line, not the form: launching is what the
+                    // button is for.
+                    event.preventDefault();
+                    event.currentTarget.blur();
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    if (isBuiltInAgentLauncherId(selectedId)) {
+                      const id = selectedId;
+                      setDrafts((current) => ({
+                        ...current,
+                        [id]: persistedRef.current[id],
+                      }));
+                    }
+                    setEditing(false);
+                  }
+                }}
+                className="h-6 w-[24rem] max-w-full min-w-0 rounded-none border-0 border-b border-primary/50 bg-transparent px-0 text-center font-mono text-[13px] shadow-none focus-visible:border-primary focus-visible:ring-0"
+              />
+            ) : (
+              <button
+                type="button"
+                disabled={!hydrated || !builtInSelected}
+                onClick={() => setEditing(true)}
+                title={builtInSelected ? "Edit start command" : undefined}
+                className="group flex min-w-0 items-baseline gap-2 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/25 disabled:cursor-default"
+              >
+                <span className="truncate text-foreground/90">{command}</span>
+                {builtInSelected ? (
+                  <HugeiconsIcon
+                    icon={PencilEdit02Icon}
+                    size={12}
+                    strokeWidth={1.75}
+                    className="shrink-0 translate-y-px text-muted-foreground opacity-0 transition-opacity group-hover:opacity-70 group-focus-visible:opacity-70"
+                  />
+                ) : null}
+              </button>
+            )}
+            {builtInSelected &&
+            command !== DEFAULT_AGENT_LAUNCH_COMMANDS[selectedId] ? (
+              <button
+                type="button"
+                onClick={resetCommand}
+                disabled={!hydrated}
+                className="inline-flex shrink-0 items-center gap-1 rounded-sm text-[11px] text-muted-foreground/70 transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/25"
+                title={`Reset to ${launcher.defaultCommand}`}
+                aria-label={`Reset to ${launcher.defaultCommand}`}
+              >
+                <HugeiconsIcon
+                  icon={Refresh01Icon}
+                  size={11}
+                  strokeWidth={1.75}
+                />
+              </button>
+            ) : null}
+          </div>
+          {validation.ok ? null : (
+            <div className="-mt-2 text-[11px] text-destructive">
+              {validation.error}
+            </div>
+          )}
+
+          <div className="flex items-stretch">
+            <Button
+              type="submit"
+              size="lg"
+              className="h-10 rounded-xl rounded-r-none px-5 text-[13px]"
+              disabled={!hydrated || !validation.ok}
+            >
+              <HugeiconsIcon icon={PlayIcon} size={14} strokeWidth={2} />
+              Launch {launcher.label}
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  size="lg"
+                  disabled={!hydrated}
+                  aria-label={`${instances} ${instances === 1 ? "instance" : "instances"}, change`}
+                  className="h-10 gap-1 rounded-xl rounded-l-none border-l border-primary-foreground/20 px-3 font-mono text-[12px]"
+                >
+                  ×{instances}
+                  <HugeiconsIcon
+                    icon={ArrowDown01Icon}
+                    size={12}
+                    strokeWidth={2}
+                    className="opacity-70"
+                  />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[10rem]">
+                <DropdownMenuRadioGroup
+                  value={String(instances)}
+                  onValueChange={(value) => {
+                    const next = INSTANCE_COUNTS.find(
+                      (count) => String(count) === value,
+                    );
+                    if (next) setInstances(next);
+                  }}
+                >
+                  {INSTANCE_COUNTS.map((count) => (
+                    <DropdownMenuRadioItem key={count} value={String(count)}>
+                      {count} {count === 1 ? "instance" : "instances"}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      </form>
+    );
+  }
 
   return (
     <form
@@ -298,6 +590,43 @@ export function AgentLauncherPanel({
         Launch {instances} {instances === 1 ? "agent" : "agents"}
       </Button>
     </form>
+  );
+}
+
+/**
+ * The edge of an overflowing roster: a fade that says there is more, and an
+ * arrow that goes there. Drawn only on the side that actually has more.
+ */
+function RosterEdge({
+  side,
+  onClick,
+}: {
+  side: "left" | "right";
+  onClick: () => void;
+}) {
+  const left = side === "left";
+  return (
+    <div
+      className={cn(
+        "pointer-events-none absolute inset-y-0 z-10 flex w-14 items-center",
+        left
+          ? "left-0 justify-start bg-gradient-to-r from-background via-background/80 to-transparent"
+          : "right-0 justify-end bg-gradient-to-l from-background via-background/80 to-transparent",
+      )}
+    >
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={left ? "Earlier agents" : "More agents"}
+        className="pointer-events-auto flex size-7 items-center justify-center rounded-full border border-border/60 bg-background/90 text-muted-foreground shadow-sm transition-colors hover:border-border hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/25 outline-none"
+      >
+        <HugeiconsIcon
+          icon={left ? ArrowLeft01Icon : ArrowRight01Icon}
+          size={14}
+          strokeWidth={1.75}
+        />
+      </button>
+    </div>
   );
 }
 
