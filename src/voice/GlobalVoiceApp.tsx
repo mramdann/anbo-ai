@@ -12,6 +12,10 @@ import {
   insertGlobalVoiceText,
   rememberGlobalVoiceForeground,
 } from "@/modules/voice/lib/globalVoice";
+import {
+  orbVisibleFromStorage,
+  VOICE_ORB_VISIBLE_KEY,
+} from "@/modules/voice/lib/useVoiceVisibility";
 import { resolveVoicePress } from "@/modules/voice/lib/voicePress";
 import { normalizeVoiceText } from "@/modules/voice/lib/voiceTarget";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
@@ -127,6 +131,28 @@ export function GlobalVoiceApp() {
     };
   }, []);
 
+  // The shell shows this window when global voice starts; whether it stays on
+  // screen is the header toggle's call. The toggle writes one localStorage
+  // key, and since both windows share an origin, that write arrives here as
+  // a storage event. The value is read once at start too, for an orb hidden
+  // before the app was last closed.
+  useEffect(() => {
+    const appWindow = getCurrentWindow();
+    const apply = (raw: string | null) => {
+      void (
+        orbVisibleFromStorage(raw) ? appWindow.show() : appWindow.hide()
+      ).catch(() => {});
+    };
+    try {
+      apply(window.localStorage.getItem(VOICE_ORB_VISIBLE_KEY));
+    } catch {}
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === VOICE_ORB_VISIBLE_KEY) apply(event.newValue);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   useEffect(() => {
     let alive = true;
     const reload = () => {
@@ -148,32 +174,35 @@ export function GlobalVoiceApp() {
     return preparation;
   }, []);
 
-  const finishInsert = useCallback(async (text: string) => {
-    // The native side turns control characters into real keystrokes, so a raw
-    // multi line transcript would press Enter and submit a half typed command
-    // to whatever terminal happens to be focused.
-    const normalized = normalizeVoiceText(text);
-    setInserting(true);
-    try {
-      if (normalized) await insertGlobalVoiceText(normalized);
-      setError(null);
-      setFallbackTranscript(null);
-    } catch (cause) {
-      const detail = message(cause);
-      setError(detail);
-      setFallbackTranscript(normalized);
+  const finishInsert = useCallback(
+    async (text: string) => {
+      // The native side turns control characters into real keystrokes, so a raw
+      // multi line transcript would press Enter and submit a half typed command
+      // to whatever terminal happens to be focused.
+      const normalized = normalizeVoiceText(text);
+      setInserting(true);
       try {
-        await navigator.clipboard.writeText(normalized);
-        setError(`${detail} Transcript copied to the clipboard.`);
-      } catch {
-        // The transcript remains in memory and can be copied on right click.
+        if (normalized) await insertGlobalVoiceText(normalized);
+        setError(null);
+        setFallbackTranscript(null);
+      } catch (cause) {
+        const detail = message(cause);
+        setError(detail);
+        setFallbackTranscript(normalized);
+        try {
+          await navigator.clipboard.writeText(normalized);
+          setError(`${detail} Transcript copied to the clipboard.`);
+        } catch {
+          // The transcript remains in memory and can be copied on right click.
+        }
+      } finally {
+        targetRef.current = null;
+        setInserting(false);
+        if (hoveredRef.current) void prepareTarget();
       }
-    } finally {
-      targetRef.current = null;
-      setInserting(false);
-      if (hoveredRef.current) void prepareTarget();
-    }
-  }, [prepareTarget]);
+    },
+    [prepareTarget],
+  );
 
   const settleTarget = useCallback(() => {
     if (!targetRef.current) return;

@@ -642,6 +642,23 @@ export default function App() {
 
   const { hasComposer, keysLoaded } = useAiBootstrap();
   const voiceVisibility = useVoiceVisibility();
+  // Before voice is set up there is no orb to show, so the toggle says why
+  // and points at the one place that fixes it instead of flipping a switch
+  // nobody can see.
+  const toggleVoiceOrb = useCallback(() => {
+    if (!voiceConfigured) {
+      toast.info("Set up voice input first", {
+        description:
+          "AnboVoice needs a speech-to-text provider before it can listen.",
+        action: {
+          label: "Open Settings",
+          onClick: () => void openSettingsWindow("models"),
+        },
+      });
+      return;
+    }
+    voiceVisibility.toggle();
+  }, [voiceConfigured, voiceVisibility.toggle]);
 
   const activeTab = tabs.find((t) => t.id === activeId);
   const isTerminalTab = activeTab?.kind === "terminal";
@@ -2498,7 +2515,7 @@ export default function App() {
                   onActivateLocalAgent={onActivateLocalAgent}
                   onOpenSettings={() => void openSettingsWindow()}
                   voiceVisible={voiceVisibility.visible}
-                  onToggleVoice={voiceVisibility.toggle}
+                  onToggleVoice={toggleVoiceOrb}
                   spaceSwitcher={spaceSwitcher}
                   searchTarget={searchTarget}
                   searchRef={searchInlineRef}
