@@ -8,7 +8,7 @@
 }
 
 .dockview-theme-anbo-workspace {
-  --dv-tabs-and-actions-container-height: 36px;
+  --dv-tabs-and-actions-container-height: 32px;
   --dv-tabs-and-actions-container-font-size: 12px;
   --dv-tab-font-size: 12px;
   --dv-group-view-background-color: var(--background);
@@ -79,7 +79,9 @@
 }
 
 .dockview-theme-anbo-workspace .dv-tab {
-  height: 33px;
+  /* Three pixels short of the strip, so the accent line and its glow have
+   * room above the tab. */
+  height: 29px;
   max-width: 320px;
   /* Half the room a shoulder needs on either side. An active tab draws its
    * shoulders eight pixels outside its surface; between two tabs the four
@@ -251,6 +253,11 @@
 .dockview-theme-anbo-workspace .dv-right-actions-container {
   align-items: center;
   padding: 0 0 0 5px;
+  /* The strip keeps three pixels above the tabs for the accent line and its
+   * glow. The actions have no line to make room for, so they take those
+   * pixels back and sit centred on the whole strip rather than on what is
+   * left below the padding. */
+  margin-top: -3px;
 }
 
 .anbo-workspace-dockview-actions {
