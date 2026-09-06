@@ -43,7 +43,7 @@ export function WindowControls({ closeOnly = false }: Props) {
   const w = getCurrentWindow();
 
   return (
-    <div className="flex h-full shrink-0 items-center gap-0.5 pr-1">
+    <div className="flex h-full shrink-0 items-center gap-1 pr-1">
       {!closeOnly && (
         <>
           <CtlButton
@@ -95,7 +95,7 @@ function CtlButton({
       title={ariaLabel}
       onClick={onClick}
       className={cn(
-        "grid size-7 place-items-center rounded-md text-muted-foreground transition-colors",
+        "grid size-6 place-items-center rounded-md text-muted-foreground transition-colors",
         danger
           ? "hover:bg-destructive/15 hover:text-destructive"
           : "hover:bg-accent hover:text-foreground",

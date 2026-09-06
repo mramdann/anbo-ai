@@ -179,13 +179,14 @@ export function NotificationBell({
         <Button
           variant="ghost"
           size="icon"
-          className="relative size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="relative size-6 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
           title="Agent notifications"
         >
           <HugeiconsIcon
             icon={Notification01Icon}
-            size={16}
+            size={14}
             strokeWidth={1.75}
+            className="size-3.5"
           />
           {badge > 0 ? (
             <span className="absolute -top-0.5 -right-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-primary px-0.5 text-[9px] font-semibold leading-none text-primary-foreground">
