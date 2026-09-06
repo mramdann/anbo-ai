@@ -17,11 +17,7 @@ import {
   Remove01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  DEVICE_PRESETS,
-  devicePreset,
-  RESPONSIVE_DEVICE,
-} from "./devices";
+import { DEVICE_PRESETS, devicePreset, RESPONSIVE_DEVICE } from "./devices";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   forwardRef,
@@ -189,52 +185,6 @@ export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
               strokeWidth={1.75}
             />
           </Button>
-          {onDevice && deviceId !== undefined && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  title={
-                    deviceId === RESPONSIVE_DEVICE.id
-                      ? "Emulate a device viewport"
-                      : `Emulating ${devicePreset(deviceId).label}`
-                  }
-                  aria-label="Device viewport"
-                  className={`size-7 shrink-0 rounded-md hover:bg-accent ${
-                    deviceId === RESPONSIVE_DEVICE.id
-                      ? "text-muted-foreground hover:text-foreground"
-                      : "text-indigo-600 dark:text-indigo-400"
-                  }`}
-                >
-                  <HugeiconsIcon
-                    icon={ComputerPhoneSyncIcon}
-                    size={14}
-                    strokeWidth={1.75}
-                  />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="min-w-48">
-                {DEVICE_PRESETS.map((preset) => (
-                  <DropdownMenuItem
-                    key={preset.id}
-                    onSelect={() => onDevice(preset.id)}
-                    className={
-                      preset.id === deviceId ? "text-foreground" : undefined
-                    }
-                  >
-                    <span className="flex-1">{preset.label}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {preset.width > 0
-                        ? `${preset.width}x${preset.height}`
-                        : "off"}
-                    </span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -310,35 +260,89 @@ export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
             </div>
           ) : null}
           {!emulatedFit && onZoom && zoom !== undefined && (
-            <div className="flex shrink-0 items-center gap-0.5 pl-1 mr-1">
+            // One tight group: two small steppers around the value, which is
+            // itself the reset. Fixed-width digits keep it from shifting as the
+            // number changes.
+            <div className="mr-0.5 flex h-6 shrink-0 items-center overflow-hidden rounded-md border border-border/60">
               <Button
                 type="button"
                 variant="ghost"
                 size="icon"
                 onClick={() => onZoom(Math.max(0.1, zoom - 0.1))}
-                title="Zoom Out"
-                className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                title="Zoom out"
+                className="size-6 shrink-0 rounded-none text-muted-foreground hover:bg-accent hover:text-foreground"
               >
-                <HugeiconsIcon icon={Remove01Icon} size={14} strokeWidth={1.75} />
+                <HugeiconsIcon
+                  icon={Remove01Icon}
+                  size={12}
+                  strokeWidth={1.75}
+                />
               </Button>
-              <div 
-                className="flex w-9 cursor-pointer items-center justify-center text-[10px] font-medium text-muted-foreground hover:text-foreground"
+              <button
+                type="button"
                 onClick={() => onZoom(1.0)}
-                title="Reset Zoom"
+                title="Reset zoom"
+                className="h-full w-8 shrink-0 border-x border-border/60 font-mono text-[10px] font-medium tabular-nums text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent"
               >
                 {Math.round(zoom * 100)}%
-              </div>
+              </button>
               <Button
                 type="button"
                 variant="ghost"
                 size="icon"
                 onClick={() => onZoom(Math.min(5.0, zoom + 0.1))}
-                title="Zoom In"
-                className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                title="Zoom in"
+                className="size-6 shrink-0 rounded-none text-muted-foreground hover:bg-accent hover:text-foreground"
               >
-                <HugeiconsIcon icon={Add01Icon} size={14} strokeWidth={1.75} />
+                <HugeiconsIcon icon={Add01Icon} size={12} strokeWidth={1.75} />
               </Button>
             </div>
+          )}
+          {onDevice && deviceId !== undefined && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  title={
+                    deviceId === RESPONSIVE_DEVICE.id
+                      ? "Emulate a device viewport"
+                      : `Emulating ${devicePreset(deviceId).label}`
+                  }
+                  aria-label="Device viewport"
+                  className={`size-7 shrink-0 rounded-md hover:bg-accent ${
+                    deviceId === RESPONSIVE_DEVICE.id
+                      ? "text-muted-foreground hover:text-foreground"
+                      : "text-indigo-600 dark:text-indigo-400"
+                  }`}
+                >
+                  <HugeiconsIcon
+                    icon={ComputerPhoneSyncIcon}
+                    size={14}
+                    strokeWidth={1.75}
+                  />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-48">
+                {DEVICE_PRESETS.map((preset) => (
+                  <DropdownMenuItem
+                    key={preset.id}
+                    onSelect={() => onDevice(preset.id)}
+                    className={
+                      preset.id === deviceId ? "text-foreground" : undefined
+                    }
+                  >
+                    <span className="flex-1">{preset.label}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {preset.width > 0
+                        ? `${preset.width}x${preset.height}`
+                        : "off"}
+                    </span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
           <Button
             type="button"
