@@ -11,7 +11,12 @@ export const STARTUP_BUDGETS = [
   {
     name: "main window",
     html: "index.html",
-    gzipLimitBytes: 670 * KIB,
+    // 680 since 0.25.0: the launch deck, first-run landing, header, search
+    // field and font guard added about 3 KiB between them; the deck and the
+    // landing page now load lazily, which took 2.3 KiB back, and the rest
+    // is real. The provider-SDK guard below is what keeps startup honest;
+    // this number is the tripwire for everything else.
+    gzipLimitBytes: 680 * KIB,
   },
   {
     name: "settings window",
