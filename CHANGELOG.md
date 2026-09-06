@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.25.0](https://github.com/mramdann/anbo-ai/compare/v0.24.0...v0.25.0) (2026-09-06)
+
+
+### Features
+
+* **agents:** the notification popover on the chrome's scale ([48b5d1a](https://github.com/mramdann/anbo-ai/commit/48b5d1ad72be0d7ea5cf8f139de77bbcd49223d7))
+* **browser:** device emulation beside zoom, and tighter zoom controls ([405346c](https://github.com/mramdann/anbo-ai/commit/405346c57a862ad836cabb87d1debe4e54c0e151))
+* **browser:** follow focus into the page ([0bfb5d4](https://github.com/mramdann/anbo-ai/commit/0bfb5d4e23fd1279208e0cc471625dfd5ba719a9))
+* **header:** a quieter search field that counts its matches ([8c5d160](https://github.com/mramdann/anbo-ai/commit/8c5d160b1f6ee05526fbe31ae905993e04e326ba))
+* **header:** the mark, search in the middle, one run of controls ([d9b5cc1](https://github.com/mramdann/anbo-ai/commit/d9b5cc14fda60e82af5a2be4f478aab6fc3536da))
+* **landing:** introduce Anbo before asking for a folder ([bd158d7](https://github.com/mramdann/anbo-ai/commit/bd158d7b4dcaa3c6e6876a5427f4d72f73c4c49c))
+* **statusbar:** menus and breadcrumb on the bar's own scale ([e57bc4e](https://github.com/mramdann/anbo-ai/commit/e57bc4ec7496953dbd087314e55ef86387c7b75b))
+* **tabs:** a shorter tab strip with its actions centred ([8f1f6f5](https://github.com/mramdann/anbo-ai/commit/8f1f6f5409ac8676ead12c259c5e5e23b33ad19b))
+* **terminal:** repaint glyphs once the fonts arrive ([a49b98f](https://github.com/mramdann/anbo-ai/commit/a49b98fde4b28750ad7cf265eec33e3923ebd651))
+* **updater:** a solid update button with a light crossing it ([d02b9bf](https://github.com/mramdann/anbo-ai/commit/d02b9bfb3364da5f30ce23675d95975d5065b0ea))
+* **workspace:** a launch deck for an empty workspace ([7d35a0e](https://github.com/mramdann/anbo-ai/commit/7d35a0e37526c64501a2f313e70e2c9a4513d4d6))
+
+
+### Bug Fixes
+
+* **spaces:** let the last workspace be deleted ([f60e62e](https://github.com/mramdann/anbo-ai/commit/f60e62ea6d5d3e058f935340389098afbd6d23f4))
+* **spaces:** stop opening a shell nobody asked for ([1cb559d](https://github.com/mramdann/anbo-ai/commit/1cb559d18b09e45bf0da6cccd818662de4131bd0))
+* **tabs:** dress only the focused group's active tab, whole at both ends ([e89814f](https://github.com/mramdann/anbo-ai/commit/e89814f789c0fb0e181030143aa6915da34a4867))
+* **updater:** a sheen the CSS minifier can pass through ([bd1d064](https://github.com/mramdann/anbo-ai/commit/bd1d064cb003b2e0b8e72639dbefbc17bd19e46b))
+* **voice:** the header toggle hides and shows the global orb ([4dcbaba](https://github.com/mramdann/anbo-ai/commit/4dcbabaaa9b143ab0426c2d6fa106576775bff82))
+
+
+### Performance Improvements
+
+* **startup:** keep the launch deck and landing page out of the startup bundle ([7f239b7](https://github.com/mramdann/anbo-ai/commit/7f239b7fe999eeebd79944e2f5d763666c6f925f))
+
 ## [0.24.0](https://github.com/mramdann/anbo-ai/compare/v0.23.0...v0.24.0) (2026-09-05)
 
 
