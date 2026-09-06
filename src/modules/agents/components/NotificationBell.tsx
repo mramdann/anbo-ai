@@ -50,19 +50,19 @@ function StatusRow({
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent"
+      className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-accent"
     >
       <AgentIcon
         agent={agent}
-        size={16}
+        size={14}
         className="shrink-0 text-muted-foreground"
       />
-      <span className="flex-1 truncate text-sm text-foreground">
+      <span className="flex-1 truncate text-xs text-foreground">
         {displayAgentInstance(agent, name)}
       </span>
       <span
         className={cn(
-          "flex items-center gap-1.5 text-xs",
+          "flex items-center gap-1.5 text-[11px]",
           waiting ? "font-medium text-primary" : "text-muted-foreground",
         )}
       >
@@ -90,13 +90,13 @@ function NotificationRow({
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent"
+      className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-accent"
     >
       <span className="flex w-4 shrink-0 items-center justify-center">
         {n.kind === "finished" ? (
           <HugeiconsIcon
             icon={CheckmarkCircle02Icon}
-            size={15}
+            size={13}
             strokeWidth={1.75}
             className="text-muted-foreground"
           />
@@ -109,7 +109,7 @@ function NotificationRow({
           />
         )}
       </span>
-      <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+      <span className="min-w-0 flex-1 truncate text-xs text-foreground">
         {displayAgentInstance(n.agent, n.name)}{" "}
         <span className="text-muted-foreground">{NOTIF_LABEL[n.kind]}</span>
       </span>
@@ -198,10 +198,10 @@ export function NotificationBell({
       <PopoverContent
         align="end"
         sideOffset={8}
-        className="w-80 gap-0.5 overflow-hidden p-0 [zoom:var(--app-zoom)]"
+        className="w-72 gap-0.5 overflow-hidden rounded-xl p-0 [zoom:var(--app-zoom)]"
       >
-        <div className="flex h-10 items-center gap-2 px-3 pt-0.5">
-          <span className="flex gap-1 text-[13px] text-foreground">
+        <div className="flex h-8 items-center gap-2 px-2.5">
+          <span className="flex gap-1 text-xs font-medium text-foreground">
             Notifications
           </span>
           <div className="ml-auto flex items-center gap-2">
@@ -223,15 +223,15 @@ export function NotificationBell({
         </div>
 
         {empty ? (
-          <div className="border-t border-border/60 px-3 py-5 text-center text-xs leading-relaxed text-muted-foreground">
+          <div className="border-t border-border/60 px-3 py-4 text-center text-[11px] leading-relaxed text-muted-foreground">
             No agent activity yet.
             <br />
             Run the Anbo agent or a coding agent to track it here.
           </div>
         ) : (
-          <div className="max-h-80 overflow-y-auto border-t border-border/60 p-1">
+          <div className="max-h-72 overflow-y-auto border-t border-border/60 p-1">
             {activeCount > 0 ? (
-              <div className="px-2 pt-1 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+              <div className="px-1.5 pt-1 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
                 Active agents
               </div>
             ) : null}
@@ -252,10 +252,10 @@ export function NotificationBell({
               />
             ))}
             {activeCount > 0 && history.length > 0 ? (
-              <div className="mx-2 my-1 h-px bg-border/50" />
+              <div className="mx-1.5 my-1 h-px bg-border/50" />
             ) : null}
             {history.length > 0 ? (
-              <div className="px-2 pt-1 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+              <div className="px-1.5 pt-1 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
                 Recent alerts
               </div>
             ) : null}
