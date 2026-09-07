@@ -15,6 +15,7 @@ import {
   Add01Icon,
   ComputerPhoneSyncIcon,
   Remove01Icon,
+  AiBrowserIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { DEVICE_PRESETS, devicePreset, RESPONSIVE_DEVICE } from "./devices";
@@ -70,7 +71,8 @@ type Props = {
   onDevice?: (id: string) => void;
   /** Set while a device is emulated, when page zoom would fight the fit. */
   emulatedFit?: number | null;
-  aiAction?: string | null;
+  effectsEnabled?: boolean;
+  onToggleEffects?: () => void;
 };
 
 export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
@@ -86,7 +88,8 @@ export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
       deviceId,
       onDevice,
       emulatedFit,
-      aiAction,
+      effectsEnabled,
+      onToggleEffects,
     },
     ref,
   ) {
@@ -244,13 +247,31 @@ export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
                 }
               }}
             />
-            {aiAction && (
-              <div className="absolute right-8 z-10 flex items-center gap-1.5 rounded-md border border-indigo-500/40 bg-indigo-500/15 px-2 py-0.5 text-[10px] font-medium text-indigo-700 shadow-sm backdrop-blur-sm dark:border-indigo-400/30 dark:text-indigo-300 dark:bg-indigo-900/30 animate-in fade-in zoom-in duration-200 pointer-events-none">
-                <span className="flex h-1.5 w-1.5 rounded-full bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,1)] animate-pulse" />
-                AI: {aiAction}
-              </div>
-            )}
           </div>
+          {onToggleEffects && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0"
+              onClick={onToggleEffects}
+              aria-pressed={effectsEnabled}
+              aria-label="Browser automation effects"
+              title={
+                effectsEnabled
+                  ? "Hide automation effects"
+                  : "Show automation effects"
+              }
+            >
+              <HugeiconsIcon
+                icon={AiBrowserIcon}
+                size={15}
+                className={
+                  effectsEnabled ? "text-primary" : "text-muted-foreground/50"
+                }
+              />
+            </Button>
+          )}
           {emulatedFit ? (
             <div
               className="flex shrink-0 items-center px-1 text-[10px] font-medium text-indigo-600 dark:text-indigo-400"

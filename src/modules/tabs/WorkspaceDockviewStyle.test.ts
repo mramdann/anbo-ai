@@ -59,9 +59,18 @@ describe("WorkspaceDockview active tab treatment", () => {
     );
   });
 
-  it("animates the browser automation robot with a reduced-motion fallback", () => {
-    expect(css).toContain("@keyframes anbo-browser-automation-robot-hop");
-    expect(css).toContain(".anbo-browser-automation-robot");
-    expect(css).toContain("transform-origin: center bottom");
+  it("keeps the agent logo still while two circular waves expand outwards", () => {
+    expect(css).not.toContain("anbo-browser-automation-robot-hop");
+    expect(css).not.toContain("transform-origin: center bottom");
+    expect(css).toContain("@keyframes anbo-browser-automation-pulse");
+    expect(css).toContain("transform: scale(0.65)");
+    expect(css).toContain("transform: scale(1.65)");
+    expect(css).toMatch(
+      /indicator::before,\s*\.anbo-browser-automation-indicator::after/,
+    );
+    expect(css).toContain("animation-delay: -0.9s");
+    expect(css).toContain("border-radius: 50%");
+    expect(css).toMatch(/indicator\[data-phase="done"\]::after/);
+    expect(css).toMatch(/indicator\[data-phase="error"\]::after/);
   });
 });

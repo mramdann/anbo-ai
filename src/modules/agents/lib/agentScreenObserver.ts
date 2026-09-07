@@ -32,6 +32,15 @@ const MIN_WORKING_MS = 1_000;
 export class AgentScreenObserver {
   private readonly entries = new Map<number, Entry>();
 
+  constructor(private readonly classify = classifyAgentScreen) {}
+
+  /** Verified browser work invalidates a previously ready screen. */
+  activity(leafId: number, now = Date.now()): void {
+    this.input(leafId, "\r", now);
+    const entry = this.entries.get(leafId);
+    if (entry) entry.sawWorkingForTurn = true;
+  }
+
   start(leafId: number, ptyId: number, agent: string): ObservedAgentSignal {
     this.entries.set(leafId, {
       leafId,
@@ -82,7 +91,7 @@ export class AgentScreenObserver {
   ): ObservedAgentSignal[] {
     const signals: ObservedAgentSignal[] = [];
     for (const entry of this.entries.values()) {
-      const candidate = classifyAgentScreen(entry.agent, read(entry.leafId));
+      const candidate = this.classify(entry.agent, read(entry.leafId));
       if (candidate === null) continue;
       if (entry.candidate === candidate) entry.stablePolls += 1;
       else {

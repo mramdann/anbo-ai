@@ -26,7 +26,6 @@ import {
 import { resolveDisplayName } from "@/modules/editor/lib/languageResolver";
 import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
 import {
-  BotIcon,
   Cancel01Icon,
   FullScreenIcon,
   Minimize01Icon,
@@ -45,7 +44,12 @@ import {
   type IDockviewPanelProps,
 } from "dockview-react";
 import "dockview/dist/styles/dockview.css";
-import { useBrowserAutomationActivity } from "@/modules/browser/automationActivity";
+import {
+  useBrowserAutomationActivity,
+  useBrowserAutomationState,
+} from "@/modules/browser/automationActivity";
+import { automationLabel } from "@/modules/browser/automationState";
+import { AgentIcon } from "@/modules/agents/lib/agentIcon";
 import { setNativeBrowserDragActive } from "@/modules/browser/nativeVisibility";
 import {
   createContext,
@@ -387,20 +391,24 @@ function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
 
 function BrowserAutomationTabIndicator({ tabId }: { tabId: number }) {
   const action = useBrowserAutomationActivity(tabId);
+  const activity = useBrowserAutomationState(tabId);
   if (!action) return null;
+  const title = activity
+    ? `${activity.actor.label}: ${automationLabel(activity)}`
+    : `Remote agent: ${action}`;
 
   return (
     <span
       data-no-drag
       role="status"
-      aria-label={`Agent is automating this browser: ${action}`}
-      title={`Agent is automating this browser: ${action}`}
+      aria-label={title}
+      title={title}
       className="anbo-browser-automation-indicator"
+      data-phase={activity?.phase}
     >
-      <HugeiconsIcon
-        icon={BotIcon}
-        size={11}
-        strokeWidth={1.8}
+      <AgentIcon
+        agent={activity?.actor.brand ?? "robot"}
+        size={12}
         className="anbo-browser-automation-robot"
       />
     </span>

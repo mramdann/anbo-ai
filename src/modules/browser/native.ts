@@ -213,6 +213,7 @@ export async function browserEmbedUpdate(
   bounds: EmbedBounds,
   visible: boolean,
   context: BrowserWorkspaceContext,
+  effectsEnabled = true,
 ): Promise<void> {
   await ensureBrowserSession();
   await invoke("browser_embed_update", {
@@ -224,6 +225,7 @@ export async function browserEmbedUpdate(
     workspace: context.workspace,
     bounds,
     visible,
+    effectsEnabled,
   });
 }
 

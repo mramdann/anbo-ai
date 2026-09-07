@@ -19,7 +19,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { useBrowserAutomationActivity } from "./automationActivity";
+import { ensureBrowserAutomationActivityListener } from "./automationActivity";
+import {
+  setAutomationEffectsEnabled,
+  useAutomationEffectsEnabled,
+} from "./automationState";
 import {
   devicePreset,
   isEmulating,
@@ -95,6 +99,7 @@ type DesiredBounds = {
   key: string;
   bounds: ReturnType<typeof toPhysicalBounds>;
   visible: boolean;
+  effectsEnabled: boolean;
 };
 
 const EMPTY_BOUNDS = { x: 0, y: 0, width: 0, height: 0 };
@@ -191,7 +196,8 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     const zoomRef = useRef(1);
     const scheduleViewportRef = useRef<() => void>(() => {});
     const viewportTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const aiAction = useBrowserAutomationActivity(id);
+    const effectsEnabled = useAutomationEffectsEnabled();
+    useEffect(ensureBrowserAutomationActivityListener, []);
     const [loading, setLoading] = useState(initialLoading);
     const onLoadingChangeRef = useRef(onLoadingChange);
     const lastHoleRef = useRef("");
@@ -317,6 +323,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
         desired.bounds,
         desired.visible,
         workspaceContextRef.current,
+        desired.effectsEnabled,
       )
         .then(() => {
           if (disposedRef.current) return;
@@ -431,13 +438,16 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
       };
       scheduleViewportRef.current();
       desiredRef.current = {
-        key: shouldShow
-          ? `show:${bounds.x},${bounds.y},${bounds.width},${bounds.height}:${currentUrl}`
-          : canMeasure && hasArea
-            ? `hidden:${bounds.x},${bounds.y},${bounds.width},${bounds.height}:${currentUrl}`
-            : "hide",
+        key:
+          `${effectsEnabled}:` +
+          (shouldShow
+            ? `show:${bounds.x},${bounds.y},${bounds.width},${bounds.height}:${currentUrl}`
+            : canMeasure && hasArea
+              ? `hidden:${bounds.x},${bounds.y},${bounds.width},${bounds.height}:${currentUrl}`
+              : "hide"),
         bounds,
         visible: shouldShow,
+        effectsEnabled,
       };
       sendDesiredBounds();
 
@@ -477,7 +487,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
           );
         }
       }
-    }, [id, native, sendDesiredBounds]);
+    }, [id, native, sendDesiredBounds, effectsEnabled]);
 
     useLayoutEffect(() => {
       if (!native) return;
@@ -779,7 +789,8 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
           emulatedFit={emulatedFit}
           deviceId={deviceId}
           onDevice={handleDevice}
-          aiAction={aiAction}
+          effectsEnabled={effectsEnabled}
+          onToggleEffects={() => setAutomationEffectsEnabled(!effectsEnabled)}
         />
         {showXfoHint ? (
           <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-border/60 bg-amber-500/8 px-3 text-[11px] text-amber-600 dark:text-amber-400">

@@ -8,7 +8,7 @@ import {
   setAgentActivity,
   subscribeTerminalInput,
 } from "@/modules/terminal";
-import { isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
 import {
@@ -16,6 +16,7 @@ import {
   type ObservedAgentSignal,
 } from "../lib/agentScreenObserver";
 import { prepareAttentionSound } from "../lib/attentionSound";
+import { BrowserTurnObserver } from "../lib/browserTurnObserver";
 import { displayAgentInstance } from "../lib/format";
 import { maybeTriggerManagedReview } from "../lib/review";
 import { routeAgentNotification } from "../lib/route";
@@ -122,6 +123,7 @@ function handleLifecycleSignal(
   sig: AgentSignal,
   ctx: Ctx,
   observer: AgentScreenObserver,
+  browser: BrowserTurnObserver,
 ): void {
   const leafId = leafIdForPty(sig.id);
   if (leafId === null) return;
@@ -132,6 +134,7 @@ function handleLifecycleSignal(
       const info = tabInfo(ctx.tabs, leafId);
       if (!info) return;
       const agent = sig.agent ?? "agent";
+      browser.start(leafId, sig.id, agent);
       store.start(
         leafId,
         info.tabId,
@@ -145,6 +148,7 @@ function handleLifecycleSignal(
       return;
     }
     case "exited":
+      browser.stop(leafId);
       observer.stop(leafId);
       clearAgentActivity(sig.id);
       store.finish(leafId);
@@ -177,6 +181,7 @@ export function AgentNotificationsBridge({
 }) {
   const focused = useWindowFocus();
   const observerRef = useRef(new AgentScreenObserver());
+  const browserRef = useRef(new BrowserTurnObserver());
   const ctxRef = useRef<Ctx>({
     tabs,
     spaces,
@@ -201,10 +206,12 @@ export function AgentNotificationsBridge({
   useEffect(() => prepareAttentionSound(), []);
 
   useEffect(() => {
+    browserRef.current.retainTabs(new Set(tabs.map((tab) => tab.id)));
     const store = useAgentStore.getState();
     for (const session of Object.values(store.sessions)) {
       const info = tabInfo(tabs, session.leafId);
       if (!info) {
+        browserRef.current.stop(session.leafId);
         observerRef.current.stop(session.leafId);
         store.finish(session.leafId);
         continue;
@@ -213,6 +220,7 @@ export function AgentNotificationsBridge({
       if (!observerRef.current.has(session.leafId)) {
         const ptyId = ptyIdForLeaf(session.leafId);
         if (ptyId !== null) {
+          browserRef.current.start(session.leafId, ptyId, session.agent);
           applyObserved(
             observerRef.current.start(session.leafId, ptyId, session.agent),
             ctxRef.current,
@@ -226,7 +234,12 @@ export function AgentNotificationsBridge({
     let alive = true;
     let unlisten: (() => void) | undefined;
     listen<AgentSignal>("anbo:agent-signal", (e) =>
-      handleLifecycleSignal(e.payload, ctxRef.current, observerRef.current),
+      handleLifecycleSignal(
+        e.payload,
+        ctxRef.current,
+        observerRef.current,
+        browserRef.current,
+      ),
     )
       .then((u) => {
         if (alive) unlisten = u;
@@ -241,17 +254,39 @@ export function AgentNotificationsBridge({
 
   useEffect(() => {
     if (!isTauri()) return;
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    void listen("browser-automation-activity", (event) =>
+      browserRef.current.receive(event.payload),
+    )
+      .then((remove) => {
+        if (alive) unlisten = remove;
+        else remove();
+      })
+      .catch(() => {});
     const unsubscribeInput = subscribeTerminalInput((leafId, data) => {
+      browserRef.current.input(leafId, data);
       const signal = observerRef.current.input(leafId, data);
       if (signal) applyObserved(signal, ctxRef.current);
     });
     const timer = window.setInterval(() => {
-      const signals = observerRef.current.poll((leafId) =>
-        readTerminalBuffer(leafId, 160),
-      );
+      const buffers = new Map<number, string | null>();
+      const read = (leafId: number) => {
+        if (!buffers.has(leafId))
+          buffers.set(leafId, readTerminalBuffer(leafId, 160));
+        return buffers.get(leafId) ?? null;
+      };
+      const signals = observerRef.current.poll(read);
       for (const signal of signals) applyObserved(signal, ctxRef.current);
+      for (const target of browserRef.current.poll(read)) {
+        void invoke("browser_automation_finish_turn", { target }).catch(
+          () => {},
+        );
+      }
     }, 200);
     return () => {
+      alive = false;
+      unlisten?.();
       unsubscribeInput();
       window.clearInterval(timer);
     };

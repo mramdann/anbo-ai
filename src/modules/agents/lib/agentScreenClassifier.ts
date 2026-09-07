@@ -180,3 +180,28 @@ export function isAgentScreenReady(
 ): boolean {
   return classifyAgentScreen(agent, buffer) === "ready";
 }
+
+/** Browser ownership follows the model turn, not a persistent background job.
+ * Keep the normal agent-status classifier unchanged: /tasks is still working.
+ */
+export function classifyAgentTurn(
+  agent: string,
+  buffer: string | null,
+): AgentScreenState {
+  if (!buffer || !["agy", "antigravity"].includes(normalizedAgent(agent))) {
+    return classifyAgentScreen(agent, buffer);
+  }
+  const screen = tail(buffer);
+  // Active cancellation controls outrank a mounted input/footer. A server's
+  // background-task count alone is not an active model cancellation control.
+  const cancelAt = lastPatternIndex(screen, /esc\s+to\s+cancel/i);
+  const shortcutsAt = lastPatternIndex(screen, /\? for shortcuts/i);
+  if (cancelAt > shortcutsAt && screen.length - cancelAt <= 2400) {
+    const state = classifyAgentScreen(agent, screen);
+    return state === "attention" ? "attention" : "working";
+  }
+  return classifyAgentScreen(
+    agent,
+    screen.replace(/\d+ task\(s\)[^\n]*\/tasks/gi, ""),
+  );
+}
