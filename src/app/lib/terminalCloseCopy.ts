@@ -5,6 +5,31 @@ export type TerminalCloseCopy = {
   description: string;
 };
 
+export type TerminalClosePrompt = {
+  tabId: number | null;
+  leafId: number | null;
+  copy: TerminalCloseCopy;
+};
+
+export function retainTerminalClosePrompt(
+  previous: TerminalClosePrompt | null,
+  tab: Tab | undefined,
+  tabId: number | null,
+  leafId: number | null,
+): TerminalClosePrompt | null {
+  // Radix retains the closing content after the pending target is cleared.
+  if (tabId === null) {
+    if (!previous || previous.tabId === null) return previous;
+    return { ...previous, tabId: null, leafId: null };
+  }
+  if (previous?.tabId === tabId && previous.leafId === leafId) return previous;
+  return {
+    tabId,
+    leafId,
+    copy: terminalCloseCopy(tab, leafId === null ? "tab" : "pane"),
+  };
+}
+
 export function terminalCloseCopy(
   tab: Tab | undefined,
   scope: "tab" | "pane" = "tab",

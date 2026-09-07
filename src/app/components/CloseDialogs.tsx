@@ -10,7 +10,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import type { Tab } from "@/modules/tabs";
-import { terminalCloseCopy } from "../lib/terminalCloseCopy";
+import { useState } from "react";
+import {
+  retainTerminalClosePrompt,
+  terminalCloseCopy,
+  type TerminalClosePrompt,
+} from "../lib/terminalCloseCopy";
 
 type Props = {
   tabs: Tab[];
@@ -63,10 +68,17 @@ export function CloseDialogs({
   onCancelAppClose,
   onConfirmAppClose,
 }: Props) {
-  const terminalCopy = terminalCloseCopy(
+  const [terminalPrompt, setTerminalPrompt] =
+    useState<TerminalClosePrompt | null>(null);
+  const nextTerminalPrompt = retainTerminalClosePrompt(
+    terminalPrompt,
     tabs.find((tab) => tab.id === pendingTerminalCloseTab),
-    pendingTerminalCloseLeaf === null ? "tab" : "pane",
+    pendingTerminalCloseTab,
+    pendingTerminalCloseLeaf,
   );
+  if (nextTerminalPrompt !== terminalPrompt)
+    setTerminalPrompt(nextTerminalPrompt);
+  const terminalCopy = nextTerminalPrompt?.copy ?? terminalCloseCopy(undefined);
 
   return (
     <>
