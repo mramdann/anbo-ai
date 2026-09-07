@@ -1,10 +1,15 @@
 import { useLayoutEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import { renameSelectionEnd } from "./lib/rename";
 
 type Props = {
   initial: string;
   placeholder?: string;
-  onCommit: (value: string) => void;
+  onCommit: (value: string) => void | Promise<void>;
   onCancel: () => void;
+  isDirectory?: boolean;
+  ariaLabel?: string;
+  errorTitle?: string;
 };
 
 /**
@@ -17,13 +22,19 @@ export function InlineInput({
   placeholder,
   onCommit,
   onCancel,
+  isDirectory = false,
+  ariaLabel,
+  errorTitle = "Could not save name",
 }: Props) {
   const [value, setValue] = useState(initial);
+  const [pending, setPending] = useState(false);
   const ref = useRef<HTMLInputElement>(null);
   const committedRef = useRef(false);
   const settledRef = useRef(false);
+  const mountedRef = useRef(false);
 
   useLayoutEffect(() => {
+    mountedRef.current = true;
     const el = ref.current;
     if (!el) return;
     // Two-tick focus to win against parent click handlers and Radix portal
@@ -40,9 +51,7 @@ export function InlineInput({
     // visible — there is no scroll-into-view we need from focus().
     const focus = () => {
       el.focus({ preventScroll: true });
-      const dot = initial.lastIndexOf(".");
-      if (dot > 0) el.setSelectionRange(0, dot);
-      else el.select();
+      el.setSelectionRange(0, renameSelectionEnd(initial, isDirectory));
     };
     focus();
     const raf = requestAnimationFrame(() => focus());
@@ -51,15 +60,29 @@ export function InlineInput({
       settledRef.current = true;
     }, 170);
     return () => {
+      mountedRef.current = false;
       cancelAnimationFrame(raf);
       clearTimeout(timer);
     };
-  }, [initial]);
+  }, [initial, isDirectory]);
 
-  const commit = () => {
+  const commit = async () => {
     if (committedRef.current) return;
     committedRef.current = true;
-    onCommit(value);
+    setPending(true);
+    try {
+      await onCommit(value);
+    } catch (error) {
+      toast.error(errorTitle, {
+        description: error instanceof Error ? error.message : String(error),
+      });
+      if (mountedRef.current) {
+        committedRef.current = false;
+        ref.current?.focus({ preventScroll: true });
+      }
+    } finally {
+      if (mountedRef.current) setPending(false);
+    }
   };
   const cancel = () => {
     if (committedRef.current) return;
@@ -72,13 +95,19 @@ export function InlineInput({
       ref={ref}
       value={value}
       placeholder={placeholder}
+      aria-label={ariaLabel ?? placeholder}
+      aria-busy={pending}
+      readOnly={pending}
       onChange={(e) => setValue(e.target.value)}
       onKeyDown={(e) => {
+        if (e.nativeEvent.isComposing) return;
         if (e.key === "Enter") {
           e.preventDefault();
-          commit();
+          e.stopPropagation();
+          void commit();
         } else if (e.key === "Escape") {
           e.preventDefault();
+          e.stopPropagation();
           cancel();
         }
       }}
@@ -87,7 +116,7 @@ export function InlineInput({
           ref.current?.focus({ preventScroll: true });
           return;
         }
-        commit();
+        void commit();
       }}
       className="flex-1 min-w-0 truncate rounded-sm border border-border bg-background px-1.5 py-0.5 text-xs text-foreground outline-none ring-0 focus:border-ring"
     />

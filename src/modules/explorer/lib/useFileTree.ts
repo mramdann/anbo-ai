@@ -3,6 +3,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useWorkspaceEnvStore } from "@/modules/workspace";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { listenFsChanged, watchAdd, watchRemove } from "./watch";
+import { renameTarget } from "./rename";
+import { toast } from "sonner";
+import { renameEntry, trashEntry } from "./pathMutations";
 
 export type DirEntry = {
   name: string;
@@ -78,6 +81,8 @@ function sameDirListing(a: DirEntry[], b: DirEntry[]): boolean {
 
 type Options = {
   onPathRenamed?: (from: string, to: string) => void;
+  onBeforePathRename?: (path: string) => void;
+  onBeforePathDelete?: (path: string) => void;
   onPathDeleted?: (path: string) => void;
 };
 
@@ -98,6 +103,20 @@ export function useFileTree(rootPath: string | null, options?: Options) {
   const nodesRef = useRef(nodes);
   const watchedRef = useRef<Set<string>>(new Set());
   const generationRef = useRef(0);
+  const mutationBusyRef = useRef(false);
+
+  const mutate = useCallback(async (action: () => Promise<void>) => {
+    if (mutationBusyRef.current)
+      throw new Error(
+        "Another file operation is in progress. Please try again.",
+      );
+    mutationBusyRef.current = true;
+    try {
+      await action();
+    } finally {
+      mutationBusyRef.current = false;
+    }
+  }, []);
 
   useEffect(() => {
     showHiddenRef.current = showHidden;
@@ -358,18 +377,18 @@ export function useFileTree(rootPath: string | null, options?: Options) {
         return;
       }
       const path = joinPath(pendingCreate.parentPath, trimmed);
+      const generation = generationRef.current;
       const cmd =
         pendingCreate.kind === "dir" ? "fs_create_dir" : "fs_create_file";
-      try {
-        await invoke(cmd, { path, workspace });
+      await mutate(() => invoke(cmd, { path, workspace }));
+      if (generation === generationRef.current) {
+        setPendingCreate((current) =>
+          current === pendingCreate ? null : current,
+        );
         await fetchChildren(pendingCreate.parentPath);
-      } catch (e) {
-        console.error(`${cmd} failed:`, e);
-      } finally {
-        setPendingCreate(null);
       }
     },
-    [pendingCreate, fetchChildren, workspace],
+    [pendingCreate, fetchChildren, workspace, mutate],
   );
 
   const beginRename = useCallback((path: string) => {
@@ -379,45 +398,63 @@ export function useFileTree(rootPath: string | null, options?: Options) {
 
   const cancelRename = useCallback(() => setRenaming(null), []);
 
+  const renamePath = useCallback(
+    async (from: string, newName: string) => {
+      const generation = generationRef.current;
+      const to = renameTarget(from, newName);
+      if (to === null) return;
+      await mutate(() =>
+        renameEntry({
+          from,
+          to,
+          workspace,
+          before: options?.onBeforePathRename,
+          after: options?.onPathRenamed,
+        }),
+      );
+      if (generation === generationRef.current)
+        await fetchChildren(dirname(from));
+    },
+    [workspace, options, mutate, fetchChildren],
+  );
+
   const commitRename = useCallback(
     async (newName: string) => {
       if (!renaming) return;
-      const trimmed = newName.trim();
-      const parent = dirname(renaming);
-      const oldName = renaming.slice(parent === "/" ? 1 : parent.length + 1);
-      if (!trimmed || trimmed === oldName) {
-        setRenaming(null);
-        return;
-      }
-      const to = joinPath(parent, trimmed);
-      try {
-        await invoke("fs_rename", {
-          from: renaming,
-          to,
-          workspace,
-        });
-        options?.onPathRenamed?.(renaming, to);
-        await fetchChildren(parent);
-      } catch (e) {
-        console.error("fs_rename failed:", e);
-      } finally {
-        setRenaming(null);
+      const generation = generationRef.current;
+      await renamePath(renaming, newName);
+      if (generation === generationRef.current) {
+        setRenaming((current) => (current === renaming ? null : current));
       }
     },
-    [renaming, fetchChildren, options, workspace],
+    [renaming, renamePath],
   );
 
   const deletePath = useCallback(
     async (path: string) => {
+      const generation = generationRef.current;
       try {
-        await invoke("fs_delete", { path, workspace });
-        options?.onPathDeleted?.(path);
-        await fetchChildren(dirname(path));
+        await mutate(() =>
+          trashEntry({
+            path,
+            workspace,
+            before: options?.onBeforePathDelete,
+            after: options?.onPathDeleted,
+          }),
+        );
+        if (generation === generationRef.current)
+          await fetchChildren(dirname(path));
+        toast.success("Moved to trash", {
+          description:
+            "You can restore it from your system trash or Recycle Bin.",
+        });
       } catch (e) {
-        console.error("fs_delete failed:", e);
+        toast.error("Could not move to trash", {
+          description: e instanceof Error ? e.message : String(e),
+        });
       }
     },
-    [fetchChildren, options, workspace],
+    [fetchChildren, options, workspace, mutate],
   );
 
   const movePath = useCallback(
@@ -425,27 +462,29 @@ export function useFileTree(rootPath: string | null, options?: Options) {
       const name = from.slice(from.lastIndexOf("/") + 1);
       const to = joinPath(toDir, name);
       if (to === from) return;
-      const target = nodesRef.current[toDir];
-      if (
-        target?.status === "loaded" &&
-        target.entries.some((e) => e.name === name)
-      ) {
-        console.warn(`move skipped: "${name}" already exists in ${toDir}`);
-        return;
-      }
+      const generation = generationRef.current;
       try {
-        await invoke("fs_rename", {
-          from,
-          to,
-          workspace,
-        });
-        options?.onPathRenamed?.(from, to);
-        await Promise.all([fetchChildren(dirname(from)), fetchChildren(toDir)]);
+        await mutate(() =>
+          renameEntry({
+            from,
+            to,
+            workspace,
+            before: options?.onBeforePathRename,
+            after: options?.onPathRenamed,
+          }),
+        );
+        if (generation === generationRef.current)
+          await Promise.all([
+            fetchChildren(dirname(from)),
+            fetchChildren(toDir),
+          ]);
       } catch (e) {
-        console.error("fs_rename (move) failed:", e);
+        toast.error("Could not move", {
+          description: e instanceof Error ? e.message : String(e),
+        });
       }
     },
-    [fetchChildren, options, workspace],
+    [fetchChildren, options, workspace, mutate],
   );
 
   return {
@@ -462,6 +501,7 @@ export function useFileTree(rootPath: string | null, options?: Options) {
     beginRename,
     cancelRename,
     commitRename,
+    renamePath,
     deletePath,
     movePath,
     joinPath,

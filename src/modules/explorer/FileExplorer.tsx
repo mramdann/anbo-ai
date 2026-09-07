@@ -59,6 +59,8 @@ type Props = {
   onOpenFile: (path: string, pin?: boolean) => void;
   onOpenInBrowser?: (path: string) => void;
   onPathRenamed?: (from: string, to: string) => void;
+  onBeforePathRename?: (path: string) => void;
+  onBeforePathDelete?: (path: string) => void;
   onPathDeleted?: (path: string) => void;
   onRevealInTerminal?: (path: string) => void;
   onAttachToAgent?: (path: string) => void;
@@ -198,6 +200,8 @@ export const FileExplorer = memo(
       onOpenFile,
       onOpenInBrowser,
       onPathRenamed,
+      onBeforePathRename,
+      onBeforePathDelete,
       onPathDeleted,
       onRevealInTerminal,
       onAttachToAgent,
@@ -206,7 +210,12 @@ export const FileExplorer = memo(
     },
     ref,
   ) {
-    const tree = useFileTree(rootPath, { onPathRenamed, onPathDeleted });
+    const tree = useFileTree(rootPath, {
+      onPathRenamed,
+      onBeforePathRename,
+      onBeforePathDelete,
+      onPathDeleted,
+    });
     const gitDecorations = usePreferencesStore((s) => s.explorerGitDecorations);
     const { lookup: lookupGitStatus } = useGitStatus(
       rootPath,
@@ -412,6 +421,13 @@ export const FileExplorer = memo(
       };
 
       switch (e.key) {
+        case "F2":
+          if (currentIdx < 0 || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey)
+            return;
+          e.preventDefault();
+          e.stopPropagation();
+          tree.beginRename(entryPaths[currentIdx]);
+          break;
         case "ArrowDown":
           e.preventDefault();
           move(currentIdx < 0 ? 0 : currentIdx + 1);
@@ -578,6 +594,7 @@ export const FileExplorer = memo(
           onActiveChange={setIsSearchActive}
           onRevealInTerminal={onRevealInTerminal}
           onAttachToAgent={onAttachToAgent}
+          onRename={tree.renamePath}
         />
 
         {!isSearchActive ? (
@@ -775,6 +792,15 @@ export const FileExplorer = memo(
                   <ContextMenuSeparator />
                   <ContextMenuItem
                     className={COMPACT_ITEM}
+                    onSelect={() => tree.beginRename(menuTarget.path)}
+                  >
+                    <span className="flex-1">Rename</span>
+                    <span className="ml-4 text-[10px] text-muted-foreground">
+                      F2
+                    </span>
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    className={COMPACT_ITEM}
                     variant="destructive"
                     onSelect={(e) => {
                       if (deleteConfirm) {
@@ -787,7 +813,7 @@ export const FileExplorer = memo(
                       }
                     }}
                   >
-                    {deleteConfirm ? "Click again to confirm" : "Delete"}
+                    {deleteConfirm ? "Confirm move to trash" : "Move to Trash"}
                   </ContextMenuItem>
                 </>
               ) : (

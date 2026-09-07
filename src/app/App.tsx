@@ -89,6 +89,10 @@ import {
   useEditorFileSync,
 } from "@/modules/editor";
 import { FileExplorer, type FileExplorerHandle } from "@/modules/explorer";
+import {
+  assertRenameHasNoUnsavedEditors,
+  renamedDocumentPatch,
+} from "@/modules/explorer/lib/rename";
 import type { GitHistorySearchHandle } from "@/modules/git-history";
 import {
   Header,
@@ -175,7 +179,11 @@ import {
   type VoiceTarget,
   WhisperRuntimeBridge,
 } from "@/modules/voice";
-import { useWorkspaceEnvStore, type WorkspaceEnv } from "@/modules/workspace";
+import {
+  useWorkspaceEnvStore,
+  workspaceScopeKey,
+  type WorkspaceEnv,
+} from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import type { SearchAddon } from "@xterm/addon-search";
@@ -1353,25 +1361,38 @@ export default function App() {
     return () => unlisten?.();
   }, [handleOpenFile]);
 
+  const handleBeforePathRename = useCallback(
+    (path: string) => {
+      const scope = workspaceScopeKey(workspaceEnv);
+      const scopedTabs = tabsRef.current.filter(
+        (tab) => workspaceScopeKey(workspaceForSpace(tab.spaceId)) === scope,
+      );
+      assertRenameHasNoUnsavedEditors(path, scopedTabs, "renaming or moving");
+    },
+    [workspaceEnv, workspaceForSpace],
+  );
+
+  const handleBeforePathDelete = useCallback(
+    (path: string) => {
+      const scope = workspaceScopeKey(workspaceEnv);
+      const scopedTabs = tabsRef.current.filter(
+        (tab) => workspaceScopeKey(workspaceForSpace(tab.spaceId)) === scope,
+      );
+      assertRenameHasNoUnsavedEditors(path, scopedTabs, "moving to trash");
+    },
+    [workspaceEnv, workspaceForSpace],
+  );
+
   const handlePathRenamed = useCallback(
     (from: string, to: string) => {
-      for (const t of tabs) {
-        if (t.kind !== "editor") continue;
-        if (t.path === from) {
-          const i = to.lastIndexOf("/");
-          updateTab(t.id, { path: to, title: i === -1 ? to : to.slice(i + 1) });
-        } else if (t.path.startsWith(`${from}/`)) {
-          const suffix = t.path.slice(from.length);
-          const newPath = `${to}${suffix}`;
-          const i = newPath.lastIndexOf("/");
-          updateTab(t.id, {
-            path: newPath,
-            title: i === -1 ? newPath : newPath.slice(i + 1),
-          });
-        }
+      const scope = workspaceScopeKey(workspaceEnv);
+      for (const t of tabsRef.current) {
+        if (workspaceScopeKey(workspaceForSpace(t.spaceId)) !== scope) continue;
+        const patch = renamedDocumentPatch(t, from, to);
+        if (patch) updateTab(t.id, patch);
       }
     },
-    [tabs, updateTab],
+    [updateTab, workspaceEnv, workspaceForSpace],
   );
 
   const activeTerminalLeafCwd =
@@ -2590,6 +2611,8 @@ export default function App() {
                             onOpenFile={handleOpenFile}
                             onOpenInBrowser={openFileInAnboBrowser}
                             onPathRenamed={handlePathRenamed}
+                            onBeforePathRename={handleBeforePathRename}
+                            onBeforePathDelete={handleBeforePathDelete}
                             onPathDeleted={handlePathDeleted}
                             onRevealInTerminal={cdInNewTab}
                             onAttachToAgent={handleAttachFileToAgent}

@@ -87,6 +87,9 @@ function EntryRowImpl(props: EntryRowProps) {
         <TreeIcon src={iconUrl} isDir={isDir} expanded={isExpanded} />
         <InlineInput
           initial={name}
+          isDirectory={isDir}
+          ariaLabel={isDir ? "Rename folder" : "Rename file"}
+          errorTitle="Could not rename"
           onCommit={actions.commitRename}
           onCancel={actions.cancelRename}
         />
