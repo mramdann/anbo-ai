@@ -42,7 +42,7 @@ pub struct Session {
     //   4. `master` — last; ClosePseudoConsole on Windows. By now the child
     //      is dead and conhost has nothing left to drain.
     #[cfg(windows)]
-    _job: Option<crate::modules::proc::job::ProcessJob>,
+    pub(super) _job: Option<crate::modules::proc::job::ProcessJob>,
     /// PID of the shell process. 0 means unknown; callers must skip checks when 0.
     pub shell_pid: u32,
     pub killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
@@ -195,6 +195,12 @@ pub fn spawn(
                             );
                         }
                         agent_detect.process(&buf[..n], |t| {
+                            if matches!(t, super::agent_detect::Transition::Exited) {
+                                crate::modules::browser_automation::activity::end_pty(
+                                    &app_reader,
+                                    id,
+                                );
+                            }
                             let _ = app_reader.emit(AGENT_EVENT, t.into_signal(id));
                         });
                         filtered.clear();
@@ -280,6 +286,7 @@ pub fn spawn(
                 }
             };
             exited_w.store(true, Ordering::Release);
+            crate::modules::browser_automation::activity::end_pty(&app_waiter, id);
             // Wait for the reader to hit EOF before taking a final snapshot of
             // `pending`, so the last line of output never races the Exit event.
             #[cfg(windows)]

@@ -4,8 +4,8 @@
 //!
 //! Spec: one MCP endpoint supporting POST (+ optional GET); a JSON-RPC *request*
 //! may be answered with a plain `application/json` object (no SSE needed for our
-//! non-streaming tools). Stateless (no `Mcp-Session-Id`). Bound to 127.0.0.1 with
-//! Origin validation to prevent DNS rebinding. GET/DELETE → 405.
+//! non-streaming tools). Bounded sessions retain display-only client identity;
+//! legacy sessionless calls remain supported. Bound to loopback with Origin validation.
 
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,7 +17,8 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 use tokio::net::TcpListener;
 
-use crate::modules::browser_automation::actions::handle_action;
+use super::caller::{self, Caller};
+use crate::modules::browser_automation::actions::handle_action_as;
 use crate::modules::browser_automation::mcp::{self, PROTOCOL_VERSION, SERVER_NAME};
 use crate::modules::browser_automation::protocol::MAX_REQUEST_SIZE;
 
@@ -64,7 +65,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                     break;
                 }
                 accept = listener.accept() => {
-                    let (stream, _) = match accept {
+                    let (stream, peer) = match accept {
                         Ok(s) => s,
                         Err(e) => {
                             log::warn!("[browser_automation] http: accept failed: {e}");
@@ -73,10 +74,13 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                     };
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
+                        let local = stream.local_addr().ok();
+                        let owner = std::sync::Arc::new(tokio::sync::OnceCell::new());
                         let io = hyper_util::rt::TokioIo::new(stream);
                         let svc = hyper::service::service_fn(move |req| {
                             let app = app.clone();
-                            async move { handle(req, app).await }
+                            let owner = owner.clone();
+                            async move { handle(req, app, peer, local, owner).await }
                         });
                         if let Err(e) = hyper::server::conn::http1::Builder::new()
                             .serve_connection(io, svc)
@@ -96,6 +100,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
 }
 
 pub fn stop() {
+    caller::clear_sessions();
     if let Ok(mut guard) = HTTP_CANCEL_TX.lock() {
         if let Some(tx) = guard.take() {
             let _ = tx.send(());
@@ -129,17 +134,32 @@ fn origin_ok(headers: &hyper::HeaderMap) -> bool {
 async fn handle(
     req: hyper::Request<hyper::body::Incoming>,
     app: AppHandle,
+    peer: std::net::SocketAddr,
+    local: Option<std::net::SocketAddr>,
+    owner: std::sync::Arc<tokio::sync::OnceCell<Option<u32>>>,
 ) -> Result<hyper::Response<Full<Bytes>>, Infallible> {
     let path = req.uri().path();
     if path != "/mcp" {
         return Ok(empty(404));
     }
-    if req.method() != hyper::Method::POST {
-        // GET/DELETE/etc. on /mcp → 405 (we don't offer an SSE stream).
-        return Ok(empty(405));
-    }
     if !origin_ok(req.headers()) {
         return Ok(empty(403));
+    }
+    let session_id = req
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    if req.method() == hyper::Method::DELETE {
+        if let Some(id) = session_id {
+            if let Some(caller) = caller::remove_session(&id) {
+                super::activity::end_owner(&app, &caller);
+            }
+        }
+        return Ok(empty(204));
+    }
+    if req.method() != hyper::Method::POST {
+        return Ok(empty(405));
     }
 
     // Cap the body via Content-Length up front, then read it.
@@ -179,12 +199,41 @@ async fn handle(
 
     let method = req_obj.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let params = req_obj.get("params").cloned().unwrap_or(json!({}));
-    let outcome = dispatch(&app, method, &params).await;
+    let mut new_session = None;
+    let actor = if method == "initialize" {
+        let pty_id = owner
+            .get_or_init(|| async {
+                match local {
+                    Some(local) => super::peer::http_owner(app.clone(), peer, local).await,
+                    None => None,
+                }
+            })
+            .await;
+        match caller::create_session(&params["clientInfo"], *pty_id) {
+            Ok(id) => new_session = Some(id),
+            Err(_) => return Ok(empty(503)),
+        }
+        Caller::default()
+    } else if let Some(id) = session_id {
+        match caller::session_caller(&id) {
+            Some(actor) => actor,
+            None => return Ok(empty(404)),
+        }
+    } else {
+        Caller::default()
+    };
+    let outcome = dispatch(&app, method, &params, actor).await;
     let resp = match outcome {
         Ok(result) => rpc_success(id, result),
         Err((code, msg)) => rpc_error(id, code, &msg),
     };
-    Ok(json_ok(resp))
+    let mut response = json_ok(resp);
+    if let Some(id) = new_session {
+        if let Ok(value) = id.parse() {
+            response.headers_mut().insert("mcp-session-id", value);
+        }
+    }
+    Ok(response)
 }
 
 /// Shown to the model of whichever agent connects, before it does anything.
@@ -200,7 +249,12 @@ const SERVER_INSTRUCTIONS: &str = concat!(
 
 /// Resolve a JSON-RPC method to its MCP result. Tool execution errors come back
 /// as an `isError` result (per MCP), not a JSON-RPC error.
-async fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<Value, (i32, String)> {
+async fn dispatch(
+    app: &AppHandle,
+    method: &str,
+    params: &Value,
+    caller: Caller,
+) -> Result<Value, (i32, String)> {
     match method {
         "initialize" => Ok(json!({
             "protocolVersion": PROTOCOL_VERSION,
@@ -210,7 +264,7 @@ async fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<Value
             // CLI it is. Without it the skills sit there unread: a tool nothing
             // points at is a tool nobody calls. Kept short, because it is
             // prepended to a context window that has work to do.
-            "instructions": SERVER_INSTRUCTIONS
+            "instructions": format!("{} {}", SERVER_INSTRUCTIONS, mcp::BROWSER_SESSION_INSTRUCTIONS)
         })),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": mcp::tool_definitions() })),
@@ -222,7 +276,7 @@ async fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<Value
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
             let action_method = mcp::tool_name_to_method(name)
                 .ok_or_else(|| (-32601, format!("unknown tool '{name}'")))?;
-            match handle_action(app, action_method, arguments).await {
+            match handle_action_as(app, action_method, arguments, caller).await {
                 Ok(val) => Ok(json!({
                     "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }]
                 })),

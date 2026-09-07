@@ -1,23 +1,15 @@
+import brandAssets from "@/modules/agents/lib/agentIconAssets.json";
+
 export type AgentBrandAsset = {
   light: string;
   dark?: string;
   invertOnDark?: boolean;
 };
 
-export const AGENT_BRAND_ASSETS = {
-  claude: { light: "/agent-icons/claude.svg" },
-  codex: { light: "/agent-icons/codex.svg", invertOnDark: true },
-  antigravity: { light: "/agent-icons/antigravity.png" },
-  pi: { light: "/agent-icons/pi.svg" },
-  opencode: {
-    light: "/agent-icons/opencode-light.svg",
-    dark: "/agent-icons/opencode-dark.svg",
-  },
-  grok: {
-    light: "/agent-icons/grok-build-light.svg",
-    dark: "/agent-icons/grok-build-dark.svg",
-  },
-} as const satisfies Record<string, AgentBrandAsset>;
+export const AGENT_BRAND_ASSETS = brandAssets satisfies Record<
+  string,
+  AgentBrandAsset
+>;
 
 export type AgentBrandId = keyof typeof AGENT_BRAND_ASSETS;
 

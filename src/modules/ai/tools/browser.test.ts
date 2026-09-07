@@ -53,7 +53,54 @@ async function run(
 }
 
 describe("AI browser tools", () => {
+  it("ends only the specified visual session without closing a browser", async () => {
+    await run("browser_end_session", { tabId: 42, controlId: 19 });
+    expect(invokeMock).toHaveBeenCalledWith(
+      "browser_automation_handle_action",
+      {
+        requestJson: JSON.stringify({
+          action: "end_session",
+          tabId: 42,
+          controlId: 19,
+        }),
+      },
+    );
+  });
   beforeEach(() => vi.clearAllMocks());
+
+  it("passes guarded input and stable postconditions without an implicit legacy wait", async () => {
+    const waitFor = {
+      url: "*results*",
+      title: "Results",
+      text: "Ready",
+      stableFor: 200,
+      timeout: 4000,
+    };
+    await run("browser_press_key", {
+      key: "Enter",
+      ref: "g4-e1",
+      expectedValue: "query",
+      waitFor,
+      diagnostics: true,
+    });
+    await run("browser_click", { ref: "g5-e2", waitFor, diagnostics: true });
+    await run("browser_wait", { waitFor });
+    expect(
+      invokeMock.mock.calls.map((call) => JSON.parse(call[1].requestJson)),
+    ).toEqual([
+      {
+        action: "press_key",
+        tabId: 42,
+        key: "Enter",
+        ref: "g4-e1",
+        expectedValue: "query",
+        waitFor,
+        diagnostics: true,
+      },
+      { action: "click", tabId: 42, ref: "g5-e2", waitFor, diagnostics: true },
+      { action: "wait", tabId: 42, waitFor },
+    ]);
+  });
 
   it("targets the active preview with snapshot refs", async () => {
     await run("browser_click", { ref: "e7" });

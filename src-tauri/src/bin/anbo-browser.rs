@@ -26,6 +26,12 @@ pub struct BrowserRequest {
     pub method: String,
     #[serde(default)]
     pub params: Value,
+    #[serde(
+        default,
+        rename = "clientInfo",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub client_info: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,7 +136,7 @@ async fn main() {
         }
     };
 
-    match execute_ipc_command(&desc, &method, params).await {
+    match execute_ipc_command(&desc, &method, params, None).await {
         Ok(res) => {
             if is_json {
                 println!("{}", serde_json::to_string(&res).unwrap());
@@ -329,6 +335,7 @@ async fn execute_ipc_command(
     desc: &InstanceDescriptor,
     method: &str,
     params: Value,
+    client_info: Option<Value>,
 ) -> Result<Value, (i32, String)> {
     #[cfg(windows)]
     {
@@ -356,6 +363,7 @@ async fn execute_ipc_command(
             token: desc.token.clone(),
             method: method.to_string(),
             params,
+            client_info,
         };
 
         let mut req_bytes = serde_json::to_vec(&req).map_err(|e| (4, e.to_string()))?;
@@ -392,7 +400,7 @@ async fn execute_ipc_command(
 
     #[cfg(not(windows))]
     {
-        let _ = (desc, method, params);
+        let _ = (desc, method, params, client_info);
         Err((
             3,
             "browser automation is only supported on Windows".to_string(),
@@ -405,6 +413,15 @@ async fn run_mcp_stdio() {
     let mut stdout = tokio::io::stdout();
     let mut reader = BufReader::new(stdin);
     let mut line = String::new();
+    let mut client_info = None;
+    let mut instance_bytes = [0u8; 32];
+    if getrandom::fill(&mut instance_bytes).is_err() {
+        return;
+    }
+    let instance = instance_bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
 
     while let Ok(n) = reader.read_line(&mut line).await {
         if n == 0 {
@@ -422,6 +439,12 @@ async fn run_mcp_stdio() {
 
         match method {
             "initialize" => {
+                client_info = req
+                    .pointer("/params/clientInfo/name")
+                    .and_then(Value::as_str)
+                    .filter(|name| name.len() <= 128)
+                    .map(|name| json!({"name": name, "instance":instance}))
+                    .or_else(|| Some(json!({"instance":instance})));
                 let resp = json!({
                     "jsonrpc": "2.0",
                     "id": id,
@@ -433,7 +456,8 @@ async fn run_mcp_stdio() {
                         "serverInfo": {
                             "name": "anbo-browser",
                             "version": env!("CARGO_PKG_VERSION")
-                        }
+                        },
+                        "instructions": anbo_lib::modules::browser_automation::mcp::BROWSER_SESSION_INSTRUCTIONS
                     }
                 });
                 let _ = stdout
@@ -479,7 +503,14 @@ async fn run_mcp_stdio() {
 
                 let desc_res = read_descriptor();
                 let result_val = match desc_res {
-                    Ok(desc) => match execute_ipc_command(&desc, mapped_method, tool_args).await {
+                    Ok(desc) => match execute_ipc_command(
+                        &desc,
+                        mapped_method,
+                        tool_args,
+                        client_info.clone(),
+                    )
+                    .await
+                    {
                         Ok(val) => {
                             json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap() }] })
                         }
@@ -510,6 +541,13 @@ async fn run_mcp_stdio() {
                 }
             }
         }
+    }
+    if let (Some(info), Ok(desc)) = (client_info, read_descriptor()) {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            execute_ipc_command(&desc, "end_client_session", json!({}), Some(info)),
+        )
+        .await;
     }
 }
 

@@ -3,6 +3,43 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { ToolContext } from "./context";
 
+const pageExpectation = z
+  .object({
+    url: z
+      .string()
+      .min(1)
+      .max(8192)
+      .optional()
+      .describe("Exact URL or glob with * wildcards."),
+    title: z
+      .string()
+      .min(1)
+      .max(2048)
+      .optional()
+      .describe("Exact title after whitespace normalization."),
+    text: z
+      .string()
+      .min(1)
+      .max(2048)
+      .optional()
+      .describe("Substring in bounded visible main-document text."),
+    timeout: z.number().int().min(100).max(60000).optional(),
+    stableFor: z
+      .number()
+      .int()
+      .min(0)
+      .max(2000)
+      .optional()
+      .describe(
+        "Observed match window in milliseconds, default 200; sampled every 100ms; cannot exceed timeout.",
+      ),
+  })
+  .strict()
+  .refine(
+    (value) => Boolean(value.url || value.title || value.text),
+    "Provide url, title, or text",
+  );
+
 function activeBrowserTabId(ctx: ToolContext): number {
   const tabId = ctx.getActiveBrowserTabId();
   if (tabId === null) throw new Error("no active browser tab");
@@ -11,6 +48,31 @@ function activeBrowserTabId(ctx: ToolContext): number {
 
 export function buildBrowserTools(ctx: ToolContext) {
   return {
+    browser_end_session: tool({
+      description:
+        "End the visual remote session when the browser task finishes, fails, or is handed back to the user. Call for each used tab with its returned controlId. Do not call between steps. Does not close a tab or terminal.",
+      inputSchema: z.object({
+        tabId: z.number().int().positive(),
+        controlId: z.number().int().positive(),
+      }),
+      execute: async ({ tabId, controlId }) => {
+        try {
+          const result = await invoke<string>(
+            "browser_automation_handle_action",
+            {
+              requestJson: JSON.stringify({
+                action: "end_session",
+                tabId,
+                controlId,
+              }),
+            },
+          );
+          return { status: "ok", result };
+        } catch (error) {
+          return { status: "error", error: String(error) };
+        }
+      },
+    }),
     browser_navigate: tool({
       description:
         "Open or navigate the native browser to any HTTP or HTTPS URL, including external sites. Opens a new browser tab when none is active.",
@@ -35,7 +97,7 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_snapshot: tool({
       description:
-        "Capture a token-lean DOM snapshot and interactive element list of the active browser page.",
+        "Capture a bounded DOM snapshot with current element refs. Both snapshot and find replace older refs for this tab. Prefer a targeted find when the element is already known.",
       inputSchema: z.object({}),
       execute: async () => {
         try {
@@ -52,7 +114,7 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_find: tool({
       description:
-        "Find elements with a semantic locator and return fresh refs. Prefer role, label, placeholder, or testId over CSS.",
+        "Find elements with a semantic locator and return fresh refs, replacing older snapshot and find refs for this tab. Prefer role, label, placeholder, or testId over CSS.",
       inputSchema: z.object({
         by: z.enum([
           "role",
@@ -109,15 +171,23 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_click: tool({
       description:
-        "Click an interactive element in the active browser page using a ref from browser_snapshot.",
+        "Click a current element ref. Optional waitFor verifies the resulting SPA state without blocking navigation or stop. A postcondition timeout does not undo the click; inspect before retrying.",
       inputSchema: z.object({
-        ref: z.string().describe("Latest browser_snapshot ref, e.g. g3-e12."),
+        ref: z.string().describe("Latest snapshot or find ref, e.g. g3-e12."),
+        waitFor: pageExpectation.optional(),
+        diagnostics: z.boolean().optional(),
       }),
-      execute: async ({ ref }) => {
+      execute: async ({ ref, waitFor, diagnostics }) => {
         try {
           const tabId = activeBrowserTabId(ctx);
           const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({ action: "click", tabId, ref }),
+            requestJson: JSON.stringify({
+              action: "click",
+              tabId,
+              ref,
+              waitFor,
+              diagnostics,
+            }),
           });
           return { status: "ok", result: res };
         } catch (error) {
@@ -184,7 +254,7 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_drag: tool({
       description:
-        "Drag one current ref onto another in the same document or frame.",
+        "Drag one current ref onto another in the same document or frame. Native mouse drag requires both endpoints visible together after scrolling and rechecks geometry before press. No automatic input retries.",
       inputSchema: z.object({
         sourceRef: z.string(),
         targetRef: z.string(),
@@ -209,9 +279,9 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_type: tool({
       description:
-        "Type text into an input field or textarea using a ref from browser_snapshot.",
+        "Type into a current input ref and verify its immediate value. Before Enter, pass this ref and expectedValue to browser_press_key to detect a later SPA reset or node replacement.",
       inputSchema: z.object({
-        ref: z.string().describe("Latest browser_snapshot ref, e.g. g3-e12."),
+        ref: z.string().describe("Latest snapshot or find ref, e.g. g3-e12."),
         text: z.string().describe("Text content to type into the field."),
         append: z
           .boolean()
@@ -264,13 +334,17 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_press_key: tool({
       description:
-        "Press a keyboard key on the active browser page. Enter observation runs without blocking stop, navigation, or other tab actions.",
+        "Press a keyboard key. For forms, pass the input ref and expectedValue to prevent submission after a reset or replacement. waitFor verifies the resulting SPA state and replaces Enter's default observation window. Inspect the page before resubmitting after a postcondition timeout.",
       inputSchema: z.object({
         key: z
           .string()
           .describe(
             "The key name to simulate, e.g. 'Enter', 'Escape', 'ArrowDown', 'Tab', 'Space'.",
           ),
+        ref: z.string().optional(),
+        expectedValue: z.string().max(65536).optional(),
+        waitFor: pageExpectation.optional(),
+        diagnostics: z.boolean().optional(),
         observationTimeout: z
           .number()
           .int()
@@ -281,7 +355,14 @@ export function buildBrowserTools(ctx: ToolContext) {
             "Milliseconds to observe submit or navigation after Enter. Ignored for other keys.",
           ),
       }),
-      execute: async ({ key, observationTimeout }) => {
+      execute: async ({
+        key,
+        observationTimeout,
+        ref,
+        expectedValue,
+        waitFor,
+        diagnostics,
+      }) => {
         try {
           const tabId = activeBrowserTabId(ctx);
           const res = await invoke<string>("browser_automation_handle_action", {
@@ -290,6 +371,10 @@ export function buildBrowserTools(ctx: ToolContext) {
               tabId,
               key,
               observationTimeout,
+              ref,
+              expectedValue,
+              waitFor,
+              diagnostics,
             }),
           });
           return { status: "ok", result: res };
@@ -301,7 +386,7 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_keyboard: tool({
       description:
-        "Dispatch a keyboard press, key-down, or key-up with optional modifiers.",
+        "Dispatch a keyboard press, key-down, or key-up. Modifiers are per-call: pass the combination on each event. Holding modifiers across tools or applying them to mouse clicks is not supported.",
       inputSchema: z.object({
         key: z.string(),
         keyAction: z.enum(["press", "down", "up"]).default("press"),
@@ -331,7 +416,7 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_wait: tool({
       description:
-        "Wait for text, URL, document load state, or an element ref state.",
+        "Wait for text, URL, load, or a ref. Alternatively use waitFor alone to require a stable combination of URL, title, and visible text for an SPA result.",
       inputSchema: z.object({
         condition: z.enum(["text", "url", "load", "ref"]).optional(),
         text: z.string().optional(),
@@ -351,11 +436,16 @@ export function buildBrowserTools(ctx: ToolContext) {
           .optional(),
         loadState: z
           .enum(["interactive", "complete", "networkIdle"])
-          .optional(),
+          .optional()
+          .describe(
+            "networkIdle waits for observed native page-target requests to finish plus 500ms of quiet. It excludes WebSocket traffic and separate CDP targets; prefer explicit postconditions for streaming apps.",
+          ),
         timeout: z
           .number()
-          .default(10000)
+          .optional()
           .describe("Timeout in milliseconds (default: 10000)."),
+        waitFor: pageExpectation.optional(),
+        diagnostics: z.boolean().optional(),
       }),
       execute: async ({
         condition,
@@ -365,6 +455,8 @@ export function buildBrowserTools(ctx: ToolContext) {
         state,
         loadState,
         timeout,
+        waitFor,
+        diagnostics,
       }) => {
         try {
           const tabId = activeBrowserTabId(ctx);
@@ -379,6 +471,8 @@ export function buildBrowserTools(ctx: ToolContext) {
               state,
               loadState,
               timeout,
+              waitFor,
+              diagnostics,
             }),
           });
           return { status: "ok", result: res };
@@ -390,7 +484,7 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_dialog: tool({
       description:
-        "Click a current ref that opens an alert, confirm, or prompt, then accept or dismiss it without leaving a blocking dialog open.",
+        "Click a current ref and handle its alert, confirm, or prompt. Inspect clickDispatched and dialogOpened separately: ok is false if no dialog opened, but the click already happened. Do not blindly repeat it.",
       inputSchema: z.object({
         ref: z.string(),
         dialogAction: z.enum(["accept", "dismiss"]),
@@ -417,7 +511,7 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_screenshot: tool({
       description:
-        "Take a screenshot of the active browser page and save it to the artifacts directory.",
+        "Capture the browser viewport, not the full page, and save a screenshot artifact. Automation cursor effects are excluded.",
       inputSchema: z.object({}),
       execute: async () => {
         try {
@@ -482,7 +576,7 @@ export function buildBrowserTools(ctx: ToolContext) {
         ref: z
           .string()
           .describe(
-            "Latest browser_snapshot ref for the <select>, e.g. g3-e12.",
+            "Latest snapshot or find ref for the <select>, e.g. g3-e12.",
           ),
         value: z
           .string()
@@ -510,9 +604,9 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_hover: tool({
       description:
-        "Hover over an actionable element by ref using real pointer movement, with CSS pseudo-state verification for main-document targets.",
+        "Hover over an actionable element by ref. Main-document targets use one native pointer movement and verify CSS hover without replaying DOM events. Child-frame targets report a DOM-only fallback.",
       inputSchema: z.object({
-        ref: z.string().describe("Latest browser_snapshot ref, e.g. g3-e12."),
+        ref: z.string().describe("Latest snapshot or find ref, e.g. g3-e12."),
       }),
       execute: async ({ ref }) => {
         try {
@@ -531,7 +625,7 @@ export function buildBrowserTools(ctx: ToolContext) {
       description:
         "Scroll a specific element into the visible viewport by ref.",
       inputSchema: z.object({
-        ref: z.string().describe("Latest browser_snapshot ref, e.g. g3-e12."),
+        ref: z.string().describe("Latest snapshot or find ref, e.g. g3-e12."),
       }),
       execute: async ({ ref }) => {
         try {
@@ -552,7 +646,7 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_get_text: tool({
       description:
-        "Read text content of the active browser page, or of a specific element by ref. Returns up to maxLength characters.",
+        "Read page or element text, bounded by maxLength. The result includes visible and source. A hidden element's accessibleName can be outdated; reveal the control and read it again before treating it as live state.",
       inputSchema: z.object({
         ref: z
           .string()

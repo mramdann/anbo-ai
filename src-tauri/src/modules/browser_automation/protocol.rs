@@ -21,6 +21,12 @@ pub struct BrowserRequest {
     pub method: String,
     #[serde(default)]
     pub params: serde_json::Value,
+    #[serde(
+        default,
+        rename = "clientInfo",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub client_info: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +79,8 @@ pub mod error_codes {
     pub const UNSUPPORTED_PLATFORM: &str = "unsupported_platform";
     pub const TAB_NOT_FOUND: &str = "tab_not_found";
     pub const STALE_REF: &str = "stale_ref";
+    pub const INPUT_MISMATCH: &str = "input_mismatch";
+    pub const INPUT_NOT_READY: &str = "input_not_ready";
     pub const NAVIGATION_FAILED: &str = "navigation_failed";
     pub const CDP_FAILED: &str = "cdp_failed";
     pub const TIMEOUT: &str = "timeout";
@@ -92,6 +100,7 @@ mod tests {
             token: "secret".into(),
             method: "snapshot".into(),
             params: serde_json::json!({ "tabId": 123 }),
+            client_info: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: BrowserRequest = serde_json::from_str(&json).unwrap();

@@ -16,11 +16,13 @@ pub const PROTOCOL_VERSION: &str = "2025-06-18";
 /// Server name reported in `initialize`.
 pub const SERVER_NAME: &str = "anbo";
 
+pub const BROWSER_SESSION_INSTRUCTIONS: &str = "Browser actions keep a visual remote session active between tool calls. When the browser task is finished, cancelled, or handed back to the user, call browser_end_session for each used tab with its returned controlId, including after an error. Do not end it between steps. This hides the cursor without closing the tab or MCP connection.";
+
 fn tab_id_prop() -> Value {
     json!({ "type": "integer", "description": "Active native browser tab id (from browser_tabs)." })
 }
 fn ref_prop() -> Value {
-    json!({ "type": "string", "description": "Generation-scoped element ref from the latest snapshot, e.g. \"g3-e12\". A newer snapshot invalidates every older ref." })
+    json!({ "type": "string", "description": "Generation-scoped element ref from the latest snapshot or find result for this tab, e.g. \"g3-e12\". Both snapshot and find replace older refs. Reuse current refs while their DOM nodes survive; use a targeted find to recover a stale ref." })
 }
 
 fn workspace_prop() -> Value {
@@ -39,6 +41,21 @@ fn terminal_id_prop() -> Value {
     json!({ "type": "string", "minLength": 1, "description": "Workspace-scoped shared terminal id returned by terminal_open or terminal_list, such as terminal:12:12." })
 }
 
+fn page_expectation_prop() -> Value {
+    json!({
+        "type": "object", "additionalProperties": false,
+        "description": "Wait after dispatch until every specified main-document condition stays matched. Prefer this to load complete for SPA results. A timeout does not undo or retry the action.",
+        "properties": {
+            "url": {"type":"string", "minLength":1, "maxLength":8192, "description":"Exact URL or a glob with * wildcards."},
+            "title": {"type":"string", "minLength":1, "maxLength":2048, "description":"Exact page title after whitespace normalization."},
+            "text": {"type":"string", "minLength":1, "maxLength":2048, "description":"Substring in bounded visible main-document text; scripts and styles are excluded."},
+            "timeout": {"type":"integer", "minimum":100, "maximum":60000, "default":10000},
+            "stableFor": {"type":"integer", "minimum":0, "maximum":2000, "default":200, "description":"Continuous match window in milliseconds, not exceeding timeout."}
+        },
+        "anyOf": [{"required":["url"]}, {"required":["title"]}, {"required":["text"]}]
+    })
+}
+
 /// The `tools` array returned by `tools/list`, grouped by capability prefix.
 pub fn tool_definitions() -> Value {
     let tab = tab_id_prop();
@@ -47,7 +64,7 @@ pub fn tool_definitions() -> Value {
     let file_workspace = file_workspace_prop();
     let agent_id = agent_id_prop();
     let terminal_id = terminal_id_prop();
-    tool_array![
+    let mut definitions = tool_array![
         { "name": "skills_list", "description": "List the skills available in a workspace: project procedures kept in .anbo/skills, plus the skills Anbo ships. Returns names and one-line descriptions only, so it stays cheap to scan. Check this before solving a task from first principles.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
         { "name": "skills_read", "description": "Read one skill in full and follow it. Names come from skills_list.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "name": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Skill name from skills_list." } }, "required": ["workspace", "name"] } },
         { "name": "browser_open", "description": "Open a native browser tab without focusing it in an explicitly selected Anbo workspace. Pass the agent's workspace root or a space id; UI focus is never used as a fallback.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["url", "workspace"] } },
@@ -60,28 +77,29 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_back", "description": "Start navigating a browser tab back in history and return immediately.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_forward", "description": "Start navigating a browser tab forward in history and return immediately.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_stop", "description": "Stop a browser tab's page load.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
-        { "name": "browser_snapshot", "description": "Get a token-bounded accessibility snapshot with viewport text and generation-scoped element refs. Output defaults to 8000 characters and never exceeds 16000; scroll and snapshot again for nearby content. Use only refs from the latest snapshot.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "maxChars": { "type": "integer", "minimum": 2000, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
+        { "name": "browser_end_session", "description": BROWSER_SESSION_INSTRUCTIONS, "annotations": { "destructiveHint": false, "idempotentHint": true }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "controlId": { "type": "integer", "minimum": 1, "description": "The controlId returned by this caller's browser actions for this tab. A stale id never ends a newer session." } }, "required": ["tabId", "controlId"] } },
+        { "name": "browser_snapshot", "description": "Get a token-bounded accessibility snapshot with viewport text and generation-scoped element refs. Output defaults to 8000 characters and never exceeds 16000; scroll and snapshot again for nearby content. Both snapshot and find replace older refs for this tab. Prefer a targeted find when the element is already known.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "maxChars": { "type": "integer", "minimum": 2000, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
         { "name": "browser_find", "description": "Find current page elements with a semantic locator and return fresh generation-scoped refs. Supports role, text, label, placeholder, testId, title, alt, and CSS across open Shadow DOM and child frames. For role locators, name is the computed accessible name, so aria-label, aria-labelledby, associated labels, alt, or title can take precedence over visible text.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "by": { "type": "string", "enum": ["role", "text", "label", "placeholder", "testId", "title", "alt", "css"] }, "value": { "type": "string", "minLength": 1, "maxLength": 4096 }, "name": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Optional computed accessible-name filter for a role locator. It may come from aria-label, aria-labelledby, an associated label, alt, title, or visible text." }, "exact": { "type": "boolean", "default": false }, "includeHidden": { "type": "boolean", "default": false }, "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 5000 } }, "required": ["tabId", "by", "value"] } },
         { "name": "browser_click", "description": "Click an element by ref after bounded visibility, stability, enabled, and hit-target checks.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_double_click", "description": "Double-click an actionable element by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_focus", "description": "Focus a visible enabled element by ref without activating the user's workspace.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_check", "description": "Set a checkbox or radio ref to the requested checked state and verify the result.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "checked": { "type": "boolean", "default": true } }, "required": ["tabId", "ref"] } },
-        { "name": "browser_drag", "description": "Drag one actionable ref onto another ref in the same document or frame.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "sourceRef": refr.clone(), "targetRef": refr.clone() }, "required": ["tabId", "sourceRef", "targetRef"] } },
+        { "name": "browser_drag", "description": "Drag one actionable ref onto another in the same document or frame. Native mouse drag requires both endpoints visible together after scrolling; geometry and hit targets are rechecked before press. No automatic input retries.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "sourceRef": refr.clone(), "targetRef": refr.clone() }, "required": ["tabId", "sourceRef", "targetRef"] } },
         { "name": "browser_type", "description": "Type text into an input element by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "text": { "type": "string" }, "append": { "type": "boolean", "description": "Append to existing value instead of replacing it." } }, "required": ["tabId", "ref", "text"] } },
         { "name": "browser_press", "description": "Press a keyboard key through the browser input pipeline (e.g. Enter, Tab). Key dispatch holds the tab lock, but Enter observation does not, so stop and navigation remain responsive. submissionObserved and navigationObserved report only effects seen within the bounded observation window; false does not mean dispatch failed.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "key": { "type": "string" }, "observationTimeout": { "type": "integer", "minimum": 0, "maximum": 10000, "default": 3000, "description": "Milliseconds to observe submit or navigation after Enter without holding the tab lock. Ignored for other keys." } }, "required": ["tabId", "key"] } },
-        { "name": "browser_key", "description": "Dispatch a keyboard press, key-down, or key-up with optional Alt, Control, Meta, and Shift modifiers.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "key": { "type": "string", "minLength": 1, "maxLength": 64 }, "keyAction": { "type": "string", "enum": ["press", "down", "up"], "default": "press" }, "modifiers": { "type": "array", "maxItems": 4, "uniqueItems": true, "items": { "type": "string", "enum": ["Alt", "Control", "Meta", "Shift"] } } }, "required": ["tabId", "key"] } },
+        { "name": "browser_key", "description": "Dispatch a keyboard press, key-down, or key-up. Alt, Control, Meta, and Shift modifiers are per-call: pass them on each key event. Holding a modifier across tools or modifying mouse clicks is not supported.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "key": { "type": "string", "minLength": 1, "maxLength": 64 }, "keyAction": { "type": "string", "enum": ["press", "down", "up"], "default": "press" }, "modifiers": { "type": "array", "maxItems": 4, "uniqueItems": true, "items": { "type": "string", "enum": ["Alt", "Control", "Meta", "Shift"] } } }, "required": ["tabId", "key"] } },
         { "name": "browser_scroll", "description": "Scroll the page by x/y pixels.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "x": { "type": "number" }, "y": { "type": "number" } }, "required": ["tabId"] } },
-        { "name": "browser_wait", "description": "Wait for text, URL, document load state, or a ref state. Backward-compatible text-only calls remain supported.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "condition": { "type": "string", "enum": ["text", "url", "load", "ref"] }, "text": { "type": "string" }, "url": { "type": "string", "description": "Exact URL or a glob containing * wildcards." }, "ref": refr.clone(), "state": { "type": "string", "enum": ["attached", "detached", "visible", "hidden", "enabled", "disabled", "checked", "unchecked"] }, "loadState": { "type": "string", "enum": ["interactive", "complete", "networkIdle"], "default": "complete" }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "description": "Timeout in milliseconds (default 10000, maximum 60000)." } }, "required": ["tabId"] } },
-        { "name": "browser_dialog", "description": "Click a ref that opens a JavaScript alert, confirm, or prompt, then accept or dismiss it without leaving a blocking native dialog open.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "dialogAction": { "type": "string", "enum": ["accept", "dismiss"] }, "promptText": { "type": "string", "maxLength": 4096 } }, "required": ["tabId", "ref", "dialogAction"] } },
-        { "name": "browser_screenshot", "description": "Capture a PNG screenshot of a browser tab to a disk artifact.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "description": "Optional workspace root; screenshot lands under <workspace>/.anbo/artifacts." } }, "required": ["tabId"] } },
+        { "name": "browser_wait", "description": "Wait for text, URL, document load state, or a ref state. networkIdle observes native page-target HTTP requests until completion or failure plus 500ms of quiet; it is not a guarantee of application readiness. Use explicit text or waitFor for streaming pages. Backward-compatible text-only calls remain supported.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "condition": { "type": "string", "enum": ["text", "url", "load", "ref"] }, "text": { "type": "string" }, "url": { "type": "string", "description": "Exact URL or a glob containing * wildcards." }, "ref": refr.clone(), "state": { "type": "string", "enum": ["attached", "detached", "visible", "hidden", "enabled", "disabled", "checked", "unchecked"] }, "loadState": { "type": "string", "enum": ["interactive", "complete", "networkIdle"], "default": "complete" }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "description": "Timeout in milliseconds (default 10000, maximum 60000)." } }, "required": ["tabId"] } },
+        { "name": "browser_dialog", "description": "Click a ref and handle its alert, confirm, or prompt. Returns clickDispatched and dialogOpened separately. If no dialog opens, ok is false but the click already happened; do not blindly retry it.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "dialogAction": { "type": "string", "enum": ["accept", "dismiss"] }, "promptText": { "type": "string", "maxLength": 4096 } }, "required": ["tabId", "ref", "dialogAction"] } },
+        { "name": "browser_screenshot", "description": "Capture the browser viewport as a PNG disk artifact, not a full-page screenshot. Automation cursor effects are excluded.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "description": "Optional workspace root; screenshot lands under <workspace>/.anbo/artifacts." } }, "required": ["tabId"] } },
         { "name": "browser_upload", "description": "Attach one or more workspace files to an <input type=file> ref without opening a native file chooser. Hidden file inputs and refs in open Shadow DOM or child frames are supported. This selects files only; use a separate click/press to submit the form.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "workspace": file_workspace.clone(), "paths": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "type": "string", "minLength": 1 }, "description": "Absolute paths inside the workspace, or paths relative to the workspace root." } }, "required": ["tabId", "ref", "workspace", "paths"] } },
         { "name": "browser_download", "description": "Arm a workspace-scoped native download and click a ref. Returns a downloadId once the download starts; completed files land under <workspace>/.anbo/downloads. Use browser_download_wait for large files.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "workspace": file_workspace.clone(), "fileName": { "type": "string", "minLength": 1, "maxLength": 255, "description": "Optional safe destination file name. Existing files are never overwritten." }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 10000, "description": "How long to wait for the page to start the download." } }, "required": ["tabId", "ref", "workspace"] } },
         { "name": "browser_download_status", "description": "Read the current state and verified destination of a workspace-scoped browser download.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "downloadId": { "type": "string", "minLength": 1, "maxLength": 128 }, "workspace": file_workspace.clone() }, "required": ["downloadId", "workspace"] } },
         { "name": "browser_download_wait", "description": "Wait for a browser download to change state or finish. Normal timeout returns timedOut:true so large downloads can be polled without losing their downloadId.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "downloadId": { "type": "string", "minLength": 1, "maxLength": 128 }, "workspace": file_workspace, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 30000 } }, "required": ["downloadId", "workspace"] } },
         { "name": "browser_select_option", "description": "Select an option on a <select> element by ref (by value or label).", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "value": { "type": "string" } }, "required": ["tabId", "ref", "value"] } },
-        { "name": "browser_hover", "description": "Hover an actionable element by ref. Main-document targets use a real DevTools mouse move, verify the CSS :hover pseudo-state, and also dispatch DOM compatibility events.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
+        { "name": "browser_hover", "description": "Hover an actionable element by ref. Main-document targets use one native DevTools mouse move and verify CSS :hover without replaying DOM events. Child-frame targets report their DOM-only fallback.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_scroll_to_element", "description": "Scroll an element into view by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
-        { "name": "browser_get_text", "description": "Get DOM text or the accessibility name of an element, or body text when ref is omitted.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "maxLength": { "type": "integer", "minimum": 1, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
+        { "name": "browser_get_text", "description": "Get DOM text or the accessibility name of an element, or body text when ref is omitted. Returns visible and source; hidden accessible labels may be outdated. Reveal controls and read again before treating labels as live state.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "maxLength": { "type": "integer", "minimum": 1, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
         { "name": "browser_page_info", "description": "Get the title and URL of a browser tab.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_console_logs", "description": "Get up to 50 bounded recent console messages, uncaught runtime errors, and unhandled promise rejections from the main document and accessible child frames.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "agent_spawn", "description": "Spawn one configured built-in or custom CLI agent in an explicitly selected open Anbo workspace. Creates a background terminal tab without activating its workspace or changing UI focus. The stored command cannot be supplied or overridden by the caller.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agent": { "type": "string", "minLength": 1, "maxLength": 71, "description": "Built-in launcher id or label, or the display name or custom:<id> of an agent registered in Anbo Settings." }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 15000, "description": "How long to wait for live agent detection before returning pending: true." } }, "required": ["workspace", "agent"] } },
@@ -98,7 +116,27 @@ pub fn tool_definitions() -> Value {
         { "name": "terminal_execute", "description": "Queue one bounded single-line command for visible cancellable dispatch in an explicitly selected idle normal terminal. Returns an executionId in phase queued; call terminal_wait for the stable final result. Rejects private terminals, agent CLI terminals, foreground processes, and prompts containing unsubmitted input.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone(), "text": { "type": "string", "minLength": 1, "maxLength": 8000 } }, "required": ["workspace", "terminalId", "text"] } },
         { "name": "terminal_wait", "description": "Wait for a command started by terminal_execute without holding the terminal lock. Returns stable phase, completionReason, interrupted, per-execution exitCode, and redacted bounded output. Completed results are idempotent.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone(), "executionId": { "type": "string", "minLength": 1, "maxLength": 128 }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 10000 }, "maxChars": { "type": "integer", "minimum": 1, "maximum": 12000, "default": 4000 } }, "required": ["workspace", "terminalId", "executionId"] } },
         { "name": "terminal_interrupt", "description": "Cancel a specific queued, dispatched, or running execution by executionId. When executionId is omitted, send Ctrl+C to the terminal foreground command or safely clear unsubmitted prompt input.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace, "terminalId": terminal_id, "executionId": { "type": "string", "minLength": 1, "maxLength": 128 } }, "required": ["workspace", "terminalId"] } }
-    ]
+    ];
+    for tool in definitions.as_array_mut().unwrap() {
+        let name = tool["name"].as_str().unwrap().to_string();
+        if matches!(
+            name.as_str(),
+            "browser_click" | "browser_press" | "browser_wait"
+        ) {
+            tool["inputSchema"]["properties"]["waitFor"] = page_expectation_prop();
+            tool["inputSchema"]["properties"]["diagnostics"] = json!({"type":"boolean", "default":false, "description":"Opt-in bounded phase timings. Success adds timings; errors retain their code and append timings=JSON. No input values are included."});
+        }
+        if name == "browser_press" {
+            tool["inputSchema"]["properties"]["ref"] = ref_prop();
+            tool["inputSchema"]["properties"]["expectedValue"] = json!({"type":"string", "maxLength":65536, "description":"Requires ref. Verify the current input/contenteditable value before key dispatch; mismatch sends no key. Values are not echoed in errors."});
+            tool["description"] = json!("Press a keyboard key through native input. For forms pass the typed input ref and expectedValue to guard against replaced or reset inputs, plus waitFor to verify the SPA result. waitFor replaces Enter's default observation window; otherwise existing observationTimeout behavior is retained. Never blindly resubmit after a postcondition timeout.");
+        } else if name == "browser_click" {
+            tool["description"] = json!("Click a current ref after bounded visibility, stability, enabled, and hit-target checks. Optional waitFor verifies the resulting page state after releasing the tab lock. Dispatch is never automatically repeated if that wait times out.");
+        } else if name == "browser_wait" {
+            tool["description"] = json!("Wait for text, URL, load, or a ref state. Alternatively pass waitFor alone to require a stable combination of URL, exact title, and visible main-document text. A document load event alone does not prove SPA readiness. Put timeout inside waitFor when using it.");
+        }
+    }
+    definitions
 }
 
 /// Map an MCP tool name to the `handle_action` method it dispatches to.
@@ -116,6 +154,7 @@ pub fn tool_name_to_method(name: &str) -> Option<&'static str> {
         "browser_back" => "back",
         "browser_forward" => "forward",
         "browser_stop" => "stop",
+        "browser_end_session" => "end_session",
         "browser_snapshot" => "snapshot",
         "browser_find" => "find",
         "browser_click" => "click",
@@ -165,7 +204,7 @@ mod tests {
     #[test]
     fn tools_have_capability_prefixes_and_unique_names() {
         let tools = tool_definitions().as_array().unwrap().clone();
-        assert_eq!(tools.len(), 50);
+        assert_eq!(tools.len(), 51);
         let mut names = std::collections::HashSet::new();
         for t in &tools {
             let n = t.get("name").and_then(|v| v.as_str()).unwrap();
@@ -300,6 +339,25 @@ mod tests {
             press["inputSchema"]["properties"]["observationTimeout"]["maximum"],
             10_000
         );
+        assert_eq!(
+            press["inputSchema"]["properties"]["expectedValue"]["maxLength"],
+            65536
+        );
+        for name in ["browser_press", "browser_click", "browser_wait"] {
+            let tool = tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap();
+            let properties = &tool["inputSchema"]["properties"];
+            assert_eq!(properties["diagnostics"]["default"], false);
+            assert_eq!(properties["waitFor"]["additionalProperties"], false);
+            assert_eq!(
+                properties["waitFor"]["properties"]["stableFor"]["maximum"],
+                2000
+            );
+        }
     }
 
     #[test]

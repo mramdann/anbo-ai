@@ -9,11 +9,13 @@ use std::mem::{size_of, zeroed};
 
 use windows_sys::Win32::Foundation::{CloseHandle, FALSE, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JobObjectExtendedLimitInformation,
     SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
-use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+};
 
 pub struct ProcessJob {
     handle: HANDLE,
@@ -23,6 +25,20 @@ unsafe impl Send for ProcessJob {}
 unsafe impl Sync for ProcessJob {}
 
 impl ProcessJob {
+    /// Read-only membership check against this exact job, never a PID/name guess.
+    pub fn contains(&self, pid: u32) -> bool {
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+            if process.is_null() {
+                return false;
+            }
+            let mut member = FALSE;
+            let ok = IsProcessInJob(process, self.handle, &mut member);
+            CloseHandle(process);
+            ok != 0 && member != FALSE
+        }
+    }
+
     pub fn create_for(pid: u32) -> io::Result<Self> {
         unsafe {
             let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
@@ -103,6 +119,9 @@ mod tests {
             .expect("spawn cmd.exe");
 
         let job = ProcessJob::create_for(child.id()).expect("create job");
+        assert!(job.contains(child.id()));
+        assert!(!job.contains(std::process::id()));
+        assert!(!job.contains(0xFFFFFFFE));
         drop(job);
 
         let deadline = Instant::now() + Duration::from_secs(3);

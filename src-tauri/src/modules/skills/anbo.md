@@ -26,6 +26,14 @@ open. Use the root you were launched in rather than guessing.
 other browser tool. Close what you open with `browser_close`, which needs the
 same `workspace`.
 
+Browser actions return a `controlId` for the visual remote session on that tab.
+Keep it active between tool calls, including while thinking or reading results.
+When the browser task finishes, is cancelled, or needs to be handed back to the
+user, call `browser_end_session` with `tabId` and that `controlId` for every used
+tab. Do this in cleanup after errors too. This removes the cursor and card;
+it does not close the browser tab, terminal, or MCP connection. A new task starts
+a new visual session automatically. Tool completion alone does not end it.
+
 Navigation is asynchronous by design. `browser_navigate` and `browser_reload`
 return as soon as the load starts, so follow them with `browser_wait` or
 `browser_tabs` rather than assuming the page is ready.

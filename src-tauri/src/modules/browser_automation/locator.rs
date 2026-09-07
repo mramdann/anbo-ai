@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use super::accessible_name::ACCESSIBLE_NAME_JS;
+use super::visibility::VISIBILITY_JS;
+
 pub const MAX_LOCATOR_MATCHES: usize = 20;
 
 #[derive(Clone, Copy)]
@@ -32,6 +35,8 @@ pub struct LocatorMatch {
 pub struct LocatorPayload {
     pub matches: Vec<LocatorMatch>,
     #[serde(default)]
+    pub visual_point: Option<super::activity::Point>,
+    #[serde(default)]
     pub scanned: usize,
     #[serde(default)]
     pub truncated: bool,
@@ -44,6 +49,11 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
         r#"(function() {{
             const generation = "gen-{generation}";
             const refPrefix = {ref_prefix};
+            const scanRoot = document.documentElement;
+            if (scanRoot) {{
+                if (Number(scanRoot.getAttribute('data-anbo-scan-generation') || 0) > {generation}) throw new Error('stale_scan');
+                scanRoot.setAttribute('data-anbo-scan-generation', '{generation}');
+            }}
             const by = {by};
             const wanted = {value};
             const wantedName = {name};
@@ -52,6 +62,7 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
             const limit = {limit};
             const maxScanned = 50000;
             const matches = [];
+            let visualPoint = null;
             let scanned = 0;
             let truncated = false;
 
@@ -83,35 +94,8 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                 }}
                 return '';
             }};
-            const labelName = el => {{
-                const labelledBy = normalize(el.getAttribute('aria-labelledby'))
-                    .split(/\s+/)
-                    .filter(Boolean)
-                    .map(id => document.getElementById(id))
-                    .filter(Boolean)
-                    .map(node => normalize(node.innerText || node.textContent))
-                    .filter(Boolean)
-                    .join(' ');
-                const labels = el.labels
-                    ? Array.from(el.labels).map(node => normalize(node.innerText || node.textContent)).filter(Boolean).join(' ')
-                    : '';
-                return normalize(el.getAttribute('aria-label') || labelledBy || labels);
-            }};
-            const accessibleName = el => {{
-                return normalize(
-                    labelName(el) ||
-                    el.getAttribute('alt') || el.getAttribute('title') ||
-                    el.getAttribute('placeholder') || el.innerText || el.textContent
-                );
-            }};
-            const visible = el => {{
-                if (!el.isConnected) return false;
-                const rect = el.getBoundingClientRect();
-                if (rect.width <= 0 || rect.height <= 0) return false;
-                const style = getComputedStyle(el);
-                return style.display !== 'none' && style.visibility !== 'hidden' &&
-                    style.visibility !== 'collapse' && Number(style.opacity || 1) > 0;
-            }};
+            {ACCESSIBLE_NAME_JS}
+            {VISIBILITY_JS}
             const isMatch = el => {{
                 if (by === 'css') {{
                     try {{ return el.matches(wanted); }} catch (_) {{ throw new Error('invalid_selector'); }}
@@ -154,14 +138,23 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                     if (matches.length >= limit) break;
                     if (scanned >= maxScanned) {{ truncated = true; break; }}
                     const el = elements[index];
+                    if (el.tagName === 'ANBO-AUTOMATION-VISUAL') continue;
                     scanned += 1;
-                    const isVisible = visible(el);
-                    if ((includeHidden || isVisible) && isMatch(el)) {{
+                    const matched = isMatch(el);
+                    const isVisible = matched && isRenderedElement(el);
+                    if (matched && (includeHidden || isVisible)) {{
                         const ref = refPrefix + (matches.length + 1);
                         el.setAttribute('data-anbo-ref', ref);
                         el.setAttribute('data-anbo-gen', generation);
                         const type = el.tagName === 'INPUT' ? String(el.type || '').toLowerCase() : '';
                         const password = type === 'password';
+                        if (!visualPoint && isVisible) {{
+                            const r = el.getBoundingClientRect();
+                            const x = r.x + r.width / 2, y = r.y + r.height / 2;
+                            if (r.width > 0 && r.height > 0 && x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight) {{
+                                visualPoint = {{x, y, width:r.width, height:r.height}};
+                            }}
+                        }}
                         matches.push({{
                             ref,
                             tag: el.tagName.toLowerCase(),
@@ -181,7 +174,7 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
             try {{
                 clearRefs(document);
                 visit(document);
-                return JSON.stringify({{ matches, scanned, truncated, error: null }});
+                return JSON.stringify({{ matches, scanned, truncated, visualPoint, error: null }});
             }} catch (error) {{
                 return JSON.stringify({{
                     matches: [],

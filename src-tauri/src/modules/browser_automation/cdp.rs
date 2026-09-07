@@ -1,6 +1,82 @@
 use tauri::Webview;
 
 #[cfg(windows)]
+pub async fn read_page_info(
+    webview: &Webview,
+    timeout: std::time::Duration,
+) -> Result<(String, String), String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    webview
+        .with_webview(move |platform| {
+            if sender.is_closed() {
+                return;
+            }
+            let result = (|| {
+                let core = unsafe { platform.controller().CoreWebView2() }
+                    .map_err(|error| error.to_string())?;
+                let mut source = windows::core::PWSTR::null();
+                unsafe { core.Source(&mut source) }.map_err(|error| error.to_string())?;
+                let url = webview2_com::take_pwstr(source);
+                let mut title = windows::core::PWSTR::null();
+                unsafe { core.DocumentTitle(&mut title) }.map_err(|error| error.to_string())?;
+                Ok((webview2_com::take_pwstr(title), url))
+            })();
+            let _ = sender.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+    tokio::time::timeout(timeout, receiver)
+        .await
+        .map_err(|_| "timed out reading browser page metadata".to_string())?
+        .map_err(|_| "browser page metadata read was cancelled".to_string())?
+}
+
+#[cfg(not(windows))]
+pub async fn read_page_info(
+    _webview: &Webview,
+    _timeout: std::time::Duration,
+) -> Result<(String, String), String> {
+    Err("native browser page metadata is only supported on Windows".into())
+}
+
+#[cfg(windows)]
+pub async fn read_url(webview: &Webview, timeout: std::time::Duration) -> Result<String, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    webview
+        .with_webview(move |platform| {
+            if sender.is_closed() {
+                return;
+            }
+            let result = (|| {
+                let core = unsafe { platform.controller().CoreWebView2() }
+                    .map_err(|error| error.to_string())?;
+                let mut source = windows::core::PWSTR::null();
+                unsafe { core.Source(&mut source) }.map_err(|error| error.to_string())?;
+                Ok(webview2_com::take_pwstr(source))
+            })();
+            let _ = sender.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+    tokio::time::timeout(timeout, receiver)
+        .await
+        .map_err(|_| "timed out reading the browser URL".to_string())?
+        .map_err(|_| "browser URL read was cancelled".to_string())?
+}
+
+#[cfg(not(windows))]
+pub async fn read_url(webview: &Webview, timeout: std::time::Duration) -> Result<String, String> {
+    let webview = webview.clone();
+    tokio::time::timeout(
+        timeout,
+        tauri::async_runtime::spawn_blocking(move || webview.url()),
+    )
+    .await
+    .map_err(|_| "timed out reading the browser URL".to_string())?
+    .map_err(|error| error.to_string())?
+    .map(|url| url.to_string())
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(windows)]
 pub async fn execute_script(webview: &Webview, script: &str) -> Result<String, String> {
     execute_script_with_timeout(webview, script, std::time::Duration::from_secs(10)).await
 }
@@ -77,6 +153,7 @@ pub async fn call_devtools_protocol_method(
 pub async fn capture_screenshot(webview: &Webview) -> Result<String, String> {
     use windows::core::BOOL;
     use windows::Win32::Foundation::RECT;
+    let _visual_capture = super::activity::prepare_capture(webview).await?;
 
     let (sender, receiver) =
         tokio::sync::oneshot::channel::<Result<Option<(RECT, RECT)>, String>>();

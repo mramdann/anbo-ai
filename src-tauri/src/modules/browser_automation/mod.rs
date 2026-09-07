@@ -1,18 +1,41 @@
+mod accessible_name;
 pub mod actions;
+pub mod activity;
 pub mod agent_actions;
+pub mod caller;
 pub mod cdp;
 pub mod download;
 pub mod http;
 pub mod locator;
 pub mod mcp;
+pub(crate) mod network;
+mod output_path;
+mod page_state;
+mod peer;
 pub mod protocol;
+mod readable_text;
+mod ref_scan;
 pub mod registry;
 pub mod server;
 pub mod snapshot;
+mod timings;
+mod visibility;
 
 use tauri::AppHandle;
 
 const MAX_ACTION_REQUEST_BYTES: usize = 64 * 1024;
+
+#[tauri::command]
+pub fn browser_automation_finish_turn(
+    app: AppHandle,
+    webview: tauri::Webview,
+    target: activity::TurnEnd,
+) -> Result<bool, String> {
+    if webview.label() != "main" {
+        return Err("main webview required".into());
+    }
+    Ok(activity::end_observed(&app, &target))
+}
 
 #[tauri::command]
 pub async fn browser_automation_start(app: AppHandle) -> Result<(), String> {
@@ -52,7 +75,7 @@ pub async fn browser_automation_handle_action(
         .ok_or_else(|| "missing 'action' or 'method' field".to_string())?
         .to_string();
 
-    actions::handle_action(&app, &method, value)
+    actions::handle_action_as(&app, &method, value, caller::Caller::internal())
         .await
         .map(|res| res.to_string())
         .map_err(|(code, msg)| format!("[{code}] {msg}"))
@@ -60,6 +83,7 @@ pub async fn browser_automation_handle_action(
 
 pub fn on_exit() {
     server::stop_server();
+    activity::clear();
     download::clear();
     registry::clear_tab_locks();
     snapshot::clear_generations();

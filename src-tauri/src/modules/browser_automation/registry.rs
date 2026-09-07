@@ -45,8 +45,11 @@ pub fn get_embed_webview(app: &AppHandle, tab_id: i64) -> Result<Webview, String
         return Err(format!("tab {tab_id} not found or closed"));
     }
     let label = embed_label(tab_id);
-    app.get_webview(&label)
-        .ok_or_else(|| format!("webview window for tab {tab_id} ({label}) is unavailable"))
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| format!("webview window for tab {tab_id} ({label}) is unavailable"))?;
+    super::activity::stage("running");
+    Ok(webview)
 }
 
 #[cfg(test)]

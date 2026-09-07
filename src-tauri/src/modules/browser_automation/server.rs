@@ -9,7 +9,7 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::modules::app_data::local_data_root;
 #[cfg(windows)]
-use crate::modules::browser_automation::actions::handle_action;
+use crate::modules::browser_automation::actions::handle_action_as;
 #[cfg(windows)]
 use crate::modules::browser_automation::protocol::{
     error_codes, BrowserRequest, BrowserResponse, InstanceDescriptor, MAX_REQUEST_SIZE,
@@ -243,6 +243,7 @@ async fn handle_client(
     app: AppHandle,
     expected_token: String,
 ) {
+    let pty_id = super::peer::pipe_owner(app.clone(), &stream).await;
     let (reader, mut writer) = tokio::io::split(stream);
     let mut buf_reader = BufReader::new(reader);
     loop {
@@ -314,7 +315,20 @@ async fn handle_client(
             continue;
         }
 
-        match handle_action(&app, &req.method, req.params).await {
+        let caller = super::caller::Caller::from_pipe_info(
+            req.client_info.as_ref().unwrap_or(&serde_json::Value::Null),
+        )
+        .with_pty(pty_id);
+        if req.method == "end_client_session" {
+            super::activity::end_owner(&app, &caller);
+            let _ = send_response(
+                &mut writer,
+                &BrowserResponse::success(req.id, serde_json::json!({"ended":true})),
+            )
+            .await;
+            continue;
+        }
+        match handle_action_as(&app, &req.method, req.params, caller).await {
             Ok(result) => {
                 let resp = BrowserResponse::success(req.id, result);
                 let _ = send_response(&mut writer, &resp).await;

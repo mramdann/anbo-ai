@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use super::accessible_name::ACCESSIBLE_NAME_JS;
+use super::visibility::VISIBILITY_JS;
+
 static SNAPSHOT_GENERATIONS: Mutex<Option<HashMap<i64, u64>>> = Mutex::new(None);
 static REF_FRAME_TARGETS: Mutex<Option<HashMap<i64, HashMap<String, RefFrameTarget>>>> =
     Mutex::new(None);
@@ -112,17 +115,27 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
         r#"(function() {{
             const gen = "gen-{generation_id}";
             const refPrefix = {ref_prefix_json};
+            const scanRoot = document.documentElement;
+            if (scanRoot) {{
+                if (Number(scanRoot.getAttribute('data-anbo-scan-generation') || 0) > {generation_id}) throw new Error('stale_scan');
+                scanRoot.setAttribute('data-anbo-scan-generation', '{generation_id}');
+            }}
             let refIdx = 1;
             const elements = [];
+            const viewportElements = [];
+            const referenceNodes = new Map();
             const maxItems = 1000;
+            const maxNodes = 50000;
+            let scannedNodes = 0;
             let sourceTruncated = false;
 
             function add(item) {{
-                if (elements.length >= maxItems) {{
+                const bucket = item.in_viewport ? viewportElements : elements;
+                if (bucket.length >= maxItems) {{
                     sourceTruncated = true;
                     return false;
                 }}
-                elements.push(item);
+                bucket.push(item);
                 return true;
             }}
 
@@ -138,13 +151,9 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
             }}
             try {{ clearRefs(document); }} catch(e) {{}}
 
-            function isVisible(el) {{
-                if (!el) return false;
-                const rect = el.getBoundingClientRect();
-                if (rect.width === 0 && rect.height === 0) return false;
-                const style = window.getComputedStyle(el);
-                return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
-            }}
+            {VISIBILITY_JS}
+            {ACCESSIBLE_NAME_JS}
+            const isVisible = isRenderedElement;
 
             function isInViewport(el) {{
                 const rect = el.getBoundingClientRect();
@@ -152,20 +161,21 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                        rect.top <= window.innerHeight && rect.left <= window.innerWidth;
             }}
 
-            function processShadow(el) {{
-                if (!el || !el.shadowRoot || elements.length >= maxItems) return;
+            function processShadow(el, depth) {{
+                if (!el || !el.shadowRoot) return;
                 for (let i = 0; i < el.shadowRoot.childNodes.length; i++) {{
-                    process(el.shadowRoot.childNodes[i]);
-                    if (elements.length >= maxItems) break;
+                    process(el.shadowRoot.childNodes[i], depth + 1);
+                    if (scannedNodes >= maxNodes) {{ sourceTruncated = true; break; }}
                 }}
             }}
 
-            function process(node) {{
+            function process(node, depth = 0) {{
                 if (!node) return;
-                if (elements.length >= maxItems) {{
+                if (scannedNodes >= maxNodes || depth > 256) {{
                     sourceTruncated = true;
                     return;
                 }}
+                scannedNodes++;
                 if (node.nodeType === 3) {{
                     const t = (node.textContent || "").trim();
                     if (t.length > 0 && node.parentElement &&
@@ -200,9 +210,14 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                 const isHiddenFileInput = tag === 'input' && inputType === 'file';
 
                 if (isInteractive && (isVisible(el) || isHiddenFileInput)) {{
+                    const inViewport = isInViewport(el);
+                    if ((inViewport ? viewportElements : elements).length >= maxItems) {{
+                        sourceTruncated = true;
+                        processShadow(el, depth);
+                        return;
+                    }}
                     const ref = refPrefix + (refIdx++);
-                    el.setAttribute('data-anbo-ref', ref);
-                    el.setAttribute('data-anbo-gen', gen);
+                    referenceNodes.set(ref, el);
 
                     let role = roleAttr || tag;
                     if (tag === 'input') {{
@@ -215,28 +230,7 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                         val = '[REDACTED]';
                     }}
 
-                    const labelledBy = (el.getAttribute('aria-labelledby') || '')
-                        .split(/\s+/)
-                        .filter(Boolean)
-                        .map(id => document.getElementById(id))
-                        .filter(Boolean)
-                        .map(node => (node.innerText || node.textContent || '').trim())
-                        .filter(Boolean)
-                        .join(' ');
-                    const labels = el.labels
-                        ? Array.from(el.labels).map(node => (node.innerText || node.textContent || '').trim()).filter(Boolean).join(' ')
-                        : '';
-                    const descendant = el.querySelector('[aria-label], img[alt], [alt], [title]');
-                    let label = el.getAttribute('aria-label') ||
-                                el.getAttribute('placeholder') ||
-                                el.getAttribute('alt') ||
-                                el.getAttribute('title') ||
-                                labelledBy ||
-                                labels ||
-                                (descendant && (descendant.getAttribute('aria-label') || descendant.getAttribute('alt') || descendant.getAttribute('title'))) ||
-                                (isPassword ? '' : (el.innerText || '')) ||
-                                '';
-                    label = label.trim().replace(/\s+/g, ' ').substring(0, 100);
+                    const label = accessibleName(el).substring(0, 100);
 
                     add({{
                         type: 'element',
@@ -247,29 +241,39 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                         value: val,
                         checked: typeof el.checked === 'boolean' ? el.checked : null,
                         disabled: el.disabled || false,
-                        in_viewport: isInViewport(el)
+                        in_viewport: inViewport
                     }});
-                    processShadow(el);
+                    processShadow(el, depth);
                     return;
                 }}
 
                 for (let i = 0; i < el.childNodes.length; i++) {{
-                    process(el.childNodes[i]);
-                    if (elements.length >= maxItems) break;
+                    process(el.childNodes[i], depth + 1);
+                    if (scannedNodes >= maxNodes) {{ sourceTruncated = true; break; }}
                 }}
                 // Traverse open Shadow DOM roots used by modern upload UIs.
                 // Closed roots remain inaccessible by browser design.
-                processShadow(el);
+                processShadow(el, depth);
             }}
 
             if (document.body) {{
                 process(document.body);
             }}
 
+            const prioritized = viewportElements.concat(elements);
+            sourceTruncated ||= prioritized.length > maxItems;
+            const selected = prioritized.slice(0, maxItems);
+            for (const item of selected) {{
+                const el = referenceNodes.get(item.ref_id);
+                if (el) {{
+                    el.setAttribute('data-anbo-ref', item.ref_id);
+                    el.setAttribute('data-anbo-gen', gen);
+                }}
+            }}
             return JSON.stringify({{
                 title: (document.title || "").substring(0, 500),
                 url: (window.location.href || "").substring(0, 2000),
-                elements: elements,
+                elements: selected,
                 source_truncated: sourceTruncated
             }});
         }})();"#,
@@ -283,6 +287,13 @@ pub struct FormattedSnapshot {
     pub included_items: usize,
     pub total_items: usize,
     pub max_chars: usize,
+}
+
+pub fn prioritize_snapshot_elements(elements: &mut Vec<SnapshotElement>, limit: usize) -> bool {
+    elements.sort_by_key(|element| !element.in_viewport);
+    let truncated = elements.len() > limit;
+    elements.truncate(limit);
+    truncated
 }
 
 fn format_item(item: &SnapshotElement) -> Option<String> {
@@ -313,9 +324,12 @@ pub fn format_snapshot(
     requested_max_chars: usize,
 ) -> FormattedSnapshot {
     let max_chars = requested_max_chars.clamp(MIN_SNAPSHOT_MAX_CHARS, MAX_SNAPSHOT_MAX_CHARS);
+    let title = payload.title.chars().take(200).collect::<String>();
+    let url = payload.url.chars().take(max_chars / 4).collect::<String>();
+    let metadata_truncated = title != payload.title || url != payload.url;
     let mut lines = Vec::new();
-    lines.push(format!("Title: {}", payload.title));
-    lines.push(format!("URL: {}", payload.url));
+    lines.push(format!("Title: {title}"));
+    lines.push(format!("URL: {url}"));
     lines.push(format!("Generation: {generation_id}"));
     lines.push(format!(
         "Scope: viewport text first, then interactive elements; limit {max_chars} characters"
@@ -343,7 +357,7 @@ pub fn format_snapshot(
         .map(|line| line.chars().count() + 1)
         .sum::<usize>();
     let mut included_items = 0;
-    let mut truncated = payload.source_truncated;
+    let mut truncated = payload.source_truncated || metadata_truncated;
 
     for line in candidates {
         if current_chars + line.chars().count() + 1 > content_limit {
@@ -526,5 +540,46 @@ mod tests {
         assert!(script.contains(r#"const refPrefix = "g42-e""#));
         assert!(script.contains("const ref = refPrefix + (refIdx++);"));
         assert!(script.contains("const gen = \"gen-42\";"));
+    }
+
+    #[test]
+    fn long_unicode_metadata_cannot_exceed_the_smallest_snapshot_budget() {
+        let payload = SnapshotPayload {
+            title: "界".repeat(500),
+            url: format!("https://example.test/?{}", "界".repeat(2000)),
+            elements: Vec::new(),
+            source_truncated: false,
+        };
+        let formatted = format_snapshot(&payload, u64::MAX, 2000);
+        assert!(formatted.truncated);
+        assert!(formatted.text.chars().count() <= 2000);
+        assert!(formatted.text.contains("[truncated: showing"));
+    }
+
+    #[test]
+    fn visible_child_frame_items_displace_offscreen_root_items_stably() {
+        let mut elements = (0..4)
+            .map(|index| SnapshotElement {
+                element_type: "element".to_string(),
+                ref_id: Some(format!("g1-e{index}")),
+                tag: Some("button".to_string()),
+                role: Some("button".to_string()),
+                label: None,
+                value: None,
+                checked: None,
+                disabled: None,
+                text: None,
+                in_viewport: index >= 2,
+            })
+            .collect::<Vec<_>>();
+        assert!(prioritize_snapshot_elements(&mut elements, 3));
+        assert_eq!(
+            elements
+                .iter()
+                .map(|item| item.ref_id.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            ["g1-e2", "g1-e3", "g1-e0"]
+        );
+        assert!(!prioritize_snapshot_elements(&mut elements, 3));
     }
 }

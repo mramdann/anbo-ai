@@ -27,9 +27,8 @@ use windows::Win32::{
     },
     UI::WindowsAndMessaging::{
         DestroyWindow, GetClientRect, IsWindow, SetWindowPos, ShowWindow, HWND_BOTTOM, HWND_TOP,
-        SET_WINDOW_POS_FLAGS,
-        SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SW_HIDE,
-        SW_SHOWNOACTIVATE,
+        SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER,
+        SWP_NOSIZE, SW_SHOWNOACTIVATE,
     },
 };
 
@@ -104,6 +103,8 @@ type EmbedKey = (i64, String);
 
 #[derive(Clone)]
 struct ActiveEmbed {
+    #[cfg(windows)]
+    network: Arc<crate::modules::browser_automation::network::NetworkState>,
     instance_id: String,
     owner_id: String,
     local_root: Arc<Mutex<Option<PathBuf>>>,
@@ -214,6 +215,17 @@ pub fn active_loading(tab_id: i64) -> Option<bool> {
         .ok()?
         .get(&tab_id)
         .map(|entry| entry.loading.load(Ordering::Acquire))
+}
+
+#[cfg(windows)]
+pub(crate) fn active_network(
+    tab_id: i64,
+) -> Option<Arc<crate::modules::browser_automation::network::NetworkState>> {
+    active_embeds()
+        .lock()
+        .ok()?
+        .get(&tab_id)
+        .map(|entry| entry.network.clone())
 }
 
 pub fn active_pending_url(tab_id: i64) -> Option<String> {
@@ -431,7 +443,7 @@ mod privilege_tests {
 }
 
 #[allow(clippy::too_many_arguments)] // One call site; splitting it would only hide the wiring.
-fn spawn_browser_child(
+async fn spawn_browser_child(
     window: &tauri::Window,
     tab_id: i64,
     target: Url,
@@ -476,79 +488,16 @@ fn spawn_browser_child(
         .get(&tab_id)
         .map(|entry| entry.navigation_generation.clone())
         .ok_or_else(|| "browser lifecycle state is unavailable".to_string())?;
-    let builder = WebviewBuilder::new(embed_label(tab_id), WebviewUrl::External(target))
+    #[cfg(windows)]
+    let initial_url = Url::parse("about:blank").map_err(|error| error.to_string())?;
+    #[cfg(not(windows))]
+    let initial_url = target;
+    let builder = WebviewBuilder::new(embed_label(tab_id), WebviewUrl::External(initial_url))
         .data_directory(browser_data_dir)
         // Opaque background so a not-yet-painted webview (new tab, mid-load) shows
         // a solid color instead of a transparent hole through to the desktop.
         .background_color(Color(255, 255, 255, 255))
-        .initialization_script(
-            r#"
-            (() => {
-            const anboLogs = Array.isArray(window.__anboLogs) ? window.__anboLogs : [];
-            window.__anboLogs = anboLogs;
-            const syncAnboLogs = () => {
-                try {
-                    document.documentElement?.setAttribute(
-                        'data-anbo-console-logs',
-                        JSON.stringify(anboLogs.slice(-50))
-                    );
-                } catch (_) {}
-            };
-            if (!document.documentElement) {
-                document.addEventListener('DOMContentLoaded', syncAnboLogs, { once: true });
-            }
-            const safeStringify = (arg) => {
-                try {
-                    if (arg === null || typeof arg !== 'object') return String(arg).slice(0, 2000);
-                    if (arg instanceof Error) {
-                        return `${String(arg.name || 'Error')}: ${String(arg.message || '').slice(0, 1500)}${
-                            arg.stack ? `\n${String(arg.stack).slice(0, 2000)}` : ''
-                        }`.slice(0, 2000);
-                    }
-                    const result = {};
-                    for (const key of Object.keys(arg).slice(0, 20)) {
-                        const value = arg[key];
-                        result[String(key).slice(0, 100)] =
-                            value === null || typeof value !== 'object'
-                                ? String(value).slice(0, 500)
-                                : Object.prototype.toString.call(value);
-                    }
-                    return JSON.stringify(result).slice(0, 2000);
-                } catch (e) { return Object.prototype.toString.call(arg).slice(0, 2000); }
-            };
-            const recordAnboLog = (level, message) => {
-                anboLogs.push({
-                    level: String(level || 'info').slice(0, 16),
-                    msg: String(message || '').slice(0, 4000),
-                    ts: Date.now()
-                });
-                if (anboLogs.length > 50) anboLogs.shift();
-                syncAnboLogs();
-            };
-            const origLog = console.log;
-            console.log = function(...args) {
-                recordAnboLog('info', args.slice(0, 20).map(safeStringify).join(' '));
-                origLog.apply(console, args);
-            };
-            const origErr = console.error;
-            console.error = function(...args) {
-                recordAnboLog('error', args.slice(0, 20).map(safeStringify).join(' '));
-                origErr.apply(console, args);
-            };
-            window.addEventListener('error', event => {
-                const location = event.filename
-                    ? ` at ${String(event.filename).slice(0, 1000)}:${Number(event.lineno) || 0}:${Number(event.colno) || 0}`
-                    : '';
-                const message = String(event.message || 'runtime error').slice(0, 3000);
-                recordAnboLog('error', `${message.startsWith('Uncaught') ? '' : 'Uncaught '}${message}${location}`);
-            });
-            window.addEventListener('unhandledrejection', event => {
-                recordAnboLog('error', `Unhandled promise rejection: ${safeStringify(event.reason)}`);
-            });
-            syncAnboLogs();
-            })();
-            "#,
-        );
+        .initialization_script(include_str!("consoleCapture.js"));
     #[cfg(target_os = "linux")]
     let builder = builder.transparent(browser_child_transparent());
     #[cfg(not(target_os = "linux"))]
@@ -579,7 +528,7 @@ fn spawn_browser_child(
             }
             NewWindowResponse::Deny
         })
-        .on_page_load(move |_webview, payload| {
+        .on_page_load(move |webview, payload| {
             let root = event_local_root.lock().ok();
             if !navigation_allowed(
                 payload.url(),
@@ -593,6 +542,7 @@ fn spawn_browser_child(
             };
             let kind = match payload.event() {
                 PageLoadEvent::Started => {
+                    crate::modules::browser_automation::activity::navigation(&webview);
                     event_loading.store(true, Ordering::Release);
                     event_navigation_generation.fetch_add(1, Ordering::AcqRel);
                     if let Ok(mut pending_url) = event_pending_url.lock() {
@@ -601,6 +551,8 @@ fn spawn_browser_child(
                     "navigated"
                 }
                 PageLoadEvent::Finished => {
+                    crate::modules::browser_automation::activity::navigation(&webview);
+                    crate::modules::browser_automation::activity::restore(&webview);
                     event_loading.store(false, Ordering::Release);
                     if let Ok(mut pending_url) = event_pending_url.lock() {
                         *pending_url = None;
@@ -686,6 +638,15 @@ fn spawn_browser_child(
         #[cfg(windows)]
         register_focus_handler(&webview, tab_id);
         set_embed_presentation(&webview, visible)?;
+        #[cfg(windows)]
+        {
+            if let Some(network) = active_network(tab_id) {
+                crate::modules::browser_automation::network::install(&webview, network).await;
+            }
+            webview
+                .navigate(target)
+                .map_err(|error| error.to_string())?;
+        }
     }
     Ok(())
 }
@@ -891,13 +852,13 @@ fn embed_insert_after(visible: bool) -> windows::Win32::Foundation::HWND {
 }
 
 #[cfg(windows)]
-fn embed_window_pos_flags() -> SET_WINDOW_POS_FLAGS {
-    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOOWNERZORDER | SWP_NOSIZE
-}
-
-#[cfg(windows)]
-fn embed_should_clip(visible: bool) -> bool {
-    !visible
+fn embed_window_pos_flags(visible: bool) -> SET_WINDOW_POS_FLAGS {
+    let flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSIZE;
+    if visible {
+        flags | SWP_NOMOVE
+    } else {
+        flags
+    }
 }
 
 #[cfg(windows)]
@@ -909,42 +870,32 @@ fn set_embed_z_order(webview: &tauri::Webview, visible: bool) -> Result<(), Stri
                 let controller = platform.controller();
                 let mut hwnd = windows::Win32::Foundation::HWND::default();
                 unsafe { controller.ParentWindow(&mut hwnd) }.map_err(|error| error.to_string())?;
-                if embed_should_clip(visible) {
-                    // Windows can discard a child window region while restoring
-                    // its transparent parent. Clear WS_VISIBLE on the host HWND
-                    // as the durable guard; the WebView2 controller itself stays
-                    // alive because we do not call controller.put_IsVisible(false).
-                    let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
-                }
-                let region = if embed_should_clip(visible) {
-                    Some(unsafe { CreateRectRgn(0, 0, 0, 0) })
+                let (x, y) = if visible {
+                    (0, 0)
                 } else {
-                    None
+                    let mut bounds = RECT::default();
+                    unsafe { GetClientRect(hwnd, &mut bounds) }
+                        .map_err(|error| error.to_string())?;
+                    super::presentation::background_origin(bounds.right.saturating_sub(bounds.left))
                 };
-                let clipped = unsafe { SetWindowRgn(hwnd, region, true) };
-                if clipped == 0 {
-                    if let Some(region) = region {
-                        let _ = unsafe { DeleteObject(region.into()) };
-                    }
-                    return Err("failed to update browser presentation region".to_string());
-                }
                 unsafe {
                     SetWindowPos(
                         hwnd,
                         Some(embed_insert_after(visible)),
+                        x,
+                        y,
                         0,
                         0,
-                        0,
-                        0,
-                        embed_window_pos_flags(),
+                        embed_window_pos_flags(visible),
                     )
                 }
                 .map_err(|error| error.to_string())?;
-                if visible {
-                    let _ = unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
-                    if let Err(error) = unsafe { controller.NotifyParentWindowPositionChanged() } {
-                        log::warn!("could not refresh browser presentation: {error}");
-                    }
+                if unsafe { SetWindowRgn(hwnd, None, true) } == 0 {
+                    return Err("failed to clear browser presentation region".to_string());
+                }
+                let _ = unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+                if let Err(error) = unsafe { controller.NotifyParentWindowPositionChanged() } {
+                    log::warn!("could not refresh browser presentation: {error}");
                 }
                 Ok(())
             })();
@@ -958,14 +909,12 @@ fn set_embed_z_order(webview: &tauri::Webview, visible: bool) -> Result<(), Stri
 
 #[cfg(windows)]
 fn set_embed_presentation(webview: &tauri::Webview, visible: bool) -> Result<(), String> {
-    // Keep WebView2's controller visible so background pages, audio, and CDP
-    // automation continue running. Merely sinking the child HWND to the bottom
-    // leaks its pixels during Windows' restore animation, before the main
-    // transparent webview has composed. The host HWND stays natively hidden
-    // (while its WebView2 controller keeps running) until the frontend reports
-    // its settled visible bounds; the empty region is a second paint guard.
+    // Hiding or empty-clipping the host can stall native input even while its
+    // controller is visible. Park it outside the parent's client area instead.
     webview.show().map_err(|error| error.to_string())?;
-    set_embed_z_order(webview, visible)
+    set_embed_z_order(webview, visible)?;
+    crate::modules::browser_automation::activity::presentation(webview, visible);
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -1245,10 +1194,7 @@ pub(crate) async fn apply_viewport(
     const CDP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
     let (method, params) = if width == 0 {
-        (
-            "Emulation.clearDeviceMetricsOverride",
-            "{}".to_string(),
-        )
+        ("Emulation.clearDeviceMetricsOverride", "{}".to_string())
     } else {
         (
             "Emulation.setDeviceMetricsOverride",
@@ -1394,13 +1340,20 @@ fn prepare_active_embed(
         .filter(mine)
         .map(|entry| entry.host_window.clone())
         .unwrap_or_else(|| Arc::new(AtomicIsize::new(0)));
+    #[cfg(windows)]
+    let network = active
+        .get(&tab_id)
+        .filter(mine)
+        .map(|entry| entry.network.clone())
+        .unwrap_or_default();
     *local_root
         .lock()
-        .map_err(|_| "browser local-file policy is unavailable".to_string())? =
-        resolved_local_root;
+        .map_err(|_| "browser local-file policy is unavailable".to_string())? = resolved_local_root;
     active.insert(
         tab_id,
         ActiveEmbed {
+            #[cfg(windows)]
+            network,
             instance_id: instance_id.to_string(),
             owner_id: owner_id.to_string(),
             local_root: local_root.clone(),
@@ -1427,6 +1380,7 @@ pub async fn browser_embed_update(
     workspace: Option<WorkspaceEnv>,
     bounds: EmbedBounds,
     visible: bool,
+    effects_enabled: Option<bool>,
 ) -> Result<(), String> {
     ensure_main_window(&window)?;
     validate_tab_id(tab_id)?;
@@ -1482,11 +1436,16 @@ pub async fn browser_embed_update(
     let Some((local_root, loading, pending_url, host_window)) = prepared else {
         if is_active(tab_id, &instance_id, Some(&owner_id)) {
             if let Some(webview) = app.get_webview(&label) {
-                webview.hide().map_err(|error| error.to_string())?;
+                set_embed_presentation(&webview, false)?;
             }
         }
         return Ok(());
     };
+    crate::modules::browser_automation::activity::set_enabled(
+        &app,
+        tab_id,
+        effects_enabled.unwrap_or(true),
+    );
 
     let target = if url.is_empty() {
         None
@@ -1498,26 +1457,31 @@ pub async fn browser_embed_update(
     };
 
     let (position, size) = physical_rect(&bounds)?;
+    #[cfg(windows)]
+    let position = if visible {
+        position
+    } else {
+        let (x, y) = super::presentation::background_origin(size.width);
+        PhysicalPosition::new(x, y)
+    };
     if let Some(webview) = app.get_webview(&label) {
         if let Some(target) = target {
-            // webview.url() posts to the main thread and waits on an UNBOUNDED
-            // channel receive. This runs while LIFECYCLE_LOCK is held, so a
-            // wedged main thread would stall every other browser and automation
-            // command behind it, permanently. Bound the wait and let the caller
-            // retry instead of holding the lock for everyone.
-            let probe = webview.clone();
-            let current = match tokio::time::timeout(
+            let current = crate::modules::browser_automation::cdp::read_url(
+                &webview,
                 std::time::Duration::from_secs(2),
-                tauri::async_runtime::spawn_blocking(move || probe.url()),
             )
-            .await
-            {
-                Ok(Ok(Ok(url))) => url,
-                Ok(Ok(Err(error))) => return Err(error.to_string()),
-                Ok(Err(error)) => return Err(error.to_string()),
-                Err(_) => return Err("timed out reading the browser URL".to_string()),
+            .await?;
+            let should_navigate = {
+                let pending = pending_url
+                    .lock()
+                    .map_err(|_| "browser navigation state is unavailable".to_string())?;
+                super::navigation::update_needs_navigation(
+                    &current,
+                    target.as_str(),
+                    pending.as_deref(),
+                )
             };
-            if current != target {
+            if should_navigate {
                 loading.store(true, Ordering::Release);
                 if let Ok(mut pending) = pending_url.lock() {
                     *pending = Some(target.to_string());
@@ -1544,7 +1508,12 @@ pub async fn browser_embed_update(
     let Some(target) = target else {
         return Ok(());
     };
-    spawn_browser_child(
+    loading.store(true, Ordering::Release);
+    *pending_url
+        .lock()
+        .map_err(|_| "browser navigation state is unavailable".to_string())? =
+        Some(target.to_string());
+    let result = spawn_browser_child(
         &window,
         tab_id,
         target,
@@ -1554,6 +1523,14 @@ pub async fn browser_embed_update(
         local_root,
         host_window,
     )
+    .await;
+    if result.is_err() {
+        loading.store(false, Ordering::Release);
+        if let Ok(mut pending) = pending_url.lock() {
+            *pending = None;
+        }
+    }
+    result
 }
 
 #[tauri::command]
@@ -1837,12 +1814,17 @@ pub async fn browser_embed_suspend(
     validate_tab_id(tab_id)?;
     validate_token(&instance_id)?;
     validate_token(&owner_id)?;
-    let _lifecycle = LIFECYCLE_LOCK.lock().await;
-    ensure_current_instance(&instance_id)?;
-    if is_active(tab_id, &instance_id, Some(&owner_id)) {
-        if let Some(webview) = app.get_webview(&embed_label(tab_id)) {
-            let _ = webview.hide();
-        }
+    let tab_lock = get_tab_lock(tab_id);
+    let _tab_lock = tab_lock.lock().await;
+    let webview = {
+        let _lifecycle = LIFECYCLE_LOCK.lock().await;
+        ensure_current_instance(&instance_id)?;
+        is_active(tab_id, &instance_id, Some(&owner_id))
+            .then(|| app.get_webview(&embed_label(tab_id)))
+            .flatten()
+    };
+    if let Some(webview) = webview {
+        set_embed_presentation(&webview, false)?;
     }
     Ok(())
 }
@@ -1853,14 +1835,18 @@ pub async fn browser_embed_suspend_all_presentations(
     window: tauri::Window,
 ) -> Result<(), String> {
     ensure_main_window(&window)?;
-    let _lifecycle = LIFECYCLE_LOCK.lock().await;
-    let tab_ids = active_embeds()
-        .lock()
-        .map_err(|_| "browser lifecycle state is unavailable".to_string())?
-        .keys()
-        .copied()
-        .collect::<Vec<_>>();
+    let tab_ids = {
+        let _lifecycle = LIFECYCLE_LOCK.lock().await;
+        active_embeds()
+            .lock()
+            .map_err(|_| "browser lifecycle state is unavailable".to_string())?
+            .keys()
+            .copied()
+            .collect::<Vec<_>>()
+    };
     for tab_id in tab_ids {
+        let tab_lock = get_tab_lock(tab_id);
+        let _tab_lock = tab_lock.lock().await;
         if let Some(webview) = app.get_webview(&embed_label(tab_id)) {
             if let Err(error) = set_embed_presentation(&webview, false) {
                 log::error!("failed to suspend browser presentation {tab_id}: {error}");
@@ -1938,6 +1924,7 @@ pub async fn browser_embed_begin_session(
             .remove(&tab_id);
         crate::modules::browser_automation::download::remove_tab(tab_id);
         crate::modules::browser_automation::snapshot::remove_generation(tab_id);
+        crate::modules::browser_automation::activity::remove(tab_id);
         remove_tab_lock(tab_id);
     }
     if is_new_session {
@@ -2191,6 +2178,7 @@ pub async fn browser_embed_close(
     remove_tab_lock(tab_id);
     crate::modules::browser_automation::download::remove_tab(tab_id);
     crate::modules::browser_automation::snapshot::remove_generation(tab_id);
+    crate::modules::browser_automation::activity::remove(tab_id);
     Ok(())
 }
 
@@ -2268,14 +2256,20 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn suppressed_embed_keeps_controller_alive_but_has_no_host_paint() {
-        use windows::Win32::UI::WindowsAndMessaging::{HWND_BOTTOM, HWND_TOP, SWP_ASYNCWINDOWPOS};
+    fn background_embed_is_parked_without_activation_or_resize() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            HWND_BOTTOM, HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        };
 
         assert_eq!(super::embed_insert_after(false), HWND_BOTTOM);
         assert_eq!(super::embed_insert_after(true), HWND_TOP);
-        assert_eq!(super::embed_window_pos_flags().0 & SWP_ASYNCWINDOWPOS.0, 0);
-        assert!(super::embed_should_clip(false));
-        assert!(!super::embed_should_clip(true));
+        for visible in [false, true] {
+            let flags = super::embed_window_pos_flags(visible).0;
+            assert_eq!(flags & SWP_ASYNCWINDOWPOS.0, 0);
+            assert_ne!(flags & SWP_NOACTIVATE.0, 0);
+            assert_ne!(flags & SWP_NOSIZE.0, 0);
+            assert_eq!(flags & SWP_NOMOVE.0 != 0, visible);
+        }
     }
 
     #[test]

@@ -32,6 +32,7 @@ pub struct DownloadSnapshot {
 pub struct DownloadRecord {
     snapshot: Mutex<DownloadSnapshot>,
     notify: Notify,
+    workspace_root: PathBuf,
     download_dir: PathBuf,
     preferred_file_name: Option<String>,
 }
@@ -242,7 +243,7 @@ pub fn arm_download(
         snapshot: Mutex::new(DownloadSnapshot {
             download_id: download_id.clone(),
             tab_id,
-            workspace: workspace_root.to_string_lossy().to_string(),
+            workspace: super::output_path::display(workspace_root),
             status: "armed".to_string(),
             url: None,
             path: None,
@@ -251,6 +252,7 @@ pub fn arm_download(
             error: None,
         }),
         notify: Notify::new(),
+        workspace_root: workspace_root.to_path_buf(),
         download_dir,
         preferred_file_name: preferred_file_name.map(ToOwned::to_owned),
     });
@@ -296,7 +298,7 @@ pub fn on_download_requested(tab_id: i64, url: &str, destination: &mut PathBuf) 
     if let Ok(mut snapshot) = record.snapshot.lock() {
         snapshot.status = "downloading".to_string();
         snapshot.url = Some(bounded_source_url(url));
-        snapshot.path = Some(selected.to_string_lossy().to_string());
+        snapshot.path = Some(super::output_path::display(&selected));
         snapshot.file_name = selected
             .file_name()
             .map(|name| name.to_string_lossy().to_string());
@@ -323,7 +325,7 @@ pub fn on_download_finished(tab_id: i64, url: &str, path: Option<PathBuf>, succe
     if let Ok(mut snapshot) = record.snapshot.lock() {
         snapshot.url = Some(bounded_source_url(url));
         if let Some(path) = path {
-            snapshot.path = Some(path.to_string_lossy().to_string());
+            snapshot.path = Some(super::output_path::display(&path));
             snapshot.file_name = path
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string());
@@ -375,13 +377,7 @@ pub fn find_download(
         .get(download_id)
         .cloned()
         .ok_or_else(|| format!("browser download '{download_id}' was not found"))?;
-    let actual_workspace = record
-        .snapshot
-        .lock()
-        .map_err(|_| "browser download state is unavailable".to_string())?
-        .workspace
-        .clone();
-    if Path::new(&actual_workspace) != workspace_root {
+    if record.workspace_root != workspace_root {
         return Err("browser download belongs to a different workspace".to_string());
     }
     Ok(record)
@@ -440,6 +436,10 @@ pub fn clear() {
 mod tests {
     use super::*;
 
+    // Lifecycle tests clear the process-wide registry; serialize them without
+    // holding a blocking mutex across the async wait assertions.
+    static REGISTRY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[test]
     fn preferred_names_cannot_escape_the_download_directory() {
         for invalid in [
@@ -471,10 +471,23 @@ mod tests {
 
     #[tokio::test]
     async fn tracked_download_moves_through_lifecycle() {
+        let _isolation = REGISTRY_TEST_LOCK.lock().await;
         clear();
         let root = tempfile::tempdir().unwrap();
         let canonical_root = std::fs::canonicalize(root.path()).unwrap();
         let record = arm_download(44, &canonical_root, Some("fixture.txt")).unwrap();
+        let id = snapshot(&record).unwrap().download_id;
+        assert!(Arc::ptr_eq(
+            &find_download(&id, &canonical_root).unwrap(),
+            &record
+        ));
+        let other = tempfile::tempdir().unwrap();
+        let other_root = std::fs::canonicalize(other.path()).unwrap();
+        assert!(find_download(&id, &other_root).is_err());
+        assert_eq!(
+            snapshot(&record).unwrap().workspace,
+            super::super::output_path::display(&canonical_root)
+        );
         let mut destination = PathBuf::from("server-name.txt");
         assert!(on_download_requested(
             44,
@@ -497,6 +510,13 @@ mod tests {
         assert_eq!(done.status, "completed");
         assert_eq!(done.size, Some(2));
         assert_eq!(done.url.as_deref(), Some("https://example.com/file"));
+        let found = find_download(&id, &canonical_root).unwrap();
+        let (completed, timed_out) =
+            wait_for_status_change(&found, "downloading", std::time::Duration::from_millis(10))
+                .await
+                .unwrap();
+        assert_eq!(completed.status, "completed");
+        assert!(!timed_out);
         clear();
     }
 
@@ -522,8 +542,9 @@ mod tests {
         assert!(resolve_download_dir(&canonical_root).is_err());
     }
 
-    #[test]
-    fn concurrent_downloads_reserve_collision_free_destinations() {
+    #[tokio::test]
+    async fn concurrent_downloads_reserve_collision_free_destinations() {
+        let _isolation = REGISTRY_TEST_LOCK.lock().await;
         clear();
         let root = tempfile::tempdir().unwrap();
         let canonical_root = std::fs::canonicalize(root.path()).unwrap();

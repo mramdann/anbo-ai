@@ -32,6 +32,22 @@ impl Default for PtyState {
 }
 
 impl PtyState {
+    #[cfg(windows)]
+    pub(crate) fn owner_of_process(&self, pid: u32) -> Option<u32> {
+        let sessions = self.sessions.read().ok()?;
+        if pid == 0 || sessions.len() > 512 {
+            return None;
+        }
+        let mut owners = sessions.iter().filter_map(|(id, session)| {
+            (!session.exited.load(Ordering::Acquire)
+                && session._job.as_ref().is_some_and(|job| job.contains(pid)))
+            .then_some(*id)
+        });
+        let owner = owners.next()?;
+        // Ambiguous nested ownership is not safe to attribute automatically.
+        owners.next().is_none().then_some(owner)
+    }
+
     pub(super) fn take(&self, id: u32) -> Option<Arc<Session>> {
         self.sessions.write().unwrap().remove(&id)
     }
@@ -170,7 +186,12 @@ pub fn pty_resize(
 }
 
 #[tauri::command]
-pub fn pty_close(state: tauri::State<PtyState>, id: u32) -> Result<(), String> {
+pub fn pty_close(
+    app: tauri::AppHandle,
+    state: tauri::State<PtyState>,
+    id: u32,
+) -> Result<(), String> {
+    crate::modules::browser_automation::activity::end_pty(&app, id);
     let session = state.sessions.write().unwrap().remove(&id);
     if let Some(s) = session {
         if let Err(e) = s.killer.lock().unwrap().kill() {
