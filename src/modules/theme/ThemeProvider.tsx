@@ -22,6 +22,7 @@ import {
 import { SurfaceLayer } from "./SurfaceLayer";
 import { getBuiltinTheme, getDefaultTheme } from "./themes";
 import type { Theme } from "./types";
+import { rememberStartupTheme } from "./startupTheme";
 
 export type { Theme };
 export type ThemeModePref = ThemePref;
@@ -50,8 +51,10 @@ const FAST_PATH_THEME_ID = "anbo-ui-theme-id-shadow";
 
 function readFastMode(fallback: ThemePref): ThemePref {
   if (typeof window === "undefined") return fallback;
-  const v = window.localStorage.getItem(FAST_PATH_KEY);
-  return v === "dark" || v === "light" || v === "system" ? v : fallback;
+  try {
+    const v = window.localStorage.getItem(FAST_PATH_KEY);
+    return v === "dark" || v === "light" || v === "system" ? v : fallback;
+  } catch { return fallback; }
 }
 
 function writeFastMode(t: ThemePref): void {
@@ -60,7 +63,9 @@ function writeFastMode(t: ThemePref): void {
 
 function readFastThemeId(): string {
   if (typeof window === "undefined") return DEFAULT_THEME_ID;
-  return window.localStorage.getItem(FAST_PATH_THEME_ID) ?? DEFAULT_THEME_ID;
+  try {
+    return window.localStorage.getItem(FAST_PATH_THEME_ID) ?? DEFAULT_THEME_ID;
+  } catch { return DEFAULT_THEME_ID; }
 }
 
 function writeFastThemeId(id: string): void {
@@ -132,6 +137,7 @@ export function ThemeProvider({ children, defaultMode = "system" }: ThemeProvide
     const root = document.documentElement;
     root.classList.remove("light", "dark");
     root.classList.add(resolvedMode);
+    root.style.colorScheme = resolvedMode;
   }, [resolvedMode]);
 
   const effectiveId = previewId ?? themeId;
@@ -142,10 +148,12 @@ export function ThemeProvider({ children, defaultMode = "system" }: ThemeProvide
   useEffect(() => {
     if (effectiveId === DEFAULT_THEME_ID) {
       clearTheme();
-      return;
+    } else {
+      applyTheme(activeTheme, resolvedMode);
     }
-    applyTheme(activeTheme, resolvedMode);
-  }, [effectiveId, activeTheme, resolvedMode]);
+    document.documentElement.style.backgroundColor = "var(--background)";
+    rememberStartupTheme(activeTheme, themeId, previewId);
+  }, [effectiveId, activeTheme, resolvedMode, themeId, previewId]);
 
   const setMode = useCallback((next: ThemePref) => {
     setModeState(next);

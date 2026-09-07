@@ -5,112 +5,298 @@
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Anbo</title>
-    <script>
+    <script data-anbo-startup-theme>
       (function () {
+        var t = "system";
+        var themeId = "anbo-default";
+        var raw = null;
         try {
-          var t = localStorage.getItem("anbo-ui-theme-shadow");
-          var resolved =
-            t === "light" || t === "dark"
-              ? t
-              : window.matchMedia("(prefers-color-scheme: dark)").matches
-                ? "dark"
-                : "light";
-          document.documentElement.classList.add(resolved);
-          document.documentElement.style.backgroundColor =
-            resolved === "dark" ? "#0a0a0a" : "#ffffff";
+          t = localStorage.getItem("anbo-ui-theme-shadow");
+          themeId = localStorage.getItem("anbo-ui-theme-id-shadow") || themeId;
+          raw = localStorage.getItem("anbo-startup-theme-shadow");
+        } catch (e) {}
+        var resolved =
+          t === "light" || t === "dark"
+            ? t
+            : window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+        var root = document.documentElement;
+        root.classList.add(resolved);
+        root.style.colorScheme = resolved;
+        root.style.backgroundColor = "var(--startup-bg)";
+        try {
+          if (!raw || raw.length > 4096) return;
+          var snapshot = JSON.parse(raw);
+          if (!snapshot || snapshot.version !== 1 || snapshot.themeId !== themeId) return;
+          var palette = snapshot[resolved];
+          if (!palette || typeof palette !== "object" || Array.isArray(palette)) return;
+          var keys = {
+            background: "bg", foreground: "fg", mutedForeground: "muted",
+            primary: "accent", border: "line", accent: "hover", destructive: "danger"
+          };
+          Object.keys(keys).forEach(function (key) {
+            var value = palette[key];
+            if (typeof value !== "string" || value.length > 128 ||
+                /var\s*\(|url\s*\(|currentcolor|inherit|initial|unset|revert/i.test(value) ||
+                !CSS.supports("color", value)) return;
+            root.style.setProperty("--startup-" + keys[key], value);
+          });
         } catch (e) {}
       })();
     </script>
     <style>
+      @font-face {
+        font-family: "Anbo Startup";
+        src: url("/node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2") format("woff2");
+        font-style: normal;
+        font-weight: 100 900;
+        font-display: swap;
+      }
+      :root {
+        --startup-bg: oklch(0.148 0.004 228.8);
+        --startup-fg: oklch(0.987 0.002 197.1);
+        --startup-muted: oklch(0.723 0.014 214.4);
+        --startup-accent: oklch(0.925 0.005 214.3);
+        --startup-line: oklch(1 0 0 / 10%);
+        --startup-hover: oklch(0.275 0.011 216.9);
+        --startup-danger: oklch(0.704 0.191 22.216);
+      }
+      :root.light {
+        --startup-bg: oklch(1 0 0);
+        --startup-fg: oklch(0.148 0.004 228.8);
+        --startup-muted: oklch(0.56 0.021 213.5);
+        --startup-accent: oklch(0.218 0.008 223.9);
+        --startup-line: oklch(0.925 0.005 214.3);
+        --startup-hover: oklch(0.963 0.002 197.1);
+        --startup-danger: oklch(0.577 0.245 27.325);
+      }
       #anbo-startup {
+        --startup-gutter: clamp(32px, 12vw, 112px);
         position: fixed;
         inset: 0;
         display: grid;
-        place-items: center;
-        overflow: hidden;
-        color: #f5f5f5;
-        background:
-          radial-gradient(circle at 50% 38%, rgba(78, 121, 255, 0.12), transparent 34%),
-          #0a0a0a;
-        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        grid-template-rows: minmax(0, 1fr);
+        box-sizing: border-box;
+        overflow-x: hidden;
+        overflow-y: auto;
+        padding: clamp(52px, 10vh, 80px) var(--startup-gutter) 94px;
+        color-scheme: inherit;
+        color: var(--startup-fg);
+        background: var(--startup-bg);
+        font-family: "Anbo Startup", Inter, ui-sans-serif, system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
       }
-      .light #anbo-startup {
-        color: #171717;
-        background:
-          radial-gradient(circle at 50% 38%, rgba(78, 121, 255, 0.1), transparent 34%),
-          #ffffff;
+      #anbo-startup-card::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: -24px;
+        width: 1px;
+        background: linear-gradient(transparent, var(--startup-line) 18%, var(--startup-line) 82%, transparent);
+        opacity: 0.55;
+        pointer-events: none;
+        transform-origin: center top;
+        animation: anbo-startup-guide-enter 560ms cubic-bezier(0.16, 1, 0.3, 1) 40ms backwards;
       }
       #anbo-startup-card {
+        position: relative;
         display: flex;
         flex-direction: column;
+        justify-self: center;
+        align-self: center;
+        width: 100%;
+        max-width: 480px;
+        height: min(320px, 100%);
+        min-height: 0;
+      }
+      #anbo-startup-brand {
+        display: flex;
         align-items: center;
-        gap: 14px;
-        transform: translateY(-2vh);
+        flex: none;
+        gap: 10px;
+      }
+      #anbo-startup-logo {
+        display: block;
+        width: 22px;
+        height: 22px;
+        animation: anbo-startup-logo-enter 300ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+      }
+      #anbo-startup-category {
+        margin: 0;
+        color: var(--startup-muted);
+        font-size: 8px;
+        line-height: 1.6;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+      #anbo-startup-hero {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        justify-content: center;
+        padding: 24px 0 32px;
       }
       #anbo-startup-title {
-        margin: 0;
+        margin: 0 0 0 -0.035em;
+        font-size: clamp(56px, 12vw, 112px);
+        font-weight: 530;
+        line-height: 1.1;
+        letter-spacing: -0.075em;
+        white-space: nowrap;
+        animation: anbo-startup-reveal 420ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+      }
+      #anbo-startup-cursor {
+        display: inline-block;
+        width: 0.46em;
+        height: 0.09em;
+        margin-left: 0.12em;
+        background: var(--startup-accent);
+        transform-origin: left center;
+        animation:
+          anbo-startup-cursor-enter 380ms cubic-bezier(0.16, 1, 0.3, 1) 120ms backwards,
+          anbo-startup-cursor-pulse 2.6s ease-in-out 650ms infinite;
+      }
+      #anbo-startup-tagline {
+        margin: 16px 0 0;
+        color: var(--startup-muted);
         font-size: 13px;
-        font-weight: 600;
-        letter-spacing: -0.01em;
+        line-height: 1.5;
+        letter-spacing: 0.01em;
+        animation: anbo-startup-reveal 360ms cubic-bezier(0.16, 1, 0.3, 1) 80ms backwards;
+      }
+      #anbo-startup-loading {
+        display: flex;
+        flex: none;
+        flex-direction: column;
+        gap: 11px;
+        width: 100%;
+      }
+      #anbo-startup-track {
+        width: 100%;
+        height: 2px;
+        overflow: hidden;
+        border-radius: 2px;
+        background: var(--startup-line);
+      }
+      #anbo-startup-progress {
+        width: 34%;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--startup-accent);
+        animation: anbo-startup-slide 2.4s cubic-bezier(0.65, 0, 0.35, 1) -0.8s infinite;
+      }
+      #anbo-startup-status-row {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 6px 20px;
       }
       #anbo-startup-status {
-        margin: -8px 0 0;
-        color: oklch(0.723 0.014 214.4); /* --muted-foreground (dark) */
-        font-size: 10px;
+        margin: 0;
+        color: var(--startup-muted);
+        font-size: 11px;
+        line-height: 1.6;
+        overflow-wrap: anywhere;
       }
-      .light #anbo-startup-status {
-        color: oklch(0.56 0.021 213.5); /* --muted-foreground (light) */
-      }
-      #anbo-startup-version {
-        margin: 14px 0 0;
-        color: oklch(0.723 0.014 214.4); /* --muted-foreground (dark) */
+      #anbo-startup-build {
+        color: var(--startup-muted);
         font-size: 9px;
+        line-height: 1.6;
         font-variant-numeric: tabular-nums;
-        letter-spacing: 0.02em;
-        opacity: 0.75;
-      }
-      .light #anbo-startup-version {
-        color: oklch(0.56 0.021 213.5); /* --muted-foreground (light) */
+        white-space: nowrap;
       }
       #anbo-startup-error {
         display: none;
-        max-width: min(420px, calc(100vw - 48px));
-        margin: -6px 0 0;
-        color: oklch(0.704 0.191 22.216);
-        font-size: 10px;
-        line-height: 1.45;
-        text-align: center;
+        box-sizing: border-box;
+        width: 100%;
+        max-height: 112px;
+        overflow: auto;
+        scrollbar-width: thin;
+        scrollbar-color: var(--startup-muted) transparent;
+        margin: 0;
+        padding: 12px;
+        border: 1px solid color-mix(in srgb, var(--startup-danger) 25%, transparent);
+        border-radius: 6px;
+        background: color-mix(in srgb, var(--startup-danger) 6%, transparent);
+        color: var(--startup-danger);
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: 11px;
+        line-height: 1.6;
+        text-align: left;
         overflow-wrap: anywhere;
       }
-      #anbo-startup[data-error="true"] #anbo-startup-error {
-        display: block;
+      #anbo-startup[data-error="true"] #anbo-startup-error { display: block; }
+      #anbo-startup[data-error="true"] #anbo-startup-track { display: none; }
+      #anbo-startup[data-error="true"] #anbo-startup-progress { animation: none; }
+      #anbo-startup[data-error="true"] #anbo-startup-status { color: var(--startup-fg); }
+      #anbo-startup[data-error="true"] #anbo-startup-title { font-size: clamp(48px, 9vw, 80px); }
+      #anbo-startup[data-error="true"] #anbo-startup-hero { padding: 16px 0; }
+      #anbo-startup[data-error="true"] #anbo-startup-tagline { display: none; }
+      #anbo-startup[data-error="true"] #anbo-startup-card::before,
+      #anbo-startup[data-error="true"] #anbo-startup-logo,
+      #anbo-startup[data-error="true"] #anbo-startup-title,
+      #anbo-startup[data-error="true"] #anbo-startup-cursor,
+      #anbo-startup[data-error="true"] #anbo-startup-tagline { animation: none; }
+      @keyframes anbo-startup-guide-enter {
+        from { transform: scaleY(0); }
+        to { transform: scaleY(1); }
       }
-      #anbo-startup[data-error="true"] #anbo-startup-track {
-        display: none;
+      @keyframes anbo-startup-logo-enter {
+        from { opacity: 0.35; transform: scale(0.96); }
+        to { opacity: 1; transform: scale(1); }
       }
-      #anbo-startup-track {
-        width: 112px;
-        height: 2px;
-        overflow: hidden;
-        border-radius: 999px;
-        background: rgba(127, 127, 127, 0.18);
+      @keyframes anbo-startup-reveal {
+        from { opacity: 0.32; transform: translateY(8px); }
+        to { opacity: 1; transform: translateY(0); }
       }
-      #anbo-startup-progress {
-        width: 45%;
-        height: 100%;
-        border-radius: inherit;
-        background: #6387ff;
-        animation: anbo-startup-slide 1.15s ease-in-out infinite;
+      @keyframes anbo-startup-cursor-enter {
+        from { opacity: 0.4; transform: scaleX(0.2); }
+        to { opacity: 1; transform: scaleX(1); }
       }
-      .light #anbo-startup-track { background: rgba(0, 0, 0, 0.08); }
-      .light #anbo-startup-progress { background: #4e79ff; }
+      @keyframes anbo-startup-cursor-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
       @keyframes anbo-startup-slide {
-        0% { transform: translateX(-120%); }
-        50% { transform: translateX(120%); }
-        100% { transform: translateX(340%); }
+        from { transform: translateX(-110%); }
+        to { transform: translateX(400%); }
+      }
+      @media (max-width: 600px) {
+        #anbo-startup { --startup-gutter: 36px; }
+        #anbo-startup-card::before { left: -18px; }
+        #anbo-startup-category { font-size: 7px; letter-spacing: 0.12em; }
+        #anbo-startup-tagline { font-size: 12px; }
+      }
+      @media (max-height: 520px) {
+        #anbo-startup { padding-top: 44px; padding-bottom: 66px; }
+        #anbo-startup-title { font-size: clamp(52px, 11vw, 88px); }
+        #anbo-startup-hero { padding: 18px 0 24px; }
+        #anbo-startup-tagline { margin-top: 14px; font-size: 12px; }
+        #anbo-startup-error { max-height: 80px; }
+        #anbo-startup[data-error="true"] #anbo-startup-title { font-size: clamp(44px, 9vw, 72px); }
+        #anbo-startup[data-error="true"] #anbo-startup-hero { padding: 12px 0; }
+      }
+      @media (max-height: 380px) {
+        #anbo-startup { padding-top: 40px; padding-bottom: 54px; }
+        #anbo-startup-logo { width: 20px; height: 20px; }
+        #anbo-startup-title { font-size: clamp(44px, 10vw, 64px); }
+        #anbo-startup-hero { padding: 12px 0 18px; }
+        #anbo-startup-tagline { display: none; }
+        #anbo-startup-loading { gap: 10px; }
+        #anbo-startup[data-error="true"] #anbo-startup-hero { display: none; }
+        #anbo-startup[data-error="true"] #anbo-startup-loading { margin-top: auto; }
+        #anbo-startup-error { max-height: 64px; }
       }
       @media (prefers-reduced-motion: reduce) {
-        #anbo-startup-progress { animation: none; transform: translateX(62%); }
+        #anbo-startup-card::before,
+        #anbo-startup-logo,
+        #anbo-startup-title,
+        #anbo-startup-cursor,
+        #anbo-startup-tagline { animation: none; }
+        #anbo-startup-progress { animation: none; transform: translateX(97%); }
       }
       /* Window controls for the pre-React "Preparing your workspace" surface.
          Mirrors src/components/WindowControls.tsx + the Hugeicons it renders
@@ -139,28 +325,21 @@
         border: 0;
         border-radius: 8px; /* rounded-md = radius * 0.8 */
         background: transparent;
-        color: oklch(0.723 0.014 214.4);            /* --muted-foreground (dark) */
+        color: var(--startup-muted);
         cursor: pointer;
         transition: background-color 0.15s ease, color 0.15s ease;
       }
       #anbo-startup-controls button:hover {
-        background: oklch(0.275 0.011 216.9);       /* --accent (dark) */
-        color: oklch(0.987 0.002 197.1);            /* --foreground (dark) */
+        background: var(--startup-hover);
+        color: var(--startup-fg);
+      }
+      #anbo-startup-controls button:focus-visible {
+        outline: 2px solid var(--startup-accent);
+        outline-offset: 2px;
       }
       #anbo-startup-controls button[data-anbo-wc="close"]:hover {
-        background: oklch(0.704 0.191 22.216 / 0.15); /* --destructive/15 (dark) */
-        color: oklch(0.704 0.191 22.216);            /* --destructive (dark) */
-      }
-      .light #anbo-startup-controls button {
-        color: oklch(0.56 0.021 213.5);             /* --muted-foreground (light) */
-      }
-      .light #anbo-startup-controls button:hover {
-        background: oklch(0.963 0.002 197.1);       /* --accent (light) */
-        color: oklch(0.148 0.004 228.8);            /* --foreground (light) */
-      }
-      .light #anbo-startup-controls button[data-anbo-wc="close"]:hover {
-        background: oklch(0.577 0.245 27.325 / 0.15); /* --destructive/15 (light) */
-        color: oklch(0.577 0.245 27.325);           /* --destructive (light) */
+        background: color-mix(in srgb, var(--startup-danger) 15%, transparent);
+        color: var(--startup-danger);
       }
       #anbo-startup-controls svg {
         fill: none;
@@ -176,16 +355,27 @@
     <div id="root">
       <div id="anbo-startup" role="status" aria-label="Starting Anbo" data-tauri-drag-region>
         <div id="anbo-startup-card">
-          <p id="anbo-startup-title">Anbo</p>
-          <p id="anbo-startup-status">Preparing your workspace</p>
-          <p id="anbo-startup-error" aria-live="polite"></p>
-          <div id="anbo-startup-track" aria-hidden="true">
-            <div id="anbo-startup-progress"></div>
+          <div id="anbo-startup-brand">
+            <img id="anbo-startup-logo" src="/logo.svg" width="22" height="22" alt="" draggable="false" />
+            <p id="anbo-startup-category">AI-native terminal</p>
           </div>
-          <p id="anbo-startup-version">v%ANBO_VERSION% &middot; %ANBO_AUTHOR%</p>
+          <div id="anbo-startup-hero">
+            <h1 id="anbo-startup-title">Anbo<span id="anbo-startup-cursor" aria-hidden="true"></span></h1>
+            <p id="anbo-startup-tagline">Your agentic workspace.</p>
+          </div>
+          <div id="anbo-startup-loading">
+            <div id="anbo-startup-track" aria-hidden="true">
+              <div id="anbo-startup-progress"></div>
+            </div>
+            <div id="anbo-startup-status-row">
+              <p id="anbo-startup-status">Preparing your workspace</p>
+              <span id="anbo-startup-build">%ANBO_VERSION%</span>
+            </div>
+            <p id="anbo-startup-error" aria-live="polite"></p>
+          </div>
         </div>
       </div>
-      <div id="anbo-startup-controls" aria-hidden="true">
+      <div id="anbo-startup-controls" role="group" aria-label="Window controls">
         <button type="button" data-anbo-wc="minimize" aria-label="Minimize" title="Minimize">
           <svg viewBox="0 0 24 24" width="12" height="12"><path d="M20 12L4 12"/></svg>
         </button>
