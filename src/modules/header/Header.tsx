@@ -10,8 +10,8 @@ import { cn } from "@/lib/utils";
 import { NotificationBell } from "@/modules/agents";
 import type { WorkspaceEnv } from "@/modules/workspace";
 import {
+  AudioWaveformIcon,
   CommandIcon,
-  Mic01Icon,
   Settings01Icon,
   SidebarLeftIcon,
 } from "@hugeicons/core-free-icons";
@@ -115,7 +115,7 @@ export function Header({
       aria-pressed={voiceVisible}
     >
       <HugeiconsIcon
-        icon={Mic01Icon}
+        icon={AudioWaveformIcon}
         size={14}
         strokeWidth={1.75}
         className="size-3.5"
