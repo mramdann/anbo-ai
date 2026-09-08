@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.26.0](https://github.com/mramdann/anbo-ai/compare/v0.25.0...v0.26.0) (2026-09-08)
+
+
+### Features
+
+* **browser:** harden MCP execution and owned control sessions ([e846fda](https://github.com/mramdann/anbo-ai/commit/e846fdaaabdb81b988dbd153822cf057e92ccceb))
+* **browser:** show branded control activity and outward tab pulses ([f3be87f](https://github.com/mramdann/anbo-ai/commit/f3be87fb46363c602512e93d824e4667bb1c08a9))
+* **explorer:** add safe rename and recoverable file operations ([ec90ea9](https://github.com/mramdann/anbo-ai/commit/ec90ea91c4352537f770c45901cf6be058f16a74))
+* **startup:** polish the theme-aware launch splash ([fd05a31](https://github.com/mramdann/anbo-ai/commit/fd05a319e3d660158be38b2881417b371cf4e515))
+
+
+### Bug Fixes
+
+* **tabs:** retain agent close-dialog copy during exit ([fbc6971](https://github.com/mramdann/anbo-ai/commit/fbc697134644fe127e208ade40f519910dd3e747))
+
 ## [0.25.0](https://github.com/mramdann/anbo-ai/compare/v0.24.0...v0.25.0) (2026-09-06)
 
 
