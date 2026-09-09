@@ -350,6 +350,25 @@ html[data-native-browser-live="true"] footer {
   display: flex !important;
   flex-direction: column;
 }
+/* Height belongs to the same layout-critical subset, and a percentage cannot
+ * carry it: the pane is a flex item, so it has a used height but its computed
+ * height stays auto, and `height: 100%` on a child of an auto-height box does
+ * not resolve. The editor then falls back to auto, the scroller grows to the
+ * whole document, nothing overflows, no scrollbar is drawn, and the pane
+ * silently clips the rest. Making the pane a flex column lets the editor take
+ * its box from `flex` instead, which needs no resolvable ancestor height.
+ * Scoped to the full-pane editors so inline CodeMirror surfaces keep sizing to
+ * their content. */
+.anbo-code-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.anbo-code-editor > .cm-editor {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
 .cm-scroller {
   display: flex !important;
   align-items: flex-start !important;
