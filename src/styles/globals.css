@@ -310,7 +310,11 @@ html[data-native-browser-live="true"] footer {
 }
 .xterm .xterm-viewport::-webkit-scrollbar,
 .xterm-viewport::-webkit-scrollbar {
-  width: 5px !important;
+  /* display has to be restated: the global hider switches every
+   * ::-webkit-scrollbar off, so an opt-in that only sets a width still paints
+   * nothing. The two opt-ins above do the same for the same reason. */
+  display: block !important;
+  width: var(--scrollbar-thickness) !important;
   height: 0 !important;
 }
 .xterm .xterm-viewport::-webkit-scrollbar-track,
