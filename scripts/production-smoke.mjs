@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, resolve, sep } from "node:path";
@@ -50,6 +50,21 @@ const mimeTypes = new Map([
 const server = createServer((request, response) => {
   try {
     const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    if (pathname === "/__anbo-icon-smoke") {
+      const icons = readdirSync(join(distRoot, "material-icons"));
+      if (!icons.length || icons.some(name => !/^[a-z0-9-]+\.svg$/.test(name))) throw new Error("invalid icon assets");
+      response.writeHead(200, {"content-type":"text/html"});
+      response.end(`<!doctype html><title>Local icon decoding</title><script>
+        Promise.all(${JSON.stringify(icons)}.map(name => new Promise((resolve, reject) => {
+          const image = new Image(16,16);
+          image.onload = () => image.naturalWidth > 0 && image.naturalHeight > 0 ? resolve() : reject(name);
+          image.onerror = () => reject(name);
+          image.src = '/material-icons/' + name;
+          document.documentElement.append(image);
+        }))).then(() => { document.documentElement.dataset.anboBundleReady = 'true'; document.documentElement.dataset.anboIcons = '${icons.length}'; });
+      </script>`);
+      return;
+    }
     const relative = pathname === "/" ? "index.html" : pathname.slice(1);
     const filePath = normalize(join(distRoot, relative));
     if (!filePath.startsWith(`${distRoot}${sep}`) || !statSync(filePath).isFile()) {
@@ -169,7 +184,9 @@ try {
     );
   }
 
-  console.log("Production bundle and editor layout smoke tests passed");
+  const icons = await dumpPage(`${url}__anbo-icon-smoke`, "local icon assets");
+  if (!icons.stdout.includes('data-anbo-icons="')) throw new Error("local icon decoding failed");
+  console.log("Production bundle, editor layout, and local icon decoding smoke tests passed");
 } finally {
   await new Promise((resolveClose) => server.close(resolveClose));
 }

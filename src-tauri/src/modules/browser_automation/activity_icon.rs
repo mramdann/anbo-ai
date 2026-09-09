@@ -34,16 +34,18 @@ pub(super) fn for_brand(brand: &str) -> Option<Icon> {
     };
     let bytes: &[u8] = match path {
         "/agent-icons/claude.svg" => include_bytes!("../../../../public/agent-icons/claude.svg"),
-        "/agent-icons/codex.svg" => include_bytes!("../../../../public/agent-icons/codex.svg"),
-        "/agent-icons/antigravity.png" => {
-            include_bytes!("../../../../public/agent-icons/antigravity.png")
+        "/agent-icons/codex-dark.svg" => {
+            include_bytes!("../../../../public/agent-icons/codex-dark.svg")
+        }
+        "/agent-icons/antigravity.svg" => {
+            include_bytes!("../../../../public/agent-icons/antigravity.svg")
         }
         "/agent-icons/pi.svg" => include_bytes!("../../../../public/agent-icons/pi.svg"),
         "/agent-icons/opencode-dark.svg" => {
             include_bytes!("../../../../public/agent-icons/opencode-dark.svg")
         }
-        "/agent-icons/grok-build-dark.svg" => {
-            include_bytes!("../../../../public/agent-icons/grok-build-dark.svg")
+        "/agent-icons/grok-dark.svg" => {
+            include_bytes!("../../../../public/agent-icons/grok-dark.svg")
         }
         "/logo.svg" => include_bytes!("../../../../public/logo.svg"),
         _ => return None,
@@ -79,8 +81,9 @@ mod tests {
                 .unwrap()
                 .is_empty());
         }
-        assert!(for_brand("codex").unwrap().invert);
-        assert!(!for_brand("opencode").unwrap().invert);
+        // Every monochrome brand ships an explicit dark asset, so the CSS
+        // invert fallback stays off for all of them.
+        assert!(assets.keys().all(|brand| !for_brand(brand).unwrap().invert));
     }
 
     #[test]
