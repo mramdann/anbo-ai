@@ -62,13 +62,11 @@ export type BrowserTabMetadata = {
   pendingUrl: string | null;
 };
 
-type BrowserOpenHandler = (request: BrowserOpenRequest) => void;
-type BrowserOpenSubscribe = (
-  handler: BrowserOpenHandler,
-) => Promise<() => void>;
+type RequestHandler<T> = (request: T) => void;
+type RequestSubscribe<T> = (handler: RequestHandler<T>) => Promise<() => void>;
 
-export function createBrowserOpenListener(subscribe: BrowserOpenSubscribe) {
-  let handler: BrowserOpenHandler | null = null;
+function createRequestListener<T>(subscribe: RequestSubscribe<T>) {
+  let handler: RequestHandler<T> | null = null;
   let subscription: Promise<void> | null = null;
   let unlisten: (() => void) | null = null;
   let generation = 0;
@@ -78,20 +76,20 @@ export function createBrowserOpenListener(subscribe: BrowserOpenSubscribe) {
     const currentGeneration = generation;
     subscription = subscribe((request) => handler?.(request))
       .then((dispose) => {
-        subscription = null;
         if (generation !== currentGeneration) {
           dispose();
           return;
         }
+        subscription = null;
         unlisten = dispose;
       })
       .catch(() => {
-        subscription = null;
+        if (generation === currentGeneration) subscription = null;
       });
   };
 
   return {
-    setHandler(next: BrowserOpenHandler) {
+    setHandler(next: RequestHandler<T>) {
       handler = next;
       start();
     },
@@ -105,147 +103,15 @@ export function createBrowserOpenListener(subscribe: BrowserOpenSubscribe) {
   };
 }
 
-type BrowserCloseHandler = (request: BrowserCloseRequest) => void;
-type BrowserCloseSubscribe = (
-  handler: BrowserCloseHandler,
-) => Promise<() => void>;
+export const createBrowserOpenListener = createRequestListener<BrowserOpenRequest>;
+export const createBrowserCloseListener = createRequestListener<BrowserCloseRequest>;
+export const createBrowserTabsListener = createRequestListener<BrowserTabsRequest>;
+export const createBrowserPopupListener = createRequestListener<BrowserPopupRequest>;
 
-export function createBrowserCloseListener(subscribe: BrowserCloseSubscribe) {
-  let handler: BrowserCloseHandler | null = null;
-  let subscription: Promise<void> | null = null;
-  let unlisten: (() => void) | null = null;
-  let generation = 0;
-
-  const start = () => {
-    if (subscription || unlisten) return;
-    const currentGeneration = generation;
-    subscription = subscribe((request) => handler?.(request))
-      .then((dispose) => {
-        subscription = null;
-        if (generation !== currentGeneration) {
-          dispose();
-          return;
-        }
-        unlisten = dispose;
-      })
-      .catch(() => {
-        subscription = null;
-      });
-  };
-
-  return {
-    setHandler(next: BrowserCloseHandler) {
-      handler = next;
-      start();
-    },
-    stop() {
-      generation += 1;
-      handler = null;
-      unlisten?.();
-      unlisten = null;
-      subscription = null;
-    },
-  };
-}
-
-type BrowserTabsHandler = (request: BrowserTabsRequest) => void;
-type BrowserTabsSubscribe = (
-  handler: BrowserTabsHandler,
-) => Promise<() => void>;
-
-export function createBrowserTabsListener(subscribe: BrowserTabsSubscribe) {
-  let handler: BrowserTabsHandler | null = null;
-  let subscription: Promise<void> | null = null;
-  let unlisten: (() => void) | null = null;
-  let generation = 0;
-
-  const start = () => {
-    if (subscription || unlisten) return;
-    const currentGeneration = generation;
-    subscription = subscribe((request) => handler?.(request))
-      .then((dispose) => {
-        subscription = null;
-        if (generation !== currentGeneration) {
-          dispose();
-          return;
-        }
-        unlisten = dispose;
-      })
-      .catch(() => {
-        subscription = null;
-      });
-  };
-
-  return {
-    setHandler(next: BrowserTabsHandler) {
-      handler = next;
-      start();
-    },
-    stop() {
-      generation += 1;
-      handler = null;
-      unlisten?.();
-      unlisten = null;
-      subscription = null;
-    },
-  };
-}
-
-type BrowserPopupHandler = (request: BrowserPopupRequest) => void;
-type BrowserPopupSubscribe = (
-  handler: BrowserPopupHandler,
-) => Promise<() => void>;
-
-export function createBrowserPopupListener(subscribe: BrowserPopupSubscribe) {
-  let handler: BrowserPopupHandler | null = null;
-  let subscription: Promise<void> | null = null;
-  let unlisten: (() => void) | null = null;
-  let generation = 0;
-
-  const start = () => {
-    if (subscription || unlisten) return;
-    const currentGeneration = generation;
-    subscription = subscribe((request) => handler?.(request))
-      .then((dispose) => {
-        subscription = null;
-        if (generation !== currentGeneration) {
-          dispose();
-          return;
-        }
-        unlisten = dispose;
-      })
-      .catch(() => {
-        subscription = null;
-      });
-  };
-
-  return {
-    setHandler(next: BrowserPopupHandler) {
-      handler = next;
-      start();
-    },
-    stop() {
-      generation += 1;
-      handler = null;
-      unlisten?.();
-      unlisten = null;
-      subscription = null;
-    },
-  };
-}
-
-export type BrowserOpenPlacement =
-  | "visible-background-tab"
-  | "inactive-workspace";
-
-export function browserOpenPlacement(
-  targetSpaceId: string,
-  activeSpaceId: string | null,
-): BrowserOpenPlacement {
-  return targetSpaceId === activeSpaceId
-    ? "visible-background-tab"
-    : "inactive-workspace";
-}
+export {
+  type AutomationTabPlacement as BrowserOpenPlacement,
+  automationTabPlacement as browserOpenPlacement,
+} from "@/modules/tabs/lib/automationTabPlacement";
 
 type BrowserOpenSpace = {
   id: string;

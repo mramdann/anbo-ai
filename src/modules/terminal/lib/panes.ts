@@ -68,6 +68,7 @@ export function pinLeafAgentResumeSession(
   n: PaneNode,
   id: PaneId,
   sessionId: string,
+  sessionBinding?: AgentResumeState["sessionBinding"],
 ): PaneNode {
   if (isLeaf(n)) {
     if (n.id !== id || !n.agentResume) return n;
@@ -78,12 +79,19 @@ export function pinLeafAgentResumeSession(
         command: n.agentResume.command,
         armed: true,
         sessionId,
+        ...(n.agentResume.agent === "antigravity" &&
+          sessionBinding && { sessionBinding }),
       },
     };
   }
   let changed = false;
   const children = n.children.map((child) => {
-    const next = pinLeafAgentResumeSession(child, id, sessionId);
+    const next = pinLeafAgentResumeSession(
+      child,
+      id,
+      sessionId,
+      sessionBinding,
+    );
     if (next !== child) changed = true;
     return next;
   });

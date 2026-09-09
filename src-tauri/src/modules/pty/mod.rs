@@ -32,6 +32,13 @@ impl Default for PtyState {
 }
 
 impl PtyState {
+    pub(crate) fn is_live(&self, id: u32) -> bool {
+        self.sessions
+            .read()
+            .unwrap()
+            .get(&id)
+            .is_some_and(|session| !session.exited.load(Ordering::Acquire))
+    }
     #[cfg(windows)]
     pub(crate) fn owner_of_process(&self, pid: u32) -> Option<u32> {
         let sessions = self.sessions.read().ok()?;
@@ -49,7 +56,9 @@ impl PtyState {
     }
 
     pub(super) fn take(&self, id: u32) -> Option<Arc<Session>> {
-        self.sessions.write().unwrap().remove(&id)
+        let session = self.sessions.write().unwrap().remove(&id);
+        crate::modules::anbo::codex_turn::stop_pty(id);
+        session
     }
 }
 
@@ -68,6 +77,7 @@ pub async fn pty_open(
     on_data: Channel<Response>,
     on_exit: Channel<i32>,
 ) -> Result<u32, String> {
+    crate::modules::resource_guard::admit(crate::modules::resource_guard::Workload::Terminal)?;
     let workspace = WorkspaceEnv::from_option(workspace);
     let blocks = blocks.unwrap_or(false);
     let cwd = user_spawn_cwd_or_home(&registry, cwd.as_deref(), &workspace);
@@ -192,7 +202,7 @@ pub fn pty_close(
     id: u32,
 ) -> Result<(), String> {
     crate::modules::browser_automation::activity::end_pty(&app, id);
-    let session = state.sessions.write().unwrap().remove(&id);
+    let session = state.take(id);
     if let Some(s) = session {
         if let Err(e) = s.killer.lock().unwrap().kill() {
             // Non-fatal: the child may already have exited on its own (e.g. the

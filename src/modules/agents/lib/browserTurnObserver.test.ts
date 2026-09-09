@@ -28,6 +28,51 @@ const event = (
 });
 
 describe("browser turn cleanup", () => {
+  it("keeps Codex ownership between commentary and its next browser tool", () => {
+    const observer = new BrowserTurnObserver();
+    const gap = "OpenAI Codex\n\u2022 Next I will check the player.\n\u203a ";
+    observer.start(1, 1, "codex");
+    observer.receive(event(1), 0);
+    observer.poll(() => gap, 200);
+    expect(observer.poll(() => gap, 1_200)).toEqual([]);
+    expect(observer.poll(() => gap, 30_000)).toEqual([]);
+    observer.receive(event(2, "running", 1, 10, 2), 31_000);
+    observer.receive(event(3, "done", 1, 10, 2), 32_000);
+    const complete = `${gap}\n\u2500 Worked for 33s \u2500\u2500`;
+    observer.poll(() => complete, 33_100);
+    expect(observer.poll(() => complete, 33_300)).toEqual([
+      { ptyId: 1, tabId: 10, controlId: 1, sequence: 3 },
+    ]);
+    expect(observer.poll(() => complete, 34_000)).toEqual([]);
+  });
+
+  it("ends Claude's owned surface after structural completion, not report words", () => {
+    const observer = new BrowserTurnObserver();
+    const complete = [
+      "Claude Code",
+      "Thought for 9s",
+      "    loading/pendingUrl/committed URL terbedakan jelas.",
+      "\u273b Saut\u00e9ed for 13m 12s \u00b7 done 8:03 PM",
+      "\u276f ",
+    ].join("\n");
+    observer.start(1, 1, "claude");
+    observer.receive(event(2), 0);
+    expect(observer.poll(() => complete, 200)).toEqual([]);
+    expect(observer.poll(() => complete, 800)).toEqual([]);
+    expect(observer.poll(() => complete, 1_200)).toEqual([
+      { ptyId: 1, tabId: 10, controlId: 1, sequence: 2 },
+    ]);
+    expect(observer.poll(() => complete, 1_400)).toEqual([]);
+    observer.receive(event(3, "running", 1, 10, 2), 2_000);
+    observer.poll(() => complete, 3_000);
+    expect(observer.poll(() => complete, 3_200)).toEqual([]);
+    observer.receive(event(4, "done", 1, 10, 2), 4_000);
+    observer.poll(() => `${complete}\nesctointerrupt`, 5_000);
+    expect(observer.poll(() => `${complete}\nesctointerrupt`, 5_200)).toEqual(
+      [],
+    );
+  });
+
   it("separates a completed model turn from its background server", () => {
     expect(classifyAgentScreen("antigravity", background)).toBe("working");
     expect(classifyAgentTurn("antigravity", background)).toBe("ready");

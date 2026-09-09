@@ -30,6 +30,7 @@ import {
   MAX_PARALLEL_OPENCODE_AGENTS,
   nextAttentionTarget,
   pollCodexSession,
+  isUnverifiedAgentResume,
   validateAgentLaunchCommand,
   withAgentMcpRuntime,
 } from "@/modules/agents";
@@ -41,6 +42,7 @@ import {
   type TerminalAutomationMethod,
 } from "@/modules/agents/lib/agentAutomationProtocol";
 import { agentIdFor } from "@/modules/agents/lib/agentIdentity";
+import { AgentSessionDiscoveryQueue } from "@/modules/agents/lib/sessionDiscoveryQueue";
 import { useAgentStore } from "@/modules/agents/store/agentStore";
 import {
   AgentRunBridge,
@@ -64,7 +66,6 @@ import {
   beginBrowserSession,
   browserEmbedClose,
   browserEmbedReconcile,
-  browserOpenPlacement,
   clearBrowserAutomationActivity,
   faviconUrlForPage,
   filePathToBrowserUrl,
@@ -100,6 +101,7 @@ import {
   type SearchTarget,
 } from "@/modules/header";
 import { setLspNavigator } from "@/modules/lsp";
+import { createAutomationTabSelection } from "@/modules/tabs/lib/automationTabPlacement";
 import {
   listenForForwardedLinks,
   setInAppLinkOpener,
@@ -225,21 +227,28 @@ async function discoverAgentSession({
   sinceTs,
   claimed,
   workspace,
+  ptyId,
+  isCurrent,
 }: {
   agent: string;
   cwd: string;
   sinceTs: number;
   claimed: ReadonlySet<string>;
   workspace: WorkspaceEnv;
+  ptyId: number;
+  isCurrent: () => boolean;
 }): Promise<string | null> {
-  return pollCodexSession(() =>
-    invoke<string | null>("anbo_find_agent_session", {
-      agent,
-      cwd,
-      sinceTs,
-      claimed: [...claimed],
-      workspace,
-    }),
+  return pollCodexSession(
+    () =>
+      invoke<string | null>("anbo_find_agent_session", {
+        agent,
+        cwd,
+        sinceTs,
+        claimed: [...claimed],
+        workspace,
+        ptyId,
+      }),
+    { isCurrent },
   );
 }
 
@@ -248,7 +257,7 @@ type AgentLaunchTarget = {
   root: string | null;
   cwd: string | undefined;
   workspace: WorkspaceEnv;
-  activate: boolean;
+  activate: boolean | "if-empty";
 };
 
 export default function App() {
@@ -312,6 +321,10 @@ export default function App() {
   tabsRef.current = tabs;
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
+  const [automationTabSelection] = useState(createAutomationTabSelection);
+  useEffect(() => {
+    automationTabSelection.reconcile(tabs);
+  }, [automationTabSelection, tabs]);
   const customCliAgents = usePreferencesStore((s) => s.customCliAgents);
   const agentMcpEnabled = usePreferencesStore((s) => s.agentMcpEnabled);
   const globalVoiceEnabled = usePreferencesStore(
@@ -918,11 +931,10 @@ export default function App() {
   }, [newBlockTab, inheritedCwdForNewTab]);
 
   const resumedAgentLeavesRef = useRef(new Set<number>());
-  const agentDiscoveryLeavesRef = useRef(new Set<number>());
-  const requestedAgentDiscoveryLeavesRef = useRef(new Set<number>());
+  const warnedUnverifiedResumeRef = useRef(false);
+  const agentDiscoveryQueueRef = useRef(new AgentSessionDiscoveryQueue());
   const agentDiscoveryGenerationRef = useRef(new Map<number, number>());
   const agentExitResumeGuardRef = useRef(new AgentExitResumeGuard());
-  const agentRecoveryRunningRef = useRef(false);
   const [agentDiscoveryRetry, setAgentDiscoveryRetry] = useState(0);
   useEffect(() => {
     const dispose = () => {
@@ -959,7 +971,7 @@ export default function App() {
         (target.agent !== undefined && target.agent.launcherId !== agent);
       if (changesAgentFamily) {
         resumedAgentLeavesRef.current.delete(leafId);
-        requestedAgentDiscoveryLeavesRef.current.delete(leafId);
+        agentDiscoveryQueueRef.current.cancel(leafId);
       }
       if (manualResume) {
         const launcher = findAgentLauncher(manualResume.agent);
@@ -991,11 +1003,15 @@ export default function App() {
         adoptAgentResume(leafId, manualResume);
       }
       if (sessionId) {
-        pinAgentResumeSession(leafId, sessionId);
-        requestedAgentDiscoveryLeavesRef.current.delete(leafId);
+        pinAgentResumeSession(
+          leafId,
+          sessionId,
+          agent === "antigravity" ? "explicit" : undefined,
+        );
+        agentDiscoveryQueueRef.current.cancel(leafId);
         return;
       }
-      requestedAgentDiscoveryLeavesRef.current.add(leafId);
+      agentDiscoveryQueueRef.current.request(leafId);
       setAgentDiscoveryRetry((value) => value + 1);
     },
     [
@@ -1007,13 +1023,13 @@ export default function App() {
     ],
   );
   const handleAgentSettled = useCallback((leafId: number) => {
-    requestedAgentDiscoveryLeavesRef.current.add(leafId);
+    agentDiscoveryQueueRef.current.request(leafId);
     setAgentDiscoveryRetry((value) => value + 1);
   }, []);
   const handleAgentExited = useCallback(
     (leafId: number) => {
       resumedAgentLeavesRef.current.delete(leafId);
-      requestedAgentDiscoveryLeavesRef.current.delete(leafId);
+      agentDiscoveryQueueRef.current.cancel(leafId);
       agentDiscoveryGenerationRef.current.set(
         leafId,
         (agentDiscoveryGenerationRef.current.get(leafId) ?? 0) + 1,
@@ -1057,7 +1073,19 @@ export default function App() {
           continue;
         }
         const baseResumeCommand = buildAgentRestoreCommand(leaf.resume);
-        if (!baseResumeCommand) continue;
+        if (!baseResumeCommand) {
+          if (
+            isUnverifiedAgentResume(leaf.resume) &&
+            !warnedUnverifiedResumeRef.current
+          ) {
+            warnedUnverifiedResumeRef.current = true;
+            toast.warning("Antigravity resume paused", {
+              description:
+                "Saved session matching could not be verified. Resume the intended conversation explicitly from its terminal. Your conversation history is unchanged.",
+            });
+          }
+          continue;
+        }
         let mcpReady = Promise.resolve(false);
         if (isMcpAgentId(leaf.resume.agent) && targetRoot) {
           const key = `${tab.spaceId}:${leaf.resume.agent}`;
@@ -1094,6 +1122,15 @@ export default function App() {
             await new Promise<void>((resolve) => setTimeout(resolve, delay));
           }
           const mcpConfigured = await mcpReady;
+          try {
+            await invoke("resource_admit_agent", {
+              agent: leaf.resume.agent,
+              count: 1,
+            });
+          } catch (error) {
+            toast.error("Agent resume paused", { description: String(error) });
+            return;
+          }
           const resumeCommand = mcpConfigured
             ? withAgentMcpRuntime(
                 leaf.resume.agent,
@@ -1114,7 +1151,7 @@ export default function App() {
   }, [agentMcpEnabled, spaceEnvironments, tabs, warmTab]);
 
   useEffect(() => {
-    if (agentRecoveryRunningRef.current) return;
+    const queue = agentDiscoveryQueueRef.current;
     const pending = tabs
       .flatMap((tab) => {
         if (tab.kind !== "terminal" || tab.cold) return [];
@@ -1130,70 +1167,65 @@ export default function App() {
         }));
       })
       .filter(
-        ({ leaf }) =>
-          !leaf.resume.sessionId &&
-          leaf.resume.armed === false &&
-          requestedAgentDiscoveryLeavesRef.current.has(leaf.id) &&
-          !agentDiscoveryLeavesRef.current.has(leaf.id),
+        ({ leaf }) => !leaf.resume.sessionId && leaf.resume.armed === false,
       );
-    if (pending.length === 0) return;
+    queue.retain(new Set(pending.map(({ leaf }) => leaf.id)));
     const recoverable = pending.filter(
       ({ leaf }) => leaf.resume.discoveryStartedAt !== undefined,
     );
-    if (recoverable.length === 0) return;
-
-    agentRecoveryRunningRef.current = true;
-    void (async () => {
-      try {
-        const claimedByAgent = new Map<string, Set<string>>();
-        for (const tab of tabsRef.current) {
-          if (tab.kind !== "terminal") continue;
-          for (const leaf of collectAgentResumeLeaves(tab.paneTree)) {
-            if (!leaf.resume.sessionId) continue;
-            const claimed =
-              claimedByAgent.get(leaf.resume.agent) ?? new Set<string>();
-            claimed.add(leaf.resume.sessionId);
-            claimedByAgent.set(leaf.resume.agent, claimed);
-          }
-        }
-        for (const { leaf, root, workspace, generation } of recoverable) {
-          agentDiscoveryLeavesRef.current.add(leaf.id);
-          try {
-            const claimed =
-              claimedByAgent.get(leaf.resume.agent) ?? new Set<string>();
-            const sessionId = await discoverAgentSession({
-              agent: leaf.resume.agent,
-              cwd: leaf.cwd ?? root,
-              sinceTs: leaf.resume.discoveryStartedAt ?? 0,
-              claimed,
-              workspace,
-            });
-            if (
-              sessionId &&
-              agentDiscoveryGenerationRef.current.get(leaf.id) === generation
-            ) {
-              claimed.add(sessionId);
+    for (const { leaf, root, workspace, generation } of recoverable) {
+      const ptyId = ptyIdForLeaf(leaf.id);
+      if (ptyId === null || !queue.begin(leaf.id, leaf.resume.agent)) continue;
+      const isCurrent = () =>
+        ptyIdForLeaf(leaf.id) === ptyId &&
+        (agentDiscoveryGenerationRef.current.get(leaf.id) ?? 0) === generation;
+      void (async () => {
+        try {
+          const claimedByAgent = new Map<string, Set<string>>();
+          for (const tab of tabsRef.current) {
+            if (tab.kind !== "terminal") continue;
+            for (const leaf of collectAgentResumeLeaves(tab.paneTree)) {
+              if (!leaf.resume.sessionId) continue;
+              const claimed =
+                claimedByAgent.get(leaf.resume.agent) ?? new Set<string>();
+              claimed.add(leaf.resume.sessionId);
               claimedByAgent.set(leaf.resume.agent, claimed);
-              pinAgentResumeSession(leaf.id, sessionId);
-              requestedAgentDiscoveryLeavesRef.current.delete(leaf.id);
             }
-          } catch (error) {
-            console.warn(
-              `[anbo] could not recover ${leaf.resume.agent} session for terminal ${leaf.id} on attempt ${agentDiscoveryRetry + 1}:`,
-              error,
-            );
-          } finally {
-            agentDiscoveryLeavesRef.current.delete(leaf.id);
           }
+          const claimed =
+            claimedByAgent.get(leaf.resume.agent) ?? new Set<string>();
+          const sessionId = await discoverAgentSession({
+            agent: leaf.resume.agent,
+            cwd: leaf.cwd ?? root,
+            sinceTs: leaf.resume.discoveryStartedAt ?? 0,
+            claimed,
+            workspace,
+            ptyId,
+            isCurrent,
+          });
+          if (sessionId && isCurrent()) {
+            pinAgentResumeSession(
+              leaf.id,
+              sessionId,
+              leaf.resume.agent === "antigravity" ? "process-v1" : undefined,
+            );
+            queue.cancel(leaf.id);
+          }
+        } catch (error) {
+          console.warn(
+            `[anbo] could not recover ${leaf.resume.agent} session for terminal ${leaf.id} on attempt ${agentDiscoveryRetry + 1}:`,
+            error,
+          );
+        } finally {
+          queue.finish(leaf.id);
+          setAgentDiscoveryRetry((value) => value + 1);
         }
-      } finally {
-        agentRecoveryRunningRef.current = false;
-      }
-    })();
+      })();
+    }
   }, [agentDiscoveryRetry, pinAgentResumeSession, spaceEnvironments, tabs]);
 
   const launchAgentGroupAt = useCallback(
-    (request: AgentLaunchRequest, target: AgentLaunchTarget) => {
+    async (request: AgentLaunchRequest, target: AgentLaunchTarget) => {
       const command = validateAgentLaunchCommand(request.command);
       if (!command.ok) return null;
       const launcher = findAgentLauncher(request.agent, customCliAgents);
@@ -1207,6 +1239,15 @@ export default function App() {
         });
         return null;
       }
+      try {
+        await invoke("resource_admit_agent", {
+          agent: request.agent,
+          count: request.instances,
+        });
+      } catch (error) {
+        toast.error("Agent launch paused", { description: String(error) });
+        throw error;
+      }
       const agentCwd = target.cwd;
       const agentResumes =
         request.agent === "opencode" && target.workspace.kind !== "local"
@@ -1216,6 +1257,16 @@ export default function App() {
               command.command,
               request.instances,
             );
+      const placement =
+        target.activate === "if-empty"
+          ? automationTabSelection.placement(
+              target.spaceId,
+              useSpaces.getState().activeId,
+              tabsRef.current,
+            )
+          : null;
+      const activated =
+        target.activate === true || placement === "visible-first-tab";
       const { tabIds, leafIds: agentLeafIds } = newAgentTabs(
         agentCwd,
         {
@@ -1225,8 +1276,10 @@ export default function App() {
         },
         request.instances,
         agentResumes,
-        { spaceId: target.spaceId, activate: target.activate },
+        { spaceId: target.spaceId, activate: activated },
       );
+      if (placement)
+        automationTabSelection.created(target.spaceId, tabIds[0], placement);
       const targetWorkspace = target.workspace;
       const mcpEnabled =
         isMcpAgentId(request.agent) && agentMcpEnabled[request.agent];
@@ -1279,21 +1332,23 @@ export default function App() {
           agentLeafIds.map((leafId, index) => launchOne(leafId, index)),
         );
       };
-      void launch();
-      return { tabIds, leafIds: agentLeafIds };
+      void launch().catch((error) => {
+        toast.error("Agent launch failed", { description: String(error) });
+      });
+      return { tabIds, leafIds: agentLeafIds, activated };
     },
-    [agentMcpEnabled, customCliAgents, newAgentTabs],
+    [agentMcpEnabled, automationTabSelection, customCliAgents, newAgentTabs],
   );
 
   const launchAgentGroup = useCallback(
     (request: AgentLaunchRequest) => {
-      launchAgentGroupAt(request, {
+      void launchAgentGroupAt(request, {
         spaceId: activeSpaceId ?? DEFAULT_SPACE_ID,
         root: activeSpaceRoot,
         cwd: inheritedCwdForNewTab(),
         workspace: workspaceForSpace(activeSpaceId ?? DEFAULT_SPACE_ID),
         activate: true,
-      });
+      }).catch(() => {}); // The launch path already displays the actionable error.
     },
     [
       activeSpaceId,
@@ -1492,12 +1547,22 @@ export default function App() {
       }
       const spaceId = resolved.space.id;
       const foregroundTabId = activeIdRef.current;
+      const placement = automationTabSelection.placement(
+        spaceId,
+        currentSpaceId,
+        tabsRef.current,
+      );
       const preserveForeground =
         spaceId === currentSpaceId &&
         tabsRef.current.some(
           (tab) => tab.id === foregroundTabId && tab.spaceId === spaceId,
         );
-      const tabId = openBrowserTab(payload.url, false, spaceId);
+      const tabId = openBrowserTab(
+        payload.url,
+        placement === "visible-first-tab",
+        spaceId,
+      );
+      automationTabSelection.created(spaceId, tabId, placement);
       markBrowserAutomationActivity(tabId, "open");
       setActiveBrowserTabId(spaceId, tabId);
       if (preserveForeground) {
@@ -1514,10 +1579,15 @@ export default function App() {
         tabId,
         spaceId,
         workspace: resolved.space.root,
-        placement: browserOpenPlacement(spaceId, currentSpaceId),
+        placement,
       });
     });
-  }, [openBrowserTab, setActiveBrowserTabId, setActiveId]);
+  }, [
+    automationTabSelection,
+    openBrowserTab,
+    setActiveBrowserTabId,
+    setActiveId,
+  ]);
 
   useEffect(() => {
     setBrowserCloseRequestHandler((payload) => {
@@ -1534,6 +1604,7 @@ export default function App() {
         return;
       }
       closeTab(payload.tabId);
+      automationTabSelection.closed(payload.tabId);
       void emit(responseEvent, {
         ok: true,
         tabId: payload.tabId,
@@ -1541,7 +1612,7 @@ export default function App() {
         workspace: resolved.space.root,
       });
     });
-  }, [closeTab]);
+  }, [automationTabSelection, closeTab]);
 
   useEffect(() => {
     setBrowserPopupRequestHandler((payload) => {
@@ -1633,7 +1704,8 @@ export default function App() {
           };
           const agentService = createAgentAutomationService({
             ...shared,
-            spawn: (workspace, agent) => {
+            prepare: prepareTerminalAutomationSession,
+            spawn: async (workspace, agent) => {
               const space = useSpaces
                 .getState()
                 .spaces.find(
@@ -1649,12 +1721,12 @@ export default function App() {
                 preferences.customCliAgents,
               );
               if (!request) return null;
-              const launched = launchAgentGroupAtRef.current(request, {
+              const launched = await launchAgentGroupAtRef.current(request, {
                 spaceId: space.id,
                 root: space.root,
                 cwd: space.root,
                 workspace: space.env,
-                activate: false,
+                activate: "if-empty",
               });
               if (!launched) return null;
               const tabId = launched.tabIds[0];
@@ -1666,6 +1738,7 @@ export default function App() {
                 leafId,
                 spaceId: space.id,
                 workspace: space.root,
+                activated: launched.activated,
               };
             },
             subscribeSessions: (listener) =>
@@ -1678,11 +1751,25 @@ export default function App() {
             getSessionState: getTerminalSessionState,
             hasForegroundProcess: leafHasForegroundProcess,
             prepare: prepareTerminalAutomationSession,
-            open: (workspace, title) =>
-              newTabInSpace(workspace.id, workspace.root, {
+            open: (workspace, title) => {
+              const placement = automationTabSelection.placement(
+                workspace.id,
+                useSpaces.getState().activeId,
+                tabsRef.current,
+              );
+              const opened = newTabInSpace(workspace.id, workspace.root, {
                 title,
                 warm: true,
-              }),
+              });
+              automationTabSelection.created(
+                workspace.id,
+                opened.tabId,
+                placement,
+              );
+              const activated = placement === "visible-first-tab";
+              if (activated) setActiveId(opened.tabId);
+              return { ...opened, activated };
+            },
             close: (tabId, leafId) => {
               const tab = tabsRef.current.find(
                 (candidate) => candidate.id === tabId,
@@ -1697,6 +1784,7 @@ export default function App() {
                 return false;
               }
               closeTab(tabId);
+              automationTabSelection.closed(tabId);
               return true;
             },
           });
@@ -1745,7 +1833,7 @@ export default function App() {
       setTerminalAutomationHandler(null);
       void servicePromise?.then((service) => service.dispose());
     };
-  }, [closeTab, newTabInSpace]);
+  }, [automationTabSelection, closeTab, newTabInSpace, setActiveId]);
 
   const splitActiveTabInDockview = useCallback(
     (position: "right" | "bottom") => {

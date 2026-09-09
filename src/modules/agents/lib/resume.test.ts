@@ -7,6 +7,7 @@ import {
   createAgentRestoreFallback,
   createAgentResumeStates,
   createManualAgentResumeState,
+  isUnverifiedAgentResume,
   normalizePersistedAgentResume,
   shouldPinAgentSession,
 } from "./resume";
@@ -77,6 +78,47 @@ describe("agent exit resume guard", () => {
 });
 
 describe("agent resume commands", () => {
+  it("preserves but never automatically executes an unverified legacy Antigravity id", () => {
+    const legacy = {
+      agent: "antigravity" as const,
+      command: "agy",
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      relaunchOnRestore: true,
+    };
+    expect(normalizePersistedAgentResume(legacy)).toEqual(legacy);
+    expect(isUnverifiedAgentResume(legacy)).toBe(true);
+    expect(buildAgentResumeCommand(legacy)).toBeNull();
+    expect(buildAgentRestoreCommand(legacy)).toBeNull();
+  });
+
+  it.each(["process-v1", "explicit"] as const)(
+    "persists and restores %s Antigravity bindings",
+    (sessionBinding) => {
+      const saved = {
+        agent: "antigravity" as const,
+        command: "agy --effort high",
+        sessionId: "00000000-0000-4000-8000-000000000001",
+        sessionBinding,
+      };
+      expect(normalizePersistedAgentResume(saved)).toEqual(saved);
+      expect(isUnverifiedAgentResume(saved)).toBe(false);
+      expect(buildAgentRestoreCommand(saved)).toBe(
+        `agy --effort high --conversation ${saved.sessionId}`,
+      );
+    },
+  );
+
+  it("does not trust unknown binding versions", () => {
+    const restored = normalizePersistedAgentResume({
+      agent: "antigravity",
+      command: "agy",
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      sessionBinding: "mtime",
+    });
+    expect(restored?.sessionBinding).toBeUndefined();
+    if (!restored) throw Error("missing descriptor");
+    expect(buildAgentRestoreCommand(restored)).toBeNull();
+  });
   it.each(["claude", "codex", "antigravity", "pi", "opencode"])(
     "pins discovered %s session ids",
     (agent) => {
@@ -128,6 +170,9 @@ describe("agent resume commands", () => {
         buildAgentResumeCommand({
           ...state,
           sessionId: "00000000-0000-4000-8000-000000000001",
+          ...(agent === "antigravity" && {
+            sessionBinding: "process-v1" as const,
+          }),
         }),
       ).toBe(`${resume} 00000000-0000-4000-8000-000000000001`);
     },

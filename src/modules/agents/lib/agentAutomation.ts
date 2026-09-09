@@ -11,7 +11,8 @@ import type {
   AgentAutomationResponse,
 } from "./agentAutomationProtocol";
 import { agentIdFor } from "./agentIdentity";
-import { isAgentScreenReady } from "./agentScreenClassifier";
+import { classifyAgentScreen } from "./agentScreenClassifier";
+import { codexTurnEvidence } from "./codexTurnEvidence";
 
 export type {
   AgentAutomationMethod,
@@ -33,6 +34,7 @@ const SUBMIT_DELAY_MS = 90;
 const ANTIGRAVITY_SUBMIT_DELAY_MS = 750;
 const INPUT_READY_TIMEOUT_MS = 8_000;
 const INPUT_READY_POLL_MS = 25;
+const INPUT_CHUNK_CHARS = 256;
 const TUI_READY_POLL_MS = 100;
 const TUI_READY_STABLE_POLLS = 3;
 
@@ -59,6 +61,7 @@ export type AgentSpawnHandle = {
   leafId: number;
   spaceId: string;
   workspace: string;
+  activated?: boolean;
 };
 
 type ServiceDependencies = {
@@ -67,11 +70,12 @@ type ServiceDependencies = {
   getSessions: () => Record<number, AgentSession>;
   getActiveTabId: () => number | null;
   getBuffer: (leafId: number) => string | null;
+  prepare: (leafId: number) => boolean;
   write: (leafId: number, data: string) => boolean;
   spawn: (
     workspace: ResolvedWorkspace,
     agent: string,
-  ) => AgentSpawnHandle | null;
+  ) => AgentSpawnHandle | null | Promise<AgentSpawnHandle | null>;
   subscribeSessions: (
     listener: (
       sessions: Record<number, AgentSession>,
@@ -236,7 +240,11 @@ export function sanitizeAgentMessage(
   return { ok: true, message };
 }
 
-export function isAgentTuiReady(cli: string, buffer: string | null): boolean {
+export function isAgentTuiReady(
+  cli: string,
+  buffer: string | null,
+  leafId?: number,
+): boolean {
   const normalizedCli = cli.replace(/^custom:/, "").toLowerCase();
   if (
     normalizedCli !== "codex" &&
@@ -247,18 +255,25 @@ export function isAgentTuiReady(cli: string, buffer: string | null): boolean {
   ) {
     return true;
   }
-  return isAgentScreenReady(normalizedCli, buffer);
+  return (
+    classifyAgentScreen(
+      normalizedCli,
+      buffer,
+      codexTurnEvidence.completed(leafId),
+    ) === "ready"
+  );
 }
 
 export async function waitForAgentTuiReady(
   getBuffer: () => string | null,
   cli: string,
   timeoutMs: number,
+  leafId?: number,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   let stablePolls = 0;
   while (Date.now() < deadline) {
-    if (isAgentTuiReady(cli, getBuffer())) {
+    if (isAgentTuiReady(cli, getBuffer(), leafId)) {
       stablePolls += 1;
       if (stablePolls >= TUI_READY_STABLE_POLLS) return true;
     } else {
@@ -280,8 +295,6 @@ export async function submitAgentMessage(
   submitDelayMs = SUBMIT_DELAY_MS,
   inputReadyTimeoutMs = INPUT_READY_TIMEOUT_MS,
 ): Promise<boolean> {
-  const before = verifyInput ? getBuffer(leafId) : null;
-  if (!write(leafId, message)) return false;
   if (verifyInput) {
     const compactEcho = (value: string) =>
       value
@@ -296,28 +309,47 @@ export async function submitAgentMessage(
         // same pass, so dropping the border glyphs keeps the comparison honest
         // even when the message itself contains them.
         .replace(/[\s\u0000-\u001f\u007f\u2500-\u259f]+/g, "");
-    const needle = compactEcho(message).slice(-120);
     const deadline = Date.now() + inputReadyTimeoutMs;
-    let observed = false;
-    while (Date.now() < deadline) {
-      await new Promise<void>((resolve) =>
-        setTimeout(resolve, INPUT_READY_POLL_MS),
-      );
-      const current = getBuffer(leafId);
-      if (
-        current !== null &&
-        current !== before &&
-        compactEcho(current).includes(needle)
-      ) {
-        observed = true;
-        break;
+    // Keep each paste below TUI collapse thresholds so acknowledgement uses
+    // actual echoed text, never an unverified "Pasted text" placeholder.
+    for (let offset = 0; offset < message.length; ) {
+      if (Date.now() >= deadline) {
+        if (offset > 0) write(leafId, "\x03");
+        return false;
       }
-    }
-    if (!observed) {
-      write(leafId, "\x03");
-      return false;
+      let end = Math.min(offset + INPUT_CHUNK_CHARS, message.length);
+      const last = message.charCodeAt(end - 1);
+      if (end < message.length && last >= 0xd800 && last <= 0xdbff) end -= 1;
+      const before = getBuffer(leafId);
+      if (!write(leafId, message.slice(offset, end))) {
+        if (offset > 0) write(leafId, "\x03");
+        return false;
+      }
+      const needle = compactEcho(message.slice(0, end)).slice(-120);
+      let observed = false;
+      while (Date.now() < deadline) {
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, INPUT_READY_POLL_MS),
+        );
+        const current = getBuffer(leafId);
+        if (
+          needle &&
+          current !== null &&
+          current !== before &&
+          compactEcho(current).includes(needle)
+        ) {
+          observed = true;
+          break;
+        }
+      }
+      if (!observed) {
+        write(leafId, "\x03");
+        return false;
+      }
+      offset = end;
     }
   } else {
+    if (!write(leafId, message)) return false;
     await new Promise<void>((resolve) => setTimeout(resolve, submitDelayMs));
   }
   return write(leafId, "\r");
@@ -728,16 +760,27 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
 
     const current = resolveTarget(params);
     if (!current.ok) return current.response;
+    const readPreparedBuffer = (leafId: number) =>
+      deps.prepare(leafId) ? deps.getBuffer(leafId) : null;
+    if (!deps.prepare(current.leafId)) {
+      return error(
+        "agent_not_ready",
+        `${current.agent.name} terminal is not attached`,
+      );
+    }
     if (!deps.getSessions()[current.leafId]) {
       return error("agent_not_found", "agent terminal is no longer available");
     }
     if (
       waitForReady &&
-      (acceptsInitialSpawnMessage || current.agent.cli === "codex") &&
+      (acceptsInitialSpawnMessage ||
+        normalizedCli === "codex" ||
+        (!isAntigravity && message.message.length > INPUT_CHUNK_CHARS)) &&
       !(await waitForAgentTuiReady(
-        () => deps.getBuffer(current.leafId),
+        () => readPreparedBuffer(current.leafId),
         current.agent.cli,
         timeout,
+        current.leafId,
       ))
     ) {
       return error(
@@ -755,19 +798,18 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     }
     const submitted = await submitAgentMessage(
       deps.write,
-      deps.getBuffer,
+      readPreparedBuffer,
       current.leafId,
       message.message,
       !isAntigravity &&
-        (acceptsInitialSpawnMessage || normalizedCli === "codex"),
+        (acceptsInitialSpawnMessage ||
+          normalizedCli === "codex" ||
+          message.message.length > INPUT_CHUNK_CHARS),
       isAntigravity ? ANTIGRAVITY_SUBMIT_DELAY_MS : SUBMIT_DELAY_MS,
       timeout,
     );
     if (!submitted) {
-      return error(
-        "agent_not_ready",
-        `${current.agent.name} input cancelled`,
-      );
+      return error("agent_not_ready", `${current.agent.name} input cancelled`);
     }
     initialSpawnLeaves.delete(current.leafId);
     sendAcknowledgements.set(current.agent.agentId, {
@@ -801,7 +843,18 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         if (!requestedAgent) {
           return error("invalid_request", "agent is required");
         }
-        const spawned = deps.spawn(resolved.workspace, requestedAgent);
+        let spawned: AgentSpawnHandle | null;
+        try {
+          spawned = await deps.spawn(resolved.workspace, requestedAgent);
+        } catch (cause) {
+          const message = String(cause);
+          return error(
+            message.includes("resource_exhausted:")
+              ? "resource_exhausted"
+              : "launch_failed",
+            message,
+          );
+        }
         if (!spawned) {
           return error(
             "launch_failed",
@@ -827,7 +880,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
           result: {
             ok: true,
             pending: agent === null,
-            placement: "background",
+            placement: spawned.activated ? "visible-first-tab" : "background",
             agent: agent ?? spawned,
           },
         };

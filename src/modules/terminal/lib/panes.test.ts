@@ -12,6 +12,44 @@ import {
 import { describe, expect, it } from "vitest";
 
 describe("pinLeafAgentResumeSession", () => {
+  it("pins ownership evidence only on the intended leaf and clears it on rearm", () => {
+    const tree: PaneNode = {
+      kind: "split",
+      id: 1,
+      dir: "row",
+      children: [
+        {
+          kind: "leaf",
+          id: 2,
+          agentResume: { agent: "antigravity", command: "agy" },
+        },
+        {
+          kind: "leaf",
+          id: 3,
+          agentResume: { agent: "antigravity", command: "agy" },
+        },
+      ],
+    };
+    const pinned = pinLeafAgentResumeSession(
+      tree,
+      3,
+      "00000000-0000-4000-8000-000000000001",
+      "process-v1",
+    );
+    if (pinned.kind !== "split") throw Error("expected split");
+    expect(pinned.children[0]).toBe(tree.children[0]);
+    expect(pinned.children[1]).toMatchObject({
+      agentResume: {
+        sessionId: "00000000-0000-4000-8000-000000000001",
+        sessionBinding: "process-v1",
+      },
+    });
+    const rearmed = rearmLeafAgentResume(pinned, 3, "antigravity", 1234);
+    if (rearmed.kind !== "split" || rearmed.children[1].kind !== "leaf")
+      throw Error("expected leaf");
+    expect(rearmed.children[1].agentResume?.sessionId).toBeUndefined();
+    expect(rearmed.children[1].agentResume?.sessionBinding).toBeUndefined();
+  });
   it("adopts a manually launched agent only on an untracked terminal leaf", () => {
     const tree: PaneNode = { kind: "leaf", id: 1, cwd: "C:/work" };
     const resume = {

@@ -17,6 +17,8 @@ import {
 } from "../lib/agentScreenObserver";
 import { prepareAttentionSound } from "../lib/attentionSound";
 import { BrowserTurnObserver } from "../lib/browserTurnObserver";
+import { codexTurnEvidence } from "../lib/codexTurnEvidence";
+import type { CodexTurnWatch } from "../lib/codexTurnWatch";
 import { displayAgentInstance } from "../lib/format";
 import { maybeTriggerManagedReview } from "../lib/review";
 import { routeAgentNotification } from "../lib/route";
@@ -157,7 +159,7 @@ function handleLifecycleSignal(
       return;
     default:
       // Hook/plugin status and session markers are intentionally ignored. The
-      // rendered terminal screen is the only activity source after cutover.
+      // rendered screen and exact native turn evidence replace CLI hooks.
       return;
   }
 }
@@ -182,6 +184,7 @@ export function AgentNotificationsBridge({
   const focused = useWindowFocus();
   const observerRef = useRef(new AgentScreenObserver());
   const browserRef = useRef(new BrowserTurnObserver());
+  const codexRef = useRef<CodexTurnWatch | null>(null);
   const ctxRef = useRef<Ctx>({
     tabs,
     spaces,
@@ -206,11 +209,39 @@ export function AgentNotificationsBridge({
   useEffect(() => prepareAttentionSound(), []);
 
   useEffect(() => {
+    let alive = true;
+    if (codexRef.current) codexRef.current.sync(tabs);
+    else if (
+      isTauri() &&
+      Object.values(useAgentStore.getState().sessions).some(
+        (s) => s.agent === "codex",
+      )
+    ) {
+      void import("../lib/codexTurnWatch").then(({ CodexTurnWatch }) => {
+        if (!alive) return;
+        codexRef.current ??= new CodexTurnWatch();
+        codexRef.current.sync(ctxRef.current.tabs);
+      });
+    }
+    return () => {
+      alive = false;
+    };
+  }, [tabs]);
+  useEffect(
+    () => () => {
+      codexRef.current?.dispose();
+      codexTurnEvidence.clear();
+    },
+    [],
+  );
+
+  useEffect(() => {
     browserRef.current.retainTabs(new Set(tabs.map((tab) => tab.id)));
     const store = useAgentStore.getState();
     for (const session of Object.values(store.sessions)) {
       const info = tabInfo(tabs, session.leafId);
       if (!info) {
+        codexTurnEvidence.stop(session.leafId);
         browserRef.current.stop(session.leafId);
         observerRef.current.stop(session.leafId);
         store.finish(session.leafId);
@@ -233,14 +264,21 @@ export function AgentNotificationsBridge({
   useEffect(() => {
     let alive = true;
     let unlisten: (() => void) | undefined;
-    listen<AgentSignal>("anbo:agent-signal", (e) =>
+    listen<AgentSignal>("anbo:agent-signal", (e) => {
+      if (e.payload.kind === "exited") {
+        const leaf = leafIdForPty(e.payload.id);
+        if (leaf !== null) {
+          codexRef.current?.stop(leaf);
+          codexTurnEvidence.stop(leaf);
+        }
+      }
       handleLifecycleSignal(
         e.payload,
         ctxRef.current,
         observerRef.current,
         browserRef.current,
-      ),
-    )
+      );
+    })
       .then((u) => {
         if (alive) unlisten = u;
         else u();
@@ -265,6 +303,14 @@ export function AgentNotificationsBridge({
       })
       .catch(() => {});
     const unsubscribeInput = subscribeTerminalInput((leafId, data) => {
+      const session = useAgentStore.getState().sessions[leafId];
+      if (
+        session?.agent === "codex" &&
+        codexTurnEvidence.input(leafId, data, session.phase === "attention")
+      ) {
+        // Codex may create its rollout only after the initial discovery timeout.
+        ctxRef.current.onSettled(leafId, session.agent);
+      }
       browserRef.current.input(leafId, data);
       const signal = observerRef.current.input(leafId, data);
       if (signal) applyObserved(signal, ctxRef.current);

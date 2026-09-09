@@ -15,6 +15,15 @@ function sourceBetween(start: string, end: string): string {
 }
 
 describe("terminal window restore", () => {
+  it("never evicts a bound buffer before the asynchronous idle check releases it", () => {
+    const protection = sourceBetween(
+      "function protectedBuffer",
+      "function pickSlotFor",
+    );
+    expect(protection).toContain("s.currentLeafId !== null");
+    expect(protection).toContain("s.pendingWrites > 0");
+    expect(protection).toContain("s.currentLeafId ?? s.retainedLeafId");
+  });
   it("does not fit minimized terminal surfaces", () => {
     expect(source).toContain("isWindowPresentationBlocked()");
     expect(source).toContain("canFitTerminal(container)");
@@ -80,7 +89,7 @@ describe("terminal window restore", () => {
     expect(
       bind.indexOf("slot.oscDisposers = p.registerOsc(slot.term)"),
     ).toBeLessThan(
-      bind.indexOf("p.drainRing((bytes) => slot.term.write(bytes))"),
+      bind.indexOf("p.drainRing((bytes) => writeSlot(slot, bytes))"),
     );
   });
 

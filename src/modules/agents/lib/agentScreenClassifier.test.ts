@@ -5,6 +5,146 @@ import {
 } from "./agentScreenClassifier";
 
 describe("classifyAgentScreen", () => {
+  it("keeps Codex commentary-to-tool gaps working without a spinner", () => {
+    const gap = [
+      "OpenAI Codex",
+      "\u2022 Called anbomcp-dev.browser_tabs({})",
+      "  \u2514 tabs: []",
+      "\u2022 The baseline is ready. I will open one background tab.",
+      "\u203a Ask Codex to do anything",
+      "gpt-6-astra xhigh",
+    ].join("\n");
+    expect(classifyAgentScreen("codex", gap)).toBe("working");
+    expect(isAgentScreenReady("codex", gap)).toBe(false);
+    expect(
+      classifyAgentScreen(
+        "codex",
+        `${gap}\n\u2500 Worked for 6m 49s \u2500\u2500`,
+      ),
+    ).toBe("ready");
+    expect(classifyAgentScreen("codex", `Worked for 5s\n${gap}`)).toBe(
+      "working",
+    );
+  });
+
+  it.each([
+    "The report says Worked for 12s",
+    "    Worked for 12s",
+    "> Worked for 12s",
+    "```text\nWorked for 12s\n```",
+  ])("does not settle Codex on quoted completion: %s", (quote) => {
+    expect(
+      classifyAgentScreen(
+        "codex",
+        `OpenAI Codex\n\u2022 Continuing the test\n${quote}\n\u203a `,
+      ),
+    ).toBe("working");
+  });
+
+  it("settles an explicit Codex interruption but not the next active turn", () => {
+    const interrupted =
+      "OpenAI Codex\n\u2022 Running the check\n\u25a0 Conversation interrupted - tell the model what to do differently.\n\u203a ";
+    expect(classifyAgentScreen("codex", interrupted)).toBe("ready");
+    expect(
+      classifyAgentScreen(
+        "codex",
+        `${interrupted}\n\u2022 Continuing now\n\u203a `,
+      ),
+    ).toBe("working");
+  });
+
+  it.each(["Saut\u00e9ed", "Saut\u0065\u0301ed", "Cogitated", "Ruminated"])(
+    "settles Claude's structural %s summary after report prose",
+    (verb) => {
+      const screen = [
+        "Claude Code",
+        "Thought for 9s",
+        "    loading/pendingUrl/committed URL terbedakan jelas.",
+        `\u273b ${verb} for 13m 12s \u00b7 done 8:03 PM`,
+        "recap: QA complete",
+        "\u276f ",
+        "bypass permissions on (shift+tab to cycle)",
+      ].join("\n");
+      expect(classifyAgentScreen("claude", screen)).toBe("ready");
+    },
+  );
+
+  it.each([
+    "loading/pendingUrl/committed URL",
+    "running tests is the next step",
+    "thinking about the design",
+    "Loading... describes a progress indicator.",
+    "waitingForReady is enabled",
+  ])("does not classify report prose as live work: %s", (prose) => {
+    expect(
+      classifyAgentScreen("claude", `Claude Code\n  ${prose}\n\u276f `),
+    ).toBe("ready");
+  });
+
+  it.each(["Loading...", "Loading\u2026", "Waiting... (12s)"])(
+    "preserves a live standalone progress row: %s",
+    (progress) => {
+      expect(
+        classifyAgentScreen("claude", `Claude Code\n${progress}\n\u276f `),
+      ).toBe("working");
+    },
+  );
+
+  it.each([
+    "> \u273b Saut\u00e9ed for 13m 12s",
+    "The report says Saut\u00e9ed for 13m 12s",
+    "```text\n\u273b Saut\u00e9ed for 13m 12s\n```",
+    "    \u273b Saut\u00e9ed for 13m 12s",
+    "\u273b Thought for 12s",
+    "Baked for 6s is a sample completion string",
+  ])("does not settle Claude on quoted/progress text: %s", (quote) => {
+    expect(
+      classifyAgentScreen(
+        "claude",
+        `Claude Code\nesc to interrupt\n${quote}\n\u276f `,
+      ),
+    ).toBe("working");
+  });
+
+  it("keeps a newer live turn working after a structural summary", () => {
+    expect(
+      classifyAgentScreen(
+        "claude",
+        "Claude Code\n\u273b Saut\u00e9ed for 13m 12s\nThought for 2s\n\u276f \nesctointerrupt",
+      ),
+    ).toBe("working");
+  });
+
+  it("recognizes bounded multi-hour and wrapped completion rows", () => {
+    expect(
+      classifyAgentScreen(
+        "claude",
+        "Claude Code\nThought for 6s\n\u273b Ruminated for 1h 2m 3.5s\n  \u00b7 done 8:03 PM\n\u276f ",
+      ),
+    ).toBe("ready");
+  });
+
+  it("handles CRLF and a report longer than the retained screen tail", () => {
+    const screen = [
+      "Claude Code",
+      "old output\n".repeat(2_000),
+      "Thought for 6s",
+      "    loading/pendingUrl/committed URL terbedakan jelas.",
+      "\u273b Saut\u00e9ed for 13m 12s \u00b7 done 8:03 PM",
+      "\u276f ",
+    ].join("\r\n");
+    expect(classifyAgentScreen("claude", screen)).toBe("ready");
+  });
+
+  it("keeps an approval request newer than completion in attention", () => {
+    expect(
+      classifyAgentScreen(
+        "claude",
+        "Claude Code\n\u273b Saut\u00e9ed for 13m 12s\nRequires approval\nPress enter to confirm",
+      ),
+    ).toBe("attention");
+  });
+
   it.each([
     ["claude", "Claude Code\nmanual mode on · ? for shortcuts\n❯ "],
     ["codex", "OpenAI Codex\n› Ask Codex to do anything\ngpt-5.6-sol high"],

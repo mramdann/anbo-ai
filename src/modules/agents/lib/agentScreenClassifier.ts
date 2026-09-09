@@ -25,7 +25,7 @@ const LIVE_WORKING_PATTERNS = [
   /esc(?:\s*to)?\s*interrup/i,
   /working \(\d+s/i,
   /(?:^|\n)\s*(?:[*•]\s*)?working\.{2,}/i,
-  /(?:^|\n)\s*(?:running|searching|fetching|thinking|generating|loading|waiting)\.{0,3}/i,
+  /^[\t ]*(?:running|searching|fetching|thinking|generating|loading|waiting)(?:\.{3}|\u2026)(?:[\t ]*\([^\r\n]{1,120}\))?[\t ]*\r?$/im,
   // Antigravity keeps its prompt mounted while this live task footer runs.
   /\d+ task\(s\).*\/tasks/i,
 ];
@@ -62,15 +62,42 @@ function normalizedAgent(agent: string): string {
   return agent.replace(/^custom:/, "").toLowerCase();
 }
 
+const CLAUDE_COMPLETION =
+  /^[\t ]{0,2}(?:\u273b[\t ]+(?!thought\b)[\p{L}\p{M}]{1,40}|(?:baked|brewed|churned|cooked|crunched|worked))[\t ]+for[\t ]+(?:\d{1,4}h[\t ]+)?(?:\d{1,4}m[\t ]+)?\d{1,4}(?:\.\d{1,3})?s(?:[\t ]+\u00b7[\t ]+done[\t ]+\d{1,2}:\d{2}(?:[\t ]+[AP]M)?)?[\t ]*\r?$/iu;
+
+const CODEX_COMPLETION =
+  /^[\t ]{0,2}(?:[\u2500\u2501-]+[\t ]*)?Worked[\t ]+for[\t ]+(?:\d{1,4}h[\t ]+)?(?:\d{1,4}m[\t ]+)?\d{1,4}(?:\.\d{1,3})?s(?:[\t ]*[\u2500\u2501-]+)?[\t ]*\r?$/i;
+const CODEX_ACTIVITY = /^[\t ]{0,2}\u2022[\t ]+\S[^\r\n]*\r?$/u;
+const CODEX_INTERRUPTED =
+  /^[\t ]{0,2}\u25a0[\t ]+Conversation interrupted\b[^\r\n]*\r?$/iu;
+
+function lastStandaloneIndex(screen: string, pattern: RegExp): number {
+  let last = -1;
+  let fence: string | undefined;
+  for (const match of screen.matchAll(/^.*$/gm)) {
+    const line = match[0];
+    const marker = /^[\t ]*(`{3,}|~{3,})/.exec(line)?.[1];
+    if (marker) {
+      if (!fence) fence = marker;
+      else if (marker[0] === fence[0] && marker.length >= fence.length)
+        fence = undefined;
+      continue;
+    }
+    if (!fence && pattern.test(line)) last = match.index;
+  }
+  return last;
+}
+
 export function classifyAgentScreen(
   agent: string,
   buffer: string | null,
+  confirmedComplete = false,
 ): AgentScreenState {
   if (!buffer) return null;
   const screen = tail(buffer);
   const agentKind = normalizedAgent(agent);
   const attentionAt = lastAnyIndex(screen, ATTENTION_PATTERNS);
-  const workingAt = lastAnyIndex(screen, WORKING_PATTERNS);
+  let workingAt = lastAnyIndex(screen, WORKING_PATTERNS);
   const liveWorkingAt = lastAnyIndex(screen, LIVE_WORKING_PATTERNS);
   const resolvedAttentionAt = lastAnyIndex(screen, [
     /user\s*answered/i,
@@ -79,6 +106,7 @@ export function classifyAgentScreen(
     /\? for shortcuts/i,
   ]);
   let readyAt = -1;
+  let codexActivityAt = -1;
   let openCodeCompletionAt = -1;
   let settledAt = -1;
 
@@ -87,22 +115,20 @@ export function classifyAgentScreen(
       if (/shortcuts|manual mode|Claude *Code/.test(screen)) {
         readyAt = lastPatternIndex(screen, /(?:\u276f|>)(?!\s*\d+\.)[^\n]*/u);
       }
-      // Claude leaves the previous "esc to interrupt" row in scrollback after
-      // returning to its prompt. A completed-turn summary after that row is
-      // the reliable boundary between stale spinner text and live work.
-      settledAt = lastPatternIndex(
-        screen,
-        /(?:baked|brewed|churned|cooked|crunched|worked) for (?:\d+m\s*)?\d+(?:\.\d+)?s/i,
-      );
+      // The completion row uses changing, sometimes accented verbs. Its TUI
+      // structure distinguishes it from quoted output and stale progress.
+      settledAt = lastStandaloneIndex(screen, CLAUDE_COMPLETION);
       break;
     case "codex":
       if (/(?:gpt-|OpenAI Codex|\/model to change)/i.test(screen)) {
         readyAt = lastPatternIndex(screen, /(?:\u203a|>)(?!\s*\d+\.)[^\n]*/u);
       }
-      settledAt = lastPatternIndex(
-        screen,
-        /worked for (?:\d+m\s*)?\d+(?:\.\d+)?s/i,
+      settledAt = Math.max(
+        lastStandaloneIndex(screen, CODEX_COMPLETION),
+        lastStandaloneIndex(screen, CODEX_INTERRUPTED),
       );
+      codexActivityAt = lastStandaloneIndex(screen, CODEX_ACTIVITY);
+      workingAt = Math.max(workingAt, codexActivityAt);
       break;
     case "agy":
     case "antigravity":
@@ -150,6 +176,16 @@ export function classifyAgentScreen(
   // completed-turn summary intact. When that boundary is newer than every
   // working marker, stale spinner rows must not keep the agent busy forever.
   if (settledAt > workingAt) return "ready";
+  if (
+    agentKind === "codex" &&
+    confirmedComplete &&
+    readyAt >= 0 &&
+    liveWorkingAt < 0
+  )
+    return "ready";
+  // Codex removes its spinner between commentary and tool dispatch while the
+  // composer stays mounted. Only a later completion row settles that output.
+  if (agentKind === "codex" && codexActivityAt > settledAt) return "working";
   // Claude keeps its input prompt mounted below live progress. In that layout
   // a fresh `Thought for ...` row is older on-screen than the prompt even
   // though the turn is still running. Claude always paints one of the settled
@@ -187,9 +223,10 @@ export function isAgentScreenReady(
 export function classifyAgentTurn(
   agent: string,
   buffer: string | null,
+  confirmedComplete = false,
 ): AgentScreenState {
   if (!buffer || !["agy", "antigravity"].includes(normalizedAgent(agent))) {
-    return classifyAgentScreen(agent, buffer);
+    return classifyAgentScreen(agent, buffer, confirmedComplete);
   }
   const screen = tail(buffer);
   // Active cancellation controls outrank a mounted input/footer. A server's

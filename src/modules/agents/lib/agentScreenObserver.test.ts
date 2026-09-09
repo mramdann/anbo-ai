@@ -4,6 +4,36 @@ import { AgentScreenObserver } from "./agentScreenObserver";
 const ready = "OpenAI Codex\n› Ask Codex to do anything\ngpt-5.6-sol high";
 
 describe("AgentScreenObserver", () => {
+  it("finishes Claude once after report prose and an accented completion", () => {
+    const observer = new AgentScreenObserver();
+    const idle = "Claude Code\n\u276f \n? for shortcuts";
+    const active = `${idle}\nThought for 9s\nesctointerrupt`;
+    const complete = [
+      "Claude Code",
+      "Thought for 9s",
+      "    loading/pendingUrl/committed URL terbedakan jelas.",
+      "\u273b Saut\u00e9ed for 13m 12s \u00b7 done 8:03 PM",
+      "\u276f ",
+      "bypass permissions on (shift+tab to cycle)",
+    ].join("\n");
+    observer.start(10, 20, "claude");
+    observer.poll(() => idle, 0);
+    observer.poll(() => idle, 200);
+    observer.input(10, "\r", 300);
+    observer.poll(() => active, 500);
+    observer.poll(() => active, 700);
+    expect(observer.poll(() => complete, 1_500)).toEqual([]);
+    expect(observer.poll(() => complete, 1_700)).toEqual([
+      expect.objectContaining({ kind: "finished", leafId: 10, ptyId: 20 }),
+    ]);
+    expect(observer.poll(() => complete, 60_000)).toEqual([]);
+    observer.input(10, "\r", 60_100);
+    observer.poll(() => `${complete}\nesctointerrupt`, 61_200);
+    expect(observer.poll(() => `${complete}\nesctointerrupt`, 61_400)).toEqual(
+      [],
+    );
+  });
+
   it("settles startup without reporting a completed turn", () => {
     const observer = new AgentScreenObserver();
     expect(observer.start(10, 20, "codex").kind).toBe("working");

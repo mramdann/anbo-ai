@@ -6,12 +6,18 @@ import {
   AgentOutputTracker,
   agentIdFor,
   collectWorkspaceAgents,
-  createAgentAutomationService,
+  createAgentAutomationService as createService,
   isAgentTuiReady,
   resolveAgentWorkspace,
   sanitizeAgentMessage,
   submitAgentMessage,
 } from "./agentAutomation";
+
+type TestDependencies = Omit<Parameters<typeof createService>[0], "prepare"> & {
+  prepare?: (leafId: number) => boolean;
+};
+const createAgentAutomationService = (deps: TestDependencies) =>
+  createService({ prepare: () => true, ...deps });
 
 const space = (overrides: Partial<SpaceMeta> = {}): SpaceMeta => ({
   id: "space-a",
@@ -59,6 +65,58 @@ afterEach(() => {
 });
 
 describe("agent workspace scoping", () => {
+  it("returns a memory admission failure without typing or waiting for spawn", async () => {
+    const write = vi.fn(() => true);
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab()],
+      getSpaces: () => [space()],
+      getSessions: () => ({}),
+      getActiveTabId: () => null,
+      getBuffer: () => null,
+      write,
+      spawn: async () => {
+        throw "resource_exhausted: Close unused tabs and retry";
+      },
+      subscribeSessions: () => () => {},
+    });
+    await expect(
+      service.handle({
+        requestId: "pressure",
+        method: "agent_spawn",
+        params: { workspace: "space-a", agent: "opencode" },
+      }),
+    ).resolves.toMatchObject({ error: { code: "resource_exhausted" } });
+    expect(write).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
+  it("does not send input when a live terminal buffer cannot be prepared", async () => {
+    const write = vi.fn(() => true);
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab()],
+      getSpaces: () => [space()],
+      getSessions: () => ({ 101: session() }),
+      getActiveTabId: () => null,
+      getBuffer: () => "ready",
+      prepare: () => false,
+      write,
+      spawn: () => null,
+      subscribeSessions: () => () => {},
+    });
+    await expect(
+      service.handle({
+        requestId: "buffer-pressure",
+        method: "agent_send",
+        params: {
+          workspace: "space-a",
+          agentId: "atlas-claude:10",
+          message: "do not submit",
+        },
+      }),
+    ).resolves.toMatchObject({ error: { code: "agent_not_ready" } });
+    expect(write).not.toHaveBeenCalled();
+    service.dispose();
+  });
   it("uses a readable workspace-scoped callsign and CLI id", () => {
     expect(agentIdFor("Lucian", "claude", 14)).toBe("lucian-claude:14");
     expect(agentIdFor("Claude", "claude", 14)).toBe("claude:14");
@@ -301,6 +359,108 @@ describe("agent messages", () => {
     await vi.advanceTimersByTimeAsync(1);
     await expect(pending).resolves.toBe(true);
     expect(writes).toEqual([message, "\r"]);
+  });
+
+  it("delivers long instructions in acknowledged chunks before one Enter", async () => {
+    vi.useFakeTimers();
+    const message = "Record for delivery verification. ".repeat(120);
+    const writes: string[] = [];
+    let buffer = "Claude Code\n\u276f ";
+    const pending = submitAgentMessage(
+      (_leafId, data) => {
+        writes.push(data);
+        if (data !== "\r") {
+          setTimeout(() => {
+            buffer += data.length > 256 ? "[Pasted text #1]" : data;
+          }, 40);
+        }
+        return true;
+      },
+      () => buffer,
+      101,
+      message,
+      true,
+    );
+    await vi.advanceTimersByTimeAsync(8_100);
+    await expect(pending).resolves.toBe(true);
+    expect(writes.slice(0, -1).join("")).toBe(message);
+    expect(writes.slice(0, -1).every((chunk) => chunk.length <= 256)).toBe(
+      true,
+    );
+    expect(writes.filter((data) => data === "\r")).toEqual(["\r"]);
+  });
+
+  it("never sends later chunks or Enter after an unacknowledged chunk", async () => {
+    vi.useFakeTimers();
+    const message = "first section ".repeat(30) + "unique final section";
+    const writes: string[] = [];
+    let buffer = "\u276f ";
+    const pending = submitAgentMessage(
+      (_leafId, data) => {
+        writes.push(data);
+        if (writes.length === 1) buffer += data;
+        return true;
+      },
+      () => buffer,
+      101,
+      message,
+      true,
+      90,
+      200,
+    );
+    await vi.advanceTimersByTimeAsync(225);
+    await expect(pending).resolves.toBe(false);
+    expect(writes).toEqual([message.slice(0, 256), message.slice(256), "\x03"]);
+  });
+
+  it("does not treat a collapsed paste marker as verified message contents", async () => {
+    vi.useFakeTimers();
+    let buffer = "\u276f ";
+    const writes: string[] = [];
+    const pending = submitAgentMessage(
+      (_leafId, data) => {
+        writes.push(data);
+        buffer += "[Pasted text #1]";
+        return true;
+      },
+      () => buffer,
+      101,
+      "Confirm the complete instruction before submitting".repeat(40),
+      true,
+      90,
+      100,
+    );
+    await vi.advanceTimersByTimeAsync(125);
+    await expect(pending).resolves.toBe(false);
+    expect(writes).toHaveLength(2);
+    expect(writes[0]).toHaveLength(256);
+    expect(writes[1]).toBe("\x03");
+  });
+
+  it("preserves Unicode pairs at chunk boundaries and cancels failed writes", async () => {
+    vi.useFakeTimers();
+    const message = `${"a".repeat(255)}\u{10437}${"b".repeat(300)}`;
+    let buffer = "\u276f ";
+    const writes: string[] = [];
+    const pending = submitAgentMessage(
+      (_leafId, data) => {
+        writes.push(data);
+        if (writes.length === 3) return false;
+        buffer += data;
+        return true;
+      },
+      () => buffer,
+      101,
+      message,
+      true,
+    );
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(pending).resolves.toBe(false);
+    expect(writes[0]).toHaveLength(255);
+    expect(writes[1].startsWith("\u{10437}")).toBe(true);
+    expect(writes.slice(0, -1).join("")).toBe(message);
+    expect(writes[writes.length - 1]).toBe("\x03");
+    expect(writes).not.toContain("\r");
   });
 
   it("does not type into a Codex trust prompt while a spawned CLI starts", async () => {
@@ -719,6 +879,41 @@ describe("agent messages", () => {
 });
 
 describe("agent spawning", () => {
+  it("reports a first agent selected by the workspace opener", async () => {
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab()],
+      getSpaces: () => [space()],
+      getSessions: () => ({ 101: session() }),
+      getActiveTabId: () => 10,
+      getBuffer: () => "",
+      prepare: () => true,
+      write: () => true,
+      spawn: () => ({
+        agentId: "claude:10",
+        cli: "claude",
+        tabId: 10,
+        leafId: 101,
+        spaceId: "space-a",
+        workspace: "C:/work/alpha",
+        activated: true,
+      }),
+      subscribeSessions: () => () => {},
+    });
+    await expect(
+      service.handle({
+        requestId: "first-agent",
+        method: "agent_spawn",
+        params: { workspace: "space-a", agent: "claude", timeout: 100 },
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        placement: "visible-first-tab",
+        pending: false,
+        agent: { active: true, tabId: 10 },
+      },
+    });
+    service.dispose();
+  });
   it("spawns one configured custom agent in the explicit workspace without changing focus", async () => {
     let tabs: Tab[] = [];
     let sessions: Record<number, AgentSession> = {};

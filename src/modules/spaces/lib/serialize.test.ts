@@ -1,4 +1,5 @@
 import type { Tab } from "@/modules/tabs/lib/useTabs";
+import { buildAgentRestoreCommand } from "@/modules/agents/lib/resume";
 import type { PaneNode } from "@/modules/terminal/lib/panes";
 import { describe, expect, it } from "vitest";
 import { hydrateTabs, type SerializedTab, serializeTabs } from "./serialize";
@@ -25,6 +26,38 @@ function term(over: Partial<Extract<Tab, { kind: "terminal" }>>): Tab {
 }
 
 describe("serializeTabs", () => {
+  it.each([undefined, "process-v1", "explicit"] as const)(
+    "round-trips Antigravity binding %s without blessing legacy ids",
+    (sessionBinding) => {
+      const sessionId = "00000000-0000-4000-8000-000000000001";
+      const original = term({
+        paneTree: {
+          kind: "leaf",
+          id: 2,
+          agentResume: {
+            agent: "antigravity",
+            command: "agy",
+            sessionId,
+            ...(sessionBinding && { sessionBinding }),
+          },
+        },
+      });
+      const [restored] = hydrateTabs(
+        serializeTabs([original]),
+        "s1",
+        counter(),
+      );
+      if (restored.kind !== "terminal" || restored.paneTree.kind !== "leaf")
+        throw Error("expected terminal leaf");
+      const resume = restored.paneTree.agentResume;
+      if (!resume) throw Error("missing descriptor");
+      expect(resume.sessionId).toBe(sessionId);
+      expect(resume.sessionBinding).toBe(sessionBinding);
+      expect(buildAgentRestoreCommand(resume)).toBe(
+        sessionBinding ? `agy --conversation ${sessionId}` : null,
+      );
+    },
+  );
   it("drops private terminals and transient kinds", () => {
     const tabs: Tab[] = [
       term({ id: 1 }),

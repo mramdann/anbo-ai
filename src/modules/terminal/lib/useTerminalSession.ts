@@ -1,6 +1,7 @@
 import { ensureMonoFontsLoaded } from "@/lib/fonts";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { invoke } from "@tauri-apps/api/core";
+import { toast } from "sonner";
 import type { SearchAddon } from "@xterm/addon-search";
 import {
   useCallback,
@@ -50,6 +51,7 @@ import {
   refreshLeafSlot,
   releaseSlot,
   setSlotFocused,
+  writeSlot,
 } from "./rendererPool";
 import { useTerminalFont } from "./useTerminalFont";
 
@@ -288,6 +290,7 @@ export async function writeToReadySession(
   await whenSessionReady(leafId, timeoutMs);
   const session = sessions.get(leafId);
   if (!session?.pty || session.shellExited) return false;
+  if (!prepareTerminalAutomationSession(leafId)) return false;
   try {
     notifyTerminalInput(leafId, data);
     await session.pty.write(data);
@@ -696,7 +699,7 @@ function deliverPtyBytes(leafId: number, bytes: Uint8Array): void {
   // Retained slots keep parsing live (render paused); the ring is only for
   // leaves whose buffer was stolen or never bound.
   const slot = getLiveSlotForLeaf(leafId);
-  if (slot) slot.term.write(bytes);
+  if (slot) writeSlot(slot, bytes);
   else s.dormantRing.push(bytes);
 }
 
@@ -710,6 +713,7 @@ async function openPtyWithRetry(
   try {
     return await openPtyForSession(leafId, s, cwd);
   } catch (e) {
+    if (String(e).includes("resource_")) throw e;
     console.error("[anbo] openPty failed, retrying once:", e);
     await new Promise((r) => setTimeout(r, SPAWN_RETRY_DELAY_MS));
     if (s.disposed) throw e;
@@ -804,8 +808,7 @@ function applyBlockMode(leafId: number, mode: BlockMode): void {
 function bindLeafToSlot(leafId: number, s: Session): void {
   if (!s.container) return;
   const altScreen = s.altScreenAtRelease;
-  s.altScreenAtRelease = false;
-  acquireSlot({
+  const slot = acquireSlot({
     leafId,
     container: s.container,
     snapshot: s.snapshot,
@@ -871,6 +874,15 @@ function bindLeafToSlot(leafId: number, s: Session): void {
     },
     onSearchReady: (addon) => s.callbacks.onSearchReady?.(addon),
   });
+  if (!slot) {
+    toast.error("Terminal capacity reached", {
+      id: "terminal-capacity",
+      description:
+        "All 16 live buffers are in use. Close an unused terminal and select this tab again. Running agents were not evicted.",
+    });
+    return;
+  }
+  s.altScreenAtRelease = false;
   s.snapshot = null;
   s.hasSlot = true;
   if (s.blocks) applyBlockMode(leafId, s.blockMode);

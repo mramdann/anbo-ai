@@ -50,7 +50,7 @@ export type TerminalAutomationDependencies = {
   open: (
     workspace: { id: string; root: string },
     title: string,
-  ) => { tabId: number; leafId: number } | null;
+  ) => { tabId: number; leafId: number; activated?: boolean } | null;
   close: (tabId: number, leafId: number) => boolean;
   write: (leafId: number, data: string) => boolean;
   initialPromptSyncTimeoutMs?: number;
@@ -697,7 +697,7 @@ export function createTerminalAutomationService(
         return {
           result: {
             ok: true,
-            placement: "background",
+            placement: opened.activated ? "visible-first-tab" : "background",
             terminal: {
               terminalId: id,
               title: title.title,
@@ -706,7 +706,7 @@ export function createTerminalAutomationService(
               spaceId: workspace.space.id,
               workspace: workspace.space.root,
               cwd: workspace.space.root,
-              active: false,
+              active: opened.activated === true,
               status: "starting",
               shell: "unknown",
             } satisfies SharedTerminalDescriptor,

@@ -64,6 +64,24 @@ function dependencies(
 }
 
 describe("shared terminal discovery", () => {
+  it("reports the selected first terminal returned by the workspace opener", async () => {
+    const service = createTerminalAutomationService(
+      dependencies({
+        open: () => ({ tabId: 20, leafId: 201, activated: true }),
+      }),
+    );
+    await expect(
+      service.handle("terminal_open", {
+        workspace: workspaceRoot,
+        title: "First terminal",
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        placement: "visible-first-tab",
+        terminal: { tabId: 20, active: true },
+      },
+    });
+  });
   it("lists normal terminal leaves with stable ids and excludes protected tabs", async () => {
     const privateTab = terminal({
       id: 11,

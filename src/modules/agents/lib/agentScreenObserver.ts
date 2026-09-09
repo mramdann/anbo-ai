@@ -2,6 +2,7 @@ import {
   classifyAgentScreen,
   type AgentScreenState,
 } from "./agentScreenClassifier";
+import { codexTurnEvidence } from "./codexTurnEvidence";
 
 export type ObservedAgentKind = "ready" | "working" | "attention" | "finished";
 
@@ -91,7 +92,11 @@ export class AgentScreenObserver {
   ): ObservedAgentSignal[] {
     const signals: ObservedAgentSignal[] = [];
     for (const entry of this.entries.values()) {
-      const candidate = this.classify(entry.agent, read(entry.leafId));
+      const candidate = this.classify(
+        entry.agent,
+        read(entry.leafId),
+        codexTurnEvidence.completed(entry.leafId),
+      );
       if (candidate === null) continue;
       if (entry.candidate === candidate) entry.stablePolls += 1;
       else {

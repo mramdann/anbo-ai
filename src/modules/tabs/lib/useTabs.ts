@@ -782,7 +782,11 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   );
 
   const pinAgentResumeSession = useCallback(
-    (leafId: number, sessionId: string) => {
+    (
+      leafId: number,
+      sessionId: string,
+      sessionBinding?: PersistedAgentResume["sessionBinding"],
+    ) => {
       setTabs((current) =>
         current.map((tab) => {
           if (tab.kind !== "terminal" || !hasLeaf(tab.paneTree, leafId)) {
@@ -792,6 +796,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
             tab.paneTree,
             leafId,
             sessionId,
+            sessionBinding,
           );
           return paneTree === tab.paneTree ? tab : { ...tab, paneTree };
         }),

@@ -16,6 +16,7 @@ export type PersistedAgentResume = {
   agent: ResumableAgentId;
   command: string;
   sessionId?: string;
+  sessionBinding?: "process-v1" | "explicit";
   relaunchOnRestore?: boolean;
 };
 
@@ -209,10 +210,18 @@ export function normalizePersistedAgentResume(
     sessionId = candidate.sessionId;
   }
   const relaunchOnRestore = candidate.relaunchOnRestore === true;
+  const sessionBinding =
+    candidate.agent === "antigravity" &&
+    sessionId &&
+    (candidate.sessionBinding === "process-v1" ||
+      candidate.sessionBinding === "explicit")
+      ? candidate.sessionBinding
+      : undefined;
   return {
     agent: candidate.agent,
     command,
     ...(sessionId && { sessionId }),
+    ...(sessionBinding && { sessionBinding }),
     ...(relaunchOnRestore && { relaunchOnRestore: true }),
   };
 }
@@ -227,6 +236,7 @@ export function buildAgentLaunchCommand(
 export function buildAgentResumeCommand(
   resume: PersistedAgentResume,
 ): string | null {
+  if (isUnverifiedAgentResume(resume)) return null;
   switch (resume.agent) {
     case "claude":
       return resume.sessionId
@@ -254,9 +264,19 @@ export function buildAgentResumeCommand(
 export function buildAgentRestoreCommand(
   resume: PersistedAgentResume,
 ): string | null {
+  if (isUnverifiedAgentResume(resume)) return null;
   return (
     buildAgentResumeCommand(resume) ??
     (resume.relaunchOnRestore ? resume.command : null)
+  );
+}
+
+export function isUnverifiedAgentResume(resume: PersistedAgentResume): boolean {
+  return (
+    resume.agent === "antigravity" &&
+    !!resume.sessionId &&
+    resume.sessionBinding !== "process-v1" &&
+    resume.sessionBinding !== "explicit"
   );
 }
 

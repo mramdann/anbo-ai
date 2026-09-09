@@ -23,8 +23,13 @@ import {
   writeTerminalClipboard,
 } from "./terminalClipboard";
 import { pasteIntoTerminal } from "./terminalPaste";
+import {
+  chooseTerminalBuffer,
+  LIVE_BUFFER_LIMIT,
+  WEBGL_CONTEXT_LIMIT,
+} from "./rendererCapacity";
 
-export const POOL_MAX_SIZE = 5;
+export const POOL_MAX_SIZE = LIVE_BUFFER_LIMIT;
 const FIT_DEBOUNCE_MS = 8;
 const PTY_RESIZE_DEBOUNCE_MS = 256;
 const SNAPSHOT_SCROLLBACK_CAP = 5_000;
@@ -67,6 +72,7 @@ export type Slot = {
   // only if another leaf steals the slot.
   retainedLeafId: number | null;
   parked: boolean;
+  pendingWrites: number;
   oscDisposers: (() => void)[];
   observer: ResizeObserver | null;
   fitTimer: ReturnType<typeof setTimeout> | null;
@@ -85,6 +91,7 @@ export type Slot = {
 };
 
 const slots: Slot[] = [];
+let nextSlotId = 0;
 let recyclerEl: HTMLDivElement | null = null;
 let adapter: SlotAdapter | null = null;
 let configuredFont: RendererFont | null = null;
@@ -276,6 +283,8 @@ export type PoolSlotStat = {
   leafId: number | null;
   retainedLeafId: number | null;
   parked: boolean;
+  protected: boolean;
+  pendingWrites: number;
   cols: number;
   rows: number;
   bufferLines: number;
@@ -289,6 +298,8 @@ export function poolSlotStats(): PoolSlotStat[] {
     leafId: s.currentLeafId,
     retainedLeafId: s.retainedLeafId,
     parked: s.parked,
+    protected: protectedBuffer(s),
+    pendingWrites: s.pendingWrites,
     cols: s.term.cols,
     rows: s.term.rows,
     bufferLines: s.term.buffer.active.length,
@@ -431,7 +442,7 @@ function createSlot(): Slot {
   attachModifierLinkClick(term, host);
 
   const slot: Slot = {
-    id: slots.length,
+    id: nextSlotId++,
     term,
     fitAddon,
     searchAddon,
@@ -442,6 +453,7 @@ function createSlot(): Slot {
     currentLeafId: null,
     retainedLeafId: null,
     parked: false,
+    pendingWrites: 0,
     oscDisposers: [],
     observer: null,
     fitTimer: null,
@@ -542,55 +554,36 @@ function isAltScreen(s: Slot): boolean {
   }
 }
 
-function evictionScore(s: Slot): number {
-  const leafId = s.currentLeafId;
-  const visible = leafId !== null && (adapter?.isLeafVisible(leafId) ?? false);
-  const busy = leafId !== null && (adapter?.isLeafBusy(leafId) ?? false);
-  const blocks = leafId !== null && (adapter?.isLeafBlocks(leafId) ?? false);
-  const focused = leafId !== null && (adapter?.isLeafFocused(leafId) ?? false);
+function protectedBuffer(s: Slot): boolean {
+  const leafId = s.currentLeafId ?? s.retainedLeafId;
   return (
-    (visible ? 1000 : 0) +
-    (isAltScreen(s) ? 100 : 0) +
-    (busy ? 80 : 0) +
-    (blocks ? 50 : 0) +
-    (focused ? 10 : 0) +
-    s.lastUsedAt / 1e12
+    // Bound hidden leaves have not yet passed the asynchronous foreground-job
+    // check. Treating an absent OSC marker as "idle" can steal a running shell
+    // or a freshly submitted agent before its first output is parsed.
+    s.currentLeafId !== null ||
+    s.pendingWrites > 0 ||
+    isAltScreen(s) ||
+    (leafId !== null && (adapter?.isLeafBusy(leafId) ?? true))
   );
 }
 
-function pickSlotFor(leafId: number): PickResult {
-  const retainedOwn = slots.find(
-    (s) => s.currentLeafId === null && s.retainedLeafId === leafId,
+function pickSlotFor(leafId: number): PickResult | null {
+  const choice = chooseTerminalBuffer(
+    slots.map((s) => ({
+      leafId: s.currentLeafId,
+      retainedLeafId: s.retainedLeafId,
+      protected: protectedBuffer(s),
+      visible:
+        s.currentLeafId !== null &&
+        (adapter?.isLeafVisible(s.currentLeafId) ?? false),
+      lastUsedAt: s.lastUsedAt,
+    })),
+    leafId,
   );
-  if (retainedOwn) return { slot: retainedOwn, previousLeafId: null };
-
-  const clean = slots.find(
-    (s) => s.currentLeafId === null && s.retainedLeafId === null,
-  );
-  if (clean) return { slot: clean, previousLeafId: null };
-  if (slots.length < POOL_MAX_SIZE)
-    return { slot: createSlot(), previousLeafId: null };
-
-  // Retained buffers are cheaper to lose than bound ones: serialize, no evict.
-  let retained: Slot | null = null;
-  for (const s of slots) {
-    if (s.currentLeafId !== null) continue;
-    if (!retained || s.lastUsedAt < retained.lastUsedAt) retained = s;
-  }
-  if (retained) return { slot: retained, previousLeafId: null };
-
-  let best: Slot | null = null;
-  let bestScore = Number.POSITIVE_INFINITY;
-  for (const s of slots) {
-    if (s.currentLeafId === leafId) return { slot: s, previousLeafId: null };
-    const score = evictionScore(s);
-    if (score < bestScore) {
-      bestScore = score;
-      best = s;
-    }
-  }
-  const chosen = best!;
-  return { slot: chosen, previousLeafId: chosen.currentLeafId };
+  if (choice === "full") return null;
+  if (choice === "create") return { slot: createSlot(), previousLeafId: null };
+  const slot = slots[choice];
+  return { slot, previousLeafId: slot.currentLeafId };
 }
 
 export type AcquireParams = {
@@ -610,7 +603,7 @@ export type AcquireParams = {
   onSearchReady: (addon: SearchAddon) => void;
 };
 
-export function acquireSlot(params: AcquireParams): Slot {
+export function acquireSlot(params: AcquireParams): Slot | null {
   const existing = slots.find((s) => s.currentLeafId === params.leafId);
   if (existing) {
     rewireSlot(existing, params);
@@ -618,6 +611,7 @@ export function acquireSlot(params: AcquireParams): Slot {
   }
 
   const pick = pickSlotFor(params.leafId);
+  if (!pick) return null;
   if (pick.previousLeafId !== null) {
     adapter?.evictLeaf(pick.previousLeafId);
   }
@@ -697,7 +691,7 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
 
     if (p.snapshot) {
       try {
-        slot.term.write(p.snapshot);
+        writeSlot(slot, p.snapshot);
       } catch (e) {
         console.warn("[anbo] snapshot replay failed:", e);
       }
@@ -708,13 +702,13 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
       // the TUI redraw from scratch instead.
       p.drainRing(() => {});
     } else {
-      p.drainRing((bytes) => slot.term.write(bytes));
+      p.drainRing((bytes) => writeSlot(slot, bytes));
     }
     try {
-      slot.term.write("\x1b[?25h");
+      writeSlot(slot, "\x1b[?25h");
     } catch {}
   } else {
-    p.drainRing((bytes) => slot.term.write(bytes));
+    p.drainRing((bytes) => writeSlot(slot, bytes));
   }
 
   setupResizeObserver(slot, p);
@@ -746,7 +740,8 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
         slot.term.refresh(0, slot.term.rows - 1);
       } catch {}
     }
-    if (adapter?.isLeafFocused(p.leafId)) slot.term.focus();
+    if (adapter?.isLeafFocused(p.leafId) && adapter.isLeafVisible(p.leafId))
+      slot.term.focus();
     if (wasParked) scheduleRevealRepair(slot, p.leafId);
   } else {
     scheduleUnhide(slot, stale || hadWebgl);
@@ -767,7 +762,12 @@ function scheduleUnhide(slot: Slot, stale: boolean): void {
         } catch {}
       }
       const leafId = slot.currentLeafId;
-      if (leafId !== null && adapter?.isLeafFocused(leafId)) {
+      if (
+        leafId !== null &&
+        !slot.parked &&
+        adapter?.isLeafFocused(leafId) &&
+        adapter.isLeafVisible(leafId)
+      ) {
         slot.term.focus();
       }
     });
@@ -935,6 +935,18 @@ export function releaseSlot(leafId: number): ReleaseOutput | null {
   return { cols: slot.term.cols, rows: slot.term.rows };
 }
 
+export function writeSlot(slot: Slot, data: string | Uint8Array): void {
+  slot.pendingWrites++;
+  try {
+    slot.term.write(data, () => {
+      slot.pendingWrites--;
+    });
+  } catch (error) {
+    slot.pendingWrites--;
+    throw error;
+  }
+}
+
 function serializeSlot(slot: Slot): SerializeOutput {
   let snapshot: string | null = null;
   try {
@@ -1031,8 +1043,10 @@ function cancelSlotReap(slot: Slot): void {
 }
 
 function reapIdleSlot(slot: Slot): void {
-  if (slot.currentLeafId !== null) return;
-  const idle = slots.filter((s) => s.currentLeafId === null);
+  if (slot.currentLeafId !== null || protectedBuffer(slot)) return;
+  const idle = slots.filter(
+    (s) => s.currentLeafId === null && !protectedBuffer(s),
+  );
   if (idle.length <= IDLE_SLOTS_KEEP_WARM) return;
   idle.sort((a, b) => a.lastUsedAt - b.lastUsedAt);
   const surplus = idle.slice(0, idle.length - IDLE_SLOTS_KEEP_WARM);
@@ -1087,7 +1101,21 @@ const IDLE_SLOTS_KEEP_WARM = 1;
 
 function attachWebgl(slot: Slot): void {
   if (slot.webglAddon || !slot.term.element) return;
+  if (
+    slot.parked ||
+    slot.currentLeafId === null ||
+    !adapter?.isLeafVisible(slot.currentLeafId)
+  )
+    return;
   if (!usePreferencesStore.getState().terminalWebglEnabled) return;
+  // Reclaim only GPU resources under pressure; its xterm parser/grid survives.
+  if (slots.filter((s) => s.webglAddon).length >= WEBGL_CONTEXT_LIMIT) {
+    const parked = slots
+      .filter((s) => s.webglAddon && (s.parked || s.currentLeafId === null))
+      .sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
+    if (parked) disposeSlotWebgl(parked);
+    else return; // Additional visible panes use xterm's DOM renderer.
+  }
   const elem = slot.term.element;
   const before = new Set<HTMLCanvasElement>(
     elem.querySelectorAll<HTMLCanvasElement>("canvas"),

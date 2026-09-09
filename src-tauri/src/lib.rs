@@ -340,6 +340,7 @@ pub fn run() {
         .manage(LaunchDir(Mutex::new(cli_dir)))
         .manage(LaunchFiles(Mutex::new(launch.files)))
         .invoke_handler(tauri::generate_handler![
+            modules::resource_guard::resource_admit_agent,
             pty::pty_open,
             pty::pty_write,
             pty::pty_resize,
@@ -440,6 +441,8 @@ pub fn run() {
             agent::agent_mcp_status,
             anbo::resume::anbo_find_claude_session,
             anbo::resume::anbo_find_codex_session,
+            anbo::codex_turn::anbo_watch_codex_turn,
+            anbo::codex_turn::anbo_unwatch_codex_turn,
             anbo::resume::anbo_find_agent_session,
             secrets::secrets_get,
             secrets::secrets_set,

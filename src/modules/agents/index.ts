@@ -35,6 +35,7 @@ export {
   createAgentRestoreFallback,
   createAgentResumeStates,
   createManualAgentResumeState,
+  isUnverifiedAgentResume,
   normalizePersistedAgentResume,
   type PersistedAgentResume,
   shouldPinAgentSession,

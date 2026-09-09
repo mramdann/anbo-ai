@@ -55,8 +55,15 @@ describe("resolveBrowserOpenSpace", () => {
 
 describe("browserOpenPlacement", () => {
   it("distinguishes visible background tabs from inactive workspace tabs", () => {
-    expect(browserOpenPlacement("a", "a")).toBe("visible-background-tab");
-    expect(browserOpenPlacement("b", "a")).toBe("inactive-workspace");
+    expect(browserOpenPlacement("a", "a", true)).toBe("visible-background-tab");
+    expect(browserOpenPlacement("b", "a", true)).toBe("inactive-workspace");
+  });
+  it("shows the first browser in an empty active workspace", () => {
+    expect(browserOpenPlacement("a", "a", false)).toBe("visible-first-tab");
+  });
+  it("does not activate an empty inactive workspace", () => {
+    expect(browserOpenPlacement("b", "a", false)).toBe("inactive-workspace");
+    expect(browserOpenPlacement("b", null, false)).toBe("inactive-workspace");
   });
 });
 
@@ -174,6 +181,44 @@ describe("parallel workspace resolution", () => {
 });
 
 describe("createBrowserOpenListener", () => {
+  it.each(["resolve", "reject"] as const)(
+    "does not clear a restarted pending subscription when the old one %ss",
+    async (settlement) => {
+      const deferred = () => {
+        let resolve!: (dispose: () => void) => void;
+        let reject!: (error: Error) => void;
+        const promise = new Promise<() => void>((accept, fail) => {
+          resolve = accept;
+          reject = fail;
+        });
+        return { promise, resolve, reject };
+      };
+      const stale = deferred();
+      const current = deferred();
+      const disposeStale = vi.fn();
+      const disposeCurrent = vi.fn();
+      const subscribe = vi
+        .fn()
+        .mockReturnValueOnce(stale.promise)
+        .mockReturnValueOnce(current.promise);
+      const listener = createBrowserOpenListener(subscribe);
+      listener.setHandler(vi.fn());
+      listener.stop();
+      listener.setHandler(vi.fn());
+      if (settlement === "resolve") stale.resolve(disposeStale);
+      else stale.reject(new Error("old subscription failed"));
+      await Promise.resolve();
+      await Promise.resolve();
+      listener.setHandler(vi.fn());
+      expect(subscribe).toHaveBeenCalledTimes(2);
+      expect(disposeStale).toHaveBeenCalledTimes(settlement === "resolve" ? 1 : 0);
+      current.resolve(disposeCurrent);
+      await Promise.resolve();
+      listener.stop();
+      expect(disposeCurrent).toHaveBeenCalledOnce();
+    },
+  );
+
   it("keeps one subscription while replacing its live handler", async () => {
     let subscribed = 0;
     const sink: {
