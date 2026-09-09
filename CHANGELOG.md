@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.27.1](https://github.com/mramdann/anbo-ai/compare/v0.27.0...v0.27.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* **editor:** reach the whole file again in a packaged build ([bfdaf08](https://github.com/mramdann/anbo-ai/commit/bfdaf08a195abb62899e709142a18968bfd02983))
+* **terminal:** restore the scrollbar on scrolled-back output ([11e9f14](https://github.com/mramdann/anbo-ai/commit/11e9f14d3fd4d8e21bb66969852a63885d541acb))
+
 ## [0.27.0](https://github.com/mramdann/anbo-ai/compare/v0.26.0...v0.27.0) (2026-09-09)
 
 
