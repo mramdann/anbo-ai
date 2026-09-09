@@ -117,8 +117,8 @@ pub fn list_skills(workspace: &Path) -> Result<Vec<SkillSummary>, String> {
 
     let root = skills_root(workspace);
     if root.is_dir() {
-        let entries = fs::read_dir(&root)
-            .map_err(|error| format!("read {}: {error}", root.display()))?;
+        let entries =
+            fs::read_dir(&root).map_err(|error| format!("read {}: {error}", root.display()))?;
         for entry in entries.flatten() {
             if skills.len() >= MAX_SKILLS {
                 break;
@@ -249,7 +249,9 @@ mod tests {
     fn anbo_explains_itself_in_a_workspace_with_no_skills() {
         let temp = tempfile::tempdir().unwrap();
         let skills = list_skills(temp.path()).unwrap();
-        assert!(skills.iter().any(|s| s.name == "anbo" && s.source == "anbo"));
+        assert!(skills
+            .iter()
+            .any(|s| s.name == "anbo" && s.source == "anbo"));
         assert!(skills.iter().all(|s| !s.description.is_empty()));
     }
 

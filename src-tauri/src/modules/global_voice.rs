@@ -410,8 +410,8 @@ mod platform {
         SafeArrayDestroy, SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound,
     };
     use windows::Win32::UI::Accessibility::{
-        CUIAutomation, IUIAutomation, SetWinEventHook, TreeScope_Descendants, UnhookWinEvent,
-        HWINEVENTHOOK, IUIAutomationElement,
+        CUIAutomation, IUIAutomation, IUIAutomationElement, SetWinEventHook, TreeScope_Descendants,
+        UnhookWinEvent, HWINEVENTHOOK,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
@@ -917,8 +917,7 @@ mod platform {
         {
             return false;
         }
-        !target.internal_text_input
-            || target.focused_class_name == current.focused_class_name
+        !target.internal_text_input || target.focused_class_name == current.focused_class_name
     }
 
     fn insert_text_excluding(
@@ -962,16 +961,52 @@ mod platform {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::sync::Mutex;
         use std::time::Duration;
         use windows::core::w;
-        use windows::Win32::UI::Input::KeyboardAndMouse::{
-            mouse_event, SetFocus, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-        };
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
         use windows::Win32::UI::WindowsAndMessaging::{
-            CreateWindowExW, DestroyWindow, DispatchMessageW, PeekMessageW, SetCursorPos,
-            SetForegroundWindow, TranslateMessage, ES_MULTILINE, MSG, PM_REMOVE, WINDOW_EX_STYLE,
-            WINDOW_STYLE, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+            CreateWindowExW, DestroyWindow, DispatchMessageW, PeekMessageW, SetForegroundWindow,
+            TranslateMessage, ES_MULTILINE, MSG, PM_REMOVE, WINDOW_EX_STYLE, WINDOW_STYLE,
+            WS_OVERLAPPEDWINDOW, WS_VISIBLE,
         };
+
+        static DESKTOP_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+        struct TestWindow(HWND);
+
+        impl Drop for TestWindow {
+            fn drop(&mut self) {
+                let _ = unsafe { DestroyWindow(self.0) };
+            }
+        }
+
+        fn pump_test_messages() {
+            let mut event = MSG::default();
+            while unsafe { PeekMessageW(&mut event, None, 0, 0, PM_REMOVE) }.as_bool() {
+                unsafe {
+                    let _ = TranslateMessage(&event);
+                    DispatchMessageW(&event);
+                }
+            }
+        }
+
+        fn focus_test_window(window: HWND) {
+            let _ = unsafe { SetForegroundWindow(window) };
+            unsafe { SetFocus(Some(window)) }.expect("test edit should accept focus");
+            let deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                pump_test_messages();
+                if unsafe { GetForegroundWindow() } == window && unsafe { GetFocus() } == window {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "interactive desktop did not grant focus; no global input was sent"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
 
         #[test]
         fn text_input_preserves_unicode_and_normalizes_crlf() {
@@ -999,9 +1034,7 @@ mod platform {
             assert!(is_internal_input_class(
                 "cm-content cm-lineWrapping cm-focused"
             ));
-            assert!(is_internal_input_class(
-                "  cm-lineWrapping   cm-content  "
-            ));
+            assert!(is_internal_input_class("  cm-lineWrapping   cm-content  "));
 
             // A token has to match whole, never as a prefix or a substring.
             assert!(!is_internal_input_class("cm-contenteditable"));
@@ -1146,6 +1179,9 @@ mod platform {
 
         #[test]
         fn inserts_unicode_into_a_real_windows_edit_control() {
+            let _desktop = DESKTOP_TEST_LOCK
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let style = WS_OVERLAPPEDWINDOW | WS_VISIBLE | WINDOW_STYLE(ES_MULTILINE as u32);
             let window = unsafe {
                 CreateWindowExW(
@@ -1164,14 +1200,8 @@ mod platform {
                 )
             }
             .expect("test edit window should be created");
-            let _ = unsafe { SetForegroundWindow(window) };
-            unsafe { SetFocus(Some(window)) }.expect("test edit window should accept focus");
-            unsafe {
-                SetCursorPos(180, 140).expect("test cursor should move to the edit window");
-                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-            }
-            std::thread::sleep(Duration::from_millis(120));
+            let _window = TestWindow(window);
+            focus_test_window(window);
 
             let (target, _, password) =
                 focused_target(None).expect("test edit target should be captured");
@@ -1185,25 +1215,21 @@ mod platform {
                 .expect("unicode transcript should be inserted");
             let deadline = std::time::Instant::now() + Duration::from_millis(300);
             while std::time::Instant::now() < deadline {
-                let mut event = MSG::default();
-                while unsafe { PeekMessageW(&mut event, None, 0, 0, PM_REMOVE) }.as_bool() {
-                    unsafe {
-                        let _ = TranslateMessage(&event);
-                        DispatchMessageW(&event);
-                    }
-                }
+                pump_test_messages();
                 std::thread::sleep(Duration::from_millis(10));
             }
 
             let mut buffer = vec![0_u16; 128];
             let copied = unsafe { GetWindowTextW(window, &mut buffer) } as usize;
             let actual = String::from_utf16_lossy(&buffer[..copied]);
-            unsafe { DestroyWindow(window) }.expect("test edit window should be destroyed");
             assert_eq!(actual, expected);
         }
 
         #[test]
         fn refuses_a_changed_target_and_detects_password_controls() {
+            let _desktop = DESKTOP_TEST_LOCK
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let normal = unsafe {
                 CreateWindowExW(
                     WINDOW_EX_STYLE::default(),
@@ -1221,6 +1247,7 @@ mod platform {
                 )
             }
             .expect("normal edit window should be created");
+            let _normal = TestWindow(normal);
             let password = unsafe {
                 CreateWindowExW(
                     WINDOW_EX_STYLE::default(),
@@ -1238,36 +1265,20 @@ mod platform {
                 )
             }
             .expect("password edit window should be created");
+            let _password = TestWindow(password);
 
-            let _ = unsafe { SetForegroundWindow(normal) };
-            unsafe { SetFocus(Some(normal)) }.expect("normal edit should accept focus");
-            unsafe {
-                SetCursorPos(180, 140).expect("cursor should move to the normal edit");
-                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-            }
-            std::thread::sleep(Duration::from_millis(120));
+            focus_test_window(normal);
             let (target, _, is_password) =
                 focused_target(None).expect("normal edit should be captured");
             assert!(!is_password);
 
-            let _ = unsafe { SetForegroundWindow(password) };
-            unsafe { SetFocus(Some(password)) }.expect("password edit should accept focus");
-            unsafe {
-                SetCursorPos(600, 140).expect("cursor should move to the password edit");
-                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-            }
-            std::thread::sleep(Duration::from_millis(120));
+            focus_test_window(password);
             let (_, _, is_password) =
                 focused_target(None).expect("password edit should be inspected");
             assert!(is_password);
             let error = insert_text_excluding(&target, "must not appear", None)
                 .expect_err("changed password target must be rejected");
             assert!(error.contains("password"));
-
-            unsafe { DestroyWindow(normal) }.expect("normal edit should be destroyed");
-            unsafe { DestroyWindow(password) }.expect("password edit should be destroyed");
         }
     }
 }

@@ -10,7 +10,7 @@ The pool lives in `src/modules/terminal/lib/rendererPool.ts`.
 
 ## Slot lifecycle
 
-- `POOL_MAX_SIZE` is 5 (`rendererPool.ts:22`). Each slot owns one xterm `Terminal`, `FitAddon`, `SearchAddon`, `SerializeAddon`, and optionally a `WebglAddon`.
+- The warm buffer budget is 5 and the hard live-buffer budget is 16 (`rendererCapacity.ts`). GPU contexts have an independent hard cap of 5. Each slot owns one xterm `Terminal`, `FitAddon`, `SearchAddon`, `SerializeAddon`, and optionally a `WebglAddon`.
 - A slot is created on demand and assigned to a leaf on bind.
 - `releaseSlot` detaches a slot from a leaf. If the leaf is idle, the slot is parked with `display:none` so xterm stops rendering but keeps parsing PTY bytes.
 - After a grace period, idle slots may be reaped to keep the pool size down.
@@ -28,7 +28,8 @@ When the leaf becomes visible again, `acquireSlot` looks for:
 1. A slot already bound to this leaf.
 2. A retained slot for this leaf (`retainedLeafId === leafId`) - fast path, no snapshot replay.
 3. A clean idle slot.
-4. If the pool is at max size, the lowest-scoring slot is evicted. Eviction serializes the retained buffer to a snapshot via `SerializeAddon` before stealing the slot.
+4. Reuse the oldest safe hidden buffer. Visible panes, busy/alternate-screen buffers (including retained ones), and queued parser writes are never eviction candidates.
+5. If none is safe, allocate a live buffer up to the hard bound. At capacity, attachment returns an explicit failure; automation must not submit a command. Close an unused terminal and select the pending tab again to retry.
 
 ## The DormantRing
 
@@ -48,7 +49,7 @@ If only a snapshot exists, `bindSlot` clears the terminal, resizes, writes the s
 
 ## WebGL lifecycle
 
-WebGL addons are created when a slot becomes visible and reaped after a grace period when parked. The addon recovers from context loss on sleep/wake or GPU reset.
+WebGL addons are created only for visible slots and reaped after a grace period when parked. At the GPU cap, a parked context is reclaimed without discarding its parser or buffer; additional visible panes use the DOM renderer. The addon recovers from context loss on sleep/wake or GPU reset.
 
 ## Invariants
 

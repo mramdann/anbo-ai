@@ -1,0 +1,7 @@
+[test-groups]
+windows-desktop-focus = { max-threads = 1 }
+
+[[profile.default.overrides]]
+platform = 'cfg(windows)'
+filter = 'test(inserts_unicode_into_a_real_windows_edit_control) | test(refuses_a_changed_target_and_detects_password_controls)'
+test-group = 'windows-desktop-focus'

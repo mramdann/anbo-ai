@@ -303,9 +303,7 @@ fn recommended_model(total_ram_mb: u64, gpu: bool) -> &'static str {
 /// Physical memory in MB, or 0 when it cannot be read.
 #[cfg(windows)]
 fn total_ram_mb() -> u64 {
-    use windows_sys::Win32::System::SystemInformation::{
-        GlobalMemoryStatusEx, MEMORYSTATUSEX,
-    };
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
     status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
     if unsafe { GlobalMemoryStatusEx(&mut status) } == 0 {
@@ -400,7 +398,9 @@ async fn installed_variant(root: &Path) -> Option<&'static RuntimeVariant> {
         .await
         .ok()?
         .ok()?;
-    VARIANTS.iter().find(|variant| variant.server_sha256 == hash)
+    VARIANTS
+        .iter()
+        .find(|variant| variant.server_sha256 == hash)
 }
 
 /// The backend an install advertises, read from its manifest. This is for
@@ -1193,20 +1193,18 @@ pub async fn whisper_runtime_start(
     let server = server_path(&root);
     let selected_model = model_path(&root, &model);
     let mut command = Command::new(&server);
-    command
-        .current_dir(root.join("Release"))
-        .args([
-            "-m",
-            &selected_model.to_string_lossy(),
-            "-l",
-            "auto",
-            "-t",
-            &threads.to_string(),
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-        ]);
+    command.current_dir(root.join("Release")).args([
+        "-m",
+        &selected_model.to_string_lossy(),
+        "-l",
+        "auto",
+        "-t",
+        &threads.to_string(),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        &port.to_string(),
+    ]);
     if !variant.gpu {
         // The CPU builds carry no GPU code at all, so this only silences the
         // attempt; on the CUDA build it would throw the acceleration away.

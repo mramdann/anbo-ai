@@ -42,6 +42,14 @@ Each round tests two native clicks, default Enter, and zero-observation Enter in
 
 ## Native browser navigation
 
+Direct single-target locators and locator-state waits have a dedicated native suite:
+
+```powershell
+node scripts/browser-locator-target-smoke.mjs --mcp-url http://127.0.0.1:7332/mcp --workspace D:/anbo-dev-local/sandbox --output .anbo/local-dev/locator-target-run.json
+```
+
+It checks ref/locator exclusivity, strict fields, trusted input, value and submit guards, exactly-once behavior after a postcondition timeout, ambiguity across frames, richer element metadata, password redaction, and absent/hidden waits on a capped 50,000-node document. It also covers focus, hover, double click, check/uncheck, select, dialog handling, scrolling, and delayed removal through the same locator entry point. It never changes window geometry. Use a fresh output path and run resource-heavy suites sequentially. Repeated close/open must release destroyed children's startup reservations without weakening concurrent startup admission.
+
 The Claude-audit regressions have reusable native fixtures:
 
 ```powershell
@@ -66,6 +74,34 @@ The fixture deliberately withholds response headers until `browser_get_url` retu
 
 ## What must have a test
 
+Codex completion fallback is hookless and event-driven. Keep the exact rollout
+workspace/session match, bounded appended reads, partial-record handling,
+matching turn ids, input epochs, watcher disposal and late-callback rejection
+covered. Real CLI checks must include a no-tool turn without a completion row,
+a first input after session discovery has expired, a normal follow-up, and
+normal `/exit` with readiness guards still enabled. Never change CLI hooks,
+plugins, trust or global configuration to make the test pass.
+
+Explorer icon generation must preserve all lookup mappings and exact SVG
+viewBox/body data. `iconResolver.test.ts` verifies generated content revisions
+and safe fallback names; `pnpm smoke:production` decodes every built local icon
+alongside the real main-entry and editor layout checks. Keep the aggregate and
+startup bundle ceilings unchanged.
+
+Native browser creation must keep `WebviewBuilder.focused(false)` so creating
+a child never depends on the user's OS window accepting focus. Pair the
+source contract test with live rapid open/close, native child enumeration,
+and log inspection. Do not resize, minimize or activate the user's Dev window
+to reproduce an upstream focus failure.
+
+The two native Windows voice focus tests share a desktop resource. An in-process
+mutex serializes `cargo test`, and `src-tauri/.config/nextest.toml` assigns both
+to a single-slot group for nextest's separate processes. Test windows are destroyed
+on assertion failure. Setup verifies foreground and keyboard focus without moving
+or clicking the system cursor; it fails before global input when focus is unavailable.
+Run them only on an available interactive desktop, not while someone is typing.
+This is test-only isolation, not a production voice-input lock.
+
 Browser automation branding and effects require `automationState.test.ts`, `automationActivity.test.ts`, and Rust `browser_automation::caller` / `activity` tests. Cover separate concurrent callers, stale completion ordering, bounded session expiry, generic legacy fallback, redacted payloads, and timer cleanup. `node scripts/browser-effects-smoke.mjs` exercises the actual overlay in an isolated Chromium profile: click-through, native input, untouched layout/text, closed Shadow DOM, screenshots, reduced motion, viewport/DPI changes, and repeated mount/dispose. `--measure` records alternating off/on renderer task time and frame intervals on the same fixture. Keep builds and other CPU-heavy tests stopped during timing, and do not equate a headless or debug result with packaged-release performance.
 
 Native verification must additionally use owned browser tabs in an explicitly designated workspace, two MCP sessions with distinct client names, navigation/reload, visible/background panes, the effects switch, native screenshots, and a dynamic page such as YouTube. No overlay DOM or arguments may enter snapshots; no old request may replace another caller's badge. Child-frame operations must retain the frame-label fallback unless their root-viewport position has been verified. Never enable remote debugging in tracked app configuration or modify an installed production profile for these checks.
@@ -77,6 +113,10 @@ The same smoke loads the shipped tab CSS to verify two outward circular pulses, 
 Cursor motion regressions must sample actual intermediate positions between separate requests, with a read-only request in between, rather than only assert the final transform. Cover persistence beyond the old 2.7-second disposal window, no running idle animations, explicit session end, late-event rejection, same-brand connection isolation, invalid coordinates, frame resets, screenshot restoration, and immediate reduced-motion positioning. Fake-clock state tests also advance ten minutes without expiring a live browser task. The native renderer suppresses queued pointer preflight events; model real rendered events such as `move`, `done`, and the next read's `running` phase. Native input counters must remain exact, without action retries or added input delays. External/unbound clients must call `browser_end_session` with the returned `controlId` in task cleanup. Local Windows clients can additionally use exact transport-PID-to-PTY-Job ownership plus the stable turn observer; a generic prompt or brand match is not sufficient. `browserTurnObserver.test.ts` covers background-server completion without changing global working status, permission waits, long thinking gaps, separate same-brand PTYs, in-flight requests, stale events, and no added reads when inactive. Rust tests verify native TCP PID resolution, exact job membership, private ownership serialization, and compare-and-end race guards.
 
 `src/startupTheme.test.ts` runs the actual pre-bundle splash script without React or IPC; `src/modules/theme/startupTheme.test.ts` covers bounded palette snapshots, built-in and single-variant custom themes, preview exclusion, and unavailable storage. Check explicit and system modes, invalid or mismatched caches, rejected CSS values, and default-token parity. Visual checks should use the real startup HTML in an isolated browser profile with app modules withheld, verify computed colors in both modes and reduced motion, and avoid changing the user's saved theme. Startup changes also require a production build, `pnpm size:startup`, and `pnpm smoke:production`.
+
+Explicit hover positions require `actionRectScript.test.ts`, AI tool forwarding, and Rust position/schema tests. Run `node scripts/browser-hover-smoke.mjs --mcp-url http://127.0.0.1:7332/mcp --workspace D:/anbo-dev-local/sandbox --output .anbo/local-dev/hover-run.json` against the current Dev binary with a fresh output filename. It reproduces cached mouseover coordinates, verifies one trusted move per successful native call, rejects invalid/covered/stale targets without input, checks child-frame coordinates and explicit fallback reporting, and preserves the user's selected tab and workspace. Center-versus-position timings are same-build debug measurements, not a production speed claim. Real media QA additionally needs visible clock progression on the same playback item across repeated fresh loads; fixture counters and CSS hover are insufficient. Do not change the user's window geometry or add automatic input replay to make this pass.
+
+First-tab selection is shared by MCP browser, shared-terminal and CLI-agent opens. `automationTabPlacement.test.ts` covers pending reservations, any existing tab kind, inactive workspaces and cleanup. Agent and terminal service tests verify selected-first reporting while preserving background defaults. On an explicitly empty active test workspace, add `--first-tab` to the hover smoke to check first/later/concurrent browser opens. Native QA must also check a first terminal, mixed browser/terminal opens, and one real configured CLI at a time. Do not override user selection for later opens or activate an inactive workspace. Retest actual window geometry and close only owned idle fixtures.
 
 `src/app/lib/terminalCloseCopy.test.ts` covers retained close-dialog copy across confirm, Cancel, Escape, missing targets, pane closure, and reopening the same tab. UI regressions must also sample actual dialog exit-animation frames: only the original dialog should remain, with its original title and description until unmount. Cancel/Escape must preserve the target; confirmation disposes it once. Use fixture tabs rather than terminating user-owned agents.
 
