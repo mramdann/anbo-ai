@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.27.0](https://github.com/mramdann/anbo-ai/compare/v0.26.0...v0.27.0) (2026-09-09)
+
+
+### Features
+
+* **browser:** add guarded locators and resilient native lifecycle ([df7f47c](https://github.com/mramdann/anbo-ai/commit/df7f47cfdb06ed4d6f8a377d8a05a68bba3152b6))
+
+
+### Bug Fixes
+
+* **runtime:** preserve agent sessions and bound terminal resource usage ([f78b1e8](https://github.com/mramdann/anbo-ai/commit/f78b1e8b736cd49492b9e5629c1aeeb20e82b46b))
+* **ui:** unify scrollbars and polish activity feedback ([2845d21](https://github.com/mramdann/anbo-ai/commit/2845d219152b4596ad93d2fee2c7957959972574))
+
+
+### Performance Improvements
+
+* **icons:** externalize Material assets and unify agent branding ([fa26709](https://github.com/mramdann/anbo-ai/commit/fa26709c8d637d348e793897d94bbb46e18bb470))
+
 ## [0.26.0](https://github.com/mramdann/anbo-ai/compare/v0.25.0...v0.26.0) (2026-09-08)
 
 
