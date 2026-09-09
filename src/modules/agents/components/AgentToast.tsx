@@ -46,6 +46,18 @@ export function showAgentToast({
         onActivate();
       },
     },
+    // The alert stands for thirty seconds, and Open jumps to the agent, so
+    // without this there is no way to put the alert away and stay put.
+    closeButton: true,
+    // Sonner pins the close button to the text-direction start, which is the
+    // left corner in LTR. A dismiss control belongs on the trailing side.
+    // The start value has to be auto, not unset: custom properties inherit, so
+    // unset here would just pick the 0 that Sonner sets on the html element.
+    style: {
+      "--toast-close-button-start": "auto",
+      "--toast-close-button-end": "0",
+      "--toast-close-button-transform": "translate(35%, -35%)",
+    } as React.CSSProperties,
     duration: 30_000,
   });
 }

@@ -282,11 +282,11 @@ html[data-native-browser-live="true"] footer {
   pointer-events: none !important;
 }
 .xterm .xterm-scrollable-element > .scrollbar.vertical {
-  width: 5px !important;
+  width: var(--scrollbar-thickness) !important;
 }
 .xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
-  left: 1px !important;
-  width: 3px !important;
+  left: 0 !important;
+  width: var(--scrollbar-thickness) !important;
   border-radius: 999px;
 }
 .xterm .xterm-decoration-overview-ruler {
@@ -299,11 +299,13 @@ html[data-native-browser-live="true"] footer {
   opacity: 0 !important;
   pointer-events: none !important;
 }
+/* Both standard properties stay auto so the ::-webkit-scrollbar rules below
+ * keep applying. The global hider then leaves this viewport without a native
+ * bar, so xterm's own .scrollbar.vertical child stays the only affordance. */
 .xterm .xterm-viewport,
 .xterm-viewport {
-  scrollbar-width: thin !important;
-  scrollbar-color: color-mix(in oklab, var(--foreground) 28%, transparent)
-    transparent;
+  scrollbar-width: auto !important;
+  scrollbar-color: auto !important;
   -ms-overflow-style: none !important;
 }
 .xterm .xterm-viewport::-webkit-scrollbar,
@@ -696,6 +698,13 @@ textarea,
   display: none !important;
 }
 
+/* One thickness for every scroll affordance in the app. Change it here, not
+ * in the individual surfaces below. Three pixels reads as a hairline and ten
+ * is heavier than the chrome wants, so this sits between the two. */
+:root {
+  --scrollbar-thickness: 6px;
+}
+
 /* Kill native scrollbars everywhere by default — Linux/Windows ship chunky
  * Chromium bars that break the chrome, and macOS WKWebView flashes its overlay
  * scrollbar briefly during layout transitions (AI panel open, pane split,
@@ -714,15 +723,17 @@ html *::-webkit-scrollbar {
   display: none;
 }
 
+/* Both standard properties stay auto so Chromium keeps honoring the
+ * ::-webkit-scrollbar rules below; a non-initial value on either one disables
+ * them and restores the chunky native bar. */
 .panel-scrollbar {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in oklab, var(--foreground) 28%, transparent)
-    transparent;
+  scrollbar-width: auto;
+  scrollbar-color: auto;
 }
 
 .panel-scrollbar::-webkit-scrollbar {
   display: block;
-  width: 3px;
+  width: var(--scrollbar-thickness);
   height: 0;
 }
 
@@ -742,17 +753,19 @@ html *::-webkit-scrollbar {
 /* The main CodeMirror scroller is nested inside the editor wrapper, so the
  * panel-scrollbar utility cannot be attached to it directly. Keep both axes
  * usable for long files and long unwrapped lines without restoring chunky
- * native scrollbars to every CodeMirror surface. */
+ * native scrollbars to every CodeMirror surface.
+ * Chromium ignores every ::-webkit-scrollbar rule on an element whose
+ * scrollbar-width or scrollbar-color is not initial, so both stay auto here
+ * and the slim thumb below is what actually renders. */
 .anbo-code-editor .cm-scroller {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in oklab, var(--foreground) 28%, transparent)
-    transparent;
+  scrollbar-width: auto;
+  scrollbar-color: auto;
 }
 
 .anbo-code-editor .cm-scroller::-webkit-scrollbar {
   display: block;
-  width: 3px;
-  height: 3px;
+  width: var(--scrollbar-thickness);
+  height: var(--scrollbar-thickness);
 }
 
 .anbo-code-editor .cm-scroller::-webkit-scrollbar-track {
@@ -766,6 +779,21 @@ html *::-webkit-scrollbar {
 
 .anbo-code-editor .cm-scroller::-webkit-scrollbar-thumb:hover {
   background: color-mix(in oklab, var(--foreground) 48%, transparent);
+}
+
+/* shadcn primitives are regenerated, never hand-edited, so ScrollArea takes the
+ * shared thickness through its slots instead of its own utility classes. */
+[data-slot="scroll-area-scrollbar"][data-orientation] {
+  padding: 0;
+  border: 0;
+}
+
+[data-slot="scroll-area-scrollbar"][data-orientation="vertical"] {
+  width: var(--scrollbar-thickness);
+}
+
+[data-slot="scroll-area-scrollbar"][data-orientation="horizontal"] {
+  height: var(--scrollbar-thickness);
 }
 
 /* Motion tokens. Reduced-motion zeroes the durations as a global snap. */

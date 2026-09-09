@@ -553,7 +553,7 @@ export function GitHistoryPane({
             <div
               ref={scrollRef}
               onScroll={handleScroll}
-              className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]"
+              className="panel-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]"
             >
               <div
                 style={{
@@ -957,7 +957,7 @@ function CommitFiles({
           {filesEntry.files.length}
         </span>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]">
+      <div className="panel-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]">
         <ul className="space-y-px px-1.5 pb-2">
           {filesEntry.files.map((file) => (
             <li key={file.path}>

@@ -18,6 +18,10 @@ const iconFor = brand => {
   return {source:`data:image/${path.endsWith('.png') ? 'png' : 'svg+xml'};base64,${readFileSync('public' + path).toString('base64')}`,invert:!asset.dark && !!asset.invertOnDark};
 };
 const output = process.argv.find(arg => arg.startsWith("--screenshot="))?.slice(13);
+const reportPath = process.argv.find(arg => arg.startsWith('--report='))?.slice(9);
+if (reportPath && existsSync(reportPath)) throw Error('Refusing to overwrite report');
+const soakSeconds = Number(process.argv.find(arg => arg.startsWith('--soak-seconds='))?.slice(15) || 0);
+if (!Number.isInteger(soakSeconds) || soakSeconds < 0 || soakSeconds > 600) throw Error('Soak must be between 0 and 600 seconds');
 if (output && existsSync(output)) throw new Error("Refusing to overwrite screenshot");
 const tabOutput = process.argv.find(arg => arg.startsWith('--tab-screenshot='))?.slice(17);
 if (tabOutput && existsSync(tabOutput)) throw new Error('Refusing to overwrite tab screenshot');
@@ -31,7 +35,7 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 const profile = mkdtempSync(join(tmpdir(), "anbo-effects-smoke-"));
 const child = spawn(browser, ["--headless=new", "--remote-debugging-port=0", "--no-first-run", "--disable-extensions", "--disable-background-networking", `--user-data-dir=${profile}`, "about:blank"], { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
 let socket;
-const deadline = setTimeout(() => { child.kill(); server.close(); throw new Error("Visual smoke timed out"); }, 120_000);
+const deadline = setTimeout(() => { child.kill(); server.close(); throw new Error("Visual smoke timed out"); }, 120_000 + soakSeconds * 1000);
 try {
   const endpoint = await new Promise((resolve, reject) => {
     let log = "";
@@ -215,6 +219,36 @@ try {
   await pause(30);
   assert.equal(await evaluate("document.querySelectorAll('[data-anbo-visual]').length"), 0, 'A late completion cannot resurrect an ended session');
   const samples = [];
+  const soak = [];
+  if (soakSeconds) {
+    await hide();
+    await evaluate('window.testRoots.length=0');
+    await send('HeapProfiler.collectGarbage');
+    const start = performance.now();
+    let cycles = 0;
+    const record = async () => {
+      await send('HeapProfiler.collectGarbage');
+      const metrics = Object.fromEntries((await send('Performance.getMetrics')).metrics.map(m => [m.name,m.value]));
+      const dom = await send('Memory.getDOMCounters');
+      const sample = {seconds:(performance.now()-start)/1000,cycles,heapBytes:metrics.JSHeapUsedSize,taskSeconds:metrics.TaskDuration,...dom};
+      soak.push(sample); console.log(JSON.stringify({soakProgress:sample}));
+    };
+    await record();
+    while (performance.now()-start < soakSeconds*1000) {
+      const request = 10000 + cycles;
+      await emit('move',{x:140+(cycles%5)*80,y:160},'hover',undefined,request,request);
+      await emit('done',undefined,'hover',undefined,request,request);
+      await pause(450);
+      await emit('ended',undefined,'hover',undefined,request,request);
+      assert.equal(await evaluate("document.querySelectorAll('[data-anbo-visual]').length"),0,'Every soak session ends without retained overlay DOM');
+      await evaluate('window.testRoots.length=0');
+      cycles++;
+      if (cycles%50===0) await record();
+    }
+    await record();
+    assert(soak.at(-1).nodes <= soak[0].nodes + 20,'Repeated sessions do not retain overlay DOM nodes');
+    assert(soak.at(-1).jsEventListeners <= soak[0].jsEventListeners + 2,'Repeated sessions do not accumulate event listeners');
+  }
   if (process.argv.includes("--measure") || process.argv.includes("--measure-idle")) {
     await send("Emulation.setDeviceMetricsOverride", { width: 1000, height: 720, deviceScaleFactor: 1, mobile: false });
     const metrics = async () => Object.fromEntries((await send("Performance.getMetrics")).metrics.map(metric => [metric.name, metric.value]));
@@ -287,6 +321,7 @@ try {
   const reducedPulse=await pulseState();assert.equal(reducedPulse.first,'none');assert.equal(reducedPulse.second,'none');
   assert.equal(requests.filter(url => !url.startsWith(origin) && !url.startsWith('data:image/')).length, 0, "Effects make no external requests");
   assert.deepEqual(errors, []);
+  if (reportPath) writeFileSync(reportPath,JSON.stringify({passed:true,scope:'Shipped visual source in isolated headless Chromium, not the Dev foreground window',soak,samples,tabSamples},null,2),{flag:'wx'});
   console.log(JSON.stringify({ passed: true, checks: ["lazy mount", "click-through", "unchanged geometry/text", "closed shadow", "native click once", "native typing", "click ripple", "cursor-attached identity", "badge edge clamping", "caller anchor isolation", "frame fallback", "clean screenshot", "reduced motion", "hidden cleanup", "DPI/small viewport", "50 lifecycle cycles", "stable completion anchor", "explicit session end", "strict page CSP", "no external requests", "no runtime errors", "cross-request cursor interpolation", "read-tool cursor continuity", "short-idle resume", "invalid coordinate reset", "persistent idle cursor with paused animations", "reduced-motion pointer", "compact two-line card", "14x18 neutral pointer", "seven canonical brand logos", "generic icon fallback", "public tool names", "bounded method labels", "error state", "CSP image fallback", "right and bottom edge flips", "same-brand session reset", "late completion rejection", "screenshot completion restore", "distance-aware travel", "matched cursor/card duration", "mid-flight retarget continuity", "stationary tab logo", "two expanding circular pulses", "unclipped pulse bounds", "pulse theme tokens", "idle and reduced-motion pulse stop"], samples, tabSamples }, null, 2));
 } finally {
   clearTimeout(deadline); socket?.close(); child.kill(); server.close();

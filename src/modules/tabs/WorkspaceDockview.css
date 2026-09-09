@@ -166,19 +166,17 @@
 @keyframes anbo-workspace-active-tab-focus-pulse {
   0%,
   100% {
-    border-top-color: color-mix(in oklab, var(--primary) 60%, transparent);
+    border-top-color: color-mix(in oklab, var(--primary) 32%, transparent);
     box-shadow:
       0 2px 0 var(--anbo-chrome-tab-surface),
-      0 -1px 6px color-mix(in oklab, var(--primary) 14%, transparent),
-      0 0 0 0 color-mix(in oklab, var(--primary) 0%, transparent);
+      0 -1px 6px color-mix(in oklab, var(--primary) 10%, transparent);
   }
 
   50% {
     border-top-color: var(--primary);
     box-shadow:
       0 2px 0 var(--anbo-chrome-tab-surface),
-      0 -1px 8px color-mix(in oklab, var(--primary) 34%, transparent),
-      0 0 0 2px color-mix(in oklab, var(--primary) 9%, transparent);
+      0 -1px 10px color-mix(in oklab, var(--primary) 46%, transparent);
   }
 }
 
@@ -340,15 +338,14 @@
 @keyframes anbo-browser-automation-pulse {
   0% {
     opacity: 0;
-    transform: scale(0.65);
+    transform: scale(0.45);
   }
-  18% {
-    opacity: 0.65;
+  20% {
+    opacity: 0.7;
   }
-  85%,
   100% {
     opacity: 0;
-    transform: scale(1.65);
+    transform: scale(1.7);
   }
 }
 
@@ -361,13 +358,12 @@
   flex: none;
   align-items: center;
   justify-content: center;
-  /* Keep the expanding rings inside the tab's clipped content box. */
+  /* Keep the expanding waves inside the tab's clipped content box. */
   margin: 6px;
   border-radius: 50%;
   color: var(--primary);
-  background: color-mix(in oklab, var(--primary) 16%, var(--background));
-  box-shadow: inset 0 0 0 1px
-    color-mix(in oklab, var(--primary) 34%, transparent);
+  /* No disc and no rim behind the logo: the only circle here is the wave, and
+   * a filled chip reads as a permanent badge rather than activity. */
 }
 
 .anbo-browser-automation-indicator::before,
@@ -375,8 +371,16 @@
   position: absolute;
   z-index: -1;
   inset: 0;
-  border: 1px solid color-mix(in oklab, var(--primary) 72%, transparent);
   border-radius: 50%;
+  /* A wave front rather than an outline: the band has no hard edge, so it
+   * reads as something spreading out from behind the logo instead of a
+   * circle being drawn around it. */
+  background: radial-gradient(
+    circle,
+    transparent 50%,
+    color-mix(in oklab, var(--primary) 60%, transparent) 68%,
+    transparent 86%
+  );
   opacity: 0;
   animation: anbo-browser-automation-pulse 1.8s ease-out infinite;
   content: "";

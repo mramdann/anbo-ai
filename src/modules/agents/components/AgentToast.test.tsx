@@ -59,6 +59,24 @@ describe("showAgentToast", () => {
     );
   });
 
+  it("can be dismissed without activating the agent", () => {
+    const onActivate = vi.fn();
+    showAgentToast({
+      agent: "claude",
+      title: "Aurelia needs your input",
+      onActivate,
+    });
+
+    const options = toast.mock.calls[0]?.[1];
+    expect(options?.closeButton).toBe(true);
+    // Trailing corner, not the text-direction start Sonner defaults to.
+    // Custom properties inherit, so the start must be auto: unset would
+    // inherit the 0 Sonner sets on the html element and stay on the left.
+    expect(options?.style?.["--toast-close-button-end"]).toBe("0");
+    expect(options?.style?.["--toast-close-button-start"]).toBe("auto");
+    expect(onActivate).not.toHaveBeenCalled();
+  });
+
   it("invokes onActivate and prevents default when action is clicked", () => {
     const onActivate = vi.fn();
     showAgentToast({

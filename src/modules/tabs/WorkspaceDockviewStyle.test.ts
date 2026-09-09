@@ -57,14 +57,36 @@ describe("WorkspaceDockview active tab treatment", () => {
     expect(css).toMatch(
       /animation: none;\s*border-top-color: var\(--primary\)/,
     );
+    // The swing has to be wide enough to read against a near-monochrome
+    // primary: a narrow one animates but looks static.
+    expect(css).toContain(
+      "border-top-color: color-mix(in oklab, var(--primary) 32%, transparent)",
+    );
+    expect(css).toContain(
+      "0 -1px 10px color-mix(in oklab, var(--primary) 46%, transparent)",
+    );
   });
 
   it("keeps the agent logo still while two circular waves expand outwards", () => {
     expect(css).not.toContain("anbo-browser-automation-robot-hop");
     expect(css).not.toContain("transform-origin: center bottom");
     expect(css).toContain("@keyframes anbo-browser-automation-pulse");
-    expect(css).toContain("transform: scale(0.65)");
-    expect(css).toContain("transform: scale(1.65)");
+    // Starts inside the logo and travels outwards, so the wave appears from
+    // behind the mark instead of being drawn around it.
+    expect(css).toContain("transform: scale(0.45)");
+    expect(css).toContain("transform: scale(1.7)");
+    // A soft gradient band, never a hard outline.
+    expect(css).toMatch(/indicator::before[\s\S]{0,400}radial-gradient\(/);
+    // The logo carries no filled chip: activity is the wave, not a badge.
+    expect(css).not.toMatch(
+      /\.anbo-browser-automation-indicator \{[^}]*background:/,
+    );
+    expect(css).not.toMatch(
+      /\.anbo-browser-automation-indicator \{[^}]*box-shadow:/,
+    );
+    expect(css).not.toMatch(
+      /indicator::before,\s*\.anbo-browser-automation-indicator::after\s*\{[^}]*border:\s*1px solid/,
+    );
     expect(css).toMatch(
       /indicator::before,\s*\.anbo-browser-automation-indicator::after/,
     );
