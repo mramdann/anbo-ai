@@ -3,6 +3,47 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { ToolContext } from "./context";
 
+const targetLocator = z
+  .object({
+    by: z.enum([
+      "role",
+      "text",
+      "label",
+      "placeholder",
+      "testId",
+      "title",
+      "alt",
+      "css",
+    ]),
+    value: z.string().min(1).max(4096),
+    name: z.string().min(1).max(4096).optional(),
+    exact: z.boolean().optional(),
+    includeHidden: z.boolean().optional(),
+    timeout: z.number().int().min(100).max(60000).optional(),
+  })
+  .strict()
+  .describe(
+    "Unique target alternative to ref. Bounded lookup; ambiguous or incomplete scans never dispatch input. timeout bounds lookup only.",
+  );
+
+function withLocator<T extends z.ZodRawShape>(
+  schema: z.ZodObject<T>,
+  optional = false,
+) {
+  return schema
+    .extend({
+      ref: z.string().min(1).max(32).optional(),
+      locator: targetLocator.optional(),
+    })
+    .refine((value) => {
+      const target = value as { ref?: string; locator?: unknown };
+      return (
+        !(target.ref && target.locator) &&
+        (optional || Boolean(target.ref || target.locator))
+      );
+    }, "Use one ref or locator");
+}
+
 const pageExpectation = z
   .object({
     url: z
@@ -17,6 +58,12 @@ const pageExpectation = z
       .max(2048)
       .optional()
       .describe("Exact title after whitespace normalization."),
+    titleSource: z
+      .enum(["document", "native"])
+      .optional()
+      .describe(
+        "Use the source returned by page info or snapshot; default document. Requires title.",
+      ),
     text: z
       .string()
       .min(1)
@@ -36,8 +83,10 @@ const pageExpectation = z
   })
   .strict()
   .refine(
-    (value) => Boolean(value.url || value.title || value.text),
-    "Provide url, title, or text",
+    (value) =>
+      Boolean(value.url || value.title || value.text) &&
+      (!value.titleSource || Boolean(value.title)),
+    "Provide url, title, or text; titleSource requires title",
   );
 
 function activeBrowserTabId(ctx: ToolContext): number {
@@ -47,35 +96,37 @@ function activeBrowserTabId(ctx: ToolContext): number {
 }
 
 export function buildBrowserTools(ctx: ToolContext) {
+  const runAction = async (
+    action: string,
+    params: Record<string, unknown> = {},
+    key = "result",
+  ) => {
+    try {
+      const tabId =
+        typeof params.tabId === "number"
+          ? params.tabId
+          : activeBrowserTabId(ctx);
+      const result = await invoke<string>("browser_automation_handle_action", {
+        requestJson: JSON.stringify({ action, tabId, ...params }),
+      });
+      return { status: "ok", [key]: result };
+    } catch (error) {
+      return { status: "error", error: String(error) };
+    }
+  };
   return {
     browser_end_session: tool({
       description:
-        "End the visual remote session when the browser task finishes, fails, or is handed back to the user. Call for each used tab with its returned controlId. Do not call between steps. Does not close a tab or terminal.",
+        "End visual control on completion, failure, or handoff: once per used tab with its controlId, not between steps. Leaves tabs and terminals open.",
       inputSchema: z.object({
         tabId: z.number().int().positive(),
         controlId: z.number().int().positive(),
       }),
-      execute: async ({ tabId, controlId }) => {
-        try {
-          const result = await invoke<string>(
-            "browser_automation_handle_action",
-            {
-              requestJson: JSON.stringify({
-                action: "end_session",
-                tabId,
-                controlId,
-              }),
-            },
-          );
-          return { status: "ok", result };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+      execute: (params) => runAction("end_session", params),
     }),
     browser_navigate: tool({
       description:
-        "Open or navigate the native browser to any HTTP or HTTPS URL, including external sites. Opens a new browser tab when none is active.",
+        "Navigate to an HTTP(S) URL, including external sites. Opens a tab if no browser is active.",
       inputSchema: z.object({
         url: z.string().describe("The HTTP or HTTPS URL to navigate to."),
       }),
@@ -97,24 +148,14 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_snapshot: tool({
       description:
-        "Capture a bounded DOM snapshot with current element refs. Both snapshot and find replace older refs for this tab. Prefer a targeted find when the element is already known.",
+        "Bounded DOM snapshot with fresh refs, replacing this tab's prior snapshot/find refs. Prefer targeted find for known elements.",
       inputSchema: z.object({}),
-      execute: async () => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({ action: "snapshot", tabId }),
-          });
-          return { status: "ok", snapshot: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+      execute: () => runAction("snapshot", {}, "snapshot"),
     }),
 
     browser_find: tool({
       description:
-        "Find elements with a semantic locator and return fresh refs, replacing older snapshot and find refs for this tab. Prefer role, label, placeholder, or testId over CSS.",
+        "Find elements and replace this tab's prior snapshot/find refs. Prefer role, label, placeholder, or testId over CSS.",
       inputSchema: z.object({
         by: z.enum([
           "role",
@@ -131,180 +172,83 @@ export function buildBrowserTools(ctx: ToolContext) {
           .string()
           .optional()
           .describe(
-            "Optional computed accessible name when locating by role. aria-label, aria-labelledby, an associated label, alt, or title can take precedence over visible text.",
+            "Computed role name; ARIA, labels, alt, or title may override visible text.",
           ),
         exact: z.boolean().default(false),
         includeHidden: z.boolean().default(false),
         limit: z.number().int().min(1).max(20).default(10),
         timeout: z.number().int().min(100).max(60000).default(5000),
       }),
-      execute: async ({
-        by,
-        value,
-        name,
-        exact,
-        includeHidden,
-        limit,
-        timeout,
-      }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({
-              action: "find",
-              tabId,
-              by,
-              value,
-              name,
-              exact,
-              includeHidden,
-              limit,
-              timeout,
-            }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+      execute: ({ by, value, name, exact, includeHidden, limit, timeout }) =>
+        runAction("find", {
+          by,
+          value,
+          name,
+          exact,
+          includeHidden,
+          limit,
+          timeout,
+        }),
     }),
 
     browser_click: tool({
       description:
-        "Click a current element ref. Optional waitFor verifies the resulting SPA state without blocking navigation or stop. A postcondition timeout does not undo the click; inspect before retrying.",
-      inputSchema: z.object({
-        ref: z.string().describe("Latest snapshot or find ref, e.g. g3-e12."),
-        waitFor: pageExpectation.optional(),
-        diagnostics: z.boolean().optional(),
-      }),
-      execute: async ({ ref, waitFor, diagnostics }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({
-              action: "click",
-              tabId,
-              ref,
-              waitFor,
-              diagnostics,
-            }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+        "Click a current ref. waitFor verifies SPA state; navigation/stop remain available. Timeout does not undo input: inspect before retrying.",
+      inputSchema: withLocator(
+        z.object({
+          waitFor: pageExpectation.optional(),
+          diagnostics: z.boolean().optional(),
+        }),
+      ),
+      execute: (params) => runAction("click", params),
     }),
 
     browser_double_click: tool({
       description: "Double-click an actionable element using a current ref.",
-      inputSchema: z.object({ ref: z.string() }),
-      execute: async ({ ref }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({ action: "double_click", tabId, ref }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+      inputSchema: withLocator(z.object({})),
+      execute: (params) => runAction("double_click", params),
     }),
 
     browser_focus: tool({
       description: "Focus a visible enabled element using a current ref.",
-      inputSchema: z.object({ ref: z.string() }),
-      execute: async ({ ref }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({ action: "focus", tabId, ref }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+      inputSchema: withLocator(z.object({})),
+      execute: (params) => runAction("focus", params),
     }),
 
     browser_check: tool({
       description: "Check or uncheck a checkbox or radio and verify its state.",
-      inputSchema: z.object({
-        ref: z.string(),
-        checked: z.boolean().default(true),
-      }),
-      execute: async ({ ref, checked }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({
-              action: "check",
-              tabId,
-              ref,
-              checked,
-            }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+      inputSchema: withLocator(
+        z.object({
+          checked: z.boolean().default(true),
+        }),
+      ),
+      execute: (params) => runAction("check", params),
     }),
 
     browser_drag: tool({
       description:
-        "Drag one current ref onto another in the same document or frame. Native mouse drag requires both endpoints visible together after scrolling and rechecks geometry before press. No automatic input retries.",
+        "Drag between current refs in one document/frame. Both endpoints must be visible after scrolling; geometry is rechecked before press. No automatic input retries.",
       inputSchema: z.object({
         sourceRef: z.string(),
         targetRef: z.string(),
       }),
-      execute: async ({ sourceRef, targetRef }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({
-              action: "drag",
-              tabId,
-              sourceRef,
-              targetRef,
-            }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+      execute: ({ sourceRef, targetRef }) =>
+        runAction("drag", { sourceRef, targetRef }),
     }),
 
     browser_type: tool({
       description:
-        "Type into a current input ref and verify its immediate value. Before Enter, pass this ref and expectedValue to browser_press_key to detect a later SPA reset or node replacement.",
-      inputSchema: z.object({
-        ref: z.string().describe("Latest snapshot or find ref, e.g. g3-e12."),
-        text: z.string().describe("Text content to type into the field."),
-        append: z
-          .boolean()
-          .default(false)
-          .describe("Append instead of replacing existing text."),
-      }),
-      execute: async ({ ref, text, append }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({
-              action: "type",
-              tabId,
-              ref,
-              text,
-              append,
-            }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+        "Type into a current ref and verify its value. Before Enter, pass ref and expectedValue to browser_press_key to detect subsequent resets/replacements.",
+      inputSchema: withLocator(
+        z.object({
+          text: z.string().describe("Text content to type into the field."),
+          append: z
+            .boolean()
+            .default(false)
+            .describe("Append instead of replacing existing text."),
+        }),
+      ),
+      execute: (params) => runAction("type", params),
     }),
 
     browser_scroll: tool({
@@ -319,74 +263,36 @@ export function buildBrowserTools(ctx: ToolContext) {
           .default(300)
           .describe("Vertical scroll offset in pixels."),
       }),
-      execute: async ({ x, y }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({ action: "scroll", tabId, x, y }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+      execute: ({ x, y }) => runAction("scroll", { x, y }),
     }),
 
     browser_press_key: tool({
       description:
-        "Press a keyboard key. For forms, pass the input ref and expectedValue to prevent submission after a reset or replacement. waitFor verifies the resulting SPA state and replaces Enter's default observation window. Inspect the page before resubmitting after a postcondition timeout.",
-      inputSchema: z.object({
-        key: z
-          .string()
-          .describe(
-            "The key name to simulate, e.g. 'Enter', 'Escape', 'ArrowDown', 'Tab', 'Space'.",
-          ),
-        ref: z.string().optional(),
-        expectedValue: z.string().max(65536).optional(),
-        waitFor: pageExpectation.optional(),
-        diagnostics: z.boolean().optional(),
-        observationTimeout: z
-          .number()
-          .int()
-          .min(0)
-          .max(10_000)
-          .default(3_000)
-          .describe(
-            "Milliseconds to observe submit or navigation after Enter. Ignored for other keys.",
-          ),
-      }),
-      execute: async ({
-        key,
-        observationTimeout,
-        ref,
-        expectedValue,
-        waitFor,
-        diagnostics,
-      }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({
-              action: "press_key",
-              tabId,
-              key,
-              observationTimeout,
-              ref,
-              expectedValue,
-              waitFor,
-              diagnostics,
-            }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+        "Press a key. For forms, ref + expectedValue guard against resets/replacements. waitFor checks SPA state instead of Enter's observation window. Inspect before resubmitting after timeout.",
+      inputSchema: withLocator(
+        z.object({
+          key: z
+            .string()
+            .describe("Key name: Enter, Escape, ArrowDown, Tab, Space, etc."),
+          expectedValue: z.string().max(65536).optional(),
+          waitFor: pageExpectation.optional(),
+          diagnostics: z.boolean().optional(),
+          observationTimeout: z
+            .number()
+            .int()
+            .min(0)
+            .max(10_000)
+            .default(3_000)
+            .describe("Enter-only submit/navigation observation in ms."),
+        }),
+        true,
+      ),
+      execute: (params) => runAction("press_key", params),
     }),
 
     browser_keyboard: tool({
       description:
-        "Dispatch a keyboard press, key-down, or key-up. Modifiers are per-call: pass the combination on each event. Holding modifiers across tools or applying them to mouse clicks is not supported.",
+        "Keyboard press/down/up. Supply modifiers per event; they cannot persist across tools or modify mouse clicks.",
       inputSchema: z.object({
         key: z.string(),
         keyAction: z.enum(["press", "down", "up"]).default("press"),
@@ -395,36 +301,28 @@ export function buildBrowserTools(ctx: ToolContext) {
           .max(4)
           .default([]),
       }),
-      execute: async ({ key, keyAction, modifiers }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({
-              action: "key",
-              tabId,
-              key,
-              keyAction,
-              modifiers,
-            }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+      execute: ({ key, keyAction, modifiers }) =>
+        runAction("key", { key, keyAction, modifiers }),
     }),
 
     browser_wait: tool({
       description:
-        "Wait for text, URL, load, or a ref. Alternatively use waitFor alone to require a stable combination of URL, title, and visible text for an SPA result.",
+        "Wait for text, URL, load, or ref state; alternatively use waitFor alone for stable URL/title/visible-text SPA conditions.",
       inputSchema: z.object({
-        condition: z.enum(["text", "url", "load", "ref"]).optional(),
+        condition: z.enum(["text", "url", "load", "ref", "locator"]).optional(),
+        locator: targetLocator
+          .omit({ includeHidden: true, timeout: true })
+          .optional()
+          .describe(
+            "Wait on a unique locator including hidden elements. Use state and top-level timeout, without legacy fields or waitFor.",
+          ),
         text: z.string().optional(),
         url: z.string().optional(),
         ref: z.string().optional(),
         state: z
           .enum([
             "attached",
+            "absent",
             "detached",
             "visible",
             "hidden",
@@ -438,7 +336,7 @@ export function buildBrowserTools(ctx: ToolContext) {
           .enum(["interactive", "complete", "networkIdle"])
           .optional()
           .describe(
-            "networkIdle waits for observed native page-target requests to finish plus 500ms of quiet. It excludes WebSocket traffic and separate CDP targets; prefer explicit postconditions for streaming apps.",
+            "networkIdle: observed page-target requests complete + 500ms quiet. Excludes WebSockets/other CDP targets; prefer explicit conditions for streaming apps.",
           ),
         timeout: z
           .number()
@@ -447,8 +345,9 @@ export function buildBrowserTools(ctx: ToolContext) {
         waitFor: pageExpectation.optional(),
         diagnostics: z.boolean().optional(),
       }),
-      execute: async ({
+      execute: ({
         condition,
+        locator,
         text,
         url,
         ref,
@@ -457,61 +356,36 @@ export function buildBrowserTools(ctx: ToolContext) {
         timeout,
         waitFor,
         diagnostics,
-      }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({
-              action: "wait",
-              tabId,
-              condition,
-              text,
-              url,
-              ref,
-              state,
-              loadState,
-              timeout,
-              waitFor,
-              diagnostics,
-            }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+      }) =>
+        runAction("wait", {
+          condition,
+          locator,
+          text,
+          url,
+          ref,
+          state,
+          loadState,
+          timeout,
+          waitFor,
+          diagnostics,
+        }),
     }),
 
     browser_dialog: tool({
       description:
-        "Click a current ref and handle its alert, confirm, or prompt. Inspect clickDispatched and dialogOpened separately: ok is false if no dialog opened, but the click already happened. Do not blindly repeat it.",
-      inputSchema: z.object({
-        ref: z.string(),
-        dialogAction: z.enum(["accept", "dismiss"]),
-        promptText: z.string().optional(),
-      }),
-      execute: async ({ ref, dialogAction, promptText }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({
-              action: "dialog",
-              tabId,
-              ref,
-              dialogAction,
-              promptText,
-            }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+        "Click a ref and handle alert/confirm/prompt. Check clickDispatched and dialogOpened: no dialog means ok:false despite dispatched input. Never blindly repeat.",
+      inputSchema: withLocator(
+        z.object({
+          dialogAction: z.enum(["accept", "dismiss"]),
+          promptText: z.string().optional(),
+        }),
+      ),
+      execute: (params) => runAction("dialog", params),
     }),
 
     browser_screenshot: tool({
       description:
-        "Capture the browser viewport, not the full page, and save a screenshot artifact. Automation cursor effects are excluded.",
+        "Save a viewport screenshot artifact, excluding automation cursor effects. Not full-page.",
       inputSchema: z.object({}),
       execute: async () => {
         try {
@@ -533,169 +407,86 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_console_logs: tool({
       description:
-        "Retrieve bounded console messages, uncaught runtime errors, and unhandled promise rejections from the active browser page and accessible frames.",
+        "Bounded console messages, runtime errors, and unhandled rejections from the active page and accessible frames.",
       inputSchema: z.object({}),
-      execute: async () => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({ action: "console_logs", tabId }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+      execute: () => runAction("console_logs"),
     }),
 
     browser_history: tool({
-      description:
-        "Control page history or reload on the active browser page (reload, back, forward, stop).",
+      description: "Active page history: reload, back, forward, stop.",
       inputSchema: z.object({
         action: z
           .enum(["reload", "back", "forward", "stop"])
           .describe("History or reload action to execute."),
       }),
-      execute: async ({ action }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({ action, tabId }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+      execute: ({ action }) => runAction(action),
     }),
 
     browser_select_option: tool({
       description:
-        "Select an option in a <select> dropdown by ref. `value` may be the option's value attribute OR its visible label text.",
-      inputSchema: z.object({
-        ref: z
-          .string()
-          .describe(
-            "Latest snapshot or find ref for the <select>, e.g. g3-e12.",
-          ),
-        value: z
-          .string()
-          .describe(
-            "Option value (value attribute) or its visible label text.",
-          ),
-      }),
-      execute: async ({ ref, value }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({
-              action: "select_option",
-              tabId,
-              ref,
-              value,
-            }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+        "Select a <select> option by ref using its value attribute or visible label.",
+      inputSchema: withLocator(
+        z.object({
+          value: z.string().describe("Option value or visible label."),
+        }),
+      ),
+      execute: (params) => runAction("select_option", params),
     }),
 
     browser_hover: tool({
       description:
-        "Hover over an actionable element by ref. Main-document targets use one native pointer movement and verify CSS hover without replaying DOM events. Child-frame targets report a DOM-only fallback.",
-      inputSchema: z.object({
-        ref: z.string().describe("Latest snapshot or find ref, e.g. g3-e12."),
-      }),
-      execute: async ({ ref }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({ action: "hover", tabId, ref }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+        "Hover a ref: one native move with CSS-hover verification; child frames report DOM-only fallback. position moves within a target to reveal media controls. CSS hover alone does not prove controls visible.",
+      inputSchema: withLocator(
+        z.object({
+          position: z
+            .object({
+              x: z.number().gt(0).lt(1),
+              y: z.number().gt(0).lt(1),
+            })
+            .strict()
+            .optional()
+            .describe(
+              "Painted-fragment fractions 0<x,y<1, not pixels. Default center {x:0.5,y:0.5}; x:0.6 moves right. Point must be visible and unobscured.",
+            ),
+        }),
+      ),
+      execute: (params) => runAction("hover", params),
     }),
 
     browser_scroll_to_element: tool({
       description:
         "Scroll a specific element into the visible viewport by ref.",
-      inputSchema: z.object({
-        ref: z.string().describe("Latest snapshot or find ref, e.g. g3-e12."),
-      }),
-      execute: async ({ ref }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({
-              action: "scroll_to_element",
-              tabId,
-              ref,
-            }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+      inputSchema: withLocator(z.object({})),
+      execute: (params) => runAction("scroll_to_element", params),
     }),
 
     browser_get_text: tool({
       description:
-        "Read page or element text, bounded by maxLength. The result includes visible and source. A hidden element's accessibleName can be outdated; reveal the control and read it again before treating it as live state.",
-      inputSchema: z.object({
-        ref: z
-          .string()
-          .optional()
-          .describe(
-            "Element ref from browser_snapshot to read a specific element. Omit to read the whole page.",
-          ),
-        maxLength: z
-          .number()
-          .default(8000)
-          .describe("Maximum characters to return (default: 8000)."),
-      }),
-      execute: async ({ ref, maxLength }) => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({
-              action: "get_text",
-              tabId,
-              ref,
-              maxLength: maxLength ?? 8000,
-            }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+        "Read bounded page/element text with visible and source metadata. Hidden accessibleName may be stale: reveal and reread before trusting it as live state.",
+      inputSchema: withLocator(
+        z.object({
+          maxLength: z
+            .number()
+            .default(8000)
+            .describe("Maximum characters to return (default: 8000)."),
+        }),
+        true,
+      ),
+      execute: ({ ref, locator, maxLength }) =>
+        runAction("get_text", { ref, locator, maxLength: maxLength ?? 8000 }),
     }),
 
     browser_get_page_info: tool({
-      description: "Get the title and URL of the active browser page.",
-      inputSchema: z.object({}),
-      execute: async () => {
-        try {
-          const tabId = activeBrowserTabId(ctx);
-          const res = await invoke<string>("browser_automation_handle_action", {
-            requestJson: JSON.stringify({ action: "get_page_info", tabId }),
-          });
-          return { status: "ok", result: res };
-        } catch (error) {
-          return { status: "error", error: String(error) };
-        }
-      },
+      description:
+        "Get native URL/title without waiting for scripts, or request document title. Reuse returned titleSource in waitFor after SPA history navigation.",
+      inputSchema: z.object({
+        titleSource: z.enum(["native", "document"]).optional(),
+      }),
+      execute: ({ titleSource }) => runAction("get_page_info", { titleSource }),
     }),
 
     browser_list_tabs: tool({
-      description:
-        "List all open browser tabs with their URL and title, and which tab id is currently active.",
+      description: "List browser tabs, URLs, titles, and active tab ID.",
       inputSchema: z.object({}),
       execute: async () => {
         try {
@@ -715,8 +506,7 @@ export function buildBrowserTools(ctx: ToolContext) {
     }),
 
     browser_new_tab: tool({
-      description:
-        "Open a new browser tab and navigate it to an HTTP or HTTPS URL. The new tab becomes the active tab.",
+      description: "Open and activate a new HTTP(S) browser tab.",
       inputSchema: z.object({
         url: z.string().describe("The HTTP or HTTPS URL to open."),
       }),
@@ -738,7 +528,7 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_switch_tab: tool({
       description:
-        "Switch the active browser tab to the one with the given id (from browser_list_tabs). Subsequent browser actions target this tab.",
+        "Activate a browser_list_tabs ID as the target for subsequent actions.",
       inputSchema: z.object({
         tabId: z.number().describe("Browser tab id from browser_list_tabs."),
       }),
@@ -751,8 +541,7 @@ export function buildBrowserTools(ctx: ToolContext) {
     }),
 
     browser_close_tab: tool({
-      description:
-        "Close the browser tab with the given id (from browser_list_tabs).",
+      description: "Close a browser_list_tabs ID.",
       needsApproval: true,
       inputSchema: z.object({
         tabId: z.number().describe("Browser tab id from browser_list_tabs."),

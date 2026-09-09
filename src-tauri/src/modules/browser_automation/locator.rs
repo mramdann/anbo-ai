@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::accessible_name::ACCESSIBLE_NAME_JS;
+use super::ref_context::REF_REGISTRY_JS;
 use super::visibility::VISIBILITY_JS;
 
 pub const MAX_LOCATOR_MATCHES: usize = 20;
@@ -28,6 +29,22 @@ pub struct LocatorMatch {
     pub visible: bool,
     pub enabled: bool,
     pub checked: Option<bool>,
+    #[serde(default)]
+    pub editable: bool,
+    #[serde(default)]
+    pub read_only: bool,
+    #[serde(default)]
+    pub in_viewport: bool,
+    #[serde(default)]
+    pub bounds: Option<LocatorBounds>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LocatorBounds {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -49,11 +66,8 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
         r#"(function() {{
             const generation = "gen-{generation}";
             const refPrefix = {ref_prefix};
-            const scanRoot = document.documentElement;
-            if (scanRoot) {{
-                if (Number(scanRoot.getAttribute('data-anbo-scan-generation') || 0) > {generation}) throw new Error('stale_scan');
-                scanRoot.setAttribute('data-anbo-scan-generation', '{generation}');
-            }}
+            {REF_REGISTRY_JS}
+            refRegistry.begin({generation});
             const by = {by};
             const wanted = {value};
             const wantedName = {name};
@@ -67,12 +81,13 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
             let truncated = false;
 
             const normalize = input => String(input || '').replace(/\s+/g, ' ').trim();
+            const expectedValue = normalize(wanted).toLocaleLowerCase();
+            const expectedName = normalize(wantedName).toLocaleLowerCase();
             const compareValue = (input, expected) => {{
                 const left = normalize(input).toLocaleLowerCase();
-                const right = normalize(expected).toLocaleLowerCase();
-                return exact ? left === right : left.includes(right);
+                return exact ? left === expected : left.includes(expected);
             }};
-            const compare = input => compareValue(input, wanted);
+            const compare = input => compareValue(input, expectedValue);
             const implicitRole = el => {{
                 const explicit = normalize(el.getAttribute('role')).split(' ')[0];
                 if (explicit) return explicit;
@@ -101,8 +116,9 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                     try {{ return el.matches(wanted); }} catch (_) {{ throw new Error('invalid_selector'); }}
                 }}
                 if (by === 'role') {{
-                    return compare(implicitRole(el)) &&
-                        (!wantedName || compareValue(accessibleName(el), wantedName));
+                    const role = implicitRole(el);
+                    return !!role && compare(role) &&
+                        (!wantedName || compareValue(accessibleName(el), expectedName));
                 }}
                 if (by === 'text') {{
                     if (!compare(el.innerText || el.textContent)) return false;
@@ -121,16 +137,6 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                 if (by === 'alt') return compare(el.getAttribute('alt'));
                 return false;
             }};
-            const clearRefs = root => {{
-                if (!root || !root.querySelectorAll) return;
-                for (const el of root.querySelectorAll('[data-anbo-ref]')) {{
-                    el.removeAttribute('data-anbo-ref');
-                    el.removeAttribute('data-anbo-gen');
-                }}
-                for (const el of root.querySelectorAll('*')) {{
-                    if (el.shadowRoot) clearRefs(el.shadowRoot);
-                }}
-            }};
             const visit = root => {{
                 if (!root || !root.querySelectorAll || matches.length >= limit) return;
                 const elements = root.querySelectorAll('*');
@@ -144,12 +150,14 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                     const isVisible = matched && isRenderedElement(el);
                     if (matched && (includeHidden || isVisible)) {{
                         const ref = refPrefix + (matches.length + 1);
-                        el.setAttribute('data-anbo-ref', ref);
-                        el.setAttribute('data-anbo-gen', generation);
+                        refRegistry.remember(ref, el);
                         const type = el.tagName === 'INPUT' ? String(el.type || '').toLowerCase() : '';
                         const password = type === 'password';
+                        const r = el.getBoundingClientRect();
+                        const readOnly = !!el.readOnly || el.getAttribute('aria-readonly') === 'true';
+                        const enabled = !(el.disabled || el.getAttribute('aria-disabled') === 'true');
+                        const textInput = el.tagName === 'INPUT' && ['text','search','email','url','tel','password','number'].includes(type);
                         if (!visualPoint && isVisible) {{
-                            const r = el.getBoundingClientRect();
                             const x = r.x + r.width / 2, y = r.y + r.height / 2;
                             if (r.width > 0 && r.height > 0 && x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight) {{
                                 visualPoint = {{x, y, width:r.width, height:r.height}};
@@ -163,8 +171,12 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                             text: normalize(el.innerText || el.textContent).slice(0, 500),
                             value: password ? '[REDACTED]' : (el.value == null ? null : String(el.value).slice(0, 500)),
                             visible: isVisible,
-                            enabled: !(el.disabled || el.getAttribute('aria-disabled') === 'true'),
-                            checked: typeof el.checked === 'boolean' ? el.checked : null
+                            enabled,
+                            readOnly,
+                            editable: enabled && !readOnly && (textInput || el.tagName === 'TEXTAREA' || !!el.isContentEditable),
+                            inViewport: isVisible && r.width > 0 && r.height > 0 && r.left < innerWidth && r.top < innerHeight && r.right > 0 && r.bottom > 0,
+                            bounds: {{x:r.x,y:r.y,width:r.width,height:r.height}},
+                            checked: ['checkbox','radio'].includes(type) ? (el.indeterminate ? null : el.checked) : (el.getAttribute('aria-checked') === 'true' ? true : el.getAttribute('aria-checked') === 'false' ? false : null)
                         }});
                     }}
                     if (el.shadowRoot) visit(el.shadowRoot);
@@ -172,7 +184,6 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
             }};
 
             try {{
-                clearRefs(document);
                 visit(document);
                 return JSON.stringify({{ matches, scanned, truncated, visualPoint, error: null }});
             }} catch (error) {{
@@ -232,6 +243,8 @@ mod tests {
             },
         );
         assert!(script.contains(r#"const wantedName = "Save changes";"#));
-        assert!(script.contains("compareValue(accessibleName(el), wantedName)"));
+        assert!(script.contains("compareValue(accessibleName(el), expectedName)"));
+        assert!(script.contains("const expectedName = normalize(wantedName).toLocaleLowerCase()"));
+        assert!(script.contains("return !!role && compare(role)"));
     }
 }

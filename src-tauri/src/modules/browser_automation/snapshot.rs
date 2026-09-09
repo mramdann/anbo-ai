@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use super::accessible_name::ACCESSIBLE_NAME_JS;
+use super::ref_context::REF_REGISTRY_JS;
 use super::visibility::VISIBILITY_JS;
 
 static SNAPSHOT_GENERATIONS: Mutex<Option<HashMap<i64, u64>>> = Mutex::new(None);
@@ -54,6 +55,7 @@ pub struct SnapshotElement {
 }
 
 pub fn remove_generation(tab_id: i64) {
+    super::ref_context::remove(tab_id);
     if let Ok(mut guard) = generations().lock() {
         if let Some(map) = guard.as_mut() {
             map.remove(&tab_id);
@@ -67,6 +69,7 @@ pub fn remove_generation(tab_id: i64) {
 }
 
 pub fn clear_generations() {
+    super::ref_context::clear();
     if let Ok(mut guard) = generations().lock() {
         if let Some(map) = guard.as_mut() {
             map.clear();
@@ -115,11 +118,8 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
         r#"(function() {{
             const gen = "gen-{generation_id}";
             const refPrefix = {ref_prefix_json};
-            const scanRoot = document.documentElement;
-            if (scanRoot) {{
-                if (Number(scanRoot.getAttribute('data-anbo-scan-generation') || 0) > {generation_id}) throw new Error('stale_scan');
-                scanRoot.setAttribute('data-anbo-scan-generation', '{generation_id}');
-            }}
+            {REF_REGISTRY_JS}
+            refRegistry.begin({generation_id});
             let refIdx = 1;
             const elements = [];
             const viewportElements = [];
@@ -138,18 +138,6 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                 bucket.push(item);
                 return true;
             }}
-
-            function clearRefs(root) {{
-                if (!root || !root.querySelectorAll) return;
-                root.querySelectorAll('[data-anbo-ref]').forEach(el => {{
-                    el.removeAttribute('data-anbo-ref');
-                    el.removeAttribute('data-anbo-gen');
-                }});
-                root.querySelectorAll('*').forEach(el => {{
-                    if (el.shadowRoot) clearRefs(el.shadowRoot);
-                }});
-            }}
-            try {{ clearRefs(document); }} catch(e) {{}}
 
             {VISIBILITY_JS}
             {ACCESSIBLE_NAME_JS}
@@ -266,8 +254,7 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
             for (const item of selected) {{
                 const el = referenceNodes.get(item.ref_id);
                 if (el) {{
-                    el.setAttribute('data-anbo-ref', item.ref_id);
-                    el.setAttribute('data-anbo-gen', gen);
+                    refRegistry.remember(item.ref_id, el);
                 }}
             }}
             return JSON.stringify({{

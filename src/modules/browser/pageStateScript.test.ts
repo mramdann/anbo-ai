@@ -44,6 +44,10 @@ interface ElementNode {
   childNodes: Node[];
   getAttribute: () => null;
   styles: Record<string, string>;
+  parentElement?: ElementNode;
+  assignedSlot?: ElementNode;
+  assignedNodes?: () => Node[];
+  shadowRoot?: { nodeType: number; childNodes: Node[] };
 }
 type Node = ReturnType<typeof text> | ElementNode;
 function element(
@@ -65,7 +69,50 @@ const read = (root: Node) =>
     getComputedStyle: styles,
   });
 
+function slottedFixture() {
+  const assigned = element("SPAN", [text("assigned result")]);
+  const unassigned = element("SPAN", [text("unassigned secret")]);
+  const fallback = element("SPAN", [text("fallback secret")]);
+  const slot = element("SLOT", [fallback]);
+  slot.assignedNodes = () => [assigned];
+  fallback.parentElement = slot;
+  assigned.assignedSlot = slot;
+  const host = element("DIV", [assigned, unassigned]);
+  assigned.parentElement = host;
+  unassigned.parentElement = host;
+  host.shadowRoot = {
+    nodeType: 11,
+    childNodes: [text("before slot"), slot, text("after slot")],
+  };
+  return { host, slot, assigned, unassigned, fallback };
+}
+
 describe("shipped readable text script", () => {
+  it("reads composed slot order without fallback, unslotted text or duplicates", () => {
+    const f = slottedFixture();
+    expect(read(f.host).text).toBe("before slot\nassigned result\nafter slot");
+    expect(read(f.assigned).text).toBe("assigned result");
+    expect(read(f.unassigned).text).toBe("");
+    expect(read(f.fallback).text).toBe("");
+  });
+  it("re-evaluates assignment and only reads fallback when the slot is empty", () => {
+    const f = slottedFixture();
+    f.slot.assignedNodes = () => [];
+    expect(read(f.host).text).toBe("before slot\nfallback secret\nafter slot");
+    f.slot.assignedNodes = () => [text("assigned text node")];
+    expect(read(f.host).text).toBe(
+      "before slot\nassigned text node\nafter slot",
+    );
+  });
+  it("follows nested slots without exposing their fallback", () => {
+    const f = slottedFixture();
+    const nested = element("SLOT", [text("nested secret")]);
+    nested.assignedNodes = () => [element("SPAN", [text("nested result")])];
+    f.slot.assignedNodes = () => [nested];
+    expect(read(f.host).text).toBe("before slot\nnested result\nafter slot");
+    f.slot.styles.opacity = "0";
+    expect(read(f.host).text).toBe("before slot\nafter slot");
+  });
   it("excludes hidden composed ancestors of shadow and slotted refs", () => {
     const parent = element("DIV", [], { opacity: "0" });
     const root = element("SPAN", [text("hidden-control")]);
@@ -158,6 +205,19 @@ describe("shipped compound page predicate", () => {
     expect(matches({ url: "*q=o.e" })).toBe(false);
     expect(matches({ url: "*q=one*one" })).toBe(false);
     expect(matches({ url: "https://example.test/results?q=one" })).toBe(true);
+  });
+  it("does not accept hidden slot fallback as visible readiness text", () => {
+    const run = (text: string) =>
+      vm.runInNewContext(
+        script("pub fn script", { expected: JSON.stringify({ text }) }),
+        {
+          document: { readyState: "complete", body: slottedFixture().host },
+          getComputedStyle: styles,
+        },
+      );
+    expect(run("fallback secret")).toBe(false);
+    expect(run("unassigned secret")).toBe(false);
+    expect(run("assigned result")).toBe(true);
   });
 });
 

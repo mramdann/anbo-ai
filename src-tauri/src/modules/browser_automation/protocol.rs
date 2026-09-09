@@ -79,6 +79,7 @@ pub mod error_codes {
     pub const UNSUPPORTED_PLATFORM: &str = "unsupported_platform";
     pub const TAB_NOT_FOUND: &str = "tab_not_found";
     pub const STALE_REF: &str = "stale_ref";
+    pub const AMBIGUOUS_TARGET: &str = "ambiguous_target";
     pub const INPUT_MISMATCH: &str = "input_mismatch";
     pub const INPUT_NOT_READY: &str = "input_not_ready";
     pub const NAVIGATION_FAILED: &str = "navigation_failed";

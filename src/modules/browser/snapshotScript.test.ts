@@ -36,6 +36,13 @@ const accessibleNameScript = readFileSync(
   ),
   "utf8",
 );
+const refRegistryScript = readFileSync(
+  new URL(
+    "../../../src-tauri/src/modules/browser_automation/refRegistry.js",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 class Element {
   nodeType = 1;
@@ -145,7 +152,9 @@ function fixture(nodes: Element[]) {
       .split("{VISIBILITY_JS}")
       .join(visibilityScript)
       .split("{ACCESSIBLE_NAME_JS}")
-      .join(accessibleNameScript);
+      .join(accessibleNameScript)
+      .split("{REF_REGISTRY_JS}")
+      .join(refRegistryScript);
     return JSON.parse(vm.runInContext(script, context)) as {
       elements: {
         label: string;

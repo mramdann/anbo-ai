@@ -78,6 +78,7 @@ try {
       check(`request reached fixture ${round}`, held.size > 0);
       const read = await call("browser_get_url", { tabId });
       check(`URL readable before response headers ${round}`, !read.error && read.wallMs < 1500, { sample: read });
+      check(`get_url exposes pending navigation ${round}`, read.result?.loading === true && read.result?.pendingUrl === `${origin}/held/${round}`, { sample: read });
       const loading = await ok("browser_tabs", {});
       check(`pending target retained ${round}`, loading.tabs.some(tab => tab.tabId === tabId && tab.loading && tab.pendingUrl === `${origin}/held/${round}`));
       for (const response of [...held]) send(response);
@@ -90,6 +91,9 @@ try {
       await ok("browser_wait", { tabId, condition: "url", url: nextUrl, timeout: 5000 });
       const current = await ok("browser_get_url", { tabId });
       check(`explicit navigation and exact URL ${round}`, current.url === nextUrl, { current: current.url });
+      await ok("browser_wait", { tabId, condition: "load", loadState: "complete", timeout: 5000 });
+      const settled = await ok("browser_get_url", { tabId });
+      check(`get_url clears pending navigation ${round}`, settled.loading === false && settled.pendingUrl === null, { settled });
       const interruptedUrl = `${origin}/held/interrupted/${round}`;
       await ok("browser_navigate", { tabId, url: interruptedUrl });
       const interruptedDeadline = Date.now() + 5000;

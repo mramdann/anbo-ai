@@ -24,7 +24,12 @@ pub fn remove_tab_lock(tab_id: i64) {
         return;
     };
     if let Some(map) = guard.as_mut() {
-        map.remove(&tab_id);
+        if map
+            .get(&tab_id)
+            .is_some_and(|lock| lock.strong_count() == 0)
+        {
+            map.remove(&tab_id);
+        }
     }
 }
 
@@ -57,12 +62,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn removing_a_tab_lock_releases_its_registry_entry() {
+    fn closing_a_tab_keeps_the_same_lock_for_existing_owners_and_waiters() {
         let first = get_tab_lock(991_337);
         remove_tab_lock(991_337);
         let second = get_tab_lock(991_337);
-        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(&first, &second));
+        drop(first);
+        drop(second);
         remove_tab_lock(991_337);
+        assert!(!TAB_LOCKS
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .contains_key(&991_337));
+    }
+
+    #[tokio::test]
+    async fn cleanup_cannot_create_a_parallel_lock_while_a_close_is_waiting() {
+        let first = get_tab_lock(991_339);
+        let held = first.lock().await;
+        let waiting = get_tab_lock(991_339);
+        remove_tab_lock(991_339);
+        let later = get_tab_lock(991_339);
+        assert!(Arc::ptr_eq(&waiting, &later));
+        assert!(later.try_lock().is_err());
+        drop(held);
+        assert!(later.try_lock().is_ok());
     }
 
     #[tokio::test]

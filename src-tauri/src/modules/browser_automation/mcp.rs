@@ -48,6 +48,7 @@ fn page_expectation_prop() -> Value {
         "properties": {
             "url": {"type":"string", "minLength":1, "maxLength":8192, "description":"Exact URL or a glob with * wildcards."},
             "title": {"type":"string", "minLength":1, "maxLength":2048, "description":"Exact page title after whitespace normalization."},
+            "titleSource": {"type":"string", "enum":["document","native"], "default":"document", "description":"Requires title. Use the source returned by page_info or snapshot. Native and DOM titles can differ after SPA history navigation."},
             "text": {"type":"string", "minLength":1, "maxLength":2048, "description":"Substring in bounded visible main-document text; scripts and styles are excluded."},
             "timeout": {"type":"integer", "minimum":100, "maximum":60000, "default":10000},
             "stableFor": {"type":"integer", "minimum":0, "maximum":2000, "default":200, "description":"Continuous match window in milliseconds, not exceeding timeout."}
@@ -67,10 +68,10 @@ pub fn tool_definitions() -> Value {
     let mut definitions = tool_array![
         { "name": "skills_list", "description": "List the skills available in a workspace: project procedures kept in .anbo/skills, plus the skills Anbo ships. Returns names and one-line descriptions only, so it stays cheap to scan. Check this before solving a task from first principles.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
         { "name": "skills_read", "description": "Read one skill in full and follow it. Names come from skills_list.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "name": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Skill name from skills_list." } }, "required": ["workspace", "name"] } },
-        { "name": "browser_open", "description": "Open a native browser tab without focusing it in an explicitly selected Anbo workspace. Pass the agent's workspace root or a space id; UI focus is never used as a fallback.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["url", "workspace"] } },
+        { "name": "browser_open", "description": "Open a native browser tab in an explicitly selected Anbo workspace. The first tab in an empty active workspace is displayed for review; later tabs stay in the background and inactive workspaces never activate. Pass the agent's workspace root or a space id; UI focus is never used as a workspace fallback.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["url", "workspace"] } },
         { "name": "browser_close", "description": "Close a native browser tab in an explicitly selected Anbo workspace.", "annotations": { "destructiveHint": true, "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["tabId", "workspace"] } },
         { "name": "browser_tabs", "description": "List active native browser tabs with foreground, workspace, space, loading, pendingUrl, automation-target, automation-activity, and durationMs metadata. While loading, url remains the last committed URL and pendingUrl identifies the target when known.", "inputSchema": { "type": "object", "properties": {} } },
-        { "name": "browser_get_url", "description": "Get the current URL of a browser tab.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
+        { "name": "browser_get_url", "description": "Get the last committed URL, loading state and pendingUrl of a browser tab without waiting for page JavaScript. While loading, pendingUrl is the requested target when known; it is not proof of a committed navigation.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_navigate", "description": "Start navigating a browser tab to an http(s) URL and return immediately. Use browser_wait or browser_tabs to observe completion; browser_stop can interrupt the active load.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "url": { "type": "string" } }, "required": ["tabId", "url"] } },
         { "name": "browser_emulate", "description": "Emulate a device viewport on a browser tab so the page lays out as it would on that device. Pass width 0 to clear the emulation. Sets the device pixel ratio and, for mobile, touch support. The emulation survives navigation until cleared.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "width": { "type": "integer", "minimum": 0, "maximum": 10000, "description": "CSS pixels wide. 0 clears the emulation." }, "height": { "type": "integer", "minimum": 0, "maximum": 10000 }, "scale": { "type": "number", "minimum": 0.1, "maximum": 4, "default": 1, "description": "Device pixel ratio." }, "mobile": { "type": "boolean", "default": false, "description": "Report a mobile device and enable touch." }, "fit": { "type": "number", "minimum": 0.05, "maximum": 1, "default": 1, "description": "Shrink the painted result so a viewport wider than the pane is shown whole instead of cropped." } }, "required": ["tabId", "width", "height"] } },
         { "name": "browser_reload", "description": "Start reloading a browser tab and return immediately. Use browser_wait or browser_tabs to observe completion.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
@@ -97,18 +98,18 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_download_status", "description": "Read the current state and verified destination of a workspace-scoped browser download.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "downloadId": { "type": "string", "minLength": 1, "maxLength": 128 }, "workspace": file_workspace.clone() }, "required": ["downloadId", "workspace"] } },
         { "name": "browser_download_wait", "description": "Wait for a browser download to change state or finish. Normal timeout returns timedOut:true so large downloads can be polled without losing their downloadId.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "downloadId": { "type": "string", "minLength": 1, "maxLength": 128 }, "workspace": file_workspace, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 30000 } }, "required": ["downloadId", "workspace"] } },
         { "name": "browser_select_option", "description": "Select an option on a <select> element by ref (by value or label).", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "value": { "type": "string" } }, "required": ["tabId", "ref", "value"] } },
-        { "name": "browser_hover", "description": "Hover an actionable element by ref. Main-document targets use one native DevTools mouse move and verify CSS :hover without replaying DOM events. Child-frame targets report their DOM-only fallback.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
+        { "name": "browser_hover", "description": "Hover an actionable element by ref with one native DevTools move and CSS :hover verification. Use position to explicitly move within the same target, such as revealing auto-hiding media controls. CSS hover does not prove controls are visible. Child-frame targets report their DOM-only fallback.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "position": { "type": "object", "additionalProperties": false, "description": "Fractions strictly between 0 and 1 within a painted target fragment, not pixels. Defaults to center {x:0.5,y:0.5}; {x:0.6,y:0.5} moves right within it. The point must be visible and unobscured.", "properties": { "x": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 }, "y": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 } }, "required": ["x", "y"] } }, "required": ["tabId", "ref"] } },
         { "name": "browser_scroll_to_element", "description": "Scroll an element into view by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_get_text", "description": "Get DOM text or the accessibility name of an element, or body text when ref is omitted. Returns visible and source; hidden accessible labels may be outdated. Reveal controls and read again before treating labels as live state.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "maxLength": { "type": "integer", "minimum": 1, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
-        { "name": "browser_page_info", "description": "Get the title and URL of a browser tab.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
+        { "name": "browser_page_info", "description": "Get native title and URL without waiting for page JavaScript. titleSource document opts into a bounded DOM-title read. When waiting for this title, pass the returned titleSource to waitFor; native and DOM titles can differ after SPA back/forward.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "titleSource": {"type":"string", "enum":["native","document"], "default":"native"} }, "required": ["tabId"] } },
         { "name": "browser_console_logs", "description": "Get up to 50 bounded recent console messages, uncaught runtime errors, and unhandled promise rejections from the main document and accessible child frames.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
-        { "name": "agent_spawn", "description": "Spawn one configured built-in or custom CLI agent in an explicitly selected open Anbo workspace. Creates a background terminal tab without activating its workspace or changing UI focus. The stored command cannot be supplied or overridden by the caller.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agent": { "type": "string", "minLength": 1, "maxLength": 71, "description": "Built-in launcher id or label, or the display name or custom:<id> of an agent registered in Anbo Settings." }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 15000, "description": "How long to wait for live agent detection before returning pending: true." } }, "required": ["workspace", "agent"] } },
+        { "name": "agent_spawn", "description": "Spawn one configured built-in or custom CLI agent in an explicitly selected open Anbo workspace. Displays its first tab only in an empty active workspace; later spawns stay in the background and inactive workspaces never activate. The stored command cannot be supplied or overridden by the caller.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agent": { "type": "string", "minLength": 1, "maxLength": 71, "description": "Built-in launcher id or label, or the display name or custom:<id> of an agent registered in Anbo Settings." }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 15000, "description": "How long to wait for live agent detection before returning pending: true." } }, "required": ["workspace", "agent"] } },
         { "name": "agent_list", "description": "List live non-private terminal agents in an explicitly selected Anbo workspace. Each carries the name it goes by, such as Alnilam, alongside its cli and id. Use the name when addressing it. Does not activate the workspace or move UI focus.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
         { "name": "agent_status", "description": "Get the callsign, CLI type, working or waiting state, tab, space, workspace, and discovered resume session for one live agent. Agent ids are readable and workspace-scoped, such as lucian-claude:14 or claude:14.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agentId": agent_id.clone() }, "required": ["workspace", "agentId"] } },
         { "name": "agent_read", "description": "Read a redacted, bounded increment of an agent terminal. Reuse the returned opaque cursor to receive only newer output; reset indicates that terminal history changed or the cursor expired.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agentId": agent_id.clone(), "cursor": { "type": "string", "description": "Opaque cursor returned by an earlier agent_read call." }, "maxChars": { "type": "integer", "minimum": 1, "maximum": 12000, "default": 4000 } }, "required": ["workspace", "agentId"] } },
         { "name": "agent_send", "description": "Send one bounded instruction to a live agent without activating its workspace. By default waits until the agent is ready, serializes concurrent sends, and rejects duplicate message ids. Set waitForReady to false to deliver immediately even while the reported state is working.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agentId": agent_id.clone(), "message": { "type": "string", "minLength": 1, "maxLength": 8000 }, "waitForReady": { "type": "boolean", "default": true }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 30000 }, "sourceAgentId": { "type": "string", "description": "Optional sender agent id. Sending to the same id is rejected." }, "messageId": { "type": "string", "maxLength": 128, "description": "Optional idempotency key scoped to the target agent." } }, "required": ["workspace", "agentId", "message"] } },
         { "name": "agent_wait", "description": "Wait for an agent to become working, waiting for input, or finished, or for its state to change when status is omitted. A normal timeout is returned as timedOut rather than a tool error.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agentId": agent_id, "status": { "type": "string", "enum": ["working", "waiting", "finished"] }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 10000 } }, "required": ["workspace", "agentId"] } },
-        { "name": "terminal_open", "description": "Open a normal shared Anbo terminal in an explicitly selected workspace without changing UI focus. A short purpose-specific tab title is required, such as Dev Server, Tests, or Build. The returned terminalId can be used after the shell becomes idle. Agent CLI and private terminals are never created by this tool.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "title": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Required purpose-specific tab title." } }, "required": ["workspace", "title"] } },
+        { "name": "terminal_open", "description": "Open a shared terminal in an explicit workspace. Displays the first tab only in an empty active workspace; later opens stay in the background and inactive workspaces never activate.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "title": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Required purpose-specific tab title." } }, "required": ["workspace", "title"] } },
         { "name": "terminal_close", "description": "Close an idle normal terminal previously created by terminal_open during the current Anbo application session. Refuses user-created terminals, agent CLI terminals, pending input, and foreground processes.", "annotations": { "readOnlyHint": false, "destructiveHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone() }, "required": ["workspace", "terminalId"] } },
         { "name": "terminal_list", "description": "List normal non-private Anbo shell terminals in an explicitly selected workspace. Agent CLI terminals are excluded. Does not activate the workspace or move UI focus.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
         { "name": "terminal_read", "description": "Read a redacted bounded increment from a shared normal terminal. Reuse the returned cursor to receive only newer output. hasMore reports unread output after this response; historyTruncated reports omitted older history; reset and replayed identify a terminal buffer repaint. Private and agent CLI terminals are never available.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone(), "cursor": { "type": "string", "description": "Opaque cursor returned by an earlier terminal_read call." }, "maxChars": { "type": "integer", "minimum": 1, "maximum": 12000, "default": 4000 } }, "required": ["workspace", "terminalId"] } },
@@ -117,6 +118,13 @@ pub fn tool_definitions() -> Value {
         { "name": "terminal_wait", "description": "Wait for a command started by terminal_execute without holding the terminal lock. Returns stable phase, completionReason, interrupted, per-execution exitCode, and redacted bounded output. Completed results are idempotent.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone(), "executionId": { "type": "string", "minLength": 1, "maxLength": 128 }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 10000 }, "maxChars": { "type": "integer", "minimum": 1, "maximum": 12000, "default": 4000 } }, "required": ["workspace", "terminalId", "executionId"] } },
         { "name": "terminal_interrupt", "description": "Cancel a specific queued, dispatched, or running execution by executionId. When executionId is omitted, send Ctrl+C to the terminal foreground command or safely clear unsubmitted prompt input.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace, "terminalId": terminal_id, "executionId": { "type": "string", "minLength": 1, "maxLength": 128 } }, "required": ["workspace", "terminalId"] } }
     ];
+    let find_schema = definitions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "browser_find")
+        .unwrap()["inputSchema"]["properties"]
+        .clone();
     for tool in definitions.as_array_mut().unwrap() {
         let name = tool["name"].as_str().unwrap().to_string();
         if matches!(
@@ -134,6 +142,43 @@ pub fn tool_definitions() -> Value {
             tool["description"] = json!("Click a current ref after bounded visibility, stability, enabled, and hit-target checks. Optional waitFor verifies the resulting page state after releasing the tab lock. Dispatch is never automatically repeated if that wait times out.");
         } else if name == "browser_wait" {
             tool["description"] = json!("Wait for text, URL, load, or a ref state. Alternatively pass waitFor alone to require a stable combination of URL, exact title, and visible main-document text. A document load event alone does not prove SPA readiness. Put timeout inside waitFor when using it.");
+        }
+        let method = tool_name_to_method(&name).unwrap_or("");
+        if super::locator_target::supports_locator(method) || name == "browser_wait" {
+            let waiting = name == "browser_wait";
+            let fields = if waiting {
+                vec!["by", "value", "name", "exact"]
+            } else {
+                vec!["by", "value", "name", "exact", "includeHidden", "timeout"]
+            };
+            let props: serde_json::Map<String, Value> = fields
+                .into_iter()
+                .map(|key| (key.into(), find_schema[key].clone()))
+                .collect();
+            tool["inputSchema"]["properties"]["locator"] = json!({
+                "type":"object", "properties":props, "required":["by","value"], "additionalProperties":false,
+                "description": if waiting { "Unique locator including hidden elements. Use top-level timeout; capped/skipped scans never prove absence." } else { "Alternative to ref. Requires one unique match across the bounded document/frame scan. timeout only bounds lookup; existing action guards still apply. No automatic input replay." }
+            });
+            if waiting {
+                tool["inputSchema"]["properties"]["condition"]["enum"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!("locator"));
+                tool["inputSchema"]["properties"]["state"]["enum"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!("absent"));
+                tool["description"] = json!(format!("{} Or pass locator + state (including absent/hidden) with top-level timeout; do not mix with legacy fields or waitFor.", tool["description"].as_str().unwrap()));
+            } else {
+                let required = tool["inputSchema"]["required"].as_array_mut().unwrap();
+                if required.iter().any(|field| field == "ref") {
+                    required.retain(|field| field != "ref");
+                }
+                tool["description"] = json!(format!("{} Accepts exactly one ref or unique locator; locator lookup creates fresh refs and rejects incomplete coverage or ambiguous targets before input.", tool["description"].as_str().unwrap()));
+            }
+        }
+        if name == "browser_find" {
+            tool["description"] = json!(format!("{} Matches also report editable, readOnly, inViewport, and frame-local bounds; these are metadata, not click actionability guarantees.", tool["description"].as_str().unwrap()));
         }
     }
     definitions
@@ -227,6 +272,30 @@ mod tests {
     fn unknown_tool_maps_to_none() {
         assert!(tool_name_to_method("browser_nope").is_none());
         assert!(tool_name_to_method("navigate").is_none());
+    }
+
+    #[test]
+    fn hover_position_schema_is_explicit_bounded_and_optional() {
+        let tools = tool_definitions();
+        let hover = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "browser_hover")
+            .unwrap();
+        let schema = &hover["inputSchema"];
+        assert_eq!(schema["required"], json!(["tabId"]));
+        assert!(schema.get("anyOf").is_none());
+        assert!(schema.get("not").is_none());
+        assert!(schema["properties"].get("ref").is_some());
+        assert!(schema["properties"].get("locator").is_some());
+        let position = &schema["properties"]["position"];
+        assert_eq!(position["additionalProperties"], false);
+        assert_eq!(position["required"], json!(["x", "y"]));
+        for axis in ["x", "y"] {
+            assert_eq!(position["properties"][axis]["exclusiveMinimum"], 0);
+            assert_eq!(position["properties"][axis]["exclusiveMaximum"], 1);
+        }
     }
 
     #[test]
@@ -357,6 +426,44 @@ mod tests {
                 properties["waitFor"]["properties"]["stableFor"]["maximum"],
                 2000
             );
+        }
+    }
+
+    #[test]
+    fn locator_contracts_preserve_target_choice_and_workspace_requirements() {
+        for tool in tool_definitions().as_array().unwrap() {
+            let name = tool["name"].as_str().unwrap();
+            let method = tool_name_to_method(name).unwrap();
+            let schema = &tool["inputSchema"];
+            if super::super::locator_target::supports_locator(method) {
+                assert_eq!(
+                    schema["properties"]["locator"]["additionalProperties"], false,
+                    "{name}"
+                );
+                assert!(schema.get("not").is_none(), "{name}");
+                assert!(
+                    !schema["required"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&json!("ref")),
+                    "{name}"
+                );
+                assert!(schema.get("anyOf").is_none(), "{name}");
+                assert!(tool["description"]
+                    .as_str()
+                    .unwrap()
+                    .contains("exactly one ref or unique locator"));
+            } else if name == "browser_drag" {
+                assert!(schema["properties"].get("locator").is_none());
+            } else if name == "browser_wait" {
+                let props = &schema["properties"]["locator"]["properties"];
+                assert!(props.get("timeout").is_none());
+                assert!(props.get("includeHidden").is_none());
+                assert!(schema["properties"]["state"]["enum"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("absent")));
+            }
         }
     }
 

@@ -17,6 +17,7 @@ use base64::Engine;
 use webview2_com::{
     CapturePreviewCompletedHandler, FocusChangedEventHandler,
     Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG,
+    SourceChangedEventHandler,
 };
 #[cfg(windows)]
 use windows::Win32::{
@@ -26,9 +27,9 @@ use windows::Win32::{
         IStream, StructuredStorage::CreateStreamOnHGlobal, STREAM_SEEK_END, STREAM_SEEK_SET,
     },
     UI::WindowsAndMessaging::{
-        DestroyWindow, GetClientRect, IsWindow, SetWindowPos, ShowWindow, HWND_BOTTOM, HWND_TOP,
-        SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER,
-        SWP_NOSIZE, SW_SHOWNOACTIVATE,
+        DestroyWindow, GetClientRect, GetPropW, IsWindow, SetPropW, SetWindowPos, ShowWindow,
+        HWND_BOTTOM, HWND_TOP, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SW_SHOWNOACTIVATE,
     },
 };
 
@@ -114,8 +115,16 @@ struct ActiveEmbed {
     /// Host HWND of this child, captured at spawn. Closing only queues the
     /// destroy, so this handle is the one thing that can prove it happened.
     host_window: Arc<AtomicIsize>,
+    startup_reservation: Option<Arc<crate::modules::resource_guard::Reservation>>,
 }
 
+/// Lock order contract for this module. The global registry and the per-embed
+/// handles inside `ActiveEmbed` are never held at the same time: read a handle
+/// out of the registry, drop the registry guard, then lock the handle. Holding
+/// a `local_root` guard while taking the registry, or the reverse, is what
+/// deadlocked a local file preview between the page-load callback and an embed
+/// update. Among the globals the order is closed_embeds, released_owners,
+/// active_embeds.
 static CLOSED_EMBEDS: OnceLock<Mutex<HashSet<EmbedKey>>> = OnceLock::new();
 static ACTIVE_EMBEDS: OnceLock<Mutex<HashMap<i64, ActiveEmbed>>> = OnceLock::new();
 static RELEASED_OWNERS: OnceLock<Mutex<HashSet<(i64, String, String)>>> = OnceLock::new();
@@ -396,6 +405,27 @@ fn active_owner(tab_id: i64) -> Option<String> {
         .map(|entry| entry.owner_id.clone())
 }
 
+/// Local-file policy check followed by the owner lookup, with the policy guard
+/// released before the registry is touched. Webview callbacks must go through
+/// here: holding `local_root` across `active_owner` inverts the lock order
+/// against `prepare_active_embed` and hangs the whole app.
+fn page_load_owner(
+    local_root: &Mutex<Option<PathBuf>>,
+    url: &Url,
+    app_url: Option<&Url>,
+    tab_id: i64,
+) -> Option<String> {
+    // Copy the root out instead of validating under the guard: the file branch
+    // of navigation_allowed canonicalizes on disk, and no lock here may be held
+    // across blocking I/O. That hold is why a local file preview, not an http
+    // page, is what surfaced the original deadlock.
+    let root = local_root.lock().ok().and_then(|root| root.clone());
+    if !navigation_allowed(url, app_url, root.as_deref()) {
+        return None;
+    }
+    active_owner(tab_id)
+}
+
 fn physical_rect(
     bounds: &EmbedBounds,
 ) -> Result<(PhysicalPosition<i32>, PhysicalSize<i32>), String> {
@@ -454,13 +484,16 @@ async fn spawn_browser_child(
     host_window: Arc<AtomicIsize>,
 ) -> Result<(), String> {
     let app = window.app_handle();
+    let reservation = Arc::new(crate::modules::resource_guard::reserve(
+        crate::modules::resource_guard::Workload::Browser,
+    )?);
     let app_url = app
         .get_webview(window.label())
         .and_then(|webview| webview.url().ok());
     let navigation_app_url = app_url.clone();
     let popup_app_url = app_url.clone();
     let event_app_url = app_url.clone();
-    let title_app_url = app_url;
+    let title_app_url = app_url.clone();
     let navigation_app = app.clone();
     let popup_app = app.clone();
     let title_app = app.clone();
@@ -468,7 +501,7 @@ async fn spawn_browser_child(
     let navigation_local_root = local_root.clone();
     let popup_local_root = local_root.clone();
     let event_local_root = local_root.clone();
-    let title_local_root = local_root;
+    let title_local_root = local_root.clone();
     let loading = active_embeds()
         .lock()
         .map_err(|_| "browser lifecycle state is unavailable".to_string())?
@@ -493,6 +526,8 @@ async fn spawn_browser_child(
     #[cfg(not(windows))]
     let initial_url = target;
     let builder = WebviewBuilder::new(embed_label(tab_id), WebviewUrl::External(initial_url))
+        // Wry 0.55.1 can fail creation when MoveFocus targets an unfocusable host.
+        .focused(false)
         .data_directory(browser_data_dir)
         // Opaque background so a not-yet-painted webview (new tab, mid-load) shows
         // a solid color instead of a transparent hole through to the desktop.
@@ -504,20 +539,15 @@ async fn spawn_browser_child(
     let builder = builder;
     let builder = builder
         .on_navigation(move |target| {
-            let root = navigation_local_root.lock().ok();
-            navigation_allowed(
-                target,
-                navigation_app_url.as_ref(),
-                root.as_deref().and_then(Option::as_deref),
-            )
+            let root = navigation_local_root
+                .lock()
+                .ok()
+                .and_then(|root| root.clone());
+            navigation_allowed(target, navigation_app_url.as_ref(), root.as_deref())
         })
         .on_new_window(move |target, _features| {
-            let root = popup_local_root.lock().ok();
-            if navigation_allowed(
-                &target,
-                popup_app_url.as_ref(),
-                root.as_deref().and_then(Option::as_deref),
-            ) {
+            let root = popup_local_root.lock().ok().and_then(|root| root.clone());
+            if navigation_allowed(&target, popup_app_url.as_ref(), root.as_deref()) {
                 let _ = popup_app.emit(
                     BROWSER_POPUP_REQUEST_EVENT,
                     BrowserPopupRequest {
@@ -529,15 +559,12 @@ async fn spawn_browser_child(
             NewWindowResponse::Deny
         })
         .on_page_load(move |webview, payload| {
-            let root = event_local_root.lock().ok();
-            if !navigation_allowed(
+            let Some(owner_id) = page_load_owner(
+                &event_local_root,
                 payload.url(),
                 event_app_url.as_ref(),
-                root.as_deref().and_then(Option::as_deref),
-            ) {
-                return;
-            }
-            let Some(owner_id) = active_owner(tab_id) else {
+                tab_id,
+            ) else {
                 return;
             };
             let kind = match payload.event() {
@@ -572,20 +599,14 @@ async fn spawn_browser_child(
             );
         })
         .on_document_title_changed(move |webview, title| {
-            let Some(owner_id) = active_owner(tab_id) else {
-                return;
-            };
             let Ok(url) = webview.url() else {
                 return;
             };
-            let root = title_local_root.lock().ok();
-            if !navigation_allowed(
-                &url,
-                title_app_url.as_ref(),
-                root.as_deref().and_then(Option::as_deref),
-            ) {
+            let Some(owner_id) =
+                page_load_owner(&title_local_root, &url, title_app_url.as_ref(), tab_id)
+            else {
                 return;
-            }
+            };
             let _ = title_app.emit(
                 BROWSER_NAV_EVENT,
                 BrowserNavEvent {
@@ -622,6 +643,13 @@ async fn spawn_browser_child(
     window
         .add_child(builder, position, size)
         .map_err(|error| error.to_string())?;
+    if let Some(entry) = active_embeds()
+        .lock()
+        .map_err(|_| "browser lifecycle state unavailable")?
+        .get_mut(&tab_id)
+    {
+        entry.startup_reservation = Some(reservation);
+    }
     if let Some(webview) = window.app_handle().get_webview(&embed_label(tab_id)) {
         // The host process is shared by every tab, so this only does work once.
         #[cfg(windows)]
@@ -631,12 +659,15 @@ async fn spawn_browser_child(
         // actually happened.
         #[cfg(windows)]
         if let Ok(hwnd) = webview_parent_hwnd(&webview) {
+            mark_child_window(hwnd, &host_window);
             host_window.store(hwnd, Ordering::Release);
         }
         #[cfg(not(windows))]
         let _ = &host_window;
         #[cfg(windows)]
         register_focus_handler(&webview, tab_id);
+        #[cfg(windows)]
+        register_source_handler(&webview, tab_id, app_url, local_root);
         set_embed_presentation(&webview, visible)?;
         #[cfg(windows)]
         {
@@ -668,6 +699,53 @@ fn register_focus_handler(webview: &tauri::Webview, tab_id: i64) {
         }));
         let mut token: i64 = 0;
         let _ = unsafe { platform.controller().add_GotFocus(&handler, &mut token) };
+    });
+}
+
+#[cfg(windows)]
+fn register_source_handler(
+    webview: &tauri::Webview,
+    tab_id: i64,
+    app_url: Option<Url>,
+    local_root: Arc<Mutex<Option<PathBuf>>>,
+) {
+    let app = webview.app_handle().clone();
+    let _ = webview.with_webview(move |platform| {
+        let register = || -> windows::core::Result<()> {
+            let core = unsafe { platform.controller().CoreWebView2()? };
+            let handler = SourceChangedEventHandler::create(Box::new(move |sender, _args| {
+                let (Some(core), Some(owner_id)) = (sender, active_owner(tab_id)) else {
+                    return Ok(());
+                };
+                let mut source = windows::core::PWSTR::null();
+                unsafe { core.Source(&mut source)? };
+                let source = webview2_com::take_pwstr(source);
+                let Ok(url) = Url::parse(&source) else {
+                    return Ok(());
+                };
+                let allowed = local_root.lock().ok().is_some_and(|root| {
+                    navigation_allowed(&url, app_url.as_ref(), root.as_deref())
+                });
+                if allowed {
+                    let _ = app.emit(
+                        BROWSER_NAV_EVENT,
+                        BrowserNavEvent {
+                            tab_id,
+                            owner_id,
+                            kind: "source",
+                            url: url.to_string(),
+                            title: None,
+                        },
+                    );
+                }
+                Ok(())
+            }));
+            let mut token = 0;
+            unsafe { core.add_SourceChanged(&handler, &mut token) }
+        };
+        if let Err(error) = register() {
+            log::warn!("browser source observer could not be registered: {error}");
+        }
     });
 }
 
@@ -1307,14 +1385,13 @@ fn prepare_active_embed(
     owner_id: &str,
     resolved_local_root: Option<PathBuf>,
 ) -> Result<PreparedEmbed, String> {
-    let mut active = active_embeds()
+    let active = active_embeds()
         .lock()
         .map_err(|_| "browser lifecycle state is unavailable".to_string())?;
     if !active.contains_key(&tab_id) && active.len() >= MAX_ACTIVE_EMBEDS {
         return Err("browser embed limit reached".to_string());
     }
-    let mine =
-        |entry: &&ActiveEmbed| entry.instance_id == instance_id && entry.owner_id == owner_id;
+    let mine = |entry: &&ActiveEmbed| entry.instance_id == instance_id;
     let local_root = active
         .get(&tab_id)
         .filter(mine)
@@ -1340,29 +1417,44 @@ fn prepare_active_embed(
         .filter(mine)
         .map(|entry| entry.host_window.clone())
         .unwrap_or_else(|| Arc::new(AtomicIsize::new(0)));
+    let startup_reservation = active
+        .get(&tab_id)
+        .filter(mine)
+        .and_then(|entry| entry.startup_reservation.clone());
     #[cfg(windows)]
     let network = active
         .get(&tab_id)
         .filter(mine)
         .map(|entry| entry.network.clone())
         .unwrap_or_default();
+    // Release the registry before writing the local-file policy. Holding both
+    // is the lock-order inversion that hung a local preview: the page-load
+    // callback takes the policy lock first and the registry second. The caller
+    // holds LIFECYCLE_LOCK, so re-taking the registry cannot interleave with
+    // another prepare for this tab, and the policy is still written before the
+    // entry becomes visible.
+    drop(active);
     *local_root
         .lock()
         .map_err(|_| "browser local-file policy is unavailable".to_string())? = resolved_local_root;
-    active.insert(
-        tab_id,
-        ActiveEmbed {
-            #[cfg(windows)]
-            network,
-            instance_id: instance_id.to_string(),
-            owner_id: owner_id.to_string(),
-            local_root: local_root.clone(),
-            loading: loading.clone(),
-            pending_url: pending_url.clone(),
-            navigation_generation,
-            host_window: host_window.clone(),
-        },
-    );
+    active_embeds()
+        .lock()
+        .map_err(|_| "browser lifecycle state is unavailable".to_string())?
+        .insert(
+            tab_id,
+            ActiveEmbed {
+                #[cfg(windows)]
+                network,
+                instance_id: instance_id.to_string(),
+                owner_id: owner_id.to_string(),
+                local_root: local_root.clone(),
+                loading: loading.clone(),
+                pending_url: pending_url.clone(),
+                navigation_generation,
+                host_window: host_window.clone(),
+                startup_reservation,
+            },
+        );
     Ok((local_root, loading, pending_url, host_window))
 }
 
@@ -1465,36 +1557,6 @@ pub async fn browser_embed_update(
         PhysicalPosition::new(x, y)
     };
     if let Some(webview) = app.get_webview(&label) {
-        if let Some(target) = target {
-            let current = crate::modules::browser_automation::cdp::read_url(
-                &webview,
-                std::time::Duration::from_secs(2),
-            )
-            .await?;
-            let should_navigate = {
-                let pending = pending_url
-                    .lock()
-                    .map_err(|_| "browser navigation state is unavailable".to_string())?;
-                super::navigation::update_needs_navigation(
-                    &current,
-                    target.as_str(),
-                    pending.as_deref(),
-                )
-            };
-            if should_navigate {
-                loading.store(true, Ordering::Release);
-                if let Ok(mut pending) = pending_url.lock() {
-                    *pending = Some(target.to_string());
-                }
-                if let Err(error) = webview.navigate(target) {
-                    loading.store(false, Ordering::Release);
-                    if let Ok(mut pending) = pending_url.lock() {
-                        *pending = None;
-                    }
-                    return Err(error.to_string());
-                }
-            }
-        }
         webview
             .set_bounds(Rect {
                 position: position.into(),
@@ -1583,6 +1645,7 @@ pub async fn browser_embed_navigate(
         set_active_pending_url(tab_id, Some(target.to_string()));
         if let Err(error) = webview.navigate(target) {
             set_active_loading(tab_id, false);
+            set_active_pending_url(tab_id, None);
             return Err(error.to_string());
         }
     }
@@ -1981,14 +2044,41 @@ async fn child_window_destroyed(_raw_hwnd: isize, _budget: std::time::Duration) 
 /// at spawn is the only remaining way to reach it, and `DestroyWindow` has to
 /// run on the thread that owns the window, which is the main thread.
 #[cfg(windows)]
-async fn force_destroy_child(app: &tauri::AppHandle, raw_hwnd: isize) -> bool {
+fn mark_child_window(raw_hwnd: isize, owner: &Arc<AtomicIsize>) {
+    // Properties disappear when Windows destroys the HWND. Keep the Arc alive
+    // through close so its address cannot be reused while fallback is queued.
+    let hwnd = windows::Win32::Foundation::HWND(raw_hwnd as *mut std::ffi::c_void);
+    let marker = windows::Win32::Foundation::HANDLE(Arc::as_ptr(owner) as *mut std::ffi::c_void);
+    if let Err(error) = unsafe {
+        SetPropW(
+            hwnd,
+            windows::core::w!("Anbo.BrowserChildOwner"),
+            Some(marker),
+        )
+    } {
+        log::warn!("browser child ownership marker unavailable: {error}");
+    }
+}
+
+#[cfg(windows)]
+async fn force_destroy_child(
+    app: &tauri::AppHandle,
+    raw_hwnd: isize,
+    owner: Option<Arc<AtomicIsize>>,
+) -> bool {
     if raw_hwnd == 0 {
         return false;
     }
+    let Some(owner) = owner else {
+        return false;
+    };
     let requested = app
         .run_on_main_thread(move || {
             let hwnd = windows::Win32::Foundation::HWND(raw_hwnd as *mut std::ffi::c_void);
-            if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+            let marker = unsafe { GetPropW(hwnd, windows::core::w!("Anbo.BrowserChildOwner")) };
+            if marker.0 == Arc::as_ptr(&owner) as *mut std::ffi::c_void
+                && unsafe { IsWindow(Some(hwnd)) }.as_bool()
+            {
                 let _ = unsafe { DestroyWindow(hwnd) };
             }
         })
@@ -2000,22 +2090,99 @@ async fn force_destroy_child(app: &tauri::AppHandle, raw_hwnd: isize) -> bool {
 }
 
 #[cfg(not(windows))]
-async fn force_destroy_child(_app: &tauri::AppHandle, _raw_hwnd: isize) -> bool {
+async fn force_destroy_child(
+    _app: &tauri::AppHandle,
+    _raw_hwnd: isize,
+    _owner: Option<Arc<AtomicIsize>>,
+) -> bool {
     true
 }
 
-/// Destroy browser children the renderer no longer has a tab for.
-///
-/// `Webview::close()` returns once the destroy is queued and forgets the label
-/// immediately, so any close that never reached the event loop leaves a child
-/// nothing in Anbo can reach again. This is the backstop that turns such a miss
-/// from permanent into transient.
-///
-/// The caller must send EVERY browser tab it holds, across every space,
-/// including inactive spaces, background-hosted and cold tabs. Anything
-/// narrower would destroy exactly the background tabs the product keeps alive
-/// on purpose. `max_tab_id` is the renderer's id high-water mark: ids above it
-/// belong to tabs being created right now and are never candidates.
+fn child_is_absent(has_webview: bool, recorded_window: Option<isize>) -> bool {
+    !has_webview && recorded_window.is_none()
+}
+
+async fn close_embed_locked(
+    app: &tauri::AppHandle,
+    tab_id: i64,
+    instance_id: &str,
+) -> Result<bool, String> {
+    let host_window = {
+        let _lifecycle = LIFECYCLE_LOCK.lock().await;
+        ensure_current_instance(instance_id)?;
+        bounded_insert(
+            &mut *closed_embeds()
+                .lock()
+                .map_err(|_| "browser close state is unavailable".to_string())?,
+            (tab_id, instance_id.to_string()),
+            MAX_CLOSED_EMBEDS,
+        );
+        released_owners()
+            .lock()
+            .map_err(|_| "browser owner state is unavailable".to_string())?
+            .retain(|(id, _, _)| *id != tab_id);
+        active_embeds()
+            .lock()
+            .map_err(|_| "browser lifecycle state is unavailable".to_string())?
+            .get(&tab_id)
+            .map(|entry| entry.host_window.clone())
+    };
+    let webview = app.get_webview(&embed_label(tab_id));
+    let recorded = host_window.as_ref().map(|h| h.load(Ordering::Acquire));
+    let existed = !child_is_absent(webview.is_some(), recorded);
+    let outcome = async {
+        if !existed {
+            return Ok(());
+        }
+        let mut raw = recorded.unwrap_or(0);
+        #[cfg(windows)]
+        if raw == 0 {
+            if let Some(webview) = &webview {
+                raw = webview_parent_hwnd(webview)?;
+                if let Some(handle) = &host_window {
+                    mark_child_window(raw, handle);
+                    handle.store(raw, Ordering::Release);
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = &mut raw;
+        if let Some(webview) = webview {
+            webview.close().map_err(|error| error.to_string())?;
+        }
+        if child_window_destroyed(raw, std::time::Duration::from_secs(3)).await
+            || force_destroy_child(app, raw, host_window.clone()).await
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "browser embed {tab_id} close did not destroy its window in time"
+            ))
+        }
+    }
+    .await;
+
+    {
+        let _lifecycle = LIFECYCLE_LOCK.lock().await;
+        ensure_current_instance(instance_id)?;
+        if outcome.is_ok() {
+            active_embeds()
+                .lock()
+                .map_err(|_| "browser lifecycle state is unavailable".to_string())?
+                .remove(&tab_id);
+        } else if let Ok(mut closed) = closed_embeds().lock() {
+            closed.remove(&(tab_id, instance_id.to_string()));
+        }
+    }
+    if outcome.is_ok() {
+        crate::modules::browser_automation::download::remove_tab(tab_id);
+        crate::modules::browser_automation::snapshot::remove_generation(tab_id);
+        crate::modules::browser_automation::activity::remove(tab_id);
+    }
+    outcome.map(|()| existed)
+}
+
+/// Receives all browser tabs across every workspace, with the allocator high-water mark.
 #[tauri::command]
 pub async fn browser_embed_reconcile(
     app: tauri::AppHandle,
@@ -2026,9 +2193,7 @@ pub async fn browser_embed_reconcile(
 ) -> Result<usize, String> {
     ensure_main_window(&window)?;
     validate_token(&instance_id)?;
-
-    // Registry work only, so the closes below never run under the global lock.
-    let strays: Vec<(i64, isize)> = {
+    let strays: Vec<i64> = {
         let _lifecycle = LIFECYCLE_LOCK.lock().await;
         ensure_current_instance(&instance_id)?;
         let live: HashSet<i64> = live_tab_ids.into_iter().collect();
@@ -2038,10 +2203,6 @@ pub async fn browser_embed_reconcile(
         let active = active_embeds()
             .lock()
             .map_err(|_| "browser lifecycle state is unavailable".to_string())?;
-        // Two sources, because neither alone is complete. The manager knows the
-        // children it still tracks; the registry knows the window handle of a
-        // child whose close was already dispatched and whose label the manager
-        // has therefore forgotten. Only the second can reach a stranded child.
         let mut candidates: HashSet<i64> = app
             .webviews()
             .keys()
@@ -2055,42 +2216,22 @@ pub async fn browser_embed_reconcile(
                     && !live.contains(tab_id)
                     && !closed.contains(&(*tab_id, instance_id.clone()))
             })
-            .map(|tab_id| {
-                let handle = active
-                    .get(&tab_id)
-                    .map(|entry| entry.host_window.load(Ordering::Acquire))
-                    .unwrap_or(0);
-                (tab_id, handle)
-            })
             .collect()
     };
 
-    let mut reaped = 0_usize;
-    for (tab_id, host_window) in strays {
+    let mut reaped = 0;
+    for tab_id in strays {
         let tab_lock = get_tab_lock(tab_id);
         let _tab_lock = tab_lock.lock().await;
-        // Never abort the loop on one failure: the rest are still strays.
-        if let Some(webview) = app.get_webview(&embed_label(tab_id)) {
-            if let Err(error) = webview.close() {
-                log::warn!("could not reconcile stray browser embed {tab_id}: {error}");
-                continue;
+        // Re-read current ownership and handle after queueing behind close/update.
+        match close_embed_locked(&app, tab_id, &instance_id).await {
+            Ok(true) => {
+                reaped += 1;
+                log::info!("reconciled stray browser embed {tab_id}");
             }
+            Ok(false) => {}
+            Err(error) => log::warn!("could not reconcile browser embed {tab_id}: {error}"),
         }
-        let gone = child_window_destroyed(host_window, std::time::Duration::from_secs(2)).await
-            || force_destroy_child(&app, host_window).await
-            || host_window == 0;
-        if gone {
-            reaped += 1;
-            if let Ok(mut active) = active_embeds().lock() {
-                active.remove(&tab_id);
-            }
-            log::info!("reconciled stray browser embed {tab_id}");
-        } else {
-            log::warn!("stray browser embed {tab_id} survived reconciliation");
-        }
-    }
-    if reaped > 0 {
-        log::info!("browser reconciliation destroyed {reaped} stray embed(s)");
     }
     Ok(reaped)
 }
@@ -2106,80 +2247,12 @@ pub async fn browser_embed_close(
     validate_tab_id(tab_id)?;
     validate_token(&instance_id)?;
     let tab_lock = get_tab_lock(tab_id);
-    {
+    let result = {
         let _tab_lock = tab_lock.lock().await;
-        let _lifecycle = LIFECYCLE_LOCK.lock().await;
-        ensure_current_instance(&instance_id)?;
-        // Scoped: this std guard must be provably gone before the await below,
-        // or the command future stops being Send.
-        {
-            let mut closed = closed_embeds()
-                .lock()
-                .map_err(|_| "browser close state is unavailable".to_string())?;
-            bounded_insert(
-                &mut closed,
-                (tab_id, instance_id.clone()),
-                MAX_CLOSED_EMBEDS,
-            );
-        }
-        released_owners()
-            .lock()
-            .map_err(|_| "browser owner state is unavailable".to_string())?
-            .retain(|(released_tab_id, _, _)| *released_tab_id != tab_id);
-        // Close whatever handle still exists, whether or not the registry
-        // agrees this tab is ours. The old is_active gate turned a stale entry
-        // into a permanently live child, and the registry entry used to be
-        // erased even when the lookup found nothing to close, throwing away the
-        // last record that the tab ever existed.
-        let host_window = active_embeds()
-            .lock()
-            .ok()
-            .and_then(|active| active.get(&tab_id).map(|entry| entry.host_window.clone()));
-        let requested = match app.get_webview(&embed_label(tab_id)) {
-            Some(webview) => match webview.close() {
-                Ok(()) => true,
-                Err(error) => {
-                    // Keep the entry so a later sweep can still find this tab.
-                    log::warn!("browser embed {tab_id} did not close: {error}");
-                    false
-                }
-            },
-            None => true,
-        };
-        if requested {
-            let raw = host_window
-                .map(|handle| handle.load(Ordering::Acquire))
-                .unwrap_or(0);
-            if child_window_destroyed(raw, std::time::Duration::from_secs(3)).await {
-                active_embeds()
-                    .lock()
-                    .map_err(|_| "browser lifecycle state is unavailable".to_string())?
-                    .remove(&tab_id);
-            } else if force_destroy_child(&app, raw).await {
-                // The queued destroy never ran, but the recorded window handle
-                // still reaches the child. This is the only path that can, since
-                // close() already dropped the label from the manager.
-                log::info!("browser embed {tab_id} destroyed through its window handle");
-                active_embeds()
-                    .lock()
-                    .map_err(|_| "browser lifecycle state is unavailable".to_string())?
-                    .remove(&tab_id);
-            } else {
-                // Keep the registry entry, which still holds the handle, and take
-                // the tab back out of the closed set so reconciliation can retry
-                // instead of reporting a success that never happened.
-                log::warn!("browser embed {tab_id} close did not destroy its window in time");
-                if let Ok(mut closed) = closed_embeds().lock() {
-                    closed.retain(|(closed_tab_id, _)| *closed_tab_id != tab_id);
-                }
-            }
-        }
-    }
+        close_embed_locked(&app, tab_id, &instance_id).await
+    };
     remove_tab_lock(tab_id);
-    crate::modules::browser_automation::download::remove_tab(tab_id);
-    crate::modules::browser_automation::snapshot::remove_generation(tab_id);
-    crate::modules::browser_automation::activity::remove(tab_id);
-    Ok(())
+    result.map(|_| ())
 }
 
 #[cfg(test)]
@@ -2191,6 +2264,144 @@ mod tests {
     };
     use std::collections::HashSet;
     use url::Url;
+
+    #[test]
+    fn a_reconciled_child_is_absent_but_a_missing_handle_is_not_proof() {
+        assert!(super::child_is_absent(false, None));
+        assert!(!super::child_is_absent(false, Some(0)));
+        assert!(!super::child_is_absent(false, Some(123)));
+        assert!(!super::child_is_absent(true, None));
+    }
+
+    #[test]
+    fn renderer_owner_transfer_retains_live_native_handles_and_loading_state() {
+        use std::sync::{atomic::Ordering, Arc};
+        let id = 991_340;
+        let first = super::prepare_active_embed(id, "same-instance", "old-owner", None).unwrap();
+        first.1.store(false, Ordering::Release);
+        first.3.store(123, Ordering::Release);
+        *first.2.lock().unwrap() = Some("https://example.test/pending".into());
+        let next = super::prepare_active_embed(id, "same-instance", "new-owner", None).unwrap();
+        assert!(Arc::ptr_eq(&first.1, &next.1));
+        assert!(Arc::ptr_eq(&first.2, &next.2));
+        assert!(Arc::ptr_eq(&first.3, &next.3));
+        assert!(!next.1.load(Ordering::Acquire));
+        assert_eq!(next.3.load(Ordering::Acquire), 123);
+        let fresh = super::prepare_active_embed(id, "new-instance", "new-owner", None).unwrap();
+        assert!(!Arc::ptr_eq(&first.3, &fresh.3));
+        super::active_embeds().lock().unwrap().remove(&id);
+    }
+
+    /// The two lock-order tests below deliberately hold one of the real locks,
+    /// so they must not observe each other.
+    static LOCK_ORDER_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Regression: an embed update used to keep the registry locked while it
+    /// waited for `local_root`, which deadlocked against a page-load callback
+    /// that held `local_root` and wanted the registry. Bounded, so a
+    /// reintroduced inversion fails the test instead of hanging the runner.
+    #[test]
+    fn an_embed_update_never_holds_the_registry_while_waiting_for_local_root() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let _serial = LOCK_ORDER_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let id = 991_342;
+        let prepared = super::prepare_active_embed(id, "iso", "owner", None).unwrap();
+        let local_root = prepared.0.clone();
+        // Stands in for a page-load callback sitting inside the policy lock.
+        let held = local_root.lock().unwrap();
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = started_tx.send(());
+            let outcome = super::prepare_active_embed(id, "iso", "next-owner", None);
+            let _ = done_tx.send(outcome.is_ok());
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+
+        let mut registry_free = false;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if super::active_embeds().try_lock().is_ok() {
+                registry_free = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let finished_early = done_rx.try_recv().is_ok();
+        // Release before asserting so a regression fails this test alone rather
+        // than poisoning the shared locks for every other test in the binary.
+        drop(held);
+        assert!(
+            registry_free,
+            "the embed update held the registry while waiting for local_root"
+        );
+        assert!(
+            !finished_early,
+            "the update finished early, so it never waited on the policy lock"
+        );
+        assert!(done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the update finished once the policy lock was released"));
+        worker.join().unwrap();
+        super::active_embeds().lock().unwrap().remove(&id);
+    }
+
+    /// Regression for the other half of the cycle: the page-load lookup must
+    /// drop the policy guard before it asks the registry for the owner.
+    #[test]
+    fn the_page_load_lookup_releases_the_policy_lock_before_the_registry() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let _serial = LOCK_ORDER_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let id = 991_343;
+        let prepared = super::prepare_active_embed(id, "iso", "owner", None).unwrap();
+        let local_root = prepared.0.clone();
+        // Stands in for an embed update sitting inside the registry.
+        let held = super::active_embeds().lock().unwrap();
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let probe_root = local_root.clone();
+        let worker = std::thread::spawn(move || {
+            let url = Url::parse("https://example.test/page").unwrap();
+            let _ = started_tx.send(());
+            let _ = done_tx.send(super::page_load_owner(&probe_root, &url, None, id));
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+
+        let mut policy_free = false;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if local_root.try_lock().is_ok() {
+                policy_free = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let finished_early = done_rx.try_recv().is_ok();
+        // Release before asserting, same reason as the test above.
+        drop(held);
+        assert!(
+            policy_free,
+            "the page-load lookup held local_root while waiting for the registry"
+        );
+        assert!(
+            !finished_early,
+            "the lookup finished early, so it never waited on the registry"
+        );
+        let owner = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the lookup finished once the registry was released");
+        assert_eq!(owner.as_deref(), Some("owner"));
+        worker.join().unwrap();
+        super::active_embeds().lock().unwrap().remove(&id);
+    }
 
     #[test]
     fn accepts_http_and_https_urls() {

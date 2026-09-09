@@ -9,6 +9,7 @@ const invokeMock = vi.hoisted(() =>
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 
 import { buildBrowserTools } from "./browser";
+import type { z } from "zod";
 
 const toolOptions: ToolExecutionOptions = {
   toolCallId: "tool-call",
@@ -53,6 +54,113 @@ async function run(
 }
 
 describe("AI browser tools", () => {
+  it("forwards a locator directly without inventing a ref or replaying input", async () => {
+    const locator = {
+      by: "role",
+      value: "button",
+      name: "Submit",
+      exact: true,
+    };
+    await run("browser_click", { locator });
+    expect(invokeMock).toHaveBeenCalledOnce();
+    expect(JSON.parse(invokeMock.mock.calls[0][1].requestJson)).toEqual({
+      action: "click",
+      tabId: 42,
+      locator,
+    });
+  });
+
+  it("requires one target for an action while retaining optional text/keyboard targets", () => {
+    const browser = buildBrowserTools(makeContext(42));
+    const click = browser.browser_click.inputSchema as z.ZodType;
+    expect(click.safeParse({}).success).toBe(false);
+    expect(
+      click.safeParse({ ref: "g1-e1", locator: { by: "css", value: "button" } })
+        .success,
+    ).toBe(false);
+    expect(
+      click.safeParse({ locator: { by: "css", value: "button" } }).success,
+    ).toBe(true);
+    expect(
+      click.safeParse({ locator: { by: "css", value: "button", limit: 1 } })
+        .success,
+    ).toBe(false);
+    expect(
+      (browser.browser_get_text.inputSchema as z.ZodType).safeParse({}).success,
+    ).toBe(true);
+    expect(
+      (browser.browser_press_key.inputSchema as z.ZodType).safeParse({
+        key: "Escape",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("forwards locator waits with their top-level timeout", async () => {
+    const locator = { by: "testId", value: "spinner" };
+    await run("browser_wait", { locator, state: "absent", timeout: 2500 });
+    expect(JSON.parse(invokeMock.mock.calls[0][1].requestJson)).toEqual({
+      action: "wait",
+      tabId: 42,
+      locator,
+      state: "absent",
+      timeout: 2500,
+    });
+  });
+
+  it("retains the snapshot result field through shared IPC forwarding", async () => {
+    await expect(run("browser_snapshot", {})).resolves.toEqual({
+      status: "ok",
+      snapshot: "{}",
+    });
+  });
+
+  it("returns an IPC error once without replaying input", async () => {
+    invokeMock.mockRejectedValueOnce(new Error("input_not_ready"));
+    await expect(
+      run("browser_hover", { ref: "g1-e1", position: { x: 0.6, y: 0.5 } }),
+    ).resolves.toEqual({ status: "error", error: "Error: input_not_ready" });
+    expect(invokeMock).toHaveBeenCalledOnce();
+  });
+
+  it("reads the current tab when a shared action executes, not when tools are created", async () => {
+    let active = 42;
+    const ctx = makeContext(42);
+    ctx.getActiveBrowserTabId = () => active;
+    const execute = buildBrowserTools(ctx).browser_hover.execute;
+    if (!execute) throw new Error("browser_hover has no execute");
+    active = 99;
+    await execute({ ref: "g2-e1" }, toolOptions);
+    expect(JSON.parse(invokeMock.mock.calls[0][1].requestJson)).toEqual({
+      action: "hover",
+      tabId: 99,
+      ref: "g2-e1",
+    });
+  });
+  it("forwards explicit title sources for page reads and waits", async () => {
+    await run("browser_get_page_info", { titleSource: "document" });
+    expect(
+      JSON.parse(
+        invokeMock.mock.calls[invokeMock.mock.calls.length - 1]?.[1]
+          .requestJson ?? "{}",
+      ),
+    ).toEqual({
+      action: "get_page_info",
+      tabId: 42,
+      titleSource: "document",
+    });
+    await run("browser_wait", {
+      waitFor: { title: "Ready", titleSource: "native" },
+    });
+    expect(
+      JSON.parse(
+        invokeMock.mock.calls[invokeMock.mock.calls.length - 1]?.[1]
+          .requestJson ?? "{}",
+      ).waitFor,
+    ).toEqual({
+      title: "Ready",
+      titleSource: "native",
+    });
+  });
   it("ends only the specified visual session without closing a browser", async () => {
     await run("browser_end_session", { tabId: 42, controlId: 19 });
     expect(invokeMock).toHaveBeenCalledWith(
@@ -320,6 +428,21 @@ describe("AI browser tools", () => {
       "browser_automation_handle_action",
       {
         requestJson: JSON.stringify({ action: "hover", tabId: 42, ref: "e2" }),
+      },
+    );
+  });
+
+  it("forwards an explicit relative hover position", async () => {
+    await run("browser_hover", { ref: "e2", position: { x: 0.6, y: 0.5 } });
+    expect(invokeMock).toHaveBeenCalledWith(
+      "browser_automation_handle_action",
+      {
+        requestJson: JSON.stringify({
+          action: "hover",
+          tabId: 42,
+          ref: "e2",
+          position: { x: 0.6, y: 0.5 },
+        }),
       },
     );
   });

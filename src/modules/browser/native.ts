@@ -7,7 +7,7 @@ export const BROWSER_LOADING_FALLBACK_MS = 30_000;
 export type BrowserNavEvent = {
   tabId: number;
   ownerId: string;
-  kind: "navigated" | "loaded" | "title";
+  kind: "navigated" | "loaded" | "title" | "source";
   url: string;
   title?: string;
 };

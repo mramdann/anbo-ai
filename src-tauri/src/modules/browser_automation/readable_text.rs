@@ -25,18 +25,25 @@ pub const READABLE_TEXT_JS: &str = r#"
                 if (style.display === 'none' || style.contentVisibility === 'hidden' || Number(style.opacity || 1) === 0) return;
                 visible = style.visibility !== 'hidden' && style.visibility !== 'collapse';
             }
-            for (const child of node.childNodes) {
+            const assigned = String(node.tagName).toUpperCase() === 'SLOT' ? node.assignedNodes?.() : null;
+            const children = node.shadowRoot ? [node.shadowRoot] : (assigned?.length ? assigned : node.childNodes);
+            for (const child of children) {
                 visit(child, depth + 1, visible);
                 if (visited >= 50000 || size > 16000) { sourceTruncated = true; break; }
             }
-            if (node.shadowRoot) visit(node.shadowRoot, depth + 1, visible);
         };
-        const parent = node => node.assignedSlot || node.parentElement || node.getRootNode?.().host || null;
+        const parent = node => {
+            if (node.assignedSlot) return node.assignedSlot;
+            const ancestor = node.parentElement;
+            if (ancestor?.shadowRoot || (String(ancestor?.tagName).toUpperCase() === 'SLOT' && ancestor.assignedNodes?.().length)) return false;
+            return ancestor || node.getRootNode?.().host || null;
+        };
         let ancestor = parent(root);
         for (let depth = 0; ancestor && depth <= 256; ancestor = parent(ancestor), depth++) {
             const style = getComputedStyle(ancestor);
             if (ancestor.hidden || ancestor.getAttribute('aria-hidden') === 'true' || style.display === 'none' || style.contentVisibility === 'hidden' || Number(style.opacity || 1) === 0) return {text:'', sourceTruncated:false};
         }
+        if (ancestor === false) return {text:'', sourceTruncated:false};
         if (ancestor) return {text:'', sourceTruncated:true};
         visit(root, 0);
         return {text:parts.join('\n'), sourceTruncated};

@@ -1,14 +1,22 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::protocol::error_codes;
 use super::readable_text::READABLE_TEXT_JS;
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TitleSource {
+    Document,
+    Native,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PageExpectation {
     pub url: Option<String>,
     pub title: Option<String>,
+    pub title_source: Option<TitleSource>,
     pub text: Option<String>,
     #[serde(default = "default_timeout")]
     pub timeout: u64,
@@ -35,6 +43,9 @@ impl PageExpectation {
         if expectation.url.is_none() && expectation.title.is_none() && expectation.text.is_none() {
             return Err(error());
         }
+        if expectation.title_source.is_some() && expectation.title.is_none() {
+            return Err(error());
+        }
         for (value, limit) in [
             (&expectation.url, 8192),
             (&expectation.title, 2048),
@@ -57,7 +68,7 @@ impl PageExpectation {
     }
 
     pub fn script(&self) -> String {
-        let expected = json!({"url": self.url, "title": self.title, "text": self.text});
+        let expected = json!({"url": self.url, "title": self.title, "text": self.text, "titleSource": self.title_source});
         format!(
             r#"(() => {{
             {READABLE_TEXT_JS}
@@ -77,10 +88,31 @@ impl PageExpectation {
             }};
             if (!document.body || document.readyState === 'loading') return false;
             return (!expected.url || glob(location.href, expected.url)) &&
-                (!expected.title || normalize(document.title) === normalize(expected.title)) &&
+                (!expected.title || expected.titleSource === 'native' || normalize(document.title) === normalize(expected.title)) &&
                 (!expected.text || normalize(readableText(document.body).text).includes(normalize(expected.text)));
         }})()"#
         )
+    }
+
+    pub fn uses_native_title(&self) -> bool {
+        self.title_source == Some(TitleSource::Native)
+    }
+
+    pub fn needs_document(&self) -> bool {
+        !self.uses_native_title() || self.url.is_some() || self.text.is_some()
+    }
+
+    pub fn matches_native_title(&self, title: &str) -> bool {
+        let normalize = |value: &str| {
+            value
+                .split(|ch: char| ch.is_whitespace() || ch == '\u{feff}')
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        self.title
+            .as_ref()
+            .is_some_and(|expected| normalize(title) == normalize(expected))
     }
 }
 
@@ -135,6 +167,8 @@ mod tests {
             json!({"text":"ok", "stableFor":2001}),
             json!({"title":"ok", "timeout":100, "stableFor":200}),
             json!({"title":"ok", "typo":true}),
+            json!({"title":"ok", "titleSource":"unknown"}),
+            json!({"text":"ok", "titleSource":"native"}),
             json!({"text":"x".repeat(2049)}),
         ] {
             assert!(PageExpectation::parse(Some(&invalid)).is_err());
@@ -166,5 +200,24 @@ mod tests {
             .script()
             .contains(&serde_json::to_string(value).unwrap()));
         assert!(input_guard_body(4, Some(value)).contains(&serde_json::to_string(value).unwrap()));
+    }
+
+    #[test]
+    fn native_title_is_explicit_and_does_not_require_document_javascript_alone() {
+        let mut expectation =
+            PageExpectation::parse(Some(&json!({"title":"Ready now", "titleSource":"native"})))
+                .unwrap()
+                .unwrap();
+        assert!(expectation.uses_native_title());
+        assert!(!expectation.needs_document());
+        assert!(expectation.matches_native_title("\u{feff} Ready\n now "));
+        assert!(!expectation.matches_native_title("Not ready"));
+        expectation.text = Some("Ready".into());
+        assert!(expectation.needs_document());
+        let default = PageExpectation::parse(Some(&json!({"title":"Ready"})))
+            .unwrap()
+            .unwrap();
+        assert!(!default.uses_native_title());
+        assert!(default.needs_document());
     }
 }
