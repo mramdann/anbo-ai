@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
 import { listen } from "@tauri-apps/api/event";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   browserAutomationActivityFromPayload,
   clearBrowserAutomationActivity,
@@ -241,5 +241,30 @@ describe("browser automation activity", () => {
     clearBrowserAutomationActivity(7);
     expect(getBrowserAutomationState(7)).toBeNull();
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("who a tab says is driving it", () => {
+  it("does not let an unnamed opener overwrite a known controller", () => {
+    // The open request is the tab's first news of a controller, but not every
+    // opener is one Anbo can name. Asserting a generic identity there put
+    // "Remote agent" on the strip for the whole session while the page overlay
+    // named the agent correctly on every action.
+    markBrowserAutomationActivity(9, "click", { brand: "kimi", label: "Kimi" });
+    expect(getBrowserAutomationActor(9)).toEqual({
+      brand: "kimi",
+      label: "Kimi",
+    });
+    markBrowserAutomationActivity(9, "open", undefined);
+    expect(getBrowserAutomationActor(9)).toEqual({
+      brand: "kimi",
+      label: "Kimi",
+    });
+  });
+
+  it("leaves a tab nameless rather than inventing one", () => {
+    markBrowserAutomationActivity(11, "open", undefined);
+    expect(getBrowserAutomationActor(11)).toBeNull();
+    expect(getBrowserAutomationActivity(11)).toBe("open");
   });
 });

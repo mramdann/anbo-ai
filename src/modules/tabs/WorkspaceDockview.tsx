@@ -44,6 +44,7 @@ import {
   type IDockviewPanelProps,
 } from "dockview-react";
 import "dockview/dist/styles/dockview.css";
+import { AgentIcon } from "@/modules/agents/lib/agentIcon";
 import {
   useBrowserAutomationActivity,
   useBrowserAutomationActor,
@@ -51,7 +52,6 @@ import {
   useBrowserAutomationState,
 } from "@/modules/browser/automationActivity";
 import { automationLabel } from "@/modules/browser/automationState";
-import { AgentIcon } from "@/modules/agents/lib/agentIcon";
 import { setNativeBrowserDragActive } from "@/modules/browser/nativeVisibility";
 import {
   createContext,
@@ -406,9 +406,15 @@ function BrowserAutomationTabIndicator({ tabId }: { tabId: number }) {
   // tab it is in.
   const focused = useBrowserAutomationFocused(tabId);
   if (!action || !focused) return null;
+  // Whichever store knows a name wins over the one that only knows "some
+  // remote client". A tab opened by something Anbo could not identify, then
+  // driven by an agent it can, was showing the anonymous answer for the whole
+  // session while the page overlay named the agent correctly.
+  const identity =
+    actor && actor.brand !== "remote" ? actor : (activity?.actor ?? actor);
   const title = activity
-    ? `${activity.actor.label}: ${automationLabel(activity)}`
-    : `${actor?.label ?? "Remote agent"}: ${action}`;
+    ? `${identity?.label ?? activity.actor.label}: ${automationLabel(activity)}`
+    : `${identity?.label ?? "Remote agent"}: ${action}`;
   // "held" is a live session with nothing in flight, "acting" is a call running
   // on this tab right now. When one agent holds several tabs this is the only
   // cue that says which of them to look at, so it drives the wave rather than
@@ -427,7 +433,7 @@ function BrowserAutomationTabIndicator({ tabId }: { tabId: number }) {
       data-state={held ? "held" : "acting"}
     >
       <AgentIcon
-        agent={actor?.brand ?? activity?.actor.brand ?? "robot"}
+        agent={identity?.brand ?? "robot"}
         size={12}
         className="anbo-browser-automation-robot"
       />

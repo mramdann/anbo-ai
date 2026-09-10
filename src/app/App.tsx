@@ -18,6 +18,7 @@ import {
   AgentExitResumeGuard,
   type AgentLaunchRequest,
   AgentNotificationsBridge,
+  agentMcpFlavour,
   buildAgentLaunchCommand,
   buildAgentRestoreCommand,
   canLaunchAgentRequest,
@@ -26,12 +27,11 @@ import {
   createAgentResumeStates,
   createManualAgentResumeState,
   findAgentLauncher,
-  agentMcpFlavour,
   isMcpAgentId,
+  isUnverifiedAgentResume,
   MAX_PARALLEL_OPENCODE_AGENTS,
   nextAttentionTarget,
   pollCodexSession,
-  isUnverifiedAgentResume,
   validateAgentLaunchCommand,
   withAgentMcpRuntime,
 } from "@/modules/agents";
@@ -83,6 +83,10 @@ import {
   setBrowserPopupRequestHandler,
   setBrowserTabsRequestHandler,
 } from "@/modules/browser/automationOpenBridge";
+import {
+  listenForForwardedLinks,
+  setInAppLinkOpener,
+} from "@/modules/browser/openLink";
 import { CommandPalette, createCommandItems } from "@/modules/command-palette";
 import {
   type EditorPaneHandle,
@@ -102,13 +106,7 @@ import {
   type SearchTarget,
 } from "@/modules/header";
 import { setLspNavigator } from "@/modules/lsp";
-import { createAutomationTabSelection } from "@/modules/tabs/lib/automationTabPlacement";
-import {
-  listenForForwardedLinks,
-  setInAppLinkOpener,
-} from "@/modules/browser/openLink";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
-import { useVoiceConfigured } from "@/modules/voice/lib/useVoiceConfigured";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   type ShortcutHandlers,
@@ -144,8 +142,9 @@ import {
   useWorkspaceCwd,
   WorkspaceDockview,
 } from "@/modules/tabs";
-import { DEFAULT_SPACE_ID } from "@/modules/tabs/lib/useTabs";
+import { createAutomationTabSelection } from "@/modules/tabs/lib/automationTabPlacement";
 import { runtimeTabIdAllocator } from "@/modules/tabs/lib/runtimeId";
+import { DEFAULT_SPACE_ID } from "@/modules/tabs/lib/useTabs";
 import {
   clearFocusedTerminal,
   collectRetainedTerminalLeafIds,
@@ -182,10 +181,11 @@ import {
   type VoiceTarget,
   WhisperRuntimeBridge,
 } from "@/modules/voice";
+import { useVoiceConfigured } from "@/modules/voice/lib/useVoiceConfigured";
 import {
   useWorkspaceEnvStore,
-  workspaceScopeKey,
   type WorkspaceEnv,
+  workspaceScopeKey,
 } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
@@ -218,6 +218,7 @@ const WorkspaceWelcome = lazy(() =>
     default: m.WorkspaceWelcome,
   })),
 );
+
 import { useAppCloseGuard } from "./hooks/useAppCloseGuard";
 import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
 import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
@@ -1571,11 +1572,7 @@ export default function App() {
         spaceId,
       );
       automationTabSelection.created(spaceId, tabId, placement);
-      markBrowserAutomationActivity(
-        tabId,
-        "open",
-        payload.actor ?? { brand: "remote", label: "Remote agent" },
-      );
+      markBrowserAutomationActivity(tabId, "open", payload.actor ?? undefined);
       setActiveBrowserTabId(spaceId, tabId);
       if (preserveForeground) {
         const restoreForeground = () => {

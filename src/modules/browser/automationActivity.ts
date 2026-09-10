@@ -1,9 +1,9 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useSyncExternalStore } from "react";
 import {
+  type AutomationState,
   acceptsAutomationState,
   parseAutomationState,
-  type AutomationState,
 } from "./automationState";
 
 export const BROWSER_AUTOMATION_ACTIVITY_TTL_MS = 8_000;
@@ -79,13 +79,20 @@ function notifyActivityListeners(): void {
 export function markBrowserAutomationActivity(
   tabId: number,
   method: string,
-  actor: AutomationActor,
+  // Optional on purpose. A request that names nobody must leave the tab's
+  // identity alone rather than assert a generic one: an invented "Remote agent"
+  // outranks nothing, but it does outrank the truth on a tab whose real
+  // controller is already known, and it is what the strip then shows.
+  actor: AutomationActor | undefined,
   ttlMs: number | null = BROWSER_AUTOMATION_ACTIVITY_TTL_MS,
 ): void {
   if (!Number.isInteger(tabId) || !method) return;
   tracker.activities.set(tabId, method);
-  tracker.actors.set(tabId, actor);
-  tracker.focus.set(actor.brand, tabId);
+  const identity = actor ?? tracker.actors.get(tabId);
+  if (identity) {
+    tracker.actors.set(tabId, identity);
+    tracker.focus.set(identity.brand, tabId);
+  }
   const previous = tracker.timers.get(tabId);
   if (previous) clearTimeout(previous);
   tracker.timers.delete(tabId);
@@ -171,14 +178,7 @@ export function receiveBrowserAutomationActivity(payload: unknown): void {
   const activity = browserAutomationActivityFromPayload(payload);
   if (activity) {
     tracker.details.delete(activity.tabId);
-    markBrowserAutomationActivity(
-      activity.tabId,
-      activity.method,
-      getBrowserAutomationActor(activity.tabId) ?? {
-        brand: "remote",
-        label: "Remote agent",
-      },
-    );
+    markBrowserAutomationActivity(activity.tabId, activity.method, undefined);
   }
 }
 
