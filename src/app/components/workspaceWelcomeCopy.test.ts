@@ -64,6 +64,16 @@ describe("taglineFor", () => {
     }
   });
 
+  it("says nothing about picking one when there is nothing to pick", () => {
+    // Reachable on a machine with no agent CLI installed. "0 agents on the
+    // bench. Pick one" would invite a click that cannot land.
+    for (let day = 1; day <= 62; day++) {
+      const line = taglineFor(daySeed("bare", new Date(2026, 8, day)), 0);
+      expect(line).not.toMatch(/0 agents/);
+      expect(line).not.toMatch(/Pick one/);
+    }
+  });
+
   it("carries the real count when there are several", () => {
     // Find a seed that lands on the counting line, then check the number.
     for (let day = 1; day <= 62; day++) {

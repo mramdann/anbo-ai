@@ -6,6 +6,7 @@ export const AGENT_LAUNCHERS = [
     defaultCommand: "claude",
     supportsHooks: false,
     custom: false,
+    hidden: false,
   },
   {
     id: "codex",
@@ -14,6 +15,7 @@ export const AGENT_LAUNCHERS = [
     defaultCommand: "codex",
     supportsHooks: false,
     custom: false,
+    hidden: false,
   },
   {
     id: "antigravity",
@@ -22,6 +24,7 @@ export const AGENT_LAUNCHERS = [
     defaultCommand: "agy",
     supportsHooks: false,
     custom: false,
+    hidden: false,
   },
   {
     id: "pi",
@@ -30,6 +33,7 @@ export const AGENT_LAUNCHERS = [
     defaultCommand: "pi",
     supportsHooks: false,
     custom: false,
+    hidden: false,
   },
   {
     id: "opencode",
@@ -38,6 +42,7 @@ export const AGENT_LAUNCHERS = [
     defaultCommand: "opencode",
     supportsHooks: false,
     custom: false,
+    hidden: false,
   },
   {
     id: "grok",
@@ -46,6 +51,7 @@ export const AGENT_LAUNCHERS = [
     defaultCommand: "grok",
     supportsHooks: false,
     custom: false,
+    hidden: false,
   },
 ] as const;
 
@@ -70,6 +76,14 @@ export type CustomCliAgent = {
   icon: CustomCliAgentIcon;
   name: string;
   command: string;
+  /**
+   * Whether to install Anbo's MCP server when this agent launches.
+   *
+   * Which CLI's wiring to use is read from the icon, not asked for twice: a
+   * custom launcher is nearly always one of the known CLIs behind a different
+   * command, and picking its icon has already said which one.
+   */
+  mcp?: boolean;
 };
 
 export type AgentLauncher = {
@@ -79,6 +93,8 @@ export type AgentLauncher = {
   defaultCommand: string;
   supportsHooks: boolean;
   custom: boolean;
+  /** Kept known, but not offered in the launcher picker. */
+  hidden?: boolean;
 };
 
 export type AgentLaunchRequest = {
@@ -231,11 +247,13 @@ export function normalizeCustomCliAgents(value: unknown): CustomCliAgent[] {
     if (!name.ok || !command.ok) continue;
     ids.add(stored.id);
     const icon = normalizeCustomCliAgentIcon(stored.icon);
+    const mcp = stored.mcp === true;
     result.push({
       id: stored.id as CustomCliAgentId,
       icon: icon ?? "robot",
       name: name.name,
       command: command.command,
+      ...(mcp ? { mcp } : {}),
     });
   }
   return result;
@@ -263,11 +281,41 @@ export function getAgentLaunchers(
   ];
 }
 
+/**
+ * The launchers the picker offers.
+ *
+ * Separate from getAgentLaunchers on purpose: hiding a CLI must not make it
+ * unrecognisable. A tab, a saved command or a running agent from a hidden
+ * launcher still has to resolve its name and icon, and a caller that names
+ * itself one still has to get its own brand rather than the generic robot.
+ * Hiding is about what is on the menu, not about what Anbo understands.
+ */
+export function getOfferedAgentLaunchers(
+  customAgents: readonly CustomCliAgent[],
+): AgentLauncher[] {
+  return getAgentLaunchers(customAgents).filter((agent) => !agent.hidden);
+}
+
 export function findAgentLauncher(
   id: string,
   customAgents: readonly CustomCliAgent[] = [],
 ): AgentLauncher | undefined {
   return getAgentLaunchers(customAgents).find((agent) => agent.id === id);
+}
+
+/**
+ * The command a launcher would run right now: a built-in follows the user's
+ * saved edit, a custom launcher is its own command. This is what decides
+ * whether the CLI behind it is installed, so it reads the persisted value
+ * rather than whatever is half-typed in the command box.
+ */
+export function configuredAgentLaunchCommand(
+  launcher: AgentLauncher,
+  commands: AgentLaunchCommands,
+): string {
+  return isBuiltInAgentLauncherId(launcher.id)
+    ? commands[launcher.id]
+    : launcher.defaultCommand;
 }
 
 export function configuredAgentLaunchRequest(

@@ -1,8 +1,8 @@
 pub mod modules;
 
 use modules::{
-    agent, anbo, app_data, browser, browser_automation, fs, git, global_voice, history, lsp, net,
-    proc, project_memory, pty, secrets, shell, voice_runtime, workspace,
+    agent, agent_cli, anbo, app_data, browser, browser_automation, fs, git, global_voice, history,
+    lsp, net, proc, project_memory, pty, secrets, shell, voice_runtime, workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -437,6 +437,7 @@ pub fn run() {
             refresh_window_presentation,
             open_settings_window,
             agent::agent_cleanup_hooks,
+            agent_cli::agent_cli_status,
             agent::agent_configure_mcp,
             agent::agent_mcp_status,
             anbo::resume::anbo_find_claude_session,

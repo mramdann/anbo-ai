@@ -1,5 +1,5 @@
 import { quoteShellArg } from "@/lib/shellQuote";
-import type { AgentLauncherId } from "./launcher";
+import type { AgentLauncherId, CustomCliAgent } from "./launcher";
 
 export const MCP_AGENT_IDS = [
   "claude",
@@ -35,6 +35,35 @@ export function normalizeAgentMcpEnabled(value: unknown): AgentMcpEnabled {
         : DEFAULT_AGENT_MCP_ENABLED[agent],
     ]),
   ) as AgentMcpEnabled;
+}
+
+/**
+ * Which CLI's MCP wiring a launch should use, if any.
+ *
+ * A built-in answers for itself, subject to its own toggle. A custom launcher
+ * answers with the flavour it was configured with, so a wrapper around Claude
+ * gets Claude's wiring without Anbo having to parse its command line.
+ */
+/**
+ * The MCP wiring an icon implies, if any.
+ *
+ * A custom launcher picks the icon of the CLI it actually runs, so that choice
+ * already answers which wiring it needs. Asking again in a second control would
+ * only let the two disagree.
+ */
+export function mcpFlavourForIcon(icon: string): McpAgentId | null {
+  return isMcpAgentId(icon) ? icon : null;
+}
+
+export function agentMcpFlavour(
+  agent: AgentLauncherId,
+  enabled: AgentMcpEnabled,
+  customAgents: readonly CustomCliAgent[],
+): McpAgentId | null {
+  if (isMcpAgentId(agent)) return enabled[agent] ? agent : null;
+  const custom = customAgents.find((candidate) => candidate.id === agent);
+  if (!custom?.mcp) return null;
+  return mcpFlavourForIcon(custom.icon);
 }
 
 function workspaceFile(root: string, ...parts: string[]): string {

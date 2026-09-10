@@ -1,6 +1,9 @@
-//! GUI-launched apps get a bare PATH on macOS, and servers like
-//! typescript-language-server need the user's PATH themselves to find
-//! `node`. Capture the login shell env once, reuse for detect and spawn.
+//! Where this machine keeps the programs Anbo launches.
+//!
+//! GUI-launched apps get a bare PATH on macOS, so a language server hunting for
+//! `node`, or the launcher asking whether `claude` is installed at all, would
+//! both come up empty against the process environment. Capture the login shell
+//! env once and reuse it for every lookup and spawn.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,7 +21,7 @@ pub fn server_env_overlay() -> &'static HashMap<String, String> {
             match capture_login_env() {
                 Some(env) => env,
                 None => {
-                    log::warn!("lsp: login shell env capture failed, using process env");
+                    log::warn!("path: login shell env capture failed, using process env");
                     HashMap::new()
                 }
             }
@@ -76,7 +79,7 @@ fn capture_login_env() -> Option<HashMap<String, String>> {
             b
         }
         Err(_) => {
-            log::warn!("lsp: login shell env capture timed out after {CAPTURE_TIMEOUT:?}");
+            log::warn!("path: login shell env capture timed out after {CAPTURE_TIMEOUT:?}");
             let _ = child.kill();
             let _ = child.wait();
             return None;

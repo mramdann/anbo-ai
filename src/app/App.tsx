@@ -26,6 +26,7 @@ import {
   createAgentResumeStates,
   createManualAgentResumeState,
   findAgentLauncher,
+  agentMcpFlavour,
   isMcpAgentId,
   MAX_PARALLEL_OPENCODE_AGENTS,
   nextAttentionTarget,
@@ -1281,12 +1282,19 @@ export default function App() {
       if (placement)
         automationTabSelection.created(target.spaceId, tabIds[0], placement);
       const targetWorkspace = target.workspace;
-      const mcpEnabled =
-        isMcpAgentId(request.agent) && agentMcpEnabled[request.agent];
+      // A custom launcher is usually one of the known CLIs behind a different
+      // command, so it says which flavour of MCP wiring it wants instead of
+      // being left without any.
+      const mcpFlavour = agentMcpFlavour(
+        request.agent,
+        agentMcpEnabled,
+        customCliAgents,
+      );
+      const mcpEnabled = mcpFlavour !== null;
       const mcpReady =
-        isMcpAgentId(request.agent) && target.root
+        mcpFlavour && target.root
           ? invoke("agent_configure_mcp", {
-              agent: request.agent,
+              agent: mcpFlavour,
               workspaceRoot: target.root,
               workspace: targetWorkspace,
               enabled: mcpEnabled,
@@ -1294,11 +1302,11 @@ export default function App() {
               .then(() => mcpEnabled)
               .catch((error) => {
                 console.warn(
-                  `[anbo] could not configure ${request.agent} MCP:`,
+                  `[anbo] could not configure ${mcpFlavour} MCP:`,
                   error,
                 );
                 toast.error("Anbo MCP setup failed", {
-                  description: `${request.agent}: ${String(error)}`,
+                  description: `${mcpFlavour}: ${String(error)}`,
                 });
                 return false;
               })
@@ -1313,9 +1321,9 @@ export default function App() {
             command.command,
           );
           const launchCommand =
-            mcpConfigured && target.root
+            mcpConfigured && mcpFlavour && target.root
               ? withAgentMcpRuntime(
-                  request.agent,
+                  mcpFlavour,
                   baseLaunchCommand,
                   target.root,
                   targetWorkspace.kind === "local",

@@ -17,9 +17,13 @@ export function greetingFor(hour: number): string {
 
 const LINES: ReadonlyArray<(agents: number) => string> = [
   (agents) =>
-    agents === 1
-      ? "One agent on the bench. Hand it the work."
-      : `${agents} agents on the bench. Pick one and hand it the work.`,
+    agents === 0
+      ? // Reachable once Anbo knows which CLIs are installed: a bench that
+        // counted agents nobody could pick would be inviting a dead click.
+        "No agent on the bench yet — install a CLI and it shows up here."
+      : agents === 1
+        ? "One agent on the bench. Hand it the work."
+        : `${agents} agents on the bench. Pick one and hand it the work.`,
   () => "A shell for you. A crew for everything else.",
   () => "Nothing open yet — the quiet before the run.",
   () => "Point an agent at this folder and watch the diff grow.",

@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod agent_cli;
 pub mod anbo;
 pub mod app_data;
 pub mod authority;
@@ -11,6 +12,7 @@ pub mod global_voice;
 pub mod history;
 pub mod lsp;
 pub mod net;
+pub mod path_env;
 pub mod proc;
 pub mod project_memory;
 pub mod pty;

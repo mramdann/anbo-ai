@@ -86,7 +86,7 @@ pub fn spawn(
     let mut cmd = Command::new(binary);
     cmd.args(args)
         .current_dir(root)
-        .envs(super::env::server_env_overlay())
+        .envs(crate::modules::path_env::server_env_overlay())
         .envs(extra_env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

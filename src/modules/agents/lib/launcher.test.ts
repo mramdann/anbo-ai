@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_LAUNCHERS,
   canLaunchAgentRequest,
+  configuredAgentLaunchCommand,
   configuredAgentLaunchRequest,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
   findAgentLauncher,
   getAgentLaunchers,
+  getOfferedAgentLaunchers,
+  isBuiltInAgentLauncherId,
   normalizeAgentLaunchCommands,
   normalizeCustomCliAgents,
   validateAgentLaunchCommand,
@@ -209,5 +212,85 @@ describe("custom CLI agents", () => {
         },
       ])[0]?.icon,
     ).toBe("antigravity");
+  });
+});
+
+describe("custom agent MCP opt-in", () => {
+  it("stores it as a plain switch, and only a real boolean turns it on", () => {
+    // Which CLI's wiring to use is read from the icon, so this field only says
+    // whether to wire it up at all. Anything but a real true is off, so a
+    // half-written preferences file cannot silently enable it.
+    const [on] = normalizeCustomCliAgents([
+      { id: "custom:a", icon: "claude", name: "A", command: "a", mcp: true },
+    ]);
+    expect(on.mcp).toBe(true);
+
+    for (const value of ["true", 1, {}, null, undefined]) {
+      const [off] = normalizeCustomCliAgents([
+        { id: "custom:b", icon: "claude", name: "B", command: "b", mcp: value },
+      ]);
+      // Off is stored by leaving the field out, so an untouched agent keeps
+      // the same shape it had before the switch existed.
+      expect(off.mcp ?? false).toBe(false);
+    }
+  });
+});
+
+describe("hidden launchers", () => {
+  it("keeps a hidden one off the menu without unlearning it", () => {
+    // Hiding a CLI is about what Anbo offers, not about what it understands. A
+    // tab, a saved command or a running agent from a hidden launcher still has
+    // to resolve its own name and icon, so only the picker is filtered. No
+    // built-in is hidden today -- an uninstalled CLI is shown and labelled
+    // instead -- so the rule is checked against the flag itself.
+    const offered = getOfferedAgentLaunchers([]).map((agent) => agent.id);
+    for (const agent of AGENT_LAUNCHERS) {
+      expect(offered.includes(agent.id)).toBe(!agent.hidden);
+      // Hidden or not, it stays resolvable by id.
+      expect(findAgentLauncher(agent.id)?.label).toBeTruthy();
+      expect(isBuiltInAgentLauncherId(agent.id)).toBe(true);
+    }
+
+    // A custom agent is never hidden by this.
+    const custom = getOfferedAgentLaunchers([
+      { id: "custom:mine", name: "Mine", command: "mine", icon: "robot" },
+    ]).map((agent) => agent.id);
+    expect(custom).toContain("custom:mine");
+  });
+
+  it("offers every CLI Anbo supports, installed or not", () => {
+    // The bench is the list of CLIs Anbo can drive. Leaving one out because
+    // this machine lacks it would hide the fact that it is supported at all.
+    const offered = getOfferedAgentLaunchers([]).map((agent) => agent.id);
+    for (const id of [
+      "claude",
+      "codex",
+      "antigravity",
+      "opencode",
+      "pi",
+      "grok",
+    ]) {
+      expect(offered).toContain(id);
+    }
+  });
+});
+
+describe("the command a launcher would run", () => {
+  it("follows the saved edit for a built-in and the agent itself for a custom", () => {
+    // This is what decides whether the CLI behind a launcher is installed, so
+    // it has to be the command that will actually be sent to the shell.
+    const commands = {
+      ...DEFAULT_AGENT_LAUNCH_COMMANDS,
+      claude: "claude --resume",
+    };
+    const [claude] = AGENT_LAUNCHERS.filter((agent) => agent.id === "claude");
+    expect(configuredAgentLaunchCommand(claude, commands)).toBe(
+      "claude --resume",
+    );
+
+    const [custom] = getAgentLaunchers([
+      { id: "custom:z", icon: "claude", name: "ClaudeZ", command: "myclaude" },
+    ]).filter((agent) => agent.custom);
+    expect(configuredAgentLaunchCommand(custom, commands)).toBe("myclaude");
   });
 });

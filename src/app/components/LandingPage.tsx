@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { WindowControls } from "@/components/WindowControls";
 import { AgentIcon } from "@/modules/agents/lib/agentIcon";
-import { getAgentLaunchers } from "@/modules/agents/lib/launcher";
+import { getOfferedAgentLaunchers } from "@/modules/agents/lib/launcher";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { Folder01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -52,7 +52,7 @@ export function LandingPage({
   const firstRun = title === undefined;
   const [name, setName] = useState("");
   const customCliAgents = usePreferencesStore((s) => s.customCliAgents);
-  const agents = getAgentLaunchers(customCliAgents);
+  const agents = getOfferedAgentLaunchers(customCliAgents);
 
   const chooseFolder = async () => {
     const selected = await open({ directory: true, multiple: false });

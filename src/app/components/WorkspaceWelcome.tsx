@@ -1,8 +1,13 @@
 import { Kbd } from "@/components/ui/kbd";
 import { AgentLauncherPanel } from "@/modules/agents/components/AgentLauncherPanel";
 import {
+  agentCliAvailability,
+  useAgentCliStatus,
+} from "@/modules/agents/lib/agentCliStatus";
+import {
   type AgentLaunchRequest,
-  getAgentLaunchers,
+  configuredAgentLaunchCommand,
+  getOfferedAgentLaunchers,
 } from "@/modules/agents/lib/launcher";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useShortcutLabel } from "@/modules/shortcuts";
@@ -86,7 +91,25 @@ export function WorkspaceWelcome({
   // chosen by workspace and day, so it holds still while you read it and is
   // different tomorrow, and it knows how many agents are on the bench.
   const customCliAgents = usePreferencesStore((s) => s.customCliAgents);
-  const agentCount = getAgentLaunchers(customCliAgents).length;
+  const launchCommands = usePreferencesStore((s) => s.agentLaunchCommands);
+  const offeredAgents = getOfferedAgentLaunchers(customCliAgents);
+  const agentProbes = useAgentCliStatus(
+    offeredAgents.map((agent) =>
+      configuredAgentLaunchCommand(agent, launchCommands),
+    ),
+  );
+  // Only what the deck below can actually launch. Counting hidden launchers
+  // made the line promise seven agents over a row of five; counting one whose
+  // CLI is missing would promise a pick that cannot be made. An agent Anbo has
+  // not answered for yet still counts, so the number does not tick down as the
+  // probe lands.
+  const agentCount = offeredAgents.filter(
+    (agent) =>
+      agentCliAvailability(
+        agentProbes,
+        configuredAgentLaunchCommand(agent, launchCommands),
+      ) !== "missing",
+  ).length;
   const now = new Date();
   const greeting = greetingFor(now.getHours());
   const tagline = taglineFor(daySeed(name, now), agentCount);

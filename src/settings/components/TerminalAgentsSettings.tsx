@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { AgentIcon } from "@/modules/agents/lib/agentIcon";
-import { isMcpAgentId } from "@/modules/agents/lib/agentMcp";
+import { isMcpAgentId, mcpFlavourForIcon } from "@/modules/agents/lib/agentMcp";
 import {
   AGENT_LAUNCHERS,
   type AgentLaunchCommands,
@@ -46,7 +46,7 @@ const CUSTOM_AGENT_ICON_OPTIONS: {
   label: string;
 }[] = [
   { id: "robot", label: "Robot" },
-  ...AGENT_LAUNCHERS.map((agent) => ({
+  ...AGENT_LAUNCHERS.filter((agent) => !agent.hidden).map((agent) => ({
     id: agent.icon,
     label: agent.label,
   })),
@@ -58,7 +58,9 @@ export function TerminalAgentsSettings() {
   const customAgents = usePreferencesStore((state) => state.customCliAgents);
   const [open, setOpen] = useState(true);
   const [newAgent, setNewAgent] = useState<CustomCliAgent | null>(null);
-  const count = AGENT_LAUNCHERS.length + customAgents.length;
+  const count =
+    AGENT_LAUNCHERS.filter((agent) => !agent.hidden).length +
+    customAgents.length;
 
   const saveCustom = (agent: CustomCliAgent) => {
     void setCustomCliAgents([
@@ -126,7 +128,7 @@ export function TerminalAgentsSettings() {
           </Button>
         </div>
         <div className="flex flex-col gap-1.5 p-2">
-          {AGENT_LAUNCHERS.map((agent) => (
+          {AGENT_LAUNCHERS.filter((agent) => !agent.hidden).map((agent) => (
             <BuiltInAgentRow
               key={agent.id}
               agent={agent}
@@ -206,7 +208,7 @@ function BuiltInAgentRow({
   };
 
   return (
-    <div className="grid grid-cols-[16px_minmax(0,1fr)] items-center gap-x-2 gap-y-2 rounded-md border border-border/50 bg-background/35 px-2.5 py-2 sm:grid-cols-[16px_112px_minmax(0,1fr)_66px_32px]">
+    <div className="grid grid-cols-[16px_minmax(0,1fr)] items-center gap-x-2 gap-y-2 rounded-md border border-border/50 bg-background/35 px-2.5 py-2 sm:grid-cols-[16px_112px_minmax(0,1fr)_66px_56px]">
       <div className="flex size-4 items-center justify-center">
         <AgentIcon agent={agent.icon} size={14} className="shrink-0" />
       </div>
@@ -280,24 +282,32 @@ function CustomCliAgentRow({
   const [draft, setDraft] = useState(agent);
   useEffect(() => setDraft(agent), [agent]);
 
+  // The icon has already said which CLI this is, so the switch only has to ask
+  // whether to wire it up -- never which wiring to use.
+  const mcpFlavour = mcpFlavourForIcon(draft.icon);
   const name = validateCustomCliAgentName(draft.name, existing, draft.id);
   const command = validateAgentLaunchCommand(draft.command);
   const changed =
     draft.icon !== agent.icon ||
     draft.name !== agent.name ||
-    draft.command !== agent.command;
-  const save = () => {
-    if (!name.ok || !command.ok) return;
+    draft.command !== agent.command ||
+    Boolean(draft.mcp) !== Boolean(agent.mcp);
+  const commit = (next: CustomCliAgent) => {
+    const nextName = validateCustomCliAgentName(next.name, existing, next.id);
+    const nextCommand = validateAgentLaunchCommand(next.command);
+    if (!nextName.ok || !nextCommand.ok) return;
     onSave({
-      id: draft.id,
-      icon: draft.icon,
-      name: name.name,
-      command: command.command,
+      id: next.id,
+      icon: next.icon,
+      name: nextName.name,
+      command: nextCommand.command,
+      ...(next.mcp && mcpFlavourForIcon(next.icon) ? { mcp: true } : {}),
     });
   };
+  const save = () => commit(draft);
 
   return (
-    <div className="grid grid-cols-[16px_minmax(0,1fr)] items-center gap-x-2 gap-y-2 rounded-md border border-border/50 bg-background/35 px-2.5 py-2 sm:grid-cols-[16px_134px_minmax(0,1fr)_56px]">
+    <div className="grid grid-cols-[16px_minmax(0,1fr)] items-center gap-x-2 gap-y-2 rounded-md border border-border/50 bg-background/35 px-2.5 py-2 sm:grid-cols-[16px_112px_minmax(0,1fr)_66px_56px]">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button
@@ -366,6 +376,36 @@ function CustomCliAgentRow({
         className="col-span-2 h-7 min-w-0 rounded-md bg-muted/25 px-2 font-mono text-[11px] sm:col-span-1"
         title={command.ok ? undefined : command.error}
       />
+      <div
+        className="col-span-1 hidden items-center justify-end gap-1.5 sm:flex"
+        title={
+          mcpFlavour
+            ? "Install Anbo MCP in this workspace when the agent launches"
+            : "Automatic Anbo MCP setup is not available for this icon"
+        }
+      >
+        <span className="text-[9.5px] text-muted-foreground">MCP</span>
+        {mcpFlavour ? (
+          <Switch
+            checked={draft.mcp === true}
+            onCheckedChange={(next) => {
+              const flipped = { ...draft, mcp: next };
+              setDraft(flipped);
+              // A built-in row applies its switch the moment it is flipped, so
+              // this one does too. Waiting behind the tick, which is there for
+              // the text fields, left the agent launching without MCP while
+              // the switch said it was on.
+              if (!isNew) commit(flipped);
+            }}
+            aria-label={`${draft.name || "Custom agent"} Anbo MCP`}
+            className="scale-90"
+          />
+        ) : (
+          <span className="w-7 text-center text-[10px] text-muted-foreground/50">
+            -
+          </span>
+        )}
+      </div>
       <div className="col-span-2 flex items-center justify-end gap-0.5 sm:col-span-1">
         <Button
           type="button"

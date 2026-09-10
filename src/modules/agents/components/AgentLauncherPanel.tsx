@@ -8,6 +8,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import {
+  agentCliAvailability,
+  benchOrder,
+  useAgentCliStatus,
+} from "@/modules/agents/lib/agentCliStatus";
 import { AgentIcon } from "@/modules/agents/lib/agentIcon";
 import {
   AGENT_LAUNCHERS,
@@ -16,9 +21,10 @@ import {
   type AgentLauncherId,
   type AgentLaunchRequest,
   type BuiltInAgentLauncherId,
+  configuredAgentLaunchCommand,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
   findAgentLauncher,
-  getAgentLaunchers,
+  getOfferedAgentLaunchers,
   isBuiltInAgentLauncherId,
   validateAgentLaunchCommand,
 } from "@/modules/agents/lib/launcher";
@@ -61,10 +67,36 @@ export function AgentLauncherPanel({
   const [drafts, setDrafts] = useState<AgentLaunchCommands>(storedCommands);
   const hydratedRef = useRef(hydrated);
   const persistedRef = useRef(storedCommands);
-  const launchers = getAgentLaunchers(customCliAgents);
+  const offered = getOfferedAgentLaunchers(customCliAgents);
+  // Availability is read from the saved command, not the draft: typing in the
+  // command box would otherwise walk PATH on every keystroke.
+  const probes = useAgentCliStatus(
+    offered.map((agent) => configuredAgentLaunchCommand(agent, storedCommands)),
+  );
+  const availability = (agent: (typeof offered)[number]) =>
+    agentCliAvailability(
+      probes,
+      configuredAgentLaunchCommand(agent, storedCommands),
+    );
+  // The deck keeps a missing CLI on the bench, greyed and moved to the end, so
+  // the user can see it is supported without it sitting between two agents they
+  // can pick. The popover is a menu of what can be launched now, so it drops
+  // them -- except one Anbo has not answered for yet, which stays until it does.
+  const launchers =
+    variant === "deck"
+      ? benchOrder(offered, availability)
+      : offered.filter((agent) => availability(agent) !== "missing");
   const resolvedLauncher = findAgentLauncher(agentId, customCliAgents);
-  const launcher = resolvedLauncher ?? AGENT_LAUNCHERS[0];
+  // A bench whose default is not installed should not open on it. As soon as
+  // the probe answers, the highlight moves to the first agent that can run,
+  // rather than waiting for the user to discover the dead one.
+  const standIn =
+    resolvedLauncher && availability(resolvedLauncher) === "missing"
+      ? launchers.find((agent) => availability(agent) === "ready")
+      : undefined;
+  const launcher = standIn ?? resolvedLauncher ?? AGENT_LAUNCHERS[0];
   const selectedId = launcher.id;
+  const selectedMissing = availability(launcher) === "missing";
   const builtInSelected = isBuiltInAgentLauncherId(selectedId);
   const command = builtInSelected
     ? drafts[selectedId]
@@ -188,6 +220,7 @@ export function AgentLauncherPanel({
   };
 
   const submit = () => {
+    if (selectedMissing) return;
     const result = validateAgentLaunchCommand(command);
     if (!result.ok) return;
     if (isBuiltInAgentLauncherId(selectedId)) {
@@ -229,17 +262,30 @@ export function AgentLauncherPanel({
             <div className="mx-auto flex gap-x-1.5 px-1 py-1">
               {launchers.map((agent) => {
                 const selected = agent.id === selectedId;
+                // Kept on the bench so the user can see what Anbo would run,
+                // but greyed and out of reach until the CLI is installed.
+                const missing = availability(agent) === "missing";
                 return (
                   <button
                     key={agent.id}
                     type="button"
-                    disabled={!hydrated}
+                    disabled={!hydrated || missing}
                     aria-pressed={selected}
                     data-agent-id={agent.id}
+                    data-missing={missing || undefined}
+                    title={
+                      missing
+                        ? `${agent.label} is not installed on this machine yet.`
+                        : undefined
+                    }
                     onClick={() => selectAgent(agent.id)}
                     className={cn(
                       "group flex min-w-[4.75rem] max-w-[6.5rem] shrink-0 flex-col items-center gap-1.5 rounded-xl px-1.5 pt-1.5 pb-1 outline-none transition-opacity duration-200 focus-visible:ring-2 focus-visible:ring-ring/25 disabled:pointer-events-none disabled:opacity-50",
-                      selected ? "" : "opacity-65 hover:opacity-100",
+                      missing
+                        ? "grayscale"
+                        : selected
+                          ? ""
+                          : "opacity-65 hover:opacity-100",
                     )}
                   >
                     <span
@@ -367,7 +413,12 @@ export function AgentLauncherPanel({
               type="submit"
               size="lg"
               className="h-10 rounded-xl rounded-r-none px-5 text-[13px]"
-              disabled={!hydrated || !validation.ok}
+              disabled={!hydrated || !validation.ok || selectedMissing}
+              title={
+                selectedMissing
+                  ? `${launcher.label} is not installed on this machine.`
+                  : undefined
+              }
             >
               <HugeiconsIcon icon={PlayIcon} size={14} strokeWidth={2} />
               Launch {launcher.label}
@@ -453,6 +504,14 @@ export function AgentLauncherPanel({
       </div>
 
       <div className="mt-1 grid max-h-44 grid-cols-2 gap-1 overflow-y-auto border-t border-border/60 pt-1.5 pr-0.5">
+        {launchers.length === 0 ? (
+          // Filtering the bench down to what can run leaves nothing when no
+          // CLI is installed. Say that, rather than showing an empty frame.
+          <p className="col-span-2 px-2.5 py-3 text-[11px] leading-relaxed text-muted-foreground">
+            No agent CLI found on this machine. Install one, then open this menu
+            again.
+          </p>
+        ) : null}
         {launchers.map((agent) => {
           const selected = agent.id === selectedId;
           return (

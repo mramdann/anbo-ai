@@ -1,4 +1,3 @@
-mod env;
 mod framing;
 mod rss;
 mod session;
@@ -9,6 +8,7 @@ use std::sync::{Arc, RwLock};
 
 use tauri::ipc::{Channel, Response};
 
+use crate::modules::path_env::resolve_binary;
 use crate::modules::workspace::{authorize_spawn_cwd, WorkspaceEnv, WorkspaceRegistry};
 use session::LspSession;
 
@@ -53,7 +53,7 @@ pub fn lsp_host_pid() -> u32 {
 #[tauri::command]
 pub async fn lsp_detect(command: String) -> Option<String> {
     tauri::async_runtime::spawn_blocking(move || {
-        env::resolve_binary(&command).map(|p| p.to_string_lossy().into_owned())
+        resolve_binary(&command).map(|p| p.to_string_lossy().into_owned())
     })
     .await
     .ok()
@@ -85,8 +85,8 @@ pub async fn lsp_spawn(
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
     let spawn_log = format!("cmd={command} root={}", root.display());
     let session = tauri::async_runtime::spawn_blocking(move || {
-        let binary = env::resolve_binary(&command)
-            .ok_or_else(|| format!("lsp: binary not found: {command}"))?;
+        let binary =
+            resolve_binary(&command).ok_or_else(|| format!("lsp: binary not found: {command}"))?;
         let extra_env = env.unwrap_or_default();
         session::spawn(
             id, app, &binary, &args, &extra_env, &root, max_rss_mb, on_message, on_exit,

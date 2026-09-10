@@ -3,6 +3,7 @@ export { AgentNotificationsBridge } from "./components/AgentNotificationsBridge"
 export { NotificationBell } from "./components/NotificationBell";
 export {
   type AgentMcpEnabled,
+  agentMcpFlavour,
   DEFAULT_AGENT_MCP_ENABLED,
   isMcpAgentId,
   MCP_AGENT_IDS,
@@ -21,6 +22,7 @@ export {
   configuredAgentLaunchRequest,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
   findAgentLauncher,
+  getOfferedAgentLaunchers,
   MAX_PARALLEL_OPENCODE_AGENTS,
   normalizeAgentLaunchCommands,
   validateAgentLaunchCommand,
