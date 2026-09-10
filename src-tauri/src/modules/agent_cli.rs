@@ -110,7 +110,7 @@ mod tests {
             "anbo-no-such-agent-cli --go".to_string(),
             String::new(),
         ]);
-        assert_eq!(status["anbo-no-such-agent-cli --go"], false);
-        assert_eq!(status[""], false);
+        assert!(!status["anbo-no-such-agent-cli --go"]);
+        assert!(!status[""]);
     }
 }
