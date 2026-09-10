@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.28.0](https://github.com/mramdann/anbo-ai/compare/v0.27.1...v0.28.0) (2026-09-10)
+
+
+### Features
+
+* **agents:** drive Kimi Code ([a0b69ec](https://github.com/mramdann/anbo-ai/commit/a0b69ec8f0c536b31c1453bd5b688b2062c749ae))
+* **agents:** show the whole bench and say which CLIs this machine has ([9aaad19](https://github.com/mramdann/anbo-ai/commit/9aaad196ff45d4e0a4f952e145a6633e69bc1bd3))
+* **browser:** give a controlling agent one session, visible on the tab and in the page ([99e00f3](https://github.com/mramdann/anbo-ai/commit/99e00f34d48f2996e876609c1d20fe0f2983de06))
+* **browser:** make the session a gate, not a courtesy ([1368fb7](https://github.com/mramdann/anbo-ai/commit/1368fb7fee63334192755368fad3fc5e3381455b))
+
+
+### Bug Fixes
+
+* **agents:** assert a bool the way clippy asks ([0467ccf](https://github.com/mramdann/anbo-ai/commit/0467ccf62632a1df289117a5426f41228e166e03))
+* **agents:** keep the status honest while an agent is working ([752b180](https://github.com/mramdann/anbo-ai/commit/752b180c1b30c0ae612ad57b1541df6854cb2444))
+* **browser:** stop a tab from claiming an agent it cannot name ([1f95185](https://github.com/mramdann/anbo-ai/commit/1f951851dc9e1d02e5afcca9603f17febfb69a0b))
+* **terminal:** stop Tailwind's invisible utility from hiding xterm's scrollbar ([ff373bd](https://github.com/mramdann/anbo-ai/commit/ff373bdd9ab6e3731d3b534507fa56a04cea147c))
+
 ## [0.27.1](https://github.com/mramdann/anbo-ai/compare/v0.27.0...v0.27.1) (2026-09-09)
 
 
