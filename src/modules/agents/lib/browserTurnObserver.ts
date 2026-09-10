@@ -1,7 +1,7 @@
 import {
+  type AutomationState,
   acceptsAutomationState,
   parseAutomationState,
-  type AutomationState,
 } from "@/modules/browser/automationState";
 import { classifyAgentTurn } from "./agentScreenClassifier";
 import { AgentScreenObserver } from "./agentScreenObserver";
@@ -51,11 +51,17 @@ export class BrowserTurnObserver {
     }
   }
 
-  receive(payload: unknown, now = Date.now()): void {
+  /**
+   * Returns the terminal this call belongs to, so the status observer can be
+   * told the agent is working. The tab strip and the notification centre have
+   * to agree: one of them drawing a live cursor while the other says the agent
+   * is waiting is the disagreement this return value exists to end.
+   */
+  receive(payload: unknown, now = Date.now()): number | null {
     const state = parseAutomationState(payload);
-    if (!state) return;
+    if (!state) return null;
     const previous = this.controls.get(state.tabId);
-    if (!acceptsAutomationState(previous?.state ?? null, state)) return;
+    if (!acceptsAutomationState(previous?.state ?? null, state)) return null;
     const rawPty = (payload as { ptyId?: unknown }).ptyId;
     const ptyId =
       typeof rawPty === "number" && Number.isSafeInteger(rawPty) && rawPty > 0
@@ -63,9 +69,9 @@ export class BrowserTurnObserver {
         : null;
     if (state.phase === "ended" || ptyId === null || !this.leaves.has(ptyId)) {
       this.controls.delete(state.tabId);
-      return;
+      return null;
     }
-    if (!previous && this.controls.size >= 256) return;
+    if (!previous && this.controls.size >= 256) return null;
     this.controls.set(state.tabId, { state, ptyId });
     const leaf = ptyId === null ? undefined : this.leaves.get(ptyId);
     if (
@@ -74,7 +80,9 @@ export class BrowserTurnObserver {
         ["done", "error"].includes(state.phase))
     ) {
       this.observer.activity(leaf, now);
+      return leaf;
     }
+    return null;
   }
 
   poll(

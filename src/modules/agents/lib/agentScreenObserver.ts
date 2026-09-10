@@ -1,6 +1,6 @@
 import {
-  classifyAgentScreen,
   type AgentScreenState,
+  classifyAgentScreen,
 } from "./agentScreenClassifier";
 import { codexTurnEvidence } from "./codexTurnEvidence";
 
@@ -29,17 +29,43 @@ type Entry = {
 
 const STABLE_POLLS = 2;
 const MIN_WORKING_MS = 1_000;
+/**
+ * How long a tool call Anbo served can keep the agent working.
+ *
+ * A model routinely pauses several seconds between calls, and some CLIs paint
+ * nothing at all in that gap. Holding a keystroke's one second there announced
+ * a finished turn in the middle of one, so the notification path trusts a
+ * served call for longer. The browser-turn path keeps the short default: it is
+ * deciding when a surface is free, not when to tell the user anything.
+ */
+export const AGENT_BROWSER_WORKING_MS = 6_000;
 
 export class AgentScreenObserver {
   private readonly entries = new Map<number, Entry>();
 
   constructor(private readonly classify = classifyAgentScreen) {}
 
-  /** Verified browser work invalidates a previously ready screen. */
-  activity(leafId: number, now = Date.now()): void {
-    this.input(leafId, "\r", now);
+  /**
+   * Verified browser work invalidates a previously ready screen.
+   *
+   * A CLI that keeps its composer mounted through a turn -- Kimi and Claude
+   * both do -- looks settled between tool calls, while the tab strip is still
+   * drawing a cursor for the call in flight. A call Anbo served itself is
+   * better evidence than the screen, so it counts as work, and the signal goes
+   * back to the caller to publish.
+   */
+  activity(
+    leafId: number,
+    now = Date.now(),
+    holdMs = MIN_WORKING_MS,
+  ): ObservedAgentSignal | null {
+    const signal = this.input(leafId, "\r", now);
     const entry = this.entries.get(leafId);
-    if (entry) entry.sawWorkingForTurn = true;
+    if (entry) {
+      entry.sawWorkingForTurn = true;
+      entry.workingUntil = Math.max(entry.workingUntil, now + holdMs);
+    }
+    return signal;
   }
 
   start(leafId: number, ptyId: number, agent: string): ObservedAgentSignal {

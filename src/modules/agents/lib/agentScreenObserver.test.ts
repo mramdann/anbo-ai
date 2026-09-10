@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { AgentScreenObserver } from "./agentScreenObserver";
+import {
+  AGENT_BROWSER_WORKING_MS,
+  AgentScreenObserver,
+} from "./agentScreenObserver";
 
 const ready = "OpenAI Codex\n› Ask Codex to do anything\ngpt-5.6-sol high";
 
@@ -164,6 +167,65 @@ describe("AgentScreenObserver", () => {
     expect(observer.poll(() => restored, 0)).toEqual([]);
     expect(observer.poll(() => restored, 100)).toEqual([
       expect.objectContaining({ kind: "ready", leafId: 10, ptyId: 20 }),
+    ]);
+  });
+});
+
+describe("browser work as evidence", () => {
+  it("reports the agent working from a served tool call, not just the screen", () => {
+    // Kimi keeps its composer mounted through a turn, so a screen read between
+    // two MCP calls looks settled. Anbo served those calls and is drawing a
+    // cursor for them on the tab, so it already knows better.
+    const idle = [
+      "Welcome to Kimi Code!",
+      "  > ",
+      "Never Ask  GLM-5.3  D:work   context: 4% (33k/977k)",
+    ].join("\n");
+    const observer = new AgentScreenObserver();
+    observer.start(7, 70, "kimi");
+    observer.poll(() => idle, 0);
+    expect(observer.poll(() => idle, 200)).toEqual([
+      { leafId: 7, ptyId: 70, agent: "kimi", kind: "ready" },
+    ]);
+
+    // A tool call lands while the screen still shows a settled composer.
+    expect(observer.activity(7, 1_000)).toEqual({
+      leafId: 7,
+      ptyId: 70,
+      agent: "kimi",
+      kind: "working",
+    });
+    // And the settled screen must not talk it back out of working while the
+    // call is in flight.
+    expect(observer.poll(() => idle, 1_200)).toEqual([]);
+    expect(observer.poll(() => idle, 1_400)).toEqual([]);
+  });
+
+  it("does not announce a finish in the gap between two tool calls", () => {
+    // A model pauses for seconds between calls and some CLIs paint nothing in
+    // that gap. Announcing "finished" there fires a notification mid-turn and
+    // then has to take it back on the next call.
+    const idle = ["  > ", "Never Ask  GLM-5.3  context: 4%"].join("\n");
+    const observer = new AgentScreenObserver();
+    observer.start(9, 90, "kimi");
+    observer.activity(9, 0, AGENT_BROWSER_WORKING_MS);
+    for (const now of [1_500, 2_000, 3_000, 4_000, 5_000]) {
+      expect(observer.poll(() => idle, now)).toEqual([]);
+    }
+    // The next call arrives and the hold simply extends.
+    observer.activity(9, 5_500, AGENT_BROWSER_WORKING_MS);
+    expect(observer.poll(() => idle, 8_000)).toEqual([]);
+  });
+
+  it("still finishes the turn once the calls stop and the screen settles", () => {
+    const idle = ["  > ", "Never Ask  GLM-5.3  context: 4%"].join("\n");
+    const observer = new AgentScreenObserver();
+    observer.start(8, 80, "kimi");
+    observer.activity(8, 0, AGENT_BROWSER_WORKING_MS);
+    observer.poll(() => idle, 100);
+    const settled = observer.poll(() => idle, 7_000);
+    expect(settled).toEqual([
+      { leafId: 8, ptyId: 80, agent: "kimi", kind: "finished" },
     ]);
   });
 });

@@ -12,6 +12,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
 import {
+  AGENT_BROWSER_WORKING_MS,
   AgentScreenObserver,
   type ObservedAgentSignal,
 } from "../lib/agentScreenObserver";
@@ -294,9 +295,20 @@ export function AgentNotificationsBridge({
     if (!isTauri()) return;
     let alive = true;
     let unlisten: (() => void) | undefined;
-    void listen("browser-automation-activity", (event) =>
-      browserRef.current.receive(event.payload),
-    )
+    void listen("browser-automation-activity", (event) => {
+      const leafId = browserRef.current.receive(event.payload);
+      // The same call that moves the cursor on the tab also has to move the
+      // agent out of "waiting". Without this the strip showed a live agent
+      // while the notification centre called it idle -- and worse, announced
+      // the turn finished in the gap between two tool calls.
+      if (leafId === null) return;
+      const signal = observerRef.current.activity(
+        leafId,
+        Date.now(),
+        AGENT_BROWSER_WORKING_MS,
+      );
+      if (signal) applyObserved(signal, ctxRef.current);
+    })
       .then((remove) => {
         if (alive) unlisten = remove;
         else remove();

@@ -14,7 +14,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState } from "react";
 import { AgentIcon } from "../lib/agentIcon";
 import { displayAgentInstance } from "../lib/format";
-import type { AgentNotification, AgentStatus } from "../lib/types";
+import type { AgentNotification, AgentPhase, AgentStatus } from "../lib/types";
 import { useAgentStore } from "../store/agentStore";
 
 type Props = {
@@ -38,14 +38,23 @@ function StatusRow({
   agent,
   name,
   status,
+  phase,
   onClick,
 }: {
   agent: string;
   name?: string;
   status: AgentStatus;
+  phase: AgentPhase;
   onClick: () => void;
 }) {
+  // Waiting and blocked are not the same thing to the person reading this. One
+  // means the agent is done and the next move is theirs whenever they like;
+  // the other means it is standing at a prompt and nothing moves until they
+  // answer. Both were called "waiting", which is why a stuck agent looked
+  // exactly like a finished one.
+  const attention = phase === "attention";
   const waiting = status === "waiting";
+  const idle = attention || waiting;
   return (
     <button
       type="button"
@@ -63,11 +72,20 @@ function StatusRow({
       <span
         className={cn(
           "flex items-center gap-1.5 text-[11px]",
-          waiting ? "font-medium text-primary" : "text-muted-foreground",
+          idle ? "font-medium text-primary" : "text-muted-foreground",
         )}
       >
-        {waiting ? <span className="size-1.5 rounded-full bg-primary" /> : null}
-        {waiting ? "waiting" : "working"}
+        {idle ? (
+          <span
+            className={cn(
+              "size-1.5 rounded-full bg-primary",
+              // Only the blocked one beats: a finished agent is not asking for
+              // anything, and a list of pulsing dots would say nothing at all.
+              attention && "animate-pulse",
+            )}
+          />
+        ) : null}
+        {attention ? "needs you" : waiting ? "waiting" : "working"}
       </span>
     </button>
   );
@@ -239,6 +257,9 @@ export function NotificationBell({
               <StatusRow
                 agent={localAgent.agent}
                 status={localAgent.status}
+                // The in-app agent has no prompt to be blocked at, so it only
+                // ever reads as working or waiting.
+                phase={localAgent.status === "waiting" ? "finished" : "working"}
                 onClick={activateLocal}
               />
             ) : null}
@@ -248,6 +269,7 @@ export function NotificationBell({
                 agent={s.agent}
                 name={s.name}
                 status={s.status}
+                phase={s.phase}
                 onClick={() => activate(s.tabId, s.leafId)}
               />
             ))}
