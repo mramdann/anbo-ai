@@ -335,13 +335,22 @@
   white-space: nowrap;
 }
 
+/*
+ * The wave brightens fast, then carries most of its strength across the middle
+ * of its travel before fading. A single early peak read as a flicker at the
+ * logo's edge; holding the band lit while it crosses open space is what makes
+ * the beat legible from the far side of a tab strip.
+ */
 @keyframes anbo-browser-automation-pulse {
   0% {
     opacity: 0;
     transform: scale(0.45);
   }
-  20% {
-    opacity: 0.7;
+  18% {
+    opacity: 0.95;
+  }
+  55% {
+    opacity: 0.5;
   }
   100% {
     opacity: 0;
@@ -366,6 +375,25 @@
    * a filled chip reads as a permanent badge rather than activity. */
 }
 
+/*
+ * Two levels rather than on and off. One agent can hold several tabs at once,
+ * and only one of them is usually being worked at any moment. Stopping the wave
+ * between calls made every held tab look finished, and made every held tab look
+ * the same, so the strip could not answer the only question worth asking of it:
+ * which tab is the agent in right now. The tab with a call in flight beats
+ * faster and brighter; the tabs merely held keep a slow, faint wave. Nothing
+ * here stops the wave -- the end of the session unmounts the indicator instead.
+ */
+.anbo-browser-automation-indicator[data-state="acting"] {
+  --anbo-automation-wave: 82%;
+  --anbo-automation-period: 1.5s;
+}
+
+.anbo-browser-automation-indicator[data-state="held"] {
+  --anbo-automation-wave: 38%;
+  --anbo-automation-period: 3.4s;
+}
+
 .anbo-browser-automation-indicator::before,
 .anbo-browser-automation-indicator::after {
   position: absolute;
@@ -377,25 +405,20 @@
    * circle being drawn around it. */
   background: radial-gradient(
     circle,
-    transparent 50%,
-    color-mix(in oklab, var(--primary) 60%, transparent) 68%,
-    transparent 86%
+    transparent 52%,
+    color-mix(in oklab, var(--primary) var(--anbo-automation-wave, 60%), transparent)
+      70%,
+    transparent 84%
   );
   opacity: 0;
-  animation: anbo-browser-automation-pulse 1.8s ease-out infinite;
+  animation: anbo-browser-automation-pulse var(--anbo-automation-period, 1.8s)
+    ease-out infinite;
   content: "";
   pointer-events: none;
 }
 
 .anbo-browser-automation-indicator::after {
-  animation-delay: -0.9s;
-}
-
-.anbo-browser-automation-indicator[data-phase="done"]::before,
-.anbo-browser-automation-indicator[data-phase="error"]::before,
-.anbo-browser-automation-indicator[data-phase="done"]::after,
-.anbo-browser-automation-indicator[data-phase="error"]::after {
-  animation: none;
+  animation-delay: calc(var(--anbo-automation-period, 1.8s) / -2);
 }
 
 .anbo-workspace-dockview-dirty {

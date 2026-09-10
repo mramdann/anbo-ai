@@ -16,7 +16,33 @@ pub const PROTOCOL_VERSION: &str = "2025-06-18";
 /// Server name reported in `initialize`.
 pub const SERVER_NAME: &str = "anbo";
 
-pub const BROWSER_SESSION_INSTRUCTIONS: &str = "Browser actions keep a visual remote session active between tool calls. When the browser task is finished, cancelled, or handed back to the user, call browser_end_session for each used tab with its returned controlId, including after an error. Do not end it between steps. This hides the cursor without closing the tab or MCP connection.";
+/// What every MCP client shows its model the moment it connects.
+///
+/// Kept here rather than in the transport so both the HTTP and the pipe path
+/// say the same thing. The browser sentence is load-bearing: a CLI that has its
+/// own web search will reach for that instead unless it is told what this
+/// browser is. Measured with a plain request to open and explore three pages --
+/// Claude and OpenCode used these tools, Codex answered from its own web search
+/// and Antigravity from memory, and neither ever read the skill. Nothing here
+/// describes a tool; it says what the tools are for, which is the part a model
+/// weighs when it decides whether to bother.
+pub const SERVER_INSTRUCTIONS: &str = concat!(
+    "You are working inside Anbo, which is providing these tools. ",
+    "The browser_ tools drive a real browser the user is watching in this app: ",
+    "pages open as tabs on their screen, and your cursor and clicks are visible ",
+    "to them as you work. When a task involves opening, reading, or interacting ",
+    "with a web page, use these tools rather than fetching or searching the web ",
+    "yourself. A page you read privately is not on the user's screen, cannot be ",
+    "scrolled or clicked, and cannot be handed back to them. ",
+    "Call skills_list with your own workspace root before starting a task: ",
+    "it returns this project's own procedures plus a skill named \"anbo\" ",
+    "that explains how these tools behave, and following them matters more ",
+    "than working it out yourself. ",
+    "Tools that take a workspace argument need your own workspace root, ",
+    "never the one currently on screen."
+);
+
+pub const BROWSER_SESSION_INSTRUCTIONS: &str = "End the control session for this whole browser task. One session covers every tab you touched under the same controlId, so this is a single call at the end of the task, not one per tab; tabId is accepted and ignored. Call it when the task is finished, cancelled, or handed back to the user, including after an error, and not between steps. This hides the cursor and the tab badge without closing any tab or the MCP connection.";
 
 fn tab_id_prop() -> Value {
     json!({ "type": "integer", "description": "Active native browser tab id (from browser_tabs)." })
@@ -68,7 +94,7 @@ pub fn tool_definitions() -> Value {
     let mut definitions = tool_array![
         { "name": "skills_list", "description": "List the skills available in a workspace: project procedures kept in .anbo/skills, plus the skills Anbo ships. Returns names and one-line descriptions only, so it stays cheap to scan. Check this before solving a task from first principles.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
         { "name": "skills_read", "description": "Read one skill in full and follow it. Names come from skills_list.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "name": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Skill name from skills_list." } }, "required": ["workspace", "name"] } },
-        { "name": "browser_open", "description": "Open a native browser tab in an explicitly selected Anbo workspace. The first tab in an empty active workspace is displayed for review; later tabs stay in the background and inactive workspaces never activate. Pass the agent's workspace root or a space id; UI focus is never used as a workspace fallback.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["url", "workspace"] } },
+        { "name": "browser_open", "description": "Open a page in the user's real browser: a visible tab in this app, not a private fetch. Use this whenever a task needs a web page opened, read, or interacted with. Opens a native browser tab in an explicitly selected Anbo workspace. The first tab in an empty active workspace is displayed for review; later tabs stay in the background and inactive workspaces never activate. Pass the agent's workspace root or a space id; UI focus is never used as a workspace fallback. The response carries the controlId of your session: it names the whole task, covers every tab you open next, and is what browser_end_session takes when the work is done.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["url", "workspace"] } },
         { "name": "browser_close", "description": "Close a native browser tab in an explicitly selected Anbo workspace.", "annotations": { "destructiveHint": true, "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["tabId", "workspace"] } },
         { "name": "browser_tabs", "description": "List active native browser tabs with foreground, workspace, space, loading, pendingUrl, automation-target, automation-activity, and durationMs metadata. While loading, url remains the last committed URL and pendingUrl identifies the target when known.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "browser_get_url", "description": "Get the last committed URL, loading state and pendingUrl of a browser tab without waiting for page JavaScript. While loading, pendingUrl is the requested target when known; it is not proof of a committed navigation.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
@@ -78,7 +104,8 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_back", "description": "Start navigating a browser tab back in history and return immediately.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_forward", "description": "Start navigating a browser tab forward in history and return immediately.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_stop", "description": "Stop a browser tab's page load.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
-        { "name": "browser_end_session", "description": BROWSER_SESSION_INSTRUCTIONS, "annotations": { "destructiveHint": false, "idempotentHint": true }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "controlId": { "type": "integer", "minimum": 1, "description": "The controlId returned by this caller's browser actions for this tab. A stale id never ends a newer session." } }, "required": ["tabId", "controlId"] } },
+        { "name": "browser_start_session", "description": "Open a control session for this browser task and return the controlId that names it. One session covers the whole task: open as many tabs as the work needs and act on any tab you are allowed to control, all under this one id, then close it once with browser_end_session. Calling this again while you already hold a session returns the same controlId. tabId is optional and only paints that tab straight away; the first browser action opens a session anyway if you skip this call.", "annotations": { "destructiveHint": false, "idempotentHint": true }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() } } },
+        { "name": "browser_end_session", "description": BROWSER_SESSION_INSTRUCTIONS, "annotations": { "destructiveHint": false, "idempotentHint": true }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "controlId": { "type": "integer", "minimum": 1, "description": "The controlId your browser calls returned. It names the whole session, not one tab. A stale id never ends a newer session." } }, "required": ["controlId"] } },
         { "name": "browser_snapshot", "description": "Get a token-bounded accessibility snapshot with viewport text and generation-scoped element refs. Output defaults to 8000 characters and never exceeds 16000; scroll and snapshot again for nearby content. Both snapshot and find replace older refs for this tab. Prefer a targeted find when the element is already known.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "maxChars": { "type": "integer", "minimum": 2000, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
         { "name": "browser_find", "description": "Find current page elements with a semantic locator and return fresh generation-scoped refs. Supports role, text, label, placeholder, testId, title, alt, and CSS across open Shadow DOM and child frames. For role locators, name is the computed accessible name, so aria-label, aria-labelledby, associated labels, alt, or title can take precedence over visible text.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "by": { "type": "string", "enum": ["role", "text", "label", "placeholder", "testId", "title", "alt", "css"] }, "value": { "type": "string", "minLength": 1, "maxLength": 4096 }, "name": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Optional computed accessible-name filter for a role locator. It may come from aria-label, aria-labelledby, an associated label, alt, title, or visible text." }, "exact": { "type": "boolean", "default": false }, "includeHidden": { "type": "boolean", "default": false }, "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 5000 } }, "required": ["tabId", "by", "value"] } },
         { "name": "browser_click", "description": "Click an element by ref after bounded visibility, stability, enabled, and hit-target checks.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
@@ -199,6 +226,7 @@ pub fn tool_name_to_method(name: &str) -> Option<&'static str> {
         "browser_back" => "back",
         "browser_forward" => "forward",
         "browser_stop" => "stop",
+        "browser_start_session" => "start_session",
         "browser_end_session" => "end_session",
         "browser_snapshot" => "snapshot",
         "browser_find" => "find",
@@ -249,7 +277,7 @@ mod tests {
     #[test]
     fn tools_have_capability_prefixes_and_unique_names() {
         let tools = tool_definitions().as_array().unwrap().clone();
-        assert_eq!(tools.len(), 51);
+        assert_eq!(tools.len(), 52);
         let mut names = std::collections::HashSet::new();
         for t in &tools {
             let n = t.get("name").and_then(|v| v.as_str()).unwrap();
@@ -266,6 +294,80 @@ mod tests {
                 "no method mapping for {n}"
             );
         }
+    }
+
+    #[test]
+    fn a_session_can_be_started_as_well_as_ended() {
+        // end_session shipped without a counterpart, so a session could only ever
+        // begin as a side effect of the first action. An agent had no way to claim
+        // a tab before acting, and browser_open -- which cannot be tracked, since
+        // the tab has no id while it runs -- could not start one at all.
+        let tools = tool_definitions().as_array().unwrap().clone();
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|t| t.get("name").and_then(|v| v.as_str()))
+            .collect();
+        assert!(names.contains(&"browser_start_session"));
+        assert!(names.contains(&"browser_end_session"));
+        assert_eq!(
+            tool_name_to_method("browser_start_session"),
+            Some("start_session")
+        );
+    }
+
+    #[test]
+    fn opening_a_tab_tells_the_agent_which_session_it_is_in() {
+        // An agent that opens three tabs and then has to end the session needs
+        // the id. Leaving it out of the open response sent them digging through
+        // a later call's payload for it, or guessing.
+        let definitions = tool_definitions();
+        let open = definitions
+            .as_array()
+            .expect("tools")
+            .iter()
+            .find(|tool| tool["name"] == "browser_open")
+            .expect("browser_open");
+        let description = open["description"].as_str().unwrap_or_default();
+        assert!(description.contains("controlId"), "{description}");
+        assert!(description.contains("browser_end_session"), "{description}");
+    }
+
+    #[test]
+    fn the_connect_message_says_what_the_browser_tools_are_for() {
+        // A CLI with its own web search will use that instead unless it is told
+        // what this browser is. Measured with a plain "open and explore three
+        // pages" request: Claude and OpenCode drove these tools, Codex answered
+        // from its own web search and Antigravity from memory, and neither of
+        // those two ever read the skill. Pointing at the skills is not enough --
+        // the model decides whether to bother before it reads anything.
+        let text = SERVER_INSTRUCTIONS.to_ascii_lowercase();
+        assert!(text.contains("real browser"), "say the browser is real");
+        assert!(
+            text.contains("watching") || text.contains("screen"),
+            "say the user can see it"
+        );
+        assert!(
+            text.contains("rather than fetching or searching the web yourself"),
+            "steer off the model's own web tools"
+        );
+        assert!(text.contains("skills_list"), "still point at the skills");
+
+        // browser_open carries it too, for clients that weigh tool descriptions
+        // more heavily than the connect message.
+        let tools = tool_definitions();
+        let open = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t.get("name").and_then(|v| v.as_str()) == Some("browser_open"))
+            .expect("browser_open");
+        let description = open
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(description.contains("real browser"));
+        assert!(description.contains("not a private fetch"));
     }
 
     #[test]

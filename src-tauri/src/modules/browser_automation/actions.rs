@@ -175,33 +175,69 @@ pub async fn handle_action_as(
     caller: super::caller::Caller,
 ) -> Result<Value, (String, String)> {
     let started = Instant::now();
-    if method == "end_session" {
+    if method == "start_session" {
+        // tabId is optional: the session is a contract with this caller, not
+        // with one tab. Passing one just paints that tab straight away.
         let tab_id = params
             .get("tabId")
             .and_then(Value::as_i64)
             .filter(|id| *id > 0);
-        let control_id = params
-            .get("controlId")
-            .and_then(Value::as_u64)
-            .filter(|id| *id > 0 && *id <= 9_007_199_254_740_991);
-        let (Some(tab_id), Some(control_id)) = (tab_id, control_id) else {
+        let Some(control_id) = super::activity::begin_session(app, tab_id, &caller) else {
             return Err((
                 error_codes::INVALID_REQUEST.into(),
-                "tabId and controlId must be positive safe integers".into(),
+                match tab_id {
+                    Some(id) => {
+                        format!("browser tab {id} is not open, or cannot be controlled yet")
+                    }
+                    None => "too many open control sessions; end one first".into(),
+                },
             ));
         };
-        return Ok(
-            json!({"tabId":tab_id, "controlId":control_id, "ended":super::activity::end_session(app, tab_id, control_id, &caller), "durationMs":started.elapsed().as_millis() as u64}),
-        );
+        return Ok(json!({
+            "tabId": tab_id,
+            "controlId": control_id,
+            "actor": caller,
+            "durationMs": started.elapsed().as_millis() as u64,
+        }));
+    }
+    if method == "end_session" {
+        // tabId is accepted and ignored: one call closes the whole session, and
+        // agents written against the older per-tab shape keep working.
+        let tab_id = params
+            .get("tabId")
+            .and_then(Value::as_i64)
+            .filter(|id| *id > 0);
+        let Some(control_id) = params
+            .get("controlId")
+            .and_then(Value::as_u64)
+            .filter(|id| *id > 0 && *id <= 9_007_199_254_740_991)
+        else {
+            return Err((
+                error_codes::INVALID_REQUEST.into(),
+                "controlId must be a positive safe integer".into(),
+            ));
+        };
+        return Ok(json!({
+            "tabId": tab_id,
+            "controlId": control_id,
+            "ended": super::activity::end_session(app, control_id, &caller),
+            "durationMs": started.elapsed().as_millis() as u64,
+        }));
     }
     let mut timings =
         ActionTimings::new(params.get("diagnostics").and_then(Value::as_bool) == Some(true));
+    // The caller is needed twice: track owns it for the session, and open has to
+    // hand it to the UI. browser_open cannot be tracked -- the tab does not exist
+    // yet, so there is no id -- which is why the first thing the tab strip ever
+    // heard about a freshly driven tab carried no identity, and it fell back to
+    // the generic robot until a second, tracked call arrived.
+    let actor = caller.clone();
     let result = super::activity::track(
         app,
         method,
         params.get("tabId").and_then(Value::as_i64),
         caller,
-        handle_action_inner(app, method, params, &mut timings),
+        handle_action_inner(app, method, params, &mut timings, &actor),
     )
     .await;
     let result = timings.finish(result);
@@ -222,6 +258,7 @@ async fn handle_action_inner(
     method: &str,
     mut params: Value,
     timings: &mut ActionTimings,
+    caller: &super::caller::Caller,
 ) -> Result<Value, (String, String)> {
     if method.starts_with("agent_") || method.starts_with("terminal_") {
         return crate::modules::browser_automation::agent_actions::handle_agent_action(
@@ -250,7 +287,20 @@ async fn handle_action_inner(
         params["ref"] = resolved["ref"].clone();
     }
     match method {
-        "open" => open_browser(app, &params).await,
+        "open" => {
+            let mut result = open_browser(app, &params, caller).await?;
+            // The tab an agent just opened is the tab it is about to work, and
+            // the open response is the first thing it reads. Naming the session
+            // here spares it hunting for the id in some later call's payload,
+            // which is what agents were actually doing.
+            if let Some(object) = result.as_object_mut() {
+                let tab_id = object.get("tabId").and_then(Value::as_i64);
+                if let Some(control_id) = super::activity::begin_session(app, tab_id, caller) {
+                    object.insert("controlId".into(), control_id.into());
+                }
+            }
+            Ok(result)
+        }
         "close" => close_browser(app, &params).await,
         "list_tabs" | "tabs" => {
             let tab_ids = get_active_tabs();
@@ -4413,7 +4463,11 @@ async fn request_browser_tabs_metadata(app: &AppHandle) -> Option<BrowserTabsRes
     serde_json::from_str(&payload).ok()
 }
 
-async fn open_browser(app: &AppHandle, params: &Value) -> Result<Value, (String, String)> {
+async fn open_browser(
+    app: &AppHandle,
+    params: &Value,
+    caller: &super::caller::Caller,
+) -> Result<Value, (String, String)> {
     let (url, workspace) = extract_browser_open_params(params)?;
     crate::modules::resource_guard::preflight(crate::modules::resource_guard::Workload::Browser)
         .map_err(|message| ("resource_exhausted".to_string(), message))?;
@@ -4434,6 +4488,9 @@ async fn open_browser(app: &AppHandle, params: &Value) -> Result<Value, (String,
             "requestId": request_id,
             "url": url,
             "workspace": workspace,
+            // Identity travels with the request so the tab carries its
+            // controller from the first frame it is drawn.
+            "actor": caller,
         }),
     ) {
         app.unlisten(listener_id);

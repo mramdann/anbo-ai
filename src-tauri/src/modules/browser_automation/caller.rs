@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Caller {
     pub brand: &'static str,
     pub label: &'static str,
@@ -13,6 +13,29 @@ pub struct Caller {
     #[serde(skip)]
     pub(super) pty_id: Option<u32>,
 }
+
+/// Two calls are the same caller when they come from the same agent, not merely
+/// from the same connection.
+///
+/// `owner` is the transport session id, and a CLI may rotate it mid-task --
+/// measured on Claude Code, which changed it twice inside two minutes. Comparing
+/// it made each rotation look like a brand new agent: a fresh control id was
+/// minted, the id the agent was told to hold went stale, and its own
+/// browser_end_session answered ended:false because the session was no longer
+/// recognised as its own. A pty is the agent's terminal, which outlives any one
+/// connection, so when both sides have one it settles identity by itself.
+impl PartialEq for Caller {
+    fn eq(&self, other: &Self) -> bool {
+        if self.brand != other.brand {
+            return false;
+        }
+        match (self.pty_id, other.pty_id) {
+            (Some(mine), Some(theirs)) => mine == theirs,
+            _ => self.owner == other.owner && self.pty_id == other.pty_id,
+        }
+    }
+}
+impl Eq for Caller {}
 
 impl Default for Caller {
     fn default() -> Self {
@@ -51,6 +74,8 @@ impl Caller {
             ("antigravity", "Antigravity")
         } else if has("opencode") {
             ("opencode", "OpenCode")
+        } else if has("kimi") {
+            ("kimi", "Kimi")
         } else if has("pi") {
             ("pi", "Pi")
         } else if has("grok") {
@@ -161,6 +186,48 @@ pub fn clear_sessions() {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn one_agent_terminal_stays_one_caller_across_a_reconnect() {
+        // Measured on Claude Code: it rotated its MCP session twice inside a two
+        // minute task. Comparing the transport id made each rotation a new
+        // agent, so a fresh control id was minted, the id the agent had been
+        // told to hold went stale, and its own browser_end_session answered
+        // ended:false. The terminal is what the agent actually is.
+        let first = Caller::from_client_info(&json!({"name": "claude"})).with_pty(Some(7));
+        let mut reconnected = first.clone();
+        reconnected.owner = Some("http:".to_string() + &"b".repeat(64));
+        assert_eq!(first, reconnected, "same terminal, later connection");
+
+        // A second terminal of the same CLI is still a different agent.
+        let sibling = Caller::from_client_info(&json!({"name": "claude"})).with_pty(Some(8));
+        assert_ne!(first, sibling);
+
+        // With no terminal to go on, the connection is all there is, so two
+        // separate clients stay separate.
+        let piped = Caller::from_pipe_info(&json!({"name":"codex","instance":"a".repeat(64)}));
+        let other = Caller::from_pipe_info(&json!({"name":"codex","instance":"b".repeat(64)}));
+        assert_ne!(piped, other);
+        assert_eq!(piped, piped.clone());
+    }
+
+    #[test]
+    fn the_open_request_names_the_caller_in_the_shape_the_ui_reads() {
+        // browser_open cannot be tracked -- the tab has no id while the call
+        // runs -- so the UI takes the tab's identity straight off this payload.
+        // If the field names drift, nothing errors: the tab strip quietly falls
+        // back to the generic robot until a tracked action arrives, which is the
+        // bug this shape exists to prevent.
+        let caller = Caller::from_client_info(&json!({"name": "opencode"}));
+        let payload = serde_json::to_value(&caller).unwrap();
+        assert_eq!(payload["brand"], "opencode");
+        assert_eq!(payload["label"], "OpenCode");
+        // A caller the registry cannot place still has to serialize, or the open
+        // request would carry nothing at all.
+        let unknown = serde_json::to_value(Caller::default()).unwrap();
+        assert_eq!(unknown["brand"], "remote");
+        assert_eq!(unknown["label"], "Remote agent");
+    }
+
     #[test]
     fn private_connection_ids_are_stable_but_never_serialized() {
         let info = json!({"name":"codex", "instance":"a".repeat(64)});

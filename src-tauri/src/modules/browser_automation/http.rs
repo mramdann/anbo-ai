@@ -236,17 +236,6 @@ async fn handle(
     Ok(response)
 }
 
-/// Shown to the model of whichever agent connects, before it does anything.
-const SERVER_INSTRUCTIONS: &str = concat!(
-    "You are working inside Anbo, which is providing these tools. ",
-    "Call skills_list with your own workspace root before starting a task: ",
-    "it returns this project's own procedures plus a skill named \"anbo\" ",
-    "that explains how these tools behave, and following them matters more ",
-    "than working it out yourself. ",
-    "Tools that take a workspace argument need your own workspace root, ",
-    "never the one currently on screen."
-);
-
 /// Resolve a JSON-RPC method to its MCP result. Tool execution errors come back
 /// as an `isError` result (per MCP), not a JSON-RPC error.
 async fn dispatch(
@@ -264,7 +253,7 @@ async fn dispatch(
             // CLI it is. Without it the skills sit there unread: a tool nothing
             // points at is a tool nobody calls. Kept short, because it is
             // prepended to a context window that has work to do.
-            "instructions": format!("{} {}", SERVER_INSTRUCTIONS, mcp::BROWSER_SESSION_INSTRUCTIONS)
+            "instructions": format!("{} {}", mcp::SERVER_INSTRUCTIONS, mcp::BROWSER_SESSION_INSTRUCTIONS)
         })),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": mcp::tool_definitions() })),

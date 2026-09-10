@@ -1563,7 +1563,11 @@ export default function App() {
         spaceId,
       );
       automationTabSelection.created(spaceId, tabId, placement);
-      markBrowserAutomationActivity(tabId, "open");
+      markBrowserAutomationActivity(
+        tabId,
+        "open",
+        payload.actor ?? { brand: "remote", label: "Remote agent" },
+      );
       setActiveBrowserTabId(spaceId, tabId);
       if (preserveForeground) {
         const restoreForeground = () => {

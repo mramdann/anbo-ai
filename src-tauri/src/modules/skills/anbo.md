@@ -68,13 +68,19 @@ matches are rejected. Capped or skipped scans never prove either state.
 Find metadata includes editable, readOnly, inViewport and frame-local bounds.
 These describe the element, not permission or proof that a click can reach it.
 
-Browser actions return a `controlId` for the visual remote session on that tab.
-Opening a tab alone need not create a remote control session. Use the controlId
-from a subsequent browser action; never invent one from tabId or automationTarget.
+A control session is a contract with you, not with a tab. `browser_start_session`
+opens one and returns the `controlId` that names it; every tab you then open or
+act on belongs to that same session, so one id covers the whole task. Calling it
+again while you hold a session returns the id you already have, and passing a
+`tabId` only paints that tab immediately -- useful right after `browser_open`, so
+the tab shows who is driving it before any action has run. The call is optional:
+the first browser action opens a session anyway. Browser actions return the same
+`controlId`; never invent one from tabId or automationTarget.
 Keep it active between tool calls, including while thinking or reading results.
 When the browser task finishes, is cancelled, or needs to be handed back to the
-user, call `browser_end_session` with `tabId` and that `controlId` for every used
-tab. Do this in cleanup after errors too. This removes the cursor and card;
+user, call `browser_end_session` once with that `controlId`. One call closes the
+session and every tab it painted; there is no need to end tabs one by one, and
+`tabId` is accepted and ignored. Do this in cleanup after errors too. This removes the cursor and card;
 it does not close the browser tab, terminal, or MCP connection. A new task starts
 a new visual session automatically. Tool completion alone does not end it.
 

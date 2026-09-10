@@ -75,6 +75,19 @@ describe("WorkspaceDockview active tab treatment", () => {
     // behind the mark instead of being drawn around it.
     expect(css).toContain("transform: scale(0.45)");
     expect(css).toContain("transform: scale(1.7)");
+    // The band has to be near its full strength while it crosses open space,
+    // or the beat reads as a flicker at the edge of the logo rather than a
+    // wave anyone notices from across the strip.
+    const pulse =
+      /@keyframes anbo-browser-automation-pulse \{([\s\S]*?)\n\}/.exec(
+        css,
+      )?.[1] ?? "";
+    const opacities = [...pulse.matchAll(/opacity:\s*([\d.]+)/g)].map((match) =>
+      Number.parseFloat(match[1]),
+    );
+    expect(Math.max(...opacities)).toBeGreaterThanOrEqual(0.9);
+    // And it must still leave: a wave that never returns to zero is a ring.
+    expect(Math.min(...opacities)).toBe(0);
     // A soft gradient band, never a hard outline.
     expect(css).toMatch(/indicator::before[\s\S]{0,400}radial-gradient\(/);
     // The logo carries no filled chip: activity is the wave, not a badge.
@@ -90,9 +103,51 @@ describe("WorkspaceDockview active tab treatment", () => {
     expect(css).toMatch(
       /indicator::before,\s*\.anbo-browser-automation-indicator::after/,
     );
-    expect(css).toContain("animation-delay: -0.9s");
+    // The second wave still starts half a period in, but the period is a token
+    // now, because the two session levels below run at different speeds.
+    expect(css).toContain(
+      "animation-delay: calc(var(--anbo-automation-period, 1.8s) / -2)",
+    );
     expect(css).toContain("border-radius: 50%");
-    expect(css).toMatch(/indicator\[data-phase="done"\]::after/);
-    expect(css).toMatch(/indicator\[data-phase="error"\]::after/);
+  });
+
+  it("beats for the whole session and says which tab is being worked", () => {
+    // One agent can hold several tabs at once. Stopping the wave when a call
+    // finished made every held tab look finished, and made all of them look
+    // alike, so the strip could not answer the only question it is there for:
+    // which tab is the agent in right now. Phase picks the level; it must not
+    // switch the wave off. Ending the session unmounts the indicator instead.
+    expect(css).not.toMatch(
+      /indicator\[data-phase="(?:done|error)"\]::(?:before|after)/,
+    );
+    expect(css).toMatch(
+      /indicator\[data-state="held"\] \{[^}]*--anbo-automation-period:/,
+    );
+    expect(css).toMatch(
+      /indicator\[data-state="held"\] \{[^}]*--anbo-automation-wave:/,
+    );
+    // The held level has to be the quieter one, or the busy tab stops standing
+    // out among the tabs that are merely held. Measured against the acting
+    // level rather than a fixed number, so turning the beat up or down keeps
+    // the two levels apart by construction.
+    const level = (state: string) => {
+      const block = css.match(
+        new RegExp(`indicator\\[data-state="${state}"\\] \\{([^}]*)\\}`),
+      )?.[1] as string;
+      return {
+        wave: Number.parseFloat(
+          /--anbo-automation-wave:\s*([\d.]+)%/.exec(block)?.[1] ?? "",
+        ),
+        period: Number.parseFloat(
+          /--anbo-automation-period:\s*([\d.]+)s/.exec(block)?.[1] ?? "",
+        ),
+      };
+    };
+    const acting = level("acting");
+    const held = level("held");
+    // Faint enough to sit behind the worked tab, not so faint it disappears.
+    expect(held.wave).toBeLessThan(acting.wave / 1.8);
+    expect(held.wave).toBeGreaterThan(acting.wave / 3);
+    expect(held.period).toBeGreaterThan(acting.period * 1.8);
   });
 });

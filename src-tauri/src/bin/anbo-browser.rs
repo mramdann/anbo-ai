@@ -457,7 +457,11 @@ async fn run_mcp_stdio() {
                             "name": "anbo-browser",
                             "version": env!("CARGO_PKG_VERSION")
                         },
-                        "instructions": anbo_lib::modules::browser_automation::mcp::BROWSER_SESSION_INSTRUCTIONS
+                        "instructions": format!(
+                            "{} {}",
+                            anbo_lib::modules::browser_automation::mcp::SERVER_INSTRUCTIONS,
+                            anbo_lib::modules::browser_automation::mcp::BROWSER_SESSION_INSTRUCTIONS
+                        )
                     }
                 });
                 let _ = stdout

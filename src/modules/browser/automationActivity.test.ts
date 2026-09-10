@@ -5,7 +5,9 @@ import {
   clearBrowserAutomationActivity,
   ensureBrowserAutomationActivityListener,
   getBrowserAutomationActivity,
+  getBrowserAutomationActor,
   getBrowserAutomationState,
+  isBrowserAutomationFocused,
   markBrowserAutomationActivity,
   receiveBrowserAutomationActivity,
 } from "./automationActivity";
@@ -13,6 +15,8 @@ import {
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
 }));
+
+const CODEX = { brand: "codex", label: "Codex" };
 
 describe("browser automation activity", () => {
   it("retains a session through thinking gaps and ignores late work after an explicit end", () => {
@@ -56,6 +60,91 @@ describe("browser automation activity", () => {
     vi.unstubAllGlobals();
   });
 
+  it("names the controlling agent from the open request, before any tracked action", () => {
+    // browser_open cannot be tracked: the tab has no id when the call starts, so
+    // the open request is the only thing that can name the controller before the
+    // first tracked action lands. Reading identity off the activity instead is
+    // what made a freshly driven tab show the generic robot and swap to the real
+    // logo a call later.
+    const opencode = { brand: "opencode", label: "OpenCode" };
+    markBrowserAutomationActivity(11, "open", opencode);
+    expect(getBrowserAutomationActor(11)).toEqual(opencode);
+    expect(getBrowserAutomationState(11)).toBeNull();
+
+    // A tracked action arrives; the identity must survive it, not be replaced by
+    // a second source of truth.
+    receiveBrowserAutomationActivity({
+      tabId: 11,
+      requestId: 4,
+      controlId: 4,
+      sequence: 4,
+      method: "click",
+      phase: "running",
+      actor: { brand: "opencode" },
+    });
+    expect(getBrowserAutomationActor(11)).toEqual(opencode);
+
+    // Ending the session takes the identity with it.
+    receiveBrowserAutomationActivity({
+      tabId: 11,
+      requestId: 4,
+      controlId: 4,
+      sequence: 5,
+      method: "click",
+      phase: "ended",
+      actor: { brand: "opencode" },
+    });
+    expect(getBrowserAutomationActor(11)).toBeNull();
+  });
+
+  it("keeps one indicator per agent and moves it to the tab being driven", () => {
+    // An agent can hold several tabs at once but only ever works one of them at
+    // a time. Lighting up every held tab answered "an agent is somewhere in
+    // here" when the question worth answering is which tab it is in, so the
+    // badge lives on the tab being driven and moves with it.
+    const opencode = { brand: "opencode", label: "OpenCode" };
+    markBrowserAutomationActivity(31, "open", opencode);
+    markBrowserAutomationActivity(32, "open", opencode);
+    expect(isBrowserAutomationFocused(32)).toBe(true);
+    expect(isBrowserAutomationFocused(31)).toBe(false);
+
+    // Going back to the first tab brings the badge back with it.
+    receiveBrowserAutomationActivity({
+      tabId: 31,
+      requestId: 40,
+      controlId: 40,
+      sequence: 40,
+      method: "click",
+      phase: "running",
+      actor: { brand: "opencode" },
+    });
+    expect(isBrowserAutomationFocused(31)).toBe(true);
+    expect(isBrowserAutomationFocused(32)).toBe(false);
+
+    // A second agent keeps its own, and does not take the first one's.
+    markBrowserAutomationActivity(33, "open", {
+      brand: "codex",
+      label: "Codex",
+    });
+    expect(isBrowserAutomationFocused(33)).toBe(true);
+    expect(isBrowserAutomationFocused(31)).toBe(true);
+
+    // Ending the session lets the badge go, rather than pinning it to a tab
+    // nobody is driving any more.
+    receiveBrowserAutomationActivity({
+      tabId: 31,
+      requestId: 40,
+      controlId: 40,
+      sequence: 41,
+      method: "click",
+      phase: "ended",
+      actor: { brand: "opencode" },
+    });
+    expect(isBrowserAutomationFocused(31)).toBe(false);
+
+    for (const id of [31, 32, 33]) clearBrowserAutomationActivity(id);
+  });
+
   it("accepts only events that target a browser tab", () => {
     expect(
       browserAutomationActivityFromPayload({
@@ -74,11 +163,11 @@ describe("browser automation activity", () => {
 
   it("extends activity on every action and clears it after inactivity", () => {
     vi.useFakeTimers();
-    markBrowserAutomationActivity(7, "navigate", 1_000);
+    markBrowserAutomationActivity(7, "navigate", CODEX, 1_000);
     expect(getBrowserAutomationActivity(7)).toBe("navigate");
 
     vi.advanceTimersByTime(750);
-    markBrowserAutomationActivity(7, "snapshot", 1_000);
+    markBrowserAutomationActivity(7, "snapshot", CODEX, 1_000);
     vi.advanceTimersByTime(750);
     expect(getBrowserAutomationActivity(7)).toBe("snapshot");
 

@@ -111,13 +111,17 @@ export function resolveAutomationTarget(
     : null;
 }
 
+// Anbo's own assistant drives the browser through this bridge, so it is the
+// controller here -- not an unnamed remote agent.
+const ANBO_ACTOR = { brand: "anbo", label: "Anbo" } as const;
+
 export function buildBrowserLive(d: BrowserLiveDeps) {
   return {
     openBrowser: (url: string, requestedSpace?: string) => {
       const space = requestedSpace ?? d.getActiveSpaceId();
       const id = d.openTab(url, false, space);
       d.setTargetForSpace(space, id);
-      markBrowserAutomationActivity(id, "open");
+      markBrowserAutomationActivity(id, "open", ANBO_ACTOR);
       return true;
     },
     navigateBrowser: (url: string, requestedSpace?: string) => {
@@ -126,12 +130,12 @@ export function buildBrowserLive(d: BrowserLiveDeps) {
       if (target == null) {
         const id = d.openTab(url, false, space);
         d.setTargetForSpace(space, id);
-        markBrowserAutomationActivity(id, "open");
+        markBrowserAutomationActivity(id, "open", ANBO_ACTOR);
         return true;
       }
       const browser = d.getBrowser(target);
       if (!browser) return false;
-      markBrowserAutomationActivity(target, "navigate");
+      markBrowserAutomationActivity(target, "navigate", ANBO_ACTOR);
       browser.navigate(url);
       return true;
     },

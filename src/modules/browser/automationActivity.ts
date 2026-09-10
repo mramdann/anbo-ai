@@ -13,9 +13,23 @@ type BrowserAutomationActivityPayload = {
   params?: { tabId?: unknown } | null;
 };
 
+export type AutomationActor = AutomationState["actor"];
+
 type ActivityTracker = {
   activities: Map<number, string>;
   details: Map<number, AutomationState>;
+  // Identity is stored apart from the activity because it is known earlier and
+  // outlives any single one. browser_open cannot be tracked -- the tab has no id
+  // yet -- so the first thing the strip hears about a driven tab is the open
+  // request, and without somewhere to keep the caller it fell back to the
+  // generic robot until a tracked call arrived.
+  actors: Map<number, AutomationActor>;
+  // The tab each agent is currently driving, keyed by brand. An agent can hold
+  // several tabs at once, but it only ever works one of them at a time, so only
+  // that one carries the indicator -- and the indicator moves when the agent
+  // moves. Keyed by arrival rather than by comparing sequences, because the open
+  // marking has no sequence of its own to compare.
+  focus: Map<string, number>;
   listeners: Set<() => void>;
   timers: Map<number, ReturnType<typeof setTimeout>>;
   bound: boolean;
@@ -29,12 +43,16 @@ const activityGlobal = globalThis as ActivityGlobal;
 const tracker = activityGlobal.__anboBrowserAutomationActivity ?? {
   activities: new Map<number, string>(),
   details: new Map<number, AutomationState>(),
+  actors: new Map<number, AutomationActor>(),
+  focus: new Map<string, number>(),
   listeners: new Set<() => void>(),
   timers: new Map<number, ReturnType<typeof setTimeout>>(),
   bound: false,
 };
 activityGlobal.__anboBrowserAutomationActivity = tracker;
 tracker.details ??= new Map<number, AutomationState>();
+tracker.actors ??= new Map<number, AutomationActor>();
+tracker.focus ??= new Map<string, number>();
 
 export function browserAutomationActivityFromPayload(
   payload: unknown,
@@ -48,6 +66,12 @@ export function browserAutomationActivityFromPayload(
   return { tabId: tabId as number, method };
 }
 
+function releaseFocus(tabId: number): void {
+  for (const [brand, focused] of tracker.focus) {
+    if (focused === tabId) tracker.focus.delete(brand);
+  }
+}
+
 function notifyActivityListeners(): void {
   for (const listener of tracker.listeners) listener();
 }
@@ -55,10 +79,13 @@ function notifyActivityListeners(): void {
 export function markBrowserAutomationActivity(
   tabId: number,
   method: string,
+  actor: AutomationActor,
   ttlMs: number | null = BROWSER_AUTOMATION_ACTIVITY_TTL_MS,
 ): void {
   if (!Number.isInteger(tabId) || !method) return;
   tracker.activities.set(tabId, method);
+  tracker.actors.set(tabId, actor);
+  tracker.focus.set(actor.brand, tabId);
   const previous = tracker.timers.get(tabId);
   if (previous) clearTimeout(previous);
   tracker.timers.delete(tabId);
@@ -69,6 +96,8 @@ export function markBrowserAutomationActivity(
         tracker.timers.delete(tabId);
         if (!tracker.activities.delete(tabId)) return;
         tracker.details.delete(tabId);
+        tracker.actors.delete(tabId);
+        releaseFocus(tabId);
         notifyActivityListeners();
       }, ttlMs),
     );
@@ -81,6 +110,8 @@ export function clearBrowserAutomationActivity(tabId: number): void {
   if (timer) clearTimeout(timer);
   tracker.timers.delete(tabId);
   tracker.details.delete(tabId);
+  tracker.actors.delete(tabId);
+  releaseFocus(tabId);
   if (tracker.activities.delete(tabId)) notifyActivityListeners();
 }
 
@@ -92,6 +123,19 @@ export function getBrowserAutomationState(
   tabId: number,
 ): AutomationState | null {
   return tracker.details.get(tabId) ?? null;
+}
+
+export function isBrowserAutomationFocused(tabId: number): boolean {
+  const actor = tracker.actors.get(tabId);
+  if (!actor) return false;
+  const focused = tracker.focus.get(actor.brand);
+  return focused === undefined || focused === tabId;
+}
+
+export function getBrowserAutomationActor(
+  tabId: number,
+): AutomationActor | null {
+  return tracker.actors.get(tabId) ?? null;
 }
 
 export function receiveBrowserAutomationActivity(payload: unknown): void {
@@ -107,12 +151,15 @@ export function receiveBrowserAutomationActivity(payload: unknown): void {
       if (timer) clearTimeout(timer);
       tracker.timers.delete(detail.tabId);
       tracker.activities.delete(detail.tabId);
+      tracker.actors.delete(detail.tabId);
+      releaseFocus(detail.tabId);
       notifyActivityListeners();
       return;
     }
     markBrowserAutomationActivity(
       detail.tabId,
       detail.method,
+      detail.actor,
       detail.controlId
         ? null
         : ["done", "error"].includes(detail.phase)
@@ -124,7 +171,14 @@ export function receiveBrowserAutomationActivity(payload: unknown): void {
   const activity = browserAutomationActivityFromPayload(payload);
   if (activity) {
     tracker.details.delete(activity.tabId);
-    markBrowserAutomationActivity(activity.tabId, activity.method);
+    markBrowserAutomationActivity(
+      activity.tabId,
+      activity.method,
+      getBrowserAutomationActor(activity.tabId) ?? {
+        brand: "remote",
+        label: "Remote agent",
+      },
+    );
   }
 }
 
@@ -165,5 +219,35 @@ export function useBrowserAutomationState(
     },
     () => getBrowserAutomationState(tabId),
     () => null,
+  );
+}
+
+export function useBrowserAutomationActor(
+  tabId: number,
+): AutomationActor | null {
+  useEffect(ensureBrowserAutomationActivityListener, []);
+  return useSyncExternalStore(
+    (listener) => {
+      tracker.listeners.add(listener);
+      return () => {
+        tracker.listeners.delete(listener);
+      };
+    },
+    () => getBrowserAutomationActor(tabId),
+    () => null,
+  );
+}
+
+export function useBrowserAutomationFocused(tabId: number): boolean {
+  useEffect(ensureBrowserAutomationActivityListener, []);
+  return useSyncExternalStore(
+    (listener) => {
+      tracker.listeners.add(listener);
+      return () => {
+        tracker.listeners.delete(listener);
+      };
+    },
+    () => isBrowserAutomationFocused(tabId),
+    () => false,
   );
 }

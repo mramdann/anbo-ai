@@ -70,10 +70,16 @@
       .detail{color:#91aab6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.badge[data-state=error] .detail{color:#ffb7a9}
       .cursor{position:absolute;left:0;top:0;width:14px;height:18px;display:none;opacity:0;transition:transform var(--travel,220ms) cubic-bezier(.22,.61,.36,1),opacity 180ms ease-out;filter:drop-shadow(0 1px 1px #0006);will-change:transform}.cursor svg{display:block;width:100%;height:100%}
       .ring{position:absolute;left:-15px;top:-15px;width:30px;height:30px;display:none}
+      /* A parked cursor still has to read as held rather than left behind, so a
+       * halo breathes behind it whenever the session is idle. Transform and
+       * opacity only, on one small element, and only in the tab on screen. */
+      .hold{position:absolute;left:-13px;top:-11px;width:40px;height:40px;border-radius:50%;background:radial-gradient(circle,#61c6d147,#61c6d10f 55%,transparent 72%);opacity:0;will-change:transform,opacity}
+      :host([data-idle]) .hold{animation:hold 2800ms ease-in-out infinite}
       .target{position:absolute;left:0;top:0;display:none;border:1px solid #61c6d18c;border-radius:4px;background:#61c6d10b}
       .ring::after{content:'';position:absolute;inset:0;border:2px solid var(--b);border-radius:50%;animation:ripple 450ms ease-out both}
       @keyframes ripple{from{transform:scale(.35);opacity:1}to{transform:scale(1.5);opacity:0}}
-      @media(prefers-reduced-motion:reduce){.orb{animation:none;display:none}.cursor,.badge{transition:none}.ring::after{animation:none;opacity:.7}}
+      @keyframes hold{0%,100%{opacity:.14;transform:scale(.72)}50%{opacity:.9;transform:scale(1)}}
+      @media(prefers-reduced-motion:reduce){.orb{animation:none;display:none}.cursor,.badge{transition:none}.ring::after{animation:none;opacity:.7}:host([data-idle]) .hold{animation:none;opacity:.45}}
       @media(max-width:420px){.badge{padding:6px 8px;gap:6px;font-size:9px}.logo{width:22px;height:22px}.name{max-width:85px}}
     `);
     root.adoptedStyleSheets = [sheet];
@@ -93,7 +99,7 @@
     add('separator', heading).textContent = '\u00b7';
     tool = add('tool', heading);
     detail = add('detail', copy);
-    target = add('target'); cursor = add('cursor'); ring = add('ring', cursor);
+    target = add('target'); cursor = add('cursor'); add('hold', cursor); ring = add('ring', cursor);
     const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     arrow.setAttribute('viewBox', '0 0 16 20');
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -145,7 +151,7 @@
     motionChanged = () => animate(true);
     motionQuery.addEventListener('change', motionChanged);
   };
-  const verbs = {click:'Clicking',double_click:'Double-clicking',type:'Typing',press:'Pressing a key',key:'Pressing a key',hover:'Hovering',drag:'Dragging',scroll:'Scrolling',scroll_to:'Scrolling',navigate:'Navigating',reload:'Reloading',back:'Going back',forward:'Going forward',find:'Finding a target',snapshot:'Reading the page',get_text:'Reading the page',wait:'Waiting for the page',screenshot:'Capturing',check:'Changing selection',select_option:'Selecting',focus:'Focusing',upload:'Attaching files',download:'Downloading',get_url:'Reading the address',page_info:'Reading page details',console_logs:'Reading console logs',download_status:'Checking download',download_wait:'Waiting for download',emulate:'Adjusting the viewport',stop:'Stopping navigation',dialog:'Handling a dialog',open:'Opening a tab',close:'Closing a tab',tabs:'Reading tabs'};
+  const verbs = {start_session:'Holding this tab',click:'Clicking',double_click:'Double-clicking',type:'Typing',press:'Pressing a key',key:'Pressing a key',hover:'Hovering',drag:'Dragging',scroll:'Scrolling',scroll_to:'Scrolling',navigate:'Navigating',reload:'Reloading',back:'Going back',forward:'Going forward',find:'Finding a target',snapshot:'Reading the page',get_text:'Reading the page',wait:'Waiting for the page',screenshot:'Capturing',check:'Changing selection',select_option:'Selecting',focus:'Focusing',upload:'Attaching files',download:'Downloading',get_url:'Reading the address',page_info:'Reading page details',console_logs:'Reading console logs',download_status:'Checking download',download_wait:'Waiting for download',emulate:'Adjusting the viewport',stop:'Stopping navigation',dialog:'Handling a dialog',open:'Opening a tab',close:'Closing a tab',tabs:'Reading tabs'};
   const aliases = {type_text:'type',press_key:'press',upload_files:'upload',scroll_to_element:'scroll_to',scroll_into_view:'scroll_to',get_page_info:'page_info',list_tabs:'tabs'};
   const paintIcon = name => {
     logo.replaceChildren();
@@ -183,7 +189,7 @@
     const canonicalMethod = Object.hasOwn(aliases, data.method) ? aliases[data.method] : data.method;
     const knownMethod = Object.hasOwn(verbs, canonicalMethod);
     const method = knownMethod ? 'browser_' + (canonicalMethod === 'scroll_to' ? 'scroll_to_element' : canonicalMethod) : 'browser_action';
-    const action = data.phase === 'error' ? 'Action stopped' : data.phase === 'done' ? 'Action complete' : data.phase === 'frame' ? 'Interacting in a frame' : (knownMethod ? verbs[canonicalMethod] : 'Working');
+    const action = data.phase === 'error' ? 'Action stopped' : canonicalMethod === 'start_session' ? 'Holding this tab' : data.phase === 'done' ? 'Action complete' : data.phase === 'frame' ? 'Interacting in a frame' : (knownMethod ? verbs[canonicalMethod] : 'Working');
     if (label.textContent !== name) label.textContent = name;
     if (tool.textContent !== method) tool.textContent = method;
     badge.dataset.state = data.phase === 'error' ? 'error' : data.phase === 'done' ? 'done' : 'working';
@@ -213,6 +219,17 @@
       } else resetPointer();
     }
     if (data.phase === 'frame') resetPointer();
+    // A live session always shows its cursor. After a navigation the stored
+    // point is dropped and the page's script is rebuilt from nothing, so
+    // without this the tab sits there with a badge and no pointer until the
+    // agent happens to run an action that carries coordinates.
+    if (!badgePoint && data.phase !== 'ended') {
+      badgePoint = { x: Math.round(innerWidth / 2), y: Math.round(innerHeight / 2) };
+      cursor.style.transition = 'none';
+      cursor.style.display = 'block';
+      cursor.style.opacity = '1';
+      cursor.style.transform = 'translate(' + badgePoint.x + 'px,' + badgePoint.y + 'px)';
+    }
     if (idle) ring.style.display = target.style.display = 'none';
     const description = action + (badgePoint ? ` \u00b7 x ${Math.round(badgePoint.x)} \u00b7 y ${Math.round(badgePoint.y)}` : '');
     if (detail.textContent !== description) detail.textContent = description;

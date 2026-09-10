@@ -46,6 +46,8 @@ import {
 import "dockview/dist/styles/dockview.css";
 import {
   useBrowserAutomationActivity,
+  useBrowserAutomationActor,
+  useBrowserAutomationFocused,
   useBrowserAutomationState,
 } from "@/modules/browser/automationActivity";
 import { automationLabel } from "@/modules/browser/automationState";
@@ -392,10 +394,27 @@ function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
 function BrowserAutomationTabIndicator({ tabId }: { tabId: number }) {
   const action = useBrowserAutomationActivity(tabId);
   const activity = useBrowserAutomationState(tabId);
-  if (!action) return null;
+  // Identity comes from its own store, not from the activity: browser_open is
+  // untracked, so the tab is already on screen and being driven before any
+  // activity with an actor exists. Reading it from the activity is what made a
+  // freshly driven tab show the generic robot first and the real agent second.
+  const actor = useBrowserAutomationActor(tabId);
+  // One agent, one indicator. An agent can hold several tabs at once but only
+  // ever works one of them at a time, so the badge lives on the tab it is in
+  // right now and moves with it. Showing every held tab made the strip say
+  // "an agent is somewhere in here" when the question worth answering is which
+  // tab it is in.
+  const focused = useBrowserAutomationFocused(tabId);
+  if (!action || !focused) return null;
   const title = activity
     ? `${activity.actor.label}: ${automationLabel(activity)}`
-    : `Remote agent: ${action}`;
+    : `${actor?.label ?? "Remote agent"}: ${action}`;
+  // "held" is a live session with nothing in flight, "acting" is a call running
+  // on this tab right now. When one agent holds several tabs this is the only
+  // cue that says which of them to look at, so it drives the wave rather than
+  // switching it off. An event without rich state is treated as acting, which
+  // is how the indicator behaved before the session model existed.
+  const held = activity?.phase === "done" || activity?.phase === "error";
 
   return (
     <span
@@ -405,9 +424,10 @@ function BrowserAutomationTabIndicator({ tabId }: { tabId: number }) {
       title={title}
       className="anbo-browser-automation-indicator"
       data-phase={activity?.phase}
+      data-state={held ? "held" : "acting"}
     >
       <AgentIcon
-        agent={activity?.actor.brand ?? "robot"}
+        agent={actor?.brand ?? activity?.actor.brand ?? "robot"}
         size={12}
         className="anbo-browser-automation-robot"
       />

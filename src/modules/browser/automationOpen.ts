@@ -10,6 +10,9 @@ export type BrowserOpenRequest = {
   requestId: string;
   url: string;
   workspace?: string | null;
+  // Who asked. browser_open is not tracked, so this is the only chance the tab
+  // gets to know its controller before the first tracked action arrives.
+  actor?: { brand: string; label: string } | null;
 };
 
 export type BrowserCloseRequest = {
