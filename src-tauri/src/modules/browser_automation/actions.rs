@@ -266,6 +266,22 @@ async fn handle_action_inner(
         )
         .await;
     }
+    // Skills are documents, not surfaces. Reading one drives nothing the user
+    // can see, so it is not something to hold a browser session for.
+    // The session is the gate, not a formality. Every browser action runs under
+    // a session that names its caller, so an action arriving without one has
+    // nobody to attribute it to -- which is how a tab ended up on screen
+    // claiming a controller Anbo could not name. Anbo's own UI answers for
+    // itself and needs no session.
+    if !method.starts_with("skills_")
+        && !caller.is_internal()
+        && !super::activity::holds_control(caller)
+    {
+        return Err((
+            error_codes::INVALID_REQUEST.into(),
+            "no browser session: call browser_start_session first, then run this action under the controlId it returns and close it with browser_end_session when the task is done".into(),
+        ));
+    }
     if params.get("locator").is_some() {
         if params.get("ref").is_some()
             || (method != "wait" && !super::locator_target::supports_locator(method))

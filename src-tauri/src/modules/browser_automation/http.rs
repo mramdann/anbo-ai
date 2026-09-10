@@ -219,6 +219,17 @@ async fn handle(
             Some(actor) => actor,
             None => return Ok(empty(404)),
         }
+    } else if method == "tools/call" {
+        // A tool call is an action on the user's screen, so it has to say who
+        // is acting. Serving one without the session id from initialize meant
+        // Anbo drove a real browser for a caller it could not name, and the tab
+        // it opened then showed that anonymity as if it were an identity.
+        // Discovery stays open: initialize, ping and tools/list need no session.
+        return Ok(json_ok(rpc_error(
+            id,
+            -32600,
+            "missing Mcp-Session-Id: send the session id returned by initialize on every tools/call",
+        )));
     } else {
         Caller::default()
     };

@@ -58,6 +58,12 @@ impl Caller {
         }
     }
 
+    /// Anbo itself, driving the browser from its own UI rather than over MCP.
+    /// It answers for its actions directly, so the session gate does not apply.
+    pub fn is_internal(&self) -> bool {
+        self.brand == "anbo" && self.owner.as_deref() == Some("internal")
+    }
+
     pub fn from_client_info(info: &Value) -> Self {
         let name = info.get("name").and_then(Value::as_str).unwrap_or("");
         if name.len() > 128 {

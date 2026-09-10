@@ -42,7 +42,7 @@ pub const SERVER_INSTRUCTIONS: &str = concat!(
     "never the one currently on screen."
 );
 
-pub const BROWSER_SESSION_INSTRUCTIONS: &str = "End the control session for this whole browser task. One session covers every tab you touched under the same controlId, so this is a single call at the end of the task, not one per tab; tabId is accepted and ignored. Call it when the task is finished, cancelled, or handed back to the user, including after an error, and not between steps. This hides the cursor and the tab badge without closing any tab or the MCP connection.";
+pub const BROWSER_SESSION_INSTRUCTIONS: &str = "Browser work runs in a session: open it with browser_start_session before the first browser tool, and end it with browser_end_session. End the control session for this whole browser task. One session covers every tab you touched under the same controlId, so this is a single call at the end of the task, not one per tab; tabId is accepted and ignored. Call it when the task is finished, cancelled, or handed back to the user, including after an error, and not between steps. This hides the cursor and the tab badge without closing any tab or the MCP connection.";
 
 fn tab_id_prop() -> Value {
     json!({ "type": "integer", "description": "Active native browser tab id (from browser_tabs)." })
@@ -104,7 +104,7 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_back", "description": "Start navigating a browser tab back in history and return immediately.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_forward", "description": "Start navigating a browser tab forward in history and return immediately.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_stop", "description": "Stop a browser tab's page load.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
-        { "name": "browser_start_session", "description": "Open a control session for this browser task and return the controlId that names it. One session covers the whole task: open as many tabs as the work needs and act on any tab you are allowed to control, all under this one id, then close it once with browser_end_session. Calling this again while you already hold a session returns the same controlId. tabId is optional and only paints that tab straight away; the first browser action opens a session anyway if you skip this call.", "annotations": { "destructiveHint": false, "idempotentHint": true }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() } } },
+        { "name": "browser_start_session", "description": "Open a control session for this browser task and return the controlId that names it. One session covers the whole task: open as many tabs as the work needs and act on any tab you are allowed to control, all under this one id, then close it once with browser_end_session. Calling this again while you already hold a session returns the same controlId. Call it before any other browser tool: an action without a session is refused, because Anbo will not drive the user's browser for a caller it cannot name. tabId is optional and only paints that tab straight away.", "annotations": { "destructiveHint": false, "idempotentHint": true }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() } } },
         { "name": "browser_end_session", "description": BROWSER_SESSION_INSTRUCTIONS, "annotations": { "destructiveHint": false, "idempotentHint": true }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "controlId": { "type": "integer", "minimum": 1, "description": "The controlId your browser calls returned. It names the whole session, not one tab. A stale id never ends a newer session." } }, "required": ["controlId"] } },
         { "name": "browser_snapshot", "description": "Get a token-bounded accessibility snapshot with viewport text and generation-scoped element refs. Output defaults to 8000 characters and never exceeds 16000; scroll and snapshot again for nearby content. Both snapshot and find replace older refs for this tab. Prefer a targeted find when the element is already known.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "maxChars": { "type": "integer", "minimum": 2000, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
         { "name": "browser_find", "description": "Find current page elements with a semantic locator and return fresh generation-scoped refs. Supports role, text, label, placeholder, testId, title, alt, and CSS across open Shadow DOM and child frames. For role locators, name is the computed accessible name, so aria-label, aria-labelledby, associated labels, alt, or title can take precedence over visible text.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "by": { "type": "string", "enum": ["role", "text", "label", "placeholder", "testId", "title", "alt", "css"] }, "value": { "type": "string", "minLength": 1, "maxLength": 4096 }, "name": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Optional computed accessible-name filter for a role locator. It may come from aria-label, aria-labelledby, an associated label, alt, title, or visible text." }, "exact": { "type": "boolean", "default": false }, "includeHidden": { "type": "boolean", "default": false }, "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 5000 } }, "required": ["tabId", "by", "value"] } },
@@ -312,6 +312,34 @@ mod tests {
         assert_eq!(
             tool_name_to_method("browser_start_session"),
             Some("start_session")
+        );
+    }
+
+    #[test]
+    fn the_session_reads_as_a_gate_rather_than_a_courtesy() {
+        // An agent decides whether to call browser_start_session from this text
+        // alone. While it said the first action would open a session anyway,
+        // every agent skipped it -- and an action with no session has no caller
+        // to attribute the tab it opens to.
+        let definitions = tool_definitions();
+        let start = definitions
+            .as_array()
+            .expect("tools")
+            .iter()
+            .find(|tool| tool["name"] == "browser_start_session")
+            .expect("browser_start_session");
+        let description = start["description"].as_str().unwrap_or_default();
+        assert!(
+            description.contains("before any other browser tool"),
+            "{description}"
+        );
+        assert!(
+            !description.contains("opens a session anyway"),
+            "{description}"
+        );
+        assert!(
+            BROWSER_SESSION_INSTRUCTIONS.contains("browser_start_session"),
+            "the connect message has to name the gate"
         );
     }
 

@@ -239,6 +239,21 @@ fn control_for(caller: &Caller, next: u64) -> Option<u64> {
     Some(next)
 }
 
+/// Whether this caller already holds a session.
+///
+/// Read-only on purpose: the session gate has to be able to ask without
+/// creating the very thing it is checking for.
+pub fn holds_control(caller: &Caller) -> bool {
+    let Ok(mut guard) = CONTROL.lock() else {
+        return false;
+    };
+    let Some(controls) = guard.as_mut() else {
+        return false;
+    };
+    controls.retain(|_, (_, touched)| touched.elapsed() < CONTROL_TTL);
+    controls.values().any(|(owner, _)| owner == caller)
+}
+
 /// How long since anything happened under this session.
 fn control_idle(control_id: u64) -> Option<Duration> {
     CONTROL
@@ -1201,6 +1216,26 @@ mod tests {
 
         // The next task gets a fresh contract rather than reviving the old one.
         assert_ne!(control_for(&claude, 14), Some(held));
+        reset_controls();
+    }
+
+    #[test]
+    fn asking_whether_a_caller_holds_a_session_does_not_open_one() {
+        let _guard = CONTROL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_controls();
+        let kimi = Caller::from_client_info(&serde_json::json!({"name":"kimi-code"}));
+
+        // The gate has to be able to ask before letting an action through. If
+        // asking created the session, the gate would open itself.
+        assert!(!holds_control(&kimi));
+        assert!(!holds_control(&kimi));
+
+        let held = control_for(&kimi, 20).expect("a session");
+        assert!(holds_control(&kimi));
+        assert!(release_control(held, &kimi));
+        assert!(!holds_control(&kimi));
         reset_controls();
     }
 
