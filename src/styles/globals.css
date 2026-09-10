@@ -270,7 +270,14 @@ html[data-native-browser-live="true"] footer {
 
 /*
  * xterm.js overrides — kept outside @layer so they win against the addon's
- * own stylesheet (which is not in any layer and would otherwise override).
+ * own stylesheet, which is not in any layer either.
+ *
+ * Order cannot be relied on here. main.tsx imports xterm.css first and this
+ * file last, which is the order the dev server serves them in, but Vite splits
+ * them into separate chunks and index.html loads the chunk carrying xterm.css
+ * LAST in a packaged build. Every declaration below that has to beat xterm
+ * therefore carries !important; only border-radius, which xterm never sets,
+ * does not.
  *
  * Newer xterm renders scrollbars as real <div class="scrollbar vertical|horizontal">
  * children rather than relying on native overflow scrollbars. Keep the vertical
@@ -281,16 +288,33 @@ html[data-native-browser-live="true"] footer {
   height: 0 !important;
   pointer-events: none !important;
 }
+/* Tailwind ships an `invisible` utility (visibility: hidden) and the app uses
+ * it, so every build emits it. xterm happens to name its hidden-scrollbar
+ * state class `invisible` too, and the bar is
+ * class="invisible scrollbar vertical fade" -- so the utility lands on it and
+ * takes it out of the paint entirely: measured visibility hidden, absent from
+ * elementsFromPoint, and not one pixel at the slider rect even with opacity
+ * forced to 1. Nothing in xterm's own stylesheet sets visibility, so nothing
+ * ever wins it back. Restore it and let opacity, which is what xterm actually
+ * animates, be the only thing that decides whether the bar shows. */
+.xterm .xterm-scrollable-element > .scrollbar {
+  visibility: visible !important;
+}
+/* xterm builds the bar with ScrollbarVisibility.Auto, so it swaps in the
+ * `invisible fade` classes the moment the terminal goes quiet and the 800ms
+ * transition carries it to opacity 0. Pin the opacity for as long as the
+ * buffer is scrollable so the terminal behaves like the editor and the side
+ * panels, which keep their bars on screen. */
 .xterm .xterm-scrollable-element > .scrollbar.vertical {
   width: var(--scrollbar-thickness) !important;
+  transition: opacity 120ms linear !important;
 }
-.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
-  left: 0 !important;
-  width: var(--scrollbar-thickness) !important;
-  border-radius: 999px;
-}
-.xterm .xterm-decoration-overview-ruler {
-  display: none !important;
+[data-anbo-terminal-scrollable="true"]
+  .xterm
+  .xterm-scrollable-element
+  > .scrollbar.vertical {
+  opacity: 1 !important;
+  pointer-events: auto !important;
 }
 [data-anbo-terminal-scrollable="false"]
   .xterm
@@ -299,36 +323,36 @@ html[data-native-browser-live="true"] footer {
   opacity: 0 !important;
   pointer-events: none !important;
 }
-/* Both standard properties stay auto so the ::-webkit-scrollbar rules below
- * keep applying. The global hider then leaves this viewport without a native
- * bar, so xterm's own .scrollbar.vertical child stays the only affordance. */
+/* The slider is painted from a <style> xterm injects at runtime, which resolves
+ * to foreground/20%. Restate it so the terminal thumb matches every other one. */
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  left: 0 !important;
+  width: var(--scrollbar-thickness) !important;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--foreground) 28%, transparent) !important;
+}
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider:hover,
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider.active {
+  background: color-mix(in oklab, var(--foreground) 48%, transparent) !important;
+}
+.xterm .xterm-decoration-overview-ruler {
+  display: none !important;
+}
+/* xterm 6 scrolls by translating .xterm-scrollable-element, so .xterm-viewport
+ * never overflows -- its scrollHeight always equals its clientHeight. Opting it
+ * into a native bar only reserved a gutter the width of the token for a thumb
+ * that could never be drawn, so it stays on the global hider and xterm's own
+ * .scrollbar.vertical remains the single affordance. */
 .xterm .xterm-viewport,
 .xterm-viewport {
-  scrollbar-width: auto !important;
-  scrollbar-color: auto !important;
+  scrollbar-width: none !important;
   -ms-overflow-style: none !important;
 }
 .xterm .xterm-viewport::-webkit-scrollbar,
 .xterm-viewport::-webkit-scrollbar {
-  /* display has to be restated: the global hider switches every
-   * ::-webkit-scrollbar off, so an opt-in that only sets a width still paints
-   * nothing. The two opt-ins above do the same for the same reason. */
-  display: block !important;
-  width: var(--scrollbar-thickness) !important;
+  display: none !important;
+  width: 0 !important;
   height: 0 !important;
-}
-.xterm .xterm-viewport::-webkit-scrollbar-track,
-.xterm-viewport::-webkit-scrollbar-track {
-  background: transparent;
-}
-.xterm .xterm-viewport::-webkit-scrollbar-thumb,
-.xterm-viewport::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--foreground) 28%, transparent);
-}
-.xterm .xterm-viewport::-webkit-scrollbar-thumb:hover,
-.xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in oklab, var(--foreground) 48%, transparent);
 }
 .xterm,
 .xterm-screen,

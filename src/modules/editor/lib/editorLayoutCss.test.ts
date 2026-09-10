@@ -47,7 +47,6 @@ describe("scrollbar opt-ins", () => {
   const optIns = [
     /\.panel-scrollbar::-webkit-scrollbar \{[^}]*display:\s*block/,
     /\.anbo-code-editor \.cm-scroller::-webkit-scrollbar \{[^}]*display:\s*block/,
-    /\.xterm-viewport::-webkit-scrollbar \{[^}]*display:\s*block/,
   ];
 
   it.each(optIns)("restates display so the hider cannot win: %s", (pattern) => {
@@ -61,5 +60,68 @@ describe("scrollbar opt-ins", () => {
     for (const w of opted) {
       expect(w).toContain("var(--scrollbar-thickness)");
     }
+  });
+});
+
+describe("terminal scrollbar", () => {
+  it("outlasts xterm's auto-hide while the buffer is scrollable", () => {
+    // xterm builds the bar with ScrollbarVisibility.Auto, so it swaps in the
+    // `invisible fade` classes as soon as the terminal goes quiet and fades the
+    // bar to opacity 0. Measured on a real xterm 6 buffer with 400 lines of
+    // scrollback: opacity 0.69 mid-transition, 0 once settled. Without these
+    // two rules the terminal looks like it has no scrollbar at all.
+    expect(css).toMatch(
+      /\[data-anbo-terminal-scrollable="true"\][^{]*\.scrollbar\.vertical\s*\{[^}]*opacity:\s*1\s*!important/,
+    );
+    expect(css).toMatch(
+      /\[data-anbo-terminal-scrollable="false"\][^{]*\.scrollbar\.vertical\s*\{[^}]*opacity:\s*0\s*!important/,
+    );
+  });
+
+  it("survives Tailwind's invisible utility", () => {
+    // xterm names its hidden-scrollbar state class `invisible`, and so does
+    // Tailwind, whose utility the app really uses -- so the build emits
+    // `.invisible{visibility:hidden}` and it lands on xterm's scrollbar, which
+    // is class="invisible scrollbar vertical fade". Nothing in xterm's own
+    // stylesheet sets visibility, so the bar is taken out of the paint
+    // entirely: measured visibility hidden, missing from elementsFromPoint,
+    // and no pixels at the slider rect even with opacity forced to 1. This is
+    // why the terminal had a bar in dev and none in a packaged build.
+    expect(css).toMatch(
+      /\.xterm \.xterm-scrollable-element > \.scrollbar \{[^}]*visibility:\s*visible\s*!important/,
+    );
+  });
+
+  it("leaves the native viewport bar off", () => {
+    // xterm 6 scrolls by translating .xterm-scrollable-element, so
+    // .xterm-viewport never overflows (scrollHeight === clientHeight). A native
+    // bar there reserves a gutter for a thumb that can never be drawn.
+    expect(css).toMatch(
+      /\.xterm-viewport::-webkit-scrollbar \{[^}]*display:\s*none/,
+    );
+  });
+
+  it("sizes the bar and its slider from the shared token", () => {
+    expect(css).toMatch(
+      /\.scrollbar\.vertical\s*\{[^}]*width:\s*var\(--scrollbar-thickness\)/,
+    );
+    expect(css).toMatch(
+      /\.scrollbar\.vertical > \.slider\s*\{[^}]*width:\s*var\(--scrollbar-thickness\)/,
+    );
+  });
+  it("wins on !important rather than on stylesheet order", () => {
+    // main.tsx imports xterm.css first and globals.css last, but Vite splits
+    // them into separate chunks and index.html loads the chunk carrying
+    // xterm.css last in a packaged build -- the reverse of dev. Anything that
+    // has to beat xterm's own stylesheet cannot lean on order.
+    const block = css.slice(
+      css.indexOf(".xterm .scrollbar.horizontal"),
+      css.indexOf(".xterm .xterm-decoration-overview-ruler"),
+    );
+    expect(block.length).toBeGreaterThan(200);
+    const weak = (block.match(/^ {2}[a-z-]+:[^;]+;/gm) ?? []).filter(
+      (d) => !d.includes("!important") && !d.startsWith("  border-radius"),
+    );
+    expect(weak).toEqual([]);
   });
 });
