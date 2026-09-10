@@ -421,3 +421,115 @@ describe("classifyAgentScreen", () => {
     },
   );
 });
+
+describe("kimi screens", () => {
+  // Copied from a real `kimi --auto` run inside Anbo, trimmed to the rows that
+  // decide the state.
+  const idle = [
+    "PS D:anbo-ai> kimi --auto",
+    "    Welcome to Kimi Code!",
+    "    Run /login or /provider to get started.",
+    "    Directory: D:anbo-ai",
+    "    Session:",
+    "    Model:     not set, run /login or /provider",
+    "    Version:   0.42.0",
+    "  No session yet - one will be created on your first message.",
+    "  > ",
+    "Never Ask  D:anbo-ai  main [+1881 -225]  ask Kimi to schedule tasks  context: 0%",
+  ].join("\n");
+
+  const trustPrompt = [
+    "PS D:anbo-ai> kimi --auto",
+    "Trust this folder?",
+    "\u2191\u2193 navigate \u00b7 Enter select \u00b7 Esc exit",
+    "",
+    "D:anbo-ai",
+    "Project MCP targets:",
+    "  anbomcp (http): url=http://127.0.0.1:7331/mcp",
+    "> Trust this folder",
+    "  Don't trust",
+  ].join("\n");
+
+  it("reads the mounted composer as ready", () => {
+    expect(classifyAgentScreen("kimi", idle)).toBe("ready");
+  });
+
+  it("does not call a transcript of the banner a live composer", () => {
+    // Without the status line under it, the same welcome text is only output
+    // someone pasted or scrolled past.
+    expect(classifyAgentScreen("kimi", "Directory: D:anbo-ai\nSession:")).toBe(
+      null,
+    );
+  });
+
+  it("holds the turn open while the trust chooser is up", () => {
+    // The folder prompt is the first thing a fresh workspace sees, and it
+    // blocks everything behind it until someone answers.
+    expect(classifyAgentScreen("kimi", trustPrompt)).toBe("attention");
+  });
+});
+
+describe("kimi turns", () => {
+  // Also copied from a real run: Kimi leaves the composer and status line
+  // mounted while it works, so the only thing that says "busy" is the spinner
+  // row above them.
+  const working = [
+    "  Done",
+    "",
+    "\u2726 run this exact command: Start-Sleep -Seconds 12",
+    "",
+    "\u2839 thinking\u2026",
+    "",
+    "  Note:",
+    "  > ",
+    "Never Ask  GLM-5.3 thinking: high  D:anbo-dev-localsandbox   context: 5% (39.1k/977k)",
+  ].join("\n");
+
+  it("stays working while the spinner runs under a mounted composer", () => {
+    expect(classifyAgentScreen("kimi", working)).toBe("working");
+  });
+
+  it("settles once the spinner row is gone", () => {
+    expect(
+      classifyAgentScreen("kimi", working.replace("\u2839 thinking\u2026", "")),
+    ).toBe("ready");
+  });
+});
+
+describe("kimi queued input", () => {
+  it("stays working while a message waits behind the running turn", () => {
+    // Typing while Kimi is busy parks the message above the composer with an
+    // offer to steer the run. The offer only exists while something is
+    // running, and at that moment there is no spinner row on screen at all.
+    const queued = [
+      "\u25cf Used browser_get_text \u00b7 MCP/anbomcp-dev",
+      "  { \u2026",
+      "  Tip: /web: use the Web UI for a better experience",
+      "\u276f take a snapshot of the current page and count how many links it has",
+      "  \u2191 to edit \u00b7 ctrl-s to steer immediately",
+      "  > ",
+      "Never Ask  GLM-5.3 thinking: high  D:anbo-dev-localsandbox   context: 7%",
+    ].join("\n");
+    expect(classifyAgentScreen("kimi", queued)).toBe("working");
+  });
+});
+
+describe("kimi permission prompt", () => {
+  it("blocks on an approval the agent cannot answer for itself", () => {
+    // Kimi outside --auto asks before it runs an MCP tool. The turn stops
+    // here until someone chooses, and its hint uses a different arrow shape
+    // from the list chooser, which is why both are recognised.
+    const approval = [
+      "\u25cf Using browser_open \u00b7 MCP/anbomcp-dev (https://example.com)",
+      "\u25b6 Approve mcp__anbomcp-dev__browser_open?",
+      "  GET   https://example.com",
+      "\u25b6 1. Approve once",
+      "  2. Approve for this session",
+      "  3. Reject",
+      "  4. Reject with feedback",
+      "\u2191/\u2193 select \u00b7 1/2/3/4 choose \u00b7 \u21b5 confirm",
+      "GLM-5.3 thinking: high  D:\anbo-dev-local\sandbox   context: 4%",
+    ].join("\n");
+    expect(classifyAgentScreen("kimi", approval)).toBe("attention");
+  });
+});

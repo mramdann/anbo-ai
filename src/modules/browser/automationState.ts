@@ -23,6 +23,7 @@ const BRANDS: Record<string, string> = {
   codex: "Codex",
   antigravity: "Antigravity",
   opencode: "OpenCode",
+  kimi: "Kimi",
   pi: "Pi",
   grok: "Grok",
   anbo: "Anbo",
@@ -99,6 +100,8 @@ export function acceptsAutomationState(
 }
 
 const ACTIONS: Record<string, string> = {
+  // A claimed tab has done nothing yet, so "Action complete" would be a lie.
+  start_session: "Holding this tab",
   click: "Clicking",
   double_click: "Double-clicking",
   type: "Typing",
@@ -123,6 +126,7 @@ const ACTIONS: Record<string, string> = {
 export function automationLabel(state: AutomationState): string {
   if (state.phase === "queued") return "Waiting to act";
   if (state.phase === "ended") return "Remote session ended";
+  if (state.method === "start_session") return "Holding this tab";
   if (state.phase === "done") return "Action complete";
   if (state.phase === "error") return "Action stopped";
   return ACTIONS[state.method] ?? "Working";

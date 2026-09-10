@@ -38,3 +38,4 @@ src-tauri/binaries/
 /.agents/mcp_config.json
 /.codex/config.toml
 /.opencode/anbo-mcp.json
+/.kimi-code/mcp.json

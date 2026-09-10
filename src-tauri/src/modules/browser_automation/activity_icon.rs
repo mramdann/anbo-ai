@@ -44,6 +44,9 @@ pub(super) fn for_brand(brand: &str) -> Option<Icon> {
         "/agent-icons/opencode-dark.svg" => {
             include_bytes!("../../../../public/agent-icons/opencode-dark.svg")
         }
+        "/agent-icons/kimi-dark.svg" => {
+            include_bytes!("../../../../public/agent-icons/kimi-dark.svg")
+        }
         "/agent-icons/grok-dark.svg" => {
             include_bytes!("../../../../public/agent-icons/grok-dark.svg")
         }

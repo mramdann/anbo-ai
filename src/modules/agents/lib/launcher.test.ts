@@ -56,6 +56,7 @@ describe("agent launch commands", () => {
       antigravity: "agy",
       pi: "pi --provider local",
       opencode: "opencode",
+      kimi: "kimi --auto",
       grok: "grok",
     });
   });
@@ -268,6 +269,7 @@ describe("hidden launchers", () => {
       "antigravity",
       "opencode",
       "pi",
+      "kimi",
       "grok",
     ]) {
       expect(offered).toContain(id);

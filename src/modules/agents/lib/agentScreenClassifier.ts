@@ -15,6 +15,10 @@ const ATTENTION_PATTERNS = [
   /select enter submit/i,
   /allow .* to (?:run|fetch|edit|use)/i,
   /select login method/i,
+  // A mounted chooser, in both shapes Kimi paints one: "↑↓ navigate" for a
+  // list it offers, "↑/↓ select" for a permission it is blocked on. The arrows
+  // are what separate a live menu from prose about one.
+  /↑\s*\/?\s*↓\s*(?:navigate|select)/,
 ];
 
 // These markers are transient controls rendered by a live TUI. Several CLIs
@@ -68,6 +72,18 @@ const CLAUDE_COMPLETION =
 const CODEX_COMPLETION =
   /^[\t ]{0,2}(?:[\u2500\u2501-]+[\t ]*)?Worked[\t ]+for[\t ]+(?:\d{1,4}h[\t ]+)?(?:\d{1,4}m[\t ]+)?\d{1,4}(?:\.\d{1,3})?s(?:[\t ]*[\u2500\u2501-]+)?[\t ]*\r?$/i;
 const CODEX_ACTIVITY = /^[\t ]{0,2}\u2022[\t ]+\S[^\r\n]*\r?$/u;
+
+// Kimi's own SPINNER_FRAMES are braille cells, painted on their own row above a
+// composer that stays mounted through the turn. The composer is therefore
+// always the newer thing on screen, so the spinner has to be read as live work
+// rather than compared for position against the prompt.
+const KIMI_SPINNER = /^[\t ]*[\u2800-\u28ff](?:[\t ]|\r?$)/m;
+
+// Kimi parks a message typed mid-turn above the composer and offers to steer
+// the run that is still going. The offer only exists while something is
+// running, which makes it the one busy marker that survives a repaint with no
+// spinner on screen.
+const KIMI_QUEUED = /ctrl-s\s+to\s+steer/i;
 const CODEX_INTERRUPTED =
   /^[\t ]{0,2}\u25a0[\t ]+Conversation interrupted\b[^\r\n]*\r?$/iu;
 
@@ -98,7 +114,7 @@ export function classifyAgentScreen(
   const agentKind = normalizedAgent(agent);
   const attentionAt = lastAnyIndex(screen, ATTENTION_PATTERNS);
   let workingAt = lastAnyIndex(screen, WORKING_PATTERNS);
-  const liveWorkingAt = lastAnyIndex(screen, LIVE_WORKING_PATTERNS);
+  let liveWorkingAt = lastAnyIndex(screen, LIVE_WORKING_PATTERNS);
   const resolvedAttentionAt = lastAnyIndex(screen, [
     /user\s*answered/i,
     /permission\s+(?:granted|approved)/i,
@@ -151,6 +167,26 @@ export function classifyAgentScreen(
     case "pi":
       if (/(?:pi coding agent|for shortcuts|session)/i.test(screen)) {
         readyAt = screen.lastIndexOf(">");
+      }
+      break;
+    case "kimi":
+      // Kimi keeps a status line mounted under its composer. The context meter
+      // is the one field of it that does not move with the permission mode,
+      // the repository or the window width, so it is what proves the composer
+      // is really on screen rather than a transcript quoting one.
+      if (
+        /context:\s*\d+%/i.test(screen) ||
+        /Welcome to Kimi Code/i.test(screen)
+      ) {
+        readyAt = screen.lastIndexOf(">");
+      }
+      {
+        const busyAt = Math.max(
+          lastPatternIndex(screen, KIMI_SPINNER),
+          lastPatternIndex(screen, KIMI_QUEUED),
+        );
+        liveWorkingAt = Math.max(liveWorkingAt, busyAt);
+        workingAt = Math.max(workingAt, busyAt);
       }
       break;
     case "grok":

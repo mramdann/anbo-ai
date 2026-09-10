@@ -6,6 +6,7 @@ export const MCP_AGENT_IDS = [
   "codex",
   "antigravity",
   "opencode",
+  "kimi",
 ] as const;
 
 export type McpAgentId = (typeof MCP_AGENT_IDS)[number];
@@ -16,6 +17,7 @@ export const DEFAULT_AGENT_MCP_ENABLED: AgentMcpEnabled = {
   codex: true,
   antigravity: true,
   opencode: true,
+  kimi: true,
 };
 
 export function isMcpAgentId(agent: string): agent is McpAgentId {

@@ -45,6 +45,15 @@ export const AGENT_LAUNCHERS = [
     hidden: false,
   },
   {
+    id: "kimi",
+    icon: "kimi",
+    label: "Kimi",
+    defaultCommand: "kimi --auto",
+    supportsHooks: false,
+    custom: false,
+    hidden: false,
+  },
+  {
     id: "grok",
     icon: "grok",
     label: "Grok",
@@ -63,6 +72,7 @@ export const CUSTOM_CLI_AGENT_ICONS = [
   "antigravity",
   "pi",
   "opencode",
+  "kimi",
   "grok",
 ] as const;
 export type CustomCliAgentIcon = (typeof CUSTOM_CLI_AGENT_ICONS)[number];

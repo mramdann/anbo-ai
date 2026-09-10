@@ -251,7 +251,8 @@ export function isAgentTuiReady(
     normalizedCli !== "claude" &&
     normalizedCli !== "antigravity" &&
     normalizedCli !== "agy" &&
-    normalizedCli !== "opencode"
+    normalizedCli !== "opencode" &&
+    normalizedCli !== "kimi"
   ) {
     return true;
   }

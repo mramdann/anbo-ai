@@ -4,6 +4,7 @@ const LABELS: Record<string, string> = {
   antigravity: "Antigravity",
   pi: "Pi",
   opencode: "OpenCode",
+  kimi: "Kimi Code",
   grok: "Grok",
   anbo: "Anbo",
 };

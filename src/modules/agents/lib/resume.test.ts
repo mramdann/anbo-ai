@@ -350,3 +350,61 @@ describe("agent resume commands", () => {
     ).toBeUndefined();
   });
 });
+
+describe("kimi resume", () => {
+  const sessionId = "session_01a02fbc-ed2d-72b3-9111-0e1395a678bb";
+
+  it("hands the whole prefixed id back on --session", () => {
+    // Kimi's ids are `session_<uuid>`, and the CLI takes that entire string --
+    // trimming the prefix to look like the other agents' uuids would resume
+    // nothing.
+    expect(
+      buildAgentResumeCommand({
+        agent: "kimi",
+        command: "kimi --auto",
+        sessionId,
+      }),
+    ).toBe(`kimi --auto --session ${sessionId}`);
+    expect(
+      buildAgentRestoreCommand({
+        agent: "kimi",
+        command: "kimi --auto",
+        relaunchOnRestore: true,
+      }),
+    ).toBe("kimi --auto");
+  });
+
+  it("only trusts an id in Kimi's own shape", () => {
+    const persisted = (candidate: string) =>
+      normalizePersistedAgentResume({
+        agent: "kimi",
+        command: "kimi --auto",
+        sessionId: candidate,
+      });
+    expect(persisted(sessionId)?.sessionId).toBe(sessionId);
+    // A bare uuid is what every other agent stores; for Kimi it is incomplete.
+    expect(persisted("01a02fbc-ed2d-72b3-9111-0e1395a678bb")).toBeUndefined();
+    expect(persisted("ses_fd03c6167ffeYZs4Zyi98zkY9T")).toBeUndefined();
+  });
+
+  it("leaves a command that already picks its own session alone", () => {
+    // -S and -c both select a session, and the subcommands never open a TUI to
+    // resume into, so none of them may be given a session of Anbo's choosing.
+    for (const command of [
+      `kimi --session ${sessionId}`,
+      "kimi -S",
+      "kimi -c",
+      "kimi --continue",
+      "kimi -p 'one shot'",
+      "kimi acp",
+      "kimi web",
+    ]) {
+      expect(createAgentResumeStates("kimi", command, 1)).toEqual([undefined]);
+    }
+    // The plain launch command still arms discovery.
+    expect(createAgentResumeStates("kimi", "kimi --auto", 1)[0]?.agent).toBe(
+      "kimi",
+    );
+    expect(shouldPinAgentSession("kimi")).toBe(true);
+  });
+});

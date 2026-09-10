@@ -13,6 +13,7 @@ describe("agent MCP preferences", () => {
       codex: true,
       antigravity: true,
       opencode: true,
+      kimi: true,
     });
   });
 });
@@ -74,6 +75,11 @@ describe("agent MCP runtime wiring", () => {
     expect(
       withAgentMcpRuntime("antigravity", "agy", "C:\\work\\demo", true),
     ).toBe("agy");
+    // Kimi reads .kimi-code/mcp.json under the directory it was started in, so
+    // the launch command is left exactly as the user wrote it.
+    expect(
+      withAgentMcpRuntime("kimi", "kimi --auto", "D:\\work\\demo", true),
+    ).toBe("kimi --auto");
   });
 });
 

@@ -28,6 +28,7 @@ export function resolveAgentBrandId(agent: string): AgentBrandId | null {
   }
   if (normalized === "pi") return "pi";
   if (normalized.includes("opencode")) return "opencode";
+  if (normalized.includes("kimi")) return "kimi";
   if (normalized.includes("grok")) return "grok";
   return null;
 }

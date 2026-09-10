@@ -10,7 +10,8 @@ export type ResumableAgentId =
   | "codex"
   | "antigravity"
   | "pi"
-  | "opencode";
+  | "opencode"
+  | "kimi";
 
 export type PersistedAgentResume = {
   agent: ResumableAgentId;
@@ -72,6 +73,9 @@ const EXACT_SESSION_AGENTS = new Set<ResumableAgentId>([
   "pi",
 ]);
 const OPENCODE_SESSION_ID = /^ses_[A-Za-z0-9]+$/;
+// Kimi mints `session_<uuid>`, and takes that whole string back on --session.
+const KIMI_SESSION_ID =
+  /^session_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
@@ -83,7 +87,8 @@ function isResumableAgentId(value: unknown): value is ResumableAgentId {
   return (
     typeof value === "string" &&
     (EXACT_SESSION_AGENTS.has(value as ResumableAgentId) ||
-      value === "opencode")
+      value === "opencode" ||
+      value === "kimi")
   );
 }
 
@@ -95,22 +100,27 @@ function canAttachSession(agent: ResumableAgentId, command: string): boolean {
     return false;
   }
   const shortSelector =
-    agent === "opencode"
-      ? /(?:^|\s)-[cs](?:\s|$)/i
-      : agent === "antigravity"
-        ? /(?:^|\s)-c(?:\s|$)/i
-        : agent === "pi"
-          ? /(?:^|\s)-[crs](?:\s|$)/i
-          : /(?:^|\s)-[cr](?:\s|$)/i;
+    agent === "kimi"
+      ? // -S selects a session, -c continues the last one.
+        /(?:^|\s)-(?:[cS]|-session)(?:\s|=|$)/
+      : agent === "opencode"
+        ? /(?:^|\s)-[cs](?:\s|$)/i
+        : agent === "antigravity"
+          ? /(?:^|\s)-c(?:\s|$)/i
+          : agent === "pi"
+            ? /(?:^|\s)-[crs](?:\s|$)/i
+            : /(?:^|\s)-[cr](?:\s|$)/i;
   if (shortSelector.test(command)) return false;
   const nonInteractive =
-    agent === "claude"
-      ? /(?:^|\s)(?:-p|--print|--no-session-persistence|--from-pr|--bg|--background)(?:\s|=|$)/i
-      : agent === "antigravity"
-        ? /(?:^|\s)(?:-p|--print|--prompt)(?:\s|=|$)/i
-        : agent === "pi"
-          ? /(?:^|\s)(?:-p|--print|--no-session|--fork)(?:\s|=|$)/i
-          : /(?:^|\s)(?:run|attach|serve|web)(?:\s|$)/i;
+    agent === "kimi"
+      ? /(?:^|\s)(?:-p|--prompt|acp|web|server|rc|remote|export|fork|provider|session|login|doctor|vis|migrate|upgrade|update)(?:\s|=|$)/i
+      : agent === "claude"
+        ? /(?:^|\s)(?:-p|--print|--no-session-persistence|--from-pr|--bg|--background)(?:\s|=|$)/i
+        : agent === "antigravity"
+          ? /(?:^|\s)(?:-p|--print|--prompt)(?:\s|=|$)/i
+          : agent === "pi"
+            ? /(?:^|\s)(?:-p|--print|--no-session|--fork)(?:\s|=|$)/i
+            : /(?:^|\s)(?:run|attach|serve|web)(?:\s|$)/i;
   return !nonInteractive.test(command);
 }
 
@@ -205,7 +215,9 @@ export function normalizePersistedAgentResume(
     const validSessionId =
       candidate.agent === "opencode"
         ? OPENCODE_SESSION_ID.test(candidate.sessionId)
-        : UUID.test(candidate.sessionId);
+        : candidate.agent === "kimi"
+          ? KIMI_SESSION_ID.test(candidate.sessionId)
+          : UUID.test(candidate.sessionId);
     if (!validSessionId) return undefined;
     sessionId = candidate.sessionId;
   }
@@ -255,6 +267,10 @@ export function buildAgentResumeCommand(
         ? `${resume.command} --session ${resume.sessionId}`
         : null;
     case "opencode":
+      return resume.sessionId
+        ? `${resume.command} --session ${resume.sessionId}`
+        : null;
+    case "kimi":
       return resume.sessionId
         ? `${resume.command} --session ${resume.sessionId}`
         : null;

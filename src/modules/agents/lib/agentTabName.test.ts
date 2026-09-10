@@ -68,7 +68,11 @@ describe("agent tab names", () => {
       aliases.length,
     );
     expect(aliases.every((name) => name.length <= 7)).toBe(true);
-    expect(aliases).toHaveLength(120);
+    // Twenty per built-in launcher, so a bench of four tabs never runs out of
+    // names before the fallback generator is needed.
+    expect(aliases).toHaveLength(
+      Object.keys(BUILT_IN_AGENT_ALIASES).length * 20,
+    );
   });
 
   it("generates readable bounded fallbacks after the curated pool is full", () => {

@@ -492,6 +492,101 @@ fn find_opencode_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>) ->
     })
 }
 
+/// How long Kimi's own CLI gets to answer before Anbo gives up on it.
+///
+/// Discovery is best-effort: a slow or wedged `session list` must not hold a
+/// blocking thread for the life of the app, and falling back to `--continue`
+/// costs the user nothing they had.
+const KIMI_SESSION_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The newest Kimi session in `cwd` that this tab could own.
+///
+/// Kimi keeps sessions behind its own store, and `kimi session list` is the
+/// documented way in: newest first, scoped to a working directory, carrying
+/// the ids and timestamps needed here. Reading the store directly would tie
+/// Anbo to a layout Kimi is free to change between releases.
+fn find_kimi_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>) -> Option<String> {
+    // Kimi buckets its sessions by a hash of the working directory, so the path
+    // has to reach it in the shape the CLI itself would produce. Anbo authorizes
+    // paths through canonicalize, which on Windows returns the verbatim
+    // `\\?\` form -- handing that over hashes to a different bucket, and every
+    // lookup comes back empty.
+    let listing = kimi_session_listing(&strip_verbatim_prefix(cwd))?;
+    let sessions: Vec<KimiSessionSummary> = serde_json::from_str(&listing).ok()?;
+    sessions
+        .into_iter()
+        .filter(|session| !session.archived)
+        // A session Kimi has not touched since this tab started belongs to some
+        // earlier run, not this one.
+        .filter(|session| session.updated_at >= since_ts)
+        .find(|session| is_valid_kimi_session_id(&session.id) && !claimed.contains(&session.id))
+        .map(|session| session.id)
+}
+
+#[derive(serde::Deserialize)]
+struct KimiSessionSummary {
+    id: String,
+    #[serde(rename = "updatedAt", default)]
+    updated_at: u64,
+    #[serde(default)]
+    archived: bool,
+}
+
+fn kimi_session_listing(cwd: &str) -> Option<String> {
+    use shared_child::SharedChild;
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::sync::Arc;
+
+    let program = std::env::var_os("ANBO_KIMI_BIN")
+        .map(std::path::PathBuf::from)
+        .or_else(|| crate::modules::path_env::resolve_binary("kimi"))?;
+    let mut command = Command::new(program);
+    command
+        .args(["session", "list", "--cwd", cwd, "--json", "--limit", "20"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    crate::modules::proc::hide_console(&mut command);
+
+    let child = Arc::new(SharedChild::spawn(&mut command).ok()?);
+    let mut stdout = child.take_stdout()?;
+    let (sender, receiver) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("anbo-kimi-session-list".into())
+        .spawn(move || {
+            let mut buffer = String::new();
+            let _ = stdout.read_to_string(&mut buffer);
+            let _ = sender.send(buffer);
+        })
+        .ok()?;
+
+    match receiver.recv_timeout(KIMI_SESSION_LIST_TIMEOUT) {
+        Ok(listing) => {
+            let status = child.wait().ok()?;
+            status.success().then_some(listing)
+        }
+        Err(_) => {
+            log::warn!("resume: kimi session list timed out after {KIMI_SESSION_LIST_TIMEOUT:?}");
+            let _ = child.kill();
+            None
+        }
+    }
+}
+
+/// Kimi mints `session_<uuid>`; anything else came from somewhere Anbo should
+/// not hand back to the CLI as a selector.
+fn is_valid_kimi_session_id(value: &str) -> bool {
+    value.strip_prefix("session_").is_some_and(|tail| {
+        tail.len() == 36
+            && tail.bytes().enumerate().all(|(index, byte)| match index {
+                8 | 13 | 18 | 23 => byte == b'-',
+                _ => byte.is_ascii_hexdigit(),
+            })
+    })
+}
+
 fn is_valid_opencode_session_id(value: &str) -> bool {
     value
         .strip_prefix("ses_")
@@ -566,6 +661,7 @@ pub async fn anbo_find_agent_session(
         }),
         "pi" => find_pi_session(&cwd, since_ts, &claimed),
         "opencode" => find_opencode_session(&cwd, since_ts, &claimed),
+        "kimi" => find_kimi_session(&cwd, since_ts, &claimed),
         _ => None,
     })
     .await
@@ -575,6 +671,40 @@ pub async fn anbo_find_agent_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kimi_is_asked_about_the_path_shape_its_own_cli_produces() {
+        // Anbo authorizes a cwd through canonicalize, which on Windows hands
+        // back the verbatim form. Kimi hashes the path it is given to find the
+        // session bucket, so the verbatim spelling is a different workspace to
+        // it -- one that never has any sessions.
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\D:\anbo-dev-local\sandbox"),
+            r"D:\anbo-dev-local\sandbox"
+        );
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\UNC\host\share\work"),
+            r"\\host\share\work"
+        );
+    }
+
+    #[test]
+    fn only_a_real_kimi_id_is_handed_back_as_a_session_selector() {
+        // Whatever comes out of `kimi session list` is passed straight back to
+        // the CLI as an argument, so the shape is checked before it is trusted.
+        assert!(is_valid_kimi_session_id(
+            "session_01a02fbc-ed2d-72b3-9111-0e1395a678bb"
+        ));
+        for rejected in [
+            "01a02fbc-ed2d-72b3-9111-0e1395a678bb",
+            "session_",
+            "session_not-a-uuid-at-all-really-nope-x",
+            "session_01a02fbc ed2d 72b3 9111 0e1395a678bb",
+            "session_01a02fbc-ed2d-72b3-9111-0e1395a678bb ; rm -rf /",
+        ] {
+            assert!(!is_valid_kimi_session_id(rejected), "{rejected}");
+        }
+    }
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::thread;

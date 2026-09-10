@@ -196,6 +196,10 @@ const LEGACY_CLAUDE_MCP_NAME: &str = "anbo-browser";
 const CODEX_MCP_FILE: &str = ".codex/config.toml";
 const ANTIGRAVITY_MCP_FILE: &str = ".agents/mcp_config.json";
 const OPENCODE_MCP_FILE: &str = ".opencode/anbo-mcp.json";
+// Kimi Code reads three MCP files; this is its project-local one, which is
+// scoped to the directory the CLI was started in and so cannot leak Anbo's
+// server into a repo the user shares.
+const KIMI_MCP_FILE: &str = ".kimi-code/mcp.json";
 
 // Substrings identifying a hook command as ours, across every form we've ever
 // emitted (legacy /dev/tty Claude, current TerminalSequence, Osc, Windows
@@ -899,6 +903,7 @@ fn mcp_project_file(agent: &str) -> Result<&'static str, String> {
         "codex" => Ok(CODEX_MCP_FILE),
         "antigravity" => Ok(ANTIGRAVITY_MCP_FILE),
         "opencode" => Ok(OPENCODE_MCP_FILE),
+        "kimi" => Ok(KIMI_MCP_FILE),
         _ => Err(format!(
             "agent {agent} does not support automatic Anbo MCP setup"
         )),
@@ -918,6 +923,9 @@ fn expected_json_mcp(agent: &str) -> Result<(&'static str, Value), String> {
                 "oauth": false
             }),
         )),
+        // Kimi infers the transport from `command` vs `url`, and rejects the
+        // entry if both are present -- so the url stands alone here.
+        "kimi" => Ok(("mcpServers", json!({ "url": ANBO_MCP_URL }))),
         _ => Err(format!("agent {agent} does not use JSON MCP configuration")),
     }
 }
@@ -933,6 +941,7 @@ fn json_mcp_matches(agent: &str, value: &Value) -> bool {
             value.get("type").and_then(Value::as_str) == Some("remote")
                 && value.get("url").and_then(Value::as_str) == Some(ANBO_MCP_URL)
         }
+        "kimi" => value.get("url").and_then(Value::as_str) == Some(ANBO_MCP_URL),
         _ => false,
     }
 }
@@ -1703,6 +1712,7 @@ mod tests {
             ("claude", CLAUDE_MCP_FILE),
             ("antigravity", ANTIGRAVITY_MCP_FILE),
             ("opencode", OPENCODE_MCP_FILE),
+            ("kimi", KIMI_MCP_FILE),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = project_file_path(dir.path(), relative, true).unwrap();
@@ -1732,6 +1742,22 @@ mod tests {
             assert!(root[container]["foreign"].is_object());
             assert!(root[container].get(ANBO_MCP_NAME).is_none());
         }
+    }
+
+    #[test]
+    fn kimi_gets_a_url_only_entry_in_its_project_local_file() {
+        // Kimi infers the transport from `command` vs `url`. Writing a `type`
+        // beside the url is how the other CLIs want it and how Kimi refuses it,
+        // so the entry is deliberately bare -- and it goes in the project-local
+        // file, never the repo-shared .mcp.json.
+        assert_eq!(mcp_project_file("kimi").unwrap(), ".kimi-code/mcp.json");
+        let (container, entry) = expected_json_mcp("kimi").unwrap();
+        assert_eq!(container, "mcpServers");
+        assert_eq!(entry["url"], json!(ANBO_MCP_URL));
+        assert!(entry.get("type").is_none());
+        assert!(entry.get("transport").is_none());
+        assert!(entry.get("command").is_none());
+        assert!(json_mcp_matches("kimi", &entry));
     }
 
     #[test]

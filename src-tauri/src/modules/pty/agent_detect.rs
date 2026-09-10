@@ -5,13 +5,30 @@ const ST_FINAL: u8 = b'\\';
 
 const OSC_MAX: usize = 2048;
 
-const DEFAULT_AGENTS: &[&str] = &["claude", "codex", "antigravity", "pi", "opencode", "grok"];
+const DEFAULT_AGENTS: &[&str] = &[
+    "claude",
+    "codex",
+    "antigravity",
+    "pi",
+    "opencode",
+    "kimi",
+    "grok",
+];
 
 // OSC 777 marker our agent hooks emit. Legacy 3-field `notify;Anbo;<event>`
 // (Claude) or 4-field `notify;Anbo;<agent>;<event>` (Codex/Antigravity/Pi).
 const ANBO_MARKER: &[u8] = b"notify;Anbo;";
 
 fn valid_session_id(agent: &str, session_id: &str) -> bool {
+    // Kimi wraps a plain uuid in a `session_` prefix and takes the whole string
+    // back on --session, so the prefix is part of the id, not decoration.
+    let session_id = match agent {
+        "kimi" => match session_id.strip_prefix("session_") {
+            Some(tail) => tail,
+            None => return false,
+        },
+        _ => session_id,
+    };
     if agent == "opencode" {
         return session_id.strip_prefix("ses_").is_some_and(|tail| {
             !tail.is_empty() && tail.chars().all(|c| c.is_ascii_alphanumeric())
@@ -360,6 +377,7 @@ impl AgentDetector {
             "claude" => &["--resume", "--session-id"],
             "opencode" => &["--session", "-s"],
             "antigravity" => &["--conversation", "-c"],
+            "kimi" => &["--session", "-S"],
             _ => &[],
         };
 
@@ -430,6 +448,9 @@ mod tests {
     fn captures_exact_session_from_manual_resume_commands() {
         let uuid = "01a02fbc-ed2d-72b3-9111-0e1395a678bb";
         let opencode = "ses_fd03c6167ffeYZs4Zyi98zkY9T";
+        // Kimi's id carries its own prefix, and the whole string is what goes
+        // back on --session, so the prefix has to survive the round trip.
+        let kimi = format!("session_{uuid}");
         for (command, agent, session_id) in [
             (format!("claude --resume {uuid}"), "claude", uuid),
             (format!("codex --yolo resume {uuid}"), "codex", uuid),
@@ -440,6 +461,12 @@ mod tests {
             ),
             (format!("agy --conversation={uuid}"), "antigravity", uuid),
             (format!("agy -c {uuid}"), "antigravity", uuid),
+            (
+                format!("kimi --auto --session {kimi}"),
+                "kimi",
+                kimi.as_str(),
+            ),
+            (format!("kimi -S {kimi}"), "kimi", kimi.as_str()),
         ] {
             let mut detector = AgentDetector::new();
             assert_eq!(
