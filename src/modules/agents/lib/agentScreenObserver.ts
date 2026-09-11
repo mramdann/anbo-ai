@@ -25,10 +25,28 @@ type Entry = {
   workingUntil: number;
   readySince: number | null;
   sawWorkingForTurn: boolean;
+  screen: string | null;
 };
 
 const STABLE_POLLS = 2;
 const MIN_WORKING_MS = 1_000;
+
+/**
+ * CLIs whose screen stands still once the turn is really over.
+ *
+ * Kimi drops its spinner while it streams the answer and keeps the composer
+ * mounted, so the screen looks idle for most of a long turn -- a 237-second
+ * turn read as finished four times, and each reading told the user their
+ * agent was done. For these three a screen that is still being painted is
+ * better evidence than a screen that merely looks settled.
+ *
+ * Measured on this machine before being trusted, because the rule is only
+ * safe for a CLI that stops repainting when it has nothing to say: idle Kimi
+ * repainted 0 times in 12s, Claude 1, Codex 2, while that long Kimi turn
+ * never held still for even one 300ms sample. A CLI that animates while idle
+ * must not be added here without the same measurement.
+ */
+const SCREEN_SETTLES_WHEN_IDLE = new Set(["kimi", "claude", "codex"]);
 /**
  * How long a tool call Anbo served can keep the agent working.
  *
@@ -81,6 +99,7 @@ export class AgentScreenObserver {
       workingUntil: 0,
       readySince: null,
       sawWorkingForTurn: false,
+      screen: null,
     });
     return { leafId, ptyId, agent, kind: "working" };
   }
@@ -118,12 +137,15 @@ export class AgentScreenObserver {
   ): ObservedAgentSignal[] {
     const signals: ObservedAgentSignal[] = [];
     for (const entry of this.entries.values()) {
+      const screen = read(entry.leafId);
       const candidate = this.classify(
         entry.agent,
-        read(entry.leafId),
+        screen,
         codexTurnEvidence.completed(entry.leafId),
       );
       if (candidate === null) continue;
+      const painting = screen !== entry.screen;
+      entry.screen = screen;
       if (entry.candidate === candidate) entry.stablePolls += 1;
       else {
         entry.candidate = candidate;
@@ -153,6 +175,17 @@ export class AgentScreenObserver {
       }
 
       if (candidate !== "ready" || now < entry.workingUntil) continue;
+      // A transcript still being written is not a finished turn, however idle
+      // the composer below it looks.
+      if (
+        entry.hasTurn &&
+        painting &&
+        SCREEN_SETTLES_WHEN_IDLE.has(
+          entry.agent.replace(/^custom:/, "").toLowerCase(),
+        )
+      ) {
+        continue;
+      }
       if (entry.hasTurn && !entry.sawWorkingForTurn) {
         entry.readySince ??= now;
         const delay = entry.agent[0] === "a" ? 1e4 : 1500;

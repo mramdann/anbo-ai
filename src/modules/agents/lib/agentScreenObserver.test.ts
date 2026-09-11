@@ -37,6 +37,37 @@ describe("AgentScreenObserver", () => {
     );
   });
 
+  it("does not call a Kimi turn finished while the answer is still arriving", () => {
+    // Kimi drops its spinner once the model starts streaming and keeps the
+    // composer mounted, so every frame below reads as an idle screen. Only the
+    // transcript growing says the turn is still running.
+    const observer = new AgentScreenObserver();
+    const box = "\n > \n Ask When Needed  GLM-5.3  context: 5% (41k/977k)";
+    const frame = (words: number) =>
+      `Welcome to Kimi Code!\n${"jawaban ".repeat(words)}${box}`;
+    observer.start(10, 20, "kimi");
+    observer.poll(() => frame(0), 0);
+    observer.poll(() => frame(0), 200);
+    observer.input(10, "\r", 400);
+
+    // Four seconds of streaming: each poll looks ready, none may report a
+    // finished turn, because each frame differs from the one before it.
+    const streamed: unknown[] = [];
+    for (let tick = 1; tick <= 20; tick += 1) {
+      streamed.push(...observer.poll(() => frame(tick), 1_400 + tick * 200));
+    }
+    expect(streamed).toEqual([]);
+
+    // The answer stops growing. A turn that never looked busy still serves
+    // its existing grace period first, and then reports finished exactly once.
+    expect(observer.poll(() => frame(20), 5_600)).toEqual([]);
+    expect(observer.poll(() => frame(20), 6_800)).toEqual([]);
+    expect(observer.poll(() => frame(20), 7_200)).toEqual([
+      expect.objectContaining({ kind: "finished", leafId: 10, ptyId: 20 }),
+    ]);
+    expect(observer.poll(() => frame(20), 7_400)).toEqual([]);
+  });
+
   it("settles startup without reporting a completed turn", () => {
     const observer = new AgentScreenObserver();
     expect(observer.start(10, 20, "codex").kind).toBe("working");
