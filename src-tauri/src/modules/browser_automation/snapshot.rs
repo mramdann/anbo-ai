@@ -177,6 +177,38 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                 }}
             }}
 
+            // A run of text is whatever sits on one line of layout: inline
+            // boxes, however many elements the page split them across. The
+            // nearest ancestor that is not inline is where that run lives.
+            const emittedRuns = new Set();
+            const isInlineBox = el => {{
+                try {{
+                    return /^(inline|contents)/.test(String(getComputedStyle(el).display || ''));
+                }} catch (error) {{
+                    return false;
+                }}
+            }};
+            function nearestBlock(el) {{
+                for (let depth = 0; el && depth <= 32; el = el.parentElement, depth++) {{
+                    if (!isInlineBox(el)) return el;
+                }}
+                return el || null;
+            }}
+            function inlineRunText(host) {{
+                let out = '';
+                const walk = (node, depth) => {{
+                    if (!node || depth > 32 || out.length > 4096) return;
+                    if (node.nodeType === 3) {{ out += node.textContent || ''; return; }}
+                    if (node.nodeType !== 1) return;
+                    const tag = node.tagName.toLowerCase();
+                    if (['script', 'style', 'noscript', 'template'].includes(tag)) return;
+                    if (node !== host && !isInlineBox(node)) return;
+                    for (const child of node.childNodes) walk(child, depth + 1);
+                }};
+                walk(host, 0);
+                return out.replace(/\s+/g, ' ').trim();
+            }}
+
             function process(node, depth = 0) {{
                 if (!node) return;
                 if (scannedNodes >= maxNodes || depth > 256) {{
@@ -185,16 +217,24 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                 }}
                 scannedNodes++;
                 if (node.nodeType === 3) {{
-                    const t = (node.textContent || "").trim();
-                    if (t.length > 0 && node.parentElement &&
-                        isVisible(node.parentElement) && isInViewport(node.parentElement)) {{
-                        const tag = node.parentElement.tagName.toLowerCase();
+                    // Emit the whole inline run at once, not one item per text
+                    // node. A ticker that redraws a changing digit as its own
+                    // span was reported as "99.02" and "8" on two lines, which
+                    // reads as two numbers and is neither of them.
+                    const host = nearestBlock(node.parentElement);
+                    if (host && !emittedRuns.has(host) &&
+                        isVisible(host) && isInViewport(host)) {{
+                        emittedRuns.add(host);
+                        const tag = host.tagName.toLowerCase();
                         if (!['button', 'a', 'option', 'script', 'style'].includes(tag)) {{
-                            add({{
-                                type: 'text',
-                                text: t.substring(0, 300),
-                                in_viewport: true
-                            }});
+                            const t = inlineRunText(host);
+                            if (t.length > 0) {{
+                                add({{
+                                    type: 'text',
+                                    text: t.substring(0, 300),
+                                    in_viewport: true
+                                }});
+                            }}
                         }}
                     }}
                     return;

@@ -48,6 +48,9 @@ pub fn validate_locator(value: &Value) -> Result<u64, TargetError> {
         Some(value) => value
             .as_u64()
             .filter(|n| (100..=60_000).contains(n))
+            // Stop short of the transport's own patience so the tool's
+            // diagnosis always wins over a bare "The operation timed out."
+            .map(|timeout| timeout.min(50_000))
             .ok_or_else(invalid),
     }
 }
@@ -173,6 +176,17 @@ mod tests {
         assert_eq!(
             validate_locator(&json!({"by":"role","value":"button","exact":true})).unwrap(),
             5000
+        );
+        // The published ceiling still validates, but a wait that runs to the
+        // transport's own limit loses its diagnosis to a generic failure, so
+        // the effective budget stops first.
+        assert_eq!(
+            validate_locator(&json!({"by":"css","value":"#a","timeout":60000})).unwrap(),
+            50_000
+        );
+        assert_eq!(
+            validate_locator(&json!({"by":"css","value":"#a","timeout":20000})).unwrap(),
+            20_000
         );
         for bad in [
             Value::Null,

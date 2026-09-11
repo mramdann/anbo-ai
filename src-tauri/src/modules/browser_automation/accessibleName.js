@@ -1,9 +1,11 @@
 const nameNormalize = value => String(value || '').slice(0, 4096).replace(/\s+/g, ' ').trim();
+const NAME_BREAK = '\u0000';
 const nameContent = (root, includeHidden = false) => {
     let remaining = 256;
     let length = 0;
     const parts = [];
     const visit = node => {
+        let block = false;
         if (!node || remaining-- <= 0 || length >= 4096) return;
         if (node.nodeType === 3) {
             const text = (node.textContent || '').slice(0, 4096 - length);
@@ -18,6 +20,10 @@ const nameContent = (root, includeHidden = false) => {
                 if (node.hidden || node.getAttribute('aria-hidden') === 'true') return;
                 const style = getComputedStyle(node);
                 if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return;
+                // Same rule the readable text uses: only a layout boundary
+                // separates words. Joining every text node with a space turned
+                // a ticker's "99.032" into "99.0 32".
+                block = !/^(inline|contents)/.test(String(style.display || ''));
             }
             const alternative = node !== root && (node.getAttribute('aria-label') || node.getAttribute('alt'));
             if (alternative) {
@@ -27,14 +33,16 @@ const nameContent = (root, includeHidden = false) => {
                 return;
             }
         }
+        if (block) parts.push(NAME_BREAK);
         const children = node.shadowRoot ? node.shadowRoot.childNodes : node.childNodes;
         for (const child of children || []) {
             if (remaining <= 0 || length >= 4096) break;
             visit(child);
         }
+        if (block) parts.push(NAME_BREAK);
     };
     visit(root);
-    return nameNormalize(parts.join(' '));
+    return nameNormalize(parts.join('').split(NAME_BREAK).map(part => part.trim()).filter(Boolean).join(' '));
 };
 const labelName = el => {
     if (!el || !el.getAttribute) return '';

@@ -49,7 +49,14 @@ use crate::modules::browser_automation::visibility::VISIBILITY_JS;
 /// single dropped callback must not be allowed to eat the whole wait budget.
 const SCRIPT_POLL_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_TEXT_OUTPUT_CHARS: u64 = 16_000;
-const MAX_WAIT_TIMEOUT_MS: u64 = 60_000;
+/// The longest a wait may actually run.
+///
+/// The published ceiling stays 60s so existing callers keep working, but the
+/// MCP transport gives up around there too, and a tool that runs to the very
+/// edge trades its own structured diagnosis for a bare "The operation timed
+/// out." Stopping first means the caller always learns what was seen.
+const MAX_WAIT_TIMEOUT_MS: u64 = 50_000;
+const ACCEPTED_WAIT_TIMEOUT_MS: u64 = 60_000;
 const MAX_URL_BYTES: usize = 8 * 1024;
 const MAX_INPUT_TEXT_BYTES: usize = 64 * 1024;
 const MAX_WAIT_TEXT_BYTES: usize = 2 * 1024;
@@ -2750,8 +2757,9 @@ async fn resolve_target_locator(
             None => 10_000,
             Some(value) => value
                 .as_u64()
-                .filter(|n| (100..=MAX_WAIT_TIMEOUT_MS).contains(n))
-                .ok_or_else(invalid)?,
+                .filter(|n| (100..=ACCEPTED_WAIT_TIMEOUT_MS).contains(n))
+                .ok_or_else(invalid)?
+                .min(MAX_WAIT_TIMEOUT_MS),
         }
     } else {
         lookup_timeout
