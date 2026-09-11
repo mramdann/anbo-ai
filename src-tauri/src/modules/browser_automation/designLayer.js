@@ -5,6 +5,7 @@
   const TAG = 'anbo-design-layer';
   const MAX_MARKS = 100, MAX_POINTS = 512, MAX_NOTE = 500, MAX_MODEL = 256 * 1024, MAX_UNDO = 50;
   const TOOLS = ['pen', 'box', 'arrow', 'pick', 'hand'];
+  const FIND_ROLES = ['link', 'button', 'textbox', 'combobox', 'listbox', 'option', 'img', 'checkbox', 'radio', 'slider', 'spinbutton'];
   const SVG = 'http://www.w3.org/2000/svg';
   const DRAG_THRESHOLD = 4;
   const ACCENT = '#ff4d6d', PICK = '#3b82f6';
@@ -73,9 +74,12 @@
       if (value) source[attr] = String(value).slice(0, 200);
     }
     const rect = el.getBoundingClientRect();
+    // browser_find only derives these roles from tags; anything else has to be
+    // an explicit role attribute or the hint would send the agent nowhere.
+    const findableRole = Boolean(el.getAttribute('role')) || FIND_ROLES.includes(role);
     let locator;
     if (testId) locator = { by: 'testId', value: testId };
-    else if (role && name) locator = { by: 'role', value: role, name };
+    else if (role && name && findableRole) locator = { by: 'role', value: role, name };
     else if (id && selector.startsWith('#')) locator = { by: 'css', value: selector };
     else if (text && text.length <= 80 && !/^(div|span|section|main|body|html)$/.test(tag)) locator = { by: 'text', value: text };
     else locator = { by: 'css', value: selector };
@@ -160,7 +164,30 @@
     return null;
   };
 
+  const THEME_KEYS = ['surface', 'text', 'muted', 'border', 'field', 'accent', 'accentText'];
+  const COLOR_FUNCTIONS = ['rgb', 'rgba', 'hsl', 'hsla', 'hwb', 'lab', 'lch', 'oklab', 'oklch', 'color', 'color-mix', 'light-dark'];
+  const themeValue = (value) => {
+    if (typeof value !== 'string' || !/^[A-Za-z0-9#(),.%/ -]{1,64}$/.test(value)) return null;
+    for (const match of value.matchAll(/([a-z-]*)\(/gi)) {
+      if (!COLOR_FUNCTIONS.includes(match[1].toLowerCase())) return null;
+    }
+    return value;
+  };
+  const applyTheme = (theme) => {
+    if (!host || !theme || typeof theme !== 'object') return;
+    const mode = theme.mode === 'light' ? 'light' : 'dark';
+    host.setAttribute('data-mode', mode);
+    host.style.setProperty('color-scheme', mode, 'important');
+    for (const key of THEME_KEYS) {
+      const value = themeValue(theme[key]);
+      if (value) host.style.setProperty('--anbo-design-' + key, value);
+      else host.style.removeProperty('--anbo-design-' + key);
+    }
+  };
+
   const css = `
+    :host{--anbo-design-surface:#0d202bf5;--anbo-design-text:#e4f2f5;--anbo-design-muted:#8ea6b2;--anbo-design-border:#79cad42e;--anbo-design-field:#08161d;--anbo-design-accent:#61c6d1;--anbo-design-accentText:#0b1a20}
+    :host([data-mode=light]){--anbo-design-surface:#fffffff7;--anbo-design-text:#1b2330;--anbo-design-muted:#66727f;--anbo-design-border:#d5dae3;--anbo-design-field:#f3f5f9;--anbo-design-accent:#3b5bdb;--anbo-design-accentText:#ffffff}
     *{box-sizing:border-box}
     .canvas{position:absolute;inset:0;cursor:crosshair;touch-action:none;user-select:none;-webkit-user-select:none}
     :host([data-tool=hand]) .canvas{pointer-events:none}
@@ -183,18 +210,19 @@
     .hover{position:absolute;left:0;top:0;display:none;border:2px solid ${PICK};border-radius:3px;background:rgba(59,130,246,.08);pointer-events:none;will-change:transform}
     .hover .tag{position:absolute;left:-2px;bottom:100%;margin-bottom:3px;max-width:320px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:2px 6px;border-radius:4px;background:${PICK};color:#fff;font:600 10px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
     .hover.below .tag{bottom:auto;top:100%;margin:3px 0 0}
-    .note{position:absolute;left:0;top:0;display:none;width:280px;padding:8px;border:1px solid #79cad42e;border-radius:8px;background:#0d202bf5;color:#e4f2f5;color-scheme:dark;font:500 11px/1.4 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;box-shadow:0 8px 24px #00000040,0 1px 3px #00000030;pointer-events:auto}
-    .note .head{display:flex;align-items:center;gap:6px;margin-bottom:6px;color:#a9c0cc;font-size:10px}
+    .note{position:absolute;left:0;top:0;display:none;width:280px;padding:8px;border:1px solid var(--anbo-design-border);border-radius:8px;background:var(--anbo-design-surface);color:var(--anbo-design-text);font:500 11px/1.4 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;box-shadow:0 8px 24px #00000040,0 1px 3px #00000030;pointer-events:auto}
+    .note .head{display:flex;align-items:center;gap:6px;margin-bottom:6px;color:var(--anbo-design-muted);font-size:10px}
     .note .head b{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:50%;background:${ACCENT};color:#fff;font-size:10px}
-    .note textarea{display:block;width:100%;min-height:52px;max-height:160px;resize:vertical;padding:6px 8px;border:1px solid #79cad42e;border-radius:6px;background:#08161d;color:#e4f2f5;font:500 12px/1.45 ui-sans-serif,system-ui,sans-serif;outline:none}
-    .note textarea:focus{border-color:#61c6d1}
-    .note .keys{margin-top:5px;display:flex;justify-content:space-between;color:#7f97a3;font-size:10px}
-    .note .keys button{all:unset;cursor:pointer;color:#ffb7a9;font:inherit}
+    .note textarea{display:block;width:100%;min-height:52px;max-height:160px;resize:vertical;padding:6px 8px;border:1px solid var(--anbo-design-border);border-radius:6px;background:var(--anbo-design-field);color:var(--anbo-design-text);font:500 12px/1.45 ui-sans-serif,system-ui,sans-serif;outline:none}
+    .note textarea::placeholder{color:var(--anbo-design-muted)}
+    .note textarea:focus{border-color:var(--anbo-design-accent)}
+    .note .keys{margin-top:5px;display:flex;justify-content:space-between;color:var(--anbo-design-muted);font-size:10px}
+    .note .keys button{all:unset;cursor:pointer;color:${ACCENT};font:inherit}
     .note .keys button:hover{text-decoration:underline}
-    .hint{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;max-width:calc(100% - 24px);padding:6px 10px;border:1px solid #79cad42e;border-radius:999px;background:#0d202bf0;color:#e4f2f5;font:500 10.5px/1.4 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;white-space:nowrap;pointer-events:none;box-shadow:0 6px 18px #00000030}
+    .hint{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;max-width:calc(100% - 24px);padding:6px 10px;border:1px solid var(--anbo-design-border);border-radius:999px;background:var(--anbo-design-surface);color:var(--anbo-design-text);font:500 10.5px/1.4 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;white-space:nowrap;pointer-events:none;box-shadow:0 6px 18px #00000030}
     .hint .dot{width:7px;height:7px;border-radius:50%;background:${ACCENT}}
-    .hint .dim{color:#8ea6b2}
-    .hint .warn{color:#ffb7a9}
+    .hint .dim{color:var(--anbo-design-muted)}
+    .hint .warn{color:${ACCENT}}
     :host([data-presentation=capture]) .hover,:host([data-presentation=capture]) .note,:host([data-presentation=capture]) .hint{display:none!important}
   `;
 
@@ -786,6 +814,7 @@
       create();
       if (init && typeof init === 'object') {
         if (TOOLS.includes(init.tool)) tool = init.tool;
+        if (init.theme) applyTheme(init.theme);
         if (init.model !== undefined) importModel(init.model);
       }
       applyTool();

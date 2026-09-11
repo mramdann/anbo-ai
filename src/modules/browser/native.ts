@@ -80,6 +80,18 @@ export type BrowserDesignStatus = {
   limit?: string;
 };
 
+/** App colours the in-page chrome paints itself with; any CSS colour text. */
+export type BrowserDesignTheme = {
+  mode: "light" | "dark";
+  surface?: string;
+  text?: string;
+  muted?: string;
+  border?: string;
+  field?: string;
+  accent?: string;
+  accentText?: string;
+};
+
 export type BrowserDesignLocator = {
   by: string;
   value: string;
@@ -372,8 +384,20 @@ export async function browserEmbedSnapshot(
 export function browserDesignSet(
   tabId: number,
   active: boolean,
+  theme?: BrowserDesignTheme,
 ): Promise<BrowserDesignStatus> {
-  return invoke<BrowserDesignStatus>("browser_design_set", { tabId, active });
+  return invoke<BrowserDesignStatus>("browser_design_set", {
+    tabId,
+    active,
+    theme: theme ?? null,
+  });
+}
+
+export function browserDesignTheme(
+  tabId: number,
+  theme: BrowserDesignTheme,
+): Promise<void> {
+  return invoke<void>("browser_design_theme", { tabId, theme });
 }
 
 export function browserDesignCommand(

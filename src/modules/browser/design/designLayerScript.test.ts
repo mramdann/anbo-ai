@@ -29,6 +29,9 @@ class FakeStyle {
   setProperty(name: string, value: string) {
     this[name] = value;
   }
+  removeProperty(name: string) {
+    delete this[name];
+  }
   set cssText(text: string) {
     for (const part of text.split(";")) {
       const [name, value] = part.split(":");
@@ -752,6 +755,27 @@ describe("design layer script", () => {
     expect(h.api().export().marks[0].rect).toMatchObject({ y: 500 });
   });
 
+  it("only hints a role locator that browser_find can resolve", () => {
+    const h = harness();
+    h.install({ tool: "pick", model: null });
+    h.click(100, 40);
+    const heading = h.api().export().marks[0].element;
+    expect(heading).toMatchObject({
+      tag: "h1",
+      role: "heading",
+      name: "Settings",
+    });
+    expect(heading.locator).toEqual({ by: "text", value: "Settings" });
+    h.nodes.section.setAttribute("role", "region");
+    h.click(600, 550);
+    const region = h.api().export().marks[1].element;
+    expect(region.locator).toEqual({
+      by: "role",
+      value: "region",
+      name: "Filters",
+    });
+  });
+
   it("keeps a sketch bounded and ignores clicks that never moved", () => {
     const h = harness();
     h.install({ tool: "pen", model: null });
@@ -1027,6 +1051,40 @@ describe("design layer script", () => {
       [30, 10],
       [40, 10],
     ]);
+  });
+
+  it("paints its chrome with the app theme and drops anything that is not a colour", () => {
+    const h = harness();
+    h.install({
+      tool: "box",
+      model: null,
+      theme: {
+        mode: "light",
+        surface: "oklch(1 0 0)",
+        text: "#1b2330",
+        border: "oklch(0.925 0.005 214.3)",
+        accent: "red; color: blue",
+        field: "url(x)}",
+        bogus: "#fff",
+      },
+    });
+    const host = h.host();
+    expect(host?.getAttribute("data-mode")).toBe("light");
+    expect(host?.style["color-scheme"]).toBe("light");
+    expect(host?.style["--anbo-design-surface"]).toBe("oklch(1 0 0)");
+    expect(host?.style["--anbo-design-text"]).toBe("#1b2330");
+    expect(host?.style["--anbo-design-border"]).toBe(
+      "oklch(0.925 0.005 214.3)",
+    );
+    expect(host?.style["--anbo-design-accent"]).toBeUndefined();
+    expect(host?.style["--anbo-design-field"]).toBeUndefined();
+    expect(host?.style["--anbo-design-bogus"]).toBeUndefined();
+    // A later theme with fewer colours falls back to the mode defaults.
+    h.api().configure({ theme: { mode: "dark", text: "#e4f2f5" } });
+    expect(host?.getAttribute("data-mode")).toBe("dark");
+    expect(host?.style["--anbo-design-surface"]).toBeUndefined();
+    expect(host?.style["--anbo-design-text"]).toBe("#e4f2f5");
+    expect(h.api().status().marks).toBe(0);
   });
 
   it("is skipped by the page scanners", () => {

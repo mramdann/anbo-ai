@@ -23,6 +23,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { useAgentCallsign } from "@/modules/agents/lib/agentCallsign";
+import { useTheme } from "@/modules/theme";
 import {
   ensureBrowserAutomationActivityListener,
   useBrowserAutomationActor,
@@ -32,6 +33,7 @@ import {
   getBrowserDesignStatus,
   useBrowserDesign,
 } from "./design/designState";
+import { readDesignTheme } from "./design/designTheme";
 import {
   setAutomationEffectsEnabled,
   useAutomationEffectsEnabled,
@@ -56,6 +58,7 @@ import {
   type BrowserNavEvent,
   isOwnBrowserFocusEvent,
   browserDesignSet,
+  browserDesignTheme,
   browserEmbedDispatch,
   browserEmbedInsertText,
   browserEmbedNavigate,
@@ -220,9 +223,13 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     const [designSendOpen, setDesignSendOpen] = useState(false);
     const automationActor = useBrowserAutomationActor(id);
     const holdingAgent = useAgentCallsign(automationActor?.ptyId);
+    const { resolvedMode, activeTheme } = useTheme();
+    const sentDesignThemeRef = useRef("");
     const toggleDesign = useCallback(() => {
       const next = !getBrowserDesignStatus(id).active;
-      void browserDesignSet(id, next)
+      const theme = next ? readDesignTheme(resolvedMode) : undefined;
+      sentDesignThemeRef.current = theme ? JSON.stringify(theme) : "";
+      void browserDesignSet(id, next, theme)
         .then(applyBrowserDesignStatus)
         .catch((error: unknown) => {
           toast.error(
@@ -233,7 +240,21 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
             },
           );
         });
-    }, [id]);
+    }, [id, resolvedMode]);
+    // biome-ignore lint/correctness/useExhaustiveDependencies: activeTheme is the trigger, not an input; the colours are read off the document once the provider has painted them
+    useEffect(() => {
+      if (!design.active) return;
+      // The provider paints the new palette in its own effect, which runs
+      // after this one, so the read waits a tick or it would ship the old one.
+      const timer = setTimeout(() => {
+        const theme = readDesignTheme(resolvedMode);
+        const signature = JSON.stringify(theme);
+        if (signature === sentDesignThemeRef.current) return;
+        sentDesignThemeRef.current = signature;
+        void browserDesignTheme(id, theme).catch(() => {});
+      }, 0);
+      return () => clearTimeout(timer);
+    }, [design.active, resolvedMode, activeTheme, id]);
     const [loading, setLoading] = useState(initialLoading);
     const onLoadingChangeRef = useRef(onLoadingChange);
     const lastHoleRef = useRef("");

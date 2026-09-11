@@ -16,7 +16,7 @@ import {
   ComputerPhoneSyncIcon,
   Remove01Icon,
   AiBrowserIcon,
-  DrawingModeIcon,
+  PenTool03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { DEVICE_PRESETS, devicePreset, RESPONSIVE_DEVICE } from "./devices";
@@ -270,7 +270,7 @@ export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
               }
             >
               <HugeiconsIcon
-                icon={DrawingModeIcon}
+                icon={PenTool03Icon}
                 size={15}
                 strokeWidth={1.75}
                 className={

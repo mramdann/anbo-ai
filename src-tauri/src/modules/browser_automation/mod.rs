@@ -102,12 +102,27 @@ pub async fn browser_design_set(
     window: tauri::Window,
     tab_id: i64,
     active: bool,
+    theme: Option<serde_json::Value>,
 ) -> Result<design::Status, String> {
     ensure_main_window(&window)?;
     if tab_id <= 0 {
         return Err("invalid browser tab id".into());
     }
-    design::set_active(&app, tab_id, active).await
+    design::set_active(&app, tab_id, active, theme).await
+}
+
+#[tauri::command]
+pub async fn browser_design_theme(
+    app: AppHandle,
+    window: tauri::Window,
+    tab_id: i64,
+    theme: serde_json::Value,
+) -> Result<(), String> {
+    ensure_main_window(&window)?;
+    if tab_id <= 0 {
+        return Err("invalid browser tab id".into());
+    }
+    design::set_theme(&app, tab_id, &theme).await
 }
 
 #[tauri::command]

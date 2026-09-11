@@ -403,6 +403,7 @@ pub fn run() {
             browser_automation::browser_design_set,
             browser_automation::browser_design_command,
             browser_automation::browser_design_capture,
+            browser_automation::browser_design_theme,
             git::commands::git_resolve_repo,
             git::commands::git_panel_snapshot,
             git::commands::git_status,

@@ -50,9 +50,86 @@ struct Session {
     marks: u32,
     dirty: bool,
     limit: Option<String>,
+    /// The app's colours for the in-page chrome, already sanitized.
+    theme: Option<Value>,
     /// Marks per page, keyed by URL without its fragment, newest last. A dev
     /// server reload lands on the same key and gets its marks back.
     pages: VecDeque<(String, String)>,
+}
+
+const THEME_KEYS: [&str; 7] = [
+    "surface",
+    "text",
+    "muted",
+    "border",
+    "field",
+    "accent",
+    "accentText",
+];
+
+const COLOR_FUNCTIONS: [&str; 12] = [
+    "rgb",
+    "rgba",
+    "hsl",
+    "hsla",
+    "hwb",
+    "lab",
+    "lch",
+    "oklab",
+    "oklch",
+    "color",
+    "color-mix",
+    "light-dark",
+];
+
+/// A colour travels into the page as a CSS custom property value. This is the
+/// alphabet a colour function needs and nothing that could end a declaration
+/// or open a block, and only colour functions may be called, so a theme file
+/// can neither smuggle CSS into the layer nor make the page fetch a url.
+fn safe_css_value(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > 64
+        || !value.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, '#' | '(' | ')' | ',' | '.' | '%' | '/' | ' ' | '-')
+        })
+    {
+        return false;
+    }
+    let lower = value.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte != b'(' {
+            continue;
+        }
+        let start = bytes[..index]
+            .iter()
+            .rposition(|c| !(c.is_ascii_lowercase() || *c == b'-'))
+            .map_or(0, |position| position + 1);
+        if !COLOR_FUNCTIONS.contains(&&lower[start..index]) {
+            return false;
+        }
+    }
+    true
+}
+
+fn sanitize_theme(value: &Value) -> Option<Value> {
+    let object = value.as_object()?;
+    let mode = match object.get("mode").and_then(Value::as_str) {
+        Some("light") => "light",
+        Some("dark") => "dark",
+        _ => return None,
+    };
+    let mut out = serde_json::Map::new();
+    out.insert("mode".into(), Value::from(mode));
+    for key in THEME_KEYS {
+        if let Some(color) = object.get(key).and_then(Value::as_str).map(str::trim) {
+            if safe_css_value(color) {
+                out.insert(key.into(), Value::from(color));
+            }
+        }
+    }
+    Some(Value::Object(out))
 }
 
 impl Session {
@@ -381,9 +458,10 @@ async fn install(app: &AppHandle, webview: &Webview, tab_id: i64) -> Result<Stat
             .model_for(&url)
             .and_then(|model| serde_json::from_str::<Value>(model).ok())
             .unwrap_or(Value::Null);
-        json!({"tool": session.tool, "model": model}).to_string()
+        json!({"tool": session.tool, "model": model, "theme": session.theme.clone().unwrap_or(Value::Null)})
+            .to_string()
     })
-    .unwrap_or_else(|| json!({"tool": "box", "model": null}).to_string());
+    .unwrap_or_else(|| json!({"tool": "box", "model": null, "theme": null}).to_string());
     let status = evaluate(webview, &install_script(&init)).await?;
     if status.get("ok") != Some(&Value::Bool(true)) {
         return Err("design layer did not report ready".into());
@@ -417,15 +495,26 @@ async fn pull_model(webview: &Webview, tab_id: i64) {
     }
 }
 
-pub async fn set_active(app: &AppHandle, tab_id: i64, active: bool) -> Result<Status, String> {
+pub async fn set_active(
+    app: &AppHandle,
+    tab_id: i64,
+    active: bool,
+    theme: Option<Value>,
+) -> Result<Status, String> {
     #[cfg(windows)]
     {
         let webview = super::registry::get_embed_webview(app, tab_id)?;
         let lock = super::registry::get_tab_lock(tab_id);
         let _guard = lock.lock().await;
         if active {
-            with_session(tab_id, |session| session.active = true)
-                .ok_or_else(|| "too many tabs in design mode".to_string())?;
+            let theme = theme.as_ref().and_then(sanitize_theme);
+            with_session(tab_id, |session| {
+                session.active = true;
+                if theme.is_some() {
+                    session.theme = theme;
+                }
+            })
+            .ok_or_else(|| "too many tabs in design mode".to_string())?;
             let installed = install(app, &webview, tab_id).await;
             if installed.is_err() {
                 with_session(tab_id, |session| {
@@ -459,8 +548,38 @@ pub async fn set_active(app: &AppHandle, tab_id: i64, active: bool) -> Result<St
     }
     #[cfg(not(windows))]
     {
-        let _ = (app, tab_id, active);
+        let _ = (app, tab_id, active, theme);
         Err("design mode is only supported on Windows".into())
+    }
+}
+
+/// The app changed its colours; the chrome inside the page follows. Stored
+/// for the next install either way, applied now only if a layer is up.
+pub async fn set_theme(app: &AppHandle, tab_id: i64, theme: &Value) -> Result<(), String> {
+    let theme = sanitize_theme(theme).ok_or_else(|| "invalid design theme".to_string())?;
+    let live = with_session(tab_id, |session| {
+        session.theme = Some(theme.clone());
+        session.active && session.installed
+    })
+    .unwrap_or(false);
+    if !live {
+        return Ok(());
+    }
+    #[cfg(windows)]
+    {
+        let webview = super::registry::get_embed_webview(app, tab_id)?;
+        let lock = super::registry::get_tab_lock(tab_id);
+        let _guard = lock.lock().await;
+        let script = format!(
+            "(() => {{ const d = globalThis.__anboDesign; return d ? d.configure({}) : null; }})()",
+            json!({ "theme": theme })
+        );
+        evaluate(&webview, &script).await.map(|_| ())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Ok(())
     }
 }
 
@@ -1053,6 +1172,36 @@ mod tests {
         assert!(resolve_workspace(-1, "").is_err());
         assert!(resolve_workspace(-1, &"a".repeat(MAX_WORKSPACE_BYTES + 1)).is_err());
         assert!(resolve_workspace(-1, root.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn themes_keep_colour_text_and_nothing_else() {
+        let theme = sanitize_theme(&json!({
+            "mode": "light",
+            "surface": " oklch(1 0 0) ",
+            "border": "oklch(1 0 0 / 10%)",
+            "text": "#1b2330",
+            "accent": "red; color: blue",
+            "field": "url(x)",
+            "muted": "x".repeat(65),
+            "accentText": "color-mix(in srgb, red 50%, blue)",
+            "bogus": "#fff",
+        }))
+        .unwrap();
+        assert_eq!(theme["mode"], "light");
+        assert_eq!(theme["surface"], "oklch(1 0 0)");
+        assert_eq!(theme["border"], "oklch(1 0 0 / 10%)");
+        assert_eq!(theme["text"], "#1b2330");
+        assert_eq!(theme["accentText"], "color-mix(in srgb, red 50%, blue)");
+        for key in ["accent", "field", "muted", "bogus"] {
+            assert!(theme.get(key).is_none(), "{key}");
+        }
+        assert!(!safe_css_value("image(x)"));
+        assert!(!safe_css_value("var(--x)"));
+        assert!(!safe_css_value(" (x)"));
+        assert!(sanitize_theme(&json!({"mode": "auto"})).is_none());
+        assert!(sanitize_theme(&json!("dark")).is_none());
+        assert_eq!(sanitize_theme(&json!({"mode": "dark"})).unwrap(), json!({"mode": "dark"}));
     }
 
     #[test]
