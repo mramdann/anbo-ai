@@ -2,6 +2,10 @@ const refRegistry = (() => {
     const key = '__anboBrowserRefs';
     if (globalThis[key]) return globalThis[key];
     let generation = 0;
+    // The generation a scan asked for but has not earned yet. A scan that ends
+    // up registering nothing has replaced nothing, so the refs the caller is
+    // still holding must outlive it.
+    let pending = 0;
     const refs = new Map();
     const parent = node => node.assignedSlot || node.parentElement || node.getRootNode?.().host || null;
     const identityAttributes = ['data-item-id', 'data-id', 'data-key', 'data-video-id'];
@@ -81,16 +85,23 @@ const refRegistry = (() => {
     const registry = Object.freeze({
         begin(next) {
             if (next < generation) throw new Error('stale_scan');
-            for (const entry of refs.values()) {
-                const node = entry.node.deref();
-                node?.removeAttribute('data-anbo-ref');
-                node?.removeAttribute('data-anbo-gen');
-            }
-            refs.clear();
-            generation = next;
+            // Claim the generation without spending it: a failed lookup used to
+            // drop every live ref here, so one mistyped selector cost the caller
+            // every target it already held.
+            pending = next;
         },
         remember(ref, node) {
-            if (!ref.startsWith('g' + generation + '-') || refs.size >= 1000) throw new Error('ref_limit');
+            if (!ref.startsWith('g' + pending + '-')) throw new Error('ref_limit');
+            if (pending !== generation) {
+                for (const entry of refs.values()) {
+                    const old = entry.node.deref();
+                    old?.removeAttribute('data-anbo-ref');
+                    old?.removeAttribute('data-anbo-gen');
+                }
+                refs.clear();
+                generation = pending;
+            }
+            if (refs.size >= 1000) throw new Error('ref_limit');
             const url = destination(node);
             const context = url === null ? itemContext(node) : null;
             refs.set(ref, { node: new WeakRef(node), destination: url, context,

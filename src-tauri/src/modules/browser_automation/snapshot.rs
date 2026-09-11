@@ -32,6 +32,26 @@ pub fn get_next_generation(tab_id: i64) -> u64 {
     next
 }
 
+/// The number a scan would take if it earns one, without spending it.
+///
+/// A lookup that matches nothing registers no refs, and the page keeps the
+/// ones it already had. Committing the number up front instead retired every
+/// live ref the moment a search began, so one selector that missed cost the
+/// caller every target it was holding.
+pub fn peek_next_generation(tab_id: i64) -> u64 {
+    get_current_generation(tab_id) + 1
+}
+
+/// Publish a generation a scan actually used. Never moves backwards.
+pub fn commit_generation(tab_id: i64, generation: u64) {
+    let mut guard = generations().lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    let entry = map.entry(tab_id).or_insert(0);
+    if generation > *entry {
+        *entry = generation;
+    }
+}
+
 pub fn get_current_generation(tab_id: i64) -> u64 {
     let mut guard = generations().lock().unwrap();
     let map = guard.get_or_insert_with(HashMap::new);

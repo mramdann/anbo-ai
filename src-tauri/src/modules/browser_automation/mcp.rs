@@ -184,7 +184,7 @@ pub fn tool_definitions() -> Value {
                 .collect();
             tool["inputSchema"]["properties"]["locator"] = json!({
                 "type":"object", "properties":props, "required":["by","value"], "additionalProperties":false,
-                "description": if waiting { "Unique locator including hidden elements. Use top-level timeout; capped/skipped scans never prove absence." } else { "Alternative to ref. Requires one unique match across the bounded document/frame scan. timeout only bounds lookup; existing action guards still apply. No automatic input replay." }
+                "description": if waiting { "Locator including hidden elements. Unique by default; pass minCount to wait for that many instead. Use top-level timeout; capped/skipped scans never prove absence." } else { "Alternative to ref. Requires one unique match across the bounded document/frame scan. timeout only bounds lookup; existing action guards still apply. No automatic input replay." }
             });
             if waiting {
                 tool["inputSchema"]["properties"]["condition"]["enum"]
@@ -195,7 +195,11 @@ pub fn tool_definitions() -> Value {
                     .as_array_mut()
                     .unwrap()
                     .push(json!("absent"));
-                tool["description"] = json!(format!("{} Or pass locator + state (including absent/hidden) with top-level timeout; do not mix with legacy fields or waitFor.", tool["description"].as_str().unwrap()));
+                tool["inputSchema"]["properties"]["minCount"] = json!({
+                    "type": "integer", "minimum": 1, "maximum": 20,
+                    "description": "Wait for at least this many matches instead of exactly one, for lazily loaded feeds, results, comments or rows. Supports attached, visible, hidden, absent and detached; the per-element states assert about one element and reject it."
+                });
+                tool["description"] = json!(format!("{} Or pass locator + state (including absent/hidden) with top-level timeout; do not mix with legacy fields or waitFor. A locator wait demands a unique match unless minCount says how many are enough.", tool["description"].as_str().unwrap()));
             } else {
                 let required = tool["inputSchema"]["required"].as_array_mut().unwrap();
                 if required.iter().any(|field| field == "ref") {

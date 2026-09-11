@@ -457,6 +457,10 @@ async fn handle_action_inner(
                 "loading": active_loading(tab_id)
             });
             if method == "stop" {
+                // Stopping is not navigating. Reporting navigated=false next to
+                // a URL that had already committed read as "the tab is still on
+                // the old page", which was the opposite of the truth.
+                body.as_object_mut().map(|body| body.remove("navigated"));
                 body["wasLoading"] = json!(was_loading.unwrap_or(false));
                 body["cancelledUrl"] = json!(match was_loading {
                     Some(true) => pending_url,
@@ -518,6 +522,7 @@ async fn handle_action_inner(
             let mut last_empty_scan = None;
             let mut scanned_state: Option<PageScanState> = None;
             let mut quiet_waits = 0usize;
+            let mut backoff_ms = LOCATOR_RETRY_MS;
             loop {
                 if tokio::time::Instant::now() >= deadline {
                     return Err(find_timeout(
@@ -538,8 +543,9 @@ async fn handle_action_inner(
                         .is_some_and(|current| previous.still_matches(&current))
                     {
                         quiet_waits += 1;
+                        backoff_ms = (backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
                         tokio::time::sleep_until(
-                            (tokio::time::Instant::now() + Duration::from_millis(150))
+                            (tokio::time::Instant::now() + Duration::from_millis(backoff_ms))
                                 .min(deadline),
                         )
                         .await;
@@ -549,9 +555,12 @@ async fn handle_action_inner(
                 // Taken before the scan so that anything moving during the walk
                 // counts as a change worth looking at again.
                 scanned_state = page_scan_state(&webview).await;
-                let (generation, result) = scan_with_fresh_refs(tab_id, deadline, |generation| {
-                    collect_locator_matches(&webview, tab_id, generation, &locator)
-                })
+                let (generation, result) = scan_with_fresh_refs(
+                    tab_id,
+                    deadline,
+                    |generation| collect_locator_matches(&webview, tab_id, generation, &locator),
+                    |result| !result.matches.is_empty(),
+                )
                 .await
                 .map_err(|error| {
                     if error.0 == error_codes::TIMEOUT {
@@ -586,8 +595,12 @@ async fn handle_action_inner(
                 }
                 empty_scans += 1;
                 last_empty_scan = Some(result);
+                // A page that has already disappointed twice rarely answers on
+                // the third ask either, and every ask is a full walk on the
+                // user's own main thread. Back off rather than hammer it.
+                backoff_ms = (backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
                 tokio::time::sleep_until(
-                    (tokio::time::Instant::now() + Duration::from_millis(150)).min(deadline),
+                    (tokio::time::Instant::now() + Duration::from_millis(backoff_ms)).min(deadline),
                 )
                 .await;
             }
@@ -2543,6 +2556,12 @@ fn describe_ambiguity(
     (error.0, format!("{}; candidates: {candidates}", error.1))
 }
 
+/// How long to wait before looking again, and the ceiling a run of
+/// disappointments backs off to. Repeating a miss is cheap only in theory:
+/// every retry is a full document walk on the page's own main thread.
+const LOCATOR_RETRY_MS: u64 = 150;
+const MAX_LOCATOR_RETRY_MS: u64 = 1_000;
+
 fn find_timeout(
     locator: &LocatorRequest,
     timeout_ms: u64,
@@ -2559,6 +2578,13 @@ fn find_timeout(
     let hidden = last_empty_scan.map_or(0, |scan| scan.hidden);
     let detail = if empty_scans == 0 {
         "no scan completed".to_string()
+    } else if scan_error.is_some() {
+        // The last look was cut off by the deadline. Whatever the earlier ones
+        // saw, this is not a page that was read to the end, and saying both in
+        // one sentence left the caller unable to tell which half to believe.
+        format!(
+            "the last scan was cut short by the deadline after {empty_scans} completed scans; no conclusion about the element is available"
+        )
     } else if let Some(scan) =
         last_empty_scan.filter(|scan| scan.node_limit_reached || scan.skipped_frames > 0)
     {
@@ -2679,7 +2705,19 @@ async fn resolve_target_locator(
     let mut locator = extract_locator(target)?;
     locator.limit = 2;
     let invalid = || {
-        (error_codes::INVALID_REQUEST.into(), "locator wait accepts locator, state, and top-level timeout, not legacy conditions or waitFor".into())
+        (error_codes::INVALID_REQUEST.into(), "locator wait accepts locator, state, minCount, and top-level timeout, not legacy conditions or waitFor".into())
+    };
+    // How many matches are enough. Absent means the old rule: exactly one, and
+    // an ambiguous page is a failure.
+    let min_count = match params.get("minCount") {
+        None => None,
+        Some(_) if !waiting => return Err(invalid()),
+        Some(value) => Some(
+            value
+                .as_u64()
+                .filter(|n| (1..=MAX_LOCATOR_MATCHES as u64).contains(n))
+                .ok_or_else(invalid)? as usize,
+        ),
     };
     let state = if waiting {
         if ["text", "url", "loadState", "waitFor", "ref"]
@@ -2694,6 +2732,9 @@ async fn resolve_target_locator(
             return Err(invalid());
         }
         locator.include_hidden = true;
+        if let Some(wanted) = min_count {
+            locator.limit = wanted.max(2);
+        }
         let state = params
             .get("state")
             .map(|v| v.as_str().ok_or_else(invalid))
@@ -2721,6 +2762,7 @@ async fn resolve_target_locator(
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     let mut last_coverage = String::from("no completed scan");
     let mut scanned_state: Option<PageScanState> = None;
+    let mut wait_backoff_ms = LOCATOR_RETRY_MS;
     loop {
         if tokio::time::Instant::now() >= deadline {
             return Err((error_codes::TIMEOUT.into(), format!("locator {} timed out after {timeout_ms}ms; {last_coverage}; no input dispatched", state.unwrap_or("lookup"))));
@@ -2732,17 +2774,22 @@ async fn resolve_target_locator(
                 .await
                 .is_some_and(|current| previous.still_matches(&current))
             {
+                wait_backoff_ms = (wait_backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
                 tokio::time::sleep_until(
-                    (tokio::time::Instant::now() + Duration::from_millis(150)).min(deadline),
+                    (tokio::time::Instant::now() + Duration::from_millis(wait_backoff_ms))
+                        .min(deadline),
                 )
                 .await;
                 continue;
             }
         }
         scanned_state = page_scan_state(&webview).await;
-        let (generation, result) = scan_with_fresh_refs(tab_id, deadline, |generation| {
-            collect_locator_matches(&webview, tab_id, generation, &locator)
-        })
+        let (generation, result) = scan_with_fresh_refs(
+            tab_id,
+            deadline,
+            |generation| collect_locator_matches(&webview, tab_id, generation, &locator),
+            |result| !result.matches.is_empty(),
+        )
         .await?;
         let complete = !result.node_limit_reached && result.skipped_frames == 0;
         last_coverage = format!(
@@ -2750,7 +2797,16 @@ async fn resolve_target_locator(
             result.scanned, result.node_limit_reached, result.skipped_frames
         );
         let first = result.matches.first();
-        let matched = if let Some(state) = state {
+        let matched = if let (Some(state), Some(wanted)) = (state, min_count) {
+            let visible = result.matches.iter().filter(|item| item.visible).count();
+            super::locator_target::wait_count_state(
+                state,
+                wanted,
+                result.matches.len(),
+                visible,
+                complete,
+            )
+        } else if let Some(state) = state {
             super::locator_target::wait_state(
                 state,
                 result.matches.len(),
@@ -2772,8 +2828,9 @@ async fn resolve_target_locator(
                 "skippedFrames":result.skipped_frames, "nodeLimitReached":result.node_limit_reached,
             }));
         }
+        wait_backoff_ms = (wait_backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
         tokio::time::sleep_until(
-            (tokio::time::Instant::now() + Duration::from_millis(150)).min(deadline),
+            (tokio::time::Instant::now() + Duration::from_millis(wait_backoff_ms)).min(deadline),
         )
         .await;
     }
@@ -5269,6 +5326,20 @@ mod tests {
         let queued = find_timeout(&locator, 800, 0, Some("queue exceeded deadline"), None, 0);
         assert!(queued.1.contains("no scan completed"));
         assert!(queued.1.contains("queue exceeded deadline"));
+
+        // A scan cut off by the deadline cannot support a verdict, even when
+        // earlier scans read the whole page. Claiming both in one sentence left
+        // the caller unable to tell which half to believe.
+        let cut = find_timeout(
+            &locator,
+            800,
+            26,
+            Some("browser reference scan exceeded its deadline"),
+            Some(&scan(0, vec![])),
+            0,
+        );
+        assert!(cut.1.contains("cut short by the deadline"));
+        assert!(!cut.1.contains("confirmed absence"));
     
         // A wait spent on a page that never moved says so, because "keep
         // retrying" is the wrong advice when re-reading cannot help.

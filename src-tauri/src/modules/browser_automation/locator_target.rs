@@ -63,6 +63,38 @@ pub fn unique(count: usize, complete: bool) -> Result<bool, TargetError> {
     Ok(count == 1 && complete)
 }
 
+/// Waiting for a crowd rather than for one element.
+///
+/// Uniqueness is a rule about acting, not about waiting: lazy-loaded content --
+/// a feed, search results, comments, table rows -- arrives in numbers, so the
+/// most ordinary thing to wait for was the one thing that could not be asked
+/// for. `minCount` says how many are enough, and an ambiguous match stops being
+/// a failure.
+pub fn wait_count_state(
+    state: &str,
+    min_count: usize,
+    matching: usize,
+    visible: usize,
+    complete: bool,
+) -> Result<bool, TargetError> {
+    if !matches!(state, "attached" | "visible" | "hidden" | "absent" | "detached") {
+        return Err((
+            error_codes::INVALID_REQUEST.into(),
+            "minCount waits support attached, visible, hidden, absent and detached; the per-element states assert about one element".into(),
+        ));
+    }
+    // An incomplete scan can only grow, so it can confirm "enough are here"
+    // but never "none are here".
+    let enough = match state {
+        "attached" => matching >= min_count,
+        "visible" => visible >= min_count,
+        "hidden" => complete && visible == 0,
+        "absent" | "detached" => complete && matching == 0,
+        _ => false,
+    };
+    Ok(enough)
+}
+
 pub fn wait_state(
     state: &str,
     count: usize,
@@ -109,6 +141,32 @@ pub fn wait_state(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_count_wait_accepts_the_crowd_that_uniqueness_rejects() {
+        // The ordinary case: comments arrive, there are eleven of them, and
+        // that is exactly what the caller was waiting for.
+        assert!(wait_count_state("attached", 1, 11, 11, true).unwrap());
+        assert!(wait_count_state("visible", 3, 11, 4, true).unwrap());
+        assert!(!wait_count_state("visible", 3, 11, 2, true).unwrap());
+
+        // Enough is enough even before the page is fully scanned: more matches
+        // can only be found, never lost.
+        assert!(wait_count_state("attached", 2, 4, 4, false).unwrap());
+        // Absence is the opposite: an unfinished scan can never prove it.
+        assert!(!wait_count_state("absent", 1, 0, 0, false).unwrap());
+        assert!(wait_count_state("absent", 1, 0, 0, true).unwrap());
+        assert!(!wait_count_state("hidden", 1, 3, 1, true).unwrap());
+        assert!(wait_count_state("hidden", 1, 3, 0, true).unwrap());
+
+        // Per-element assertions are about one element, so counting them is
+        // refused rather than quietly answered for the first match.
+        for state in ["enabled", "disabled", "checked", "unchecked"] {
+            let error = wait_count_state(state, 2, 5, 5, true).unwrap_err();
+            assert_eq!(error.0, error_codes::INVALID_REQUEST);
+            assert!(error.1.contains("assert about one element"));
+        }
+    }
 
     #[test]
     fn validates_bounded_locator_fields_without_coercion() {
