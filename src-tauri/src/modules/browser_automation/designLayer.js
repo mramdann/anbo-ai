@@ -214,7 +214,8 @@
     .note .head{display:flex;align-items:center;gap:6px;min-width:0;margin-bottom:6px;color:var(--anbo-design-muted);font-size:10px}
     .note .head b{display:inline-grid;flex:none;place-items:center;width:18px;height:18px;border-radius:50%;background:${ACCENT};color:#fff;font-size:10px}
     .note .head .kind{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-    .note .head .remove{all:unset;flex:none;cursor:pointer;padding:2px 7px;border:1px solid var(--anbo-design-border);border-radius:5px;color:var(--anbo-design-muted);font:600 10px/1.4 ui-sans-serif,system-ui,sans-serif;white-space:nowrap}
+    .note .head .remove{all:unset;flex:none;display:inline-grid;place-items:center;width:22px;height:22px;cursor:pointer;border:1px solid var(--anbo-design-border);border-radius:5px;color:var(--anbo-design-muted)}
+    .note .head .remove svg{display:block;width:14px;height:14px}
     .note .head .remove:hover,.note .head .remove:focus-visible{color:${ACCENT};border-color:${ACCENT};outline:none}
     .note textarea{display:block;width:100%;min-height:52px;max-height:160px;resize:vertical;padding:6px 8px;border:1px solid var(--anbo-design-border);border-radius:6px;background:var(--anbo-design-field);color:var(--anbo-design-text);font:500 12px/1.45 ui-sans-serif,system-ui,sans-serif;outline:none}
     .note textarea::placeholder{color:var(--anbo-design-muted)}
@@ -263,8 +264,27 @@
     noteRemove = document.createElement('button');
     noteRemove.type = 'button';
     noteRemove.className = 'remove';
-    noteRemove.textContent = 'Remove';
     noteRemove.setAttribute('title', 'Remove this mark');
+    noteRemove.setAttribute('aria-label', 'Remove mark');
+    // Hugeicons CommentRemove01, inlined so the layer needs no asset request.
+    const removeIcon = document.createElementNS(SVG, 'svg');
+    removeIcon.setAttribute('viewBox', '0 0 24 24');
+    removeIcon.setAttribute('fill', 'none');
+    removeIcon.setAttribute('stroke', 'currentColor');
+    removeIcon.setAttribute('stroke-width', '1.75');
+    removeIcon.setAttribute('stroke-linecap', 'round');
+    removeIcon.setAttribute('stroke-linejoin', 'round');
+    removeIcon.setAttribute('aria-hidden', 'true');
+    for (const d of [
+      'M15 2L18.5 5.5M18.5 5.5L22 9M18.5 5.5L22 2M18.5 5.5L15 9',
+      'M6.09881 19.5C4.7987 19.3721 3.82475 18.9816 3.17157 18.3284C2 17.1569 2 15.2712 2 11.5V11C2 7.22876 2 5.34315 3.17157 4.17157C4.34315 3 6.22876 3 10 3H11.5M6.5 18C6.29454 19.0019 5.37769 21.1665 6.31569 21.8651C6.806 22.2218 7.58729 21.8408 9.14987 21.0789C10.2465 20.5441 11.3562 19.9309 12.5546 19.655C12.9931 19.5551 13.4395 19.5125 14 19.5C17.7712 19.5 19.6569 19.5 20.8284 18.3284C21.947 17.2098 21.9976 15.4403 21.9999 12',
+      'M8 14H14M8 9H11',
+    ]) {
+      const path = document.createElementNS(SVG, 'path');
+      path.setAttribute('d', d);
+      removeIcon.append(path);
+    }
+    noteRemove.append(removeIcon);
     note.append(noteHead, noteInput, keys);
     hint = document.createElement('div');
     hint.className = 'hint';

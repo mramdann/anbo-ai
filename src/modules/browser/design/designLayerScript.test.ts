@@ -1095,7 +1095,9 @@ describe("design layer script", () => {
     const remove = head.children.find(
       (c) => (c as FakeElement).tagName === "BUTTON",
     ) as FakeElement;
-    expect(remove.textContent).toBe("Remove");
+    expect(remove.getAttribute("aria-label")).toBe("Remove mark");
+    expect((remove.children[0] as FakeElement).tagName).toBe("svg");
+    expect(remove.children[0].children).toHaveLength(3);
     expect((head.children[1] as FakeElement).className).toBe("kind");
     remove.fire("click", { preventDefault() {} });
     expect(h.api().status().marks).toBe(0);
