@@ -147,28 +147,43 @@ export function shouldPinAgentSession(
   return isResumableAgentId(agent);
 }
 
+/**
+ * Which CLIs a plain terminal may be adopted into the resume lifecycle as.
+ *
+ * Written as an exhaustive record rather than a switch on purpose: a newly
+ * supported agent stops the build here until someone answers for it, instead
+ * of being silently left out while the terminal still recognises the CLI and
+ * the tab quietly loses its resume. Pi stays out deliberately, as ANBO.md
+ * records -- it has exact resume from the launcher, not from adoption.
+ */
+const MANUAL_ADOPTION: Record<ResumableAgentId, boolean> = {
+  claude: true,
+  codex: true,
+  antigravity: true,
+  opencode: true,
+  kimi: true,
+  pi: false,
+};
+
+/**
+ * Resume for a CLI the user started by hand rather than from the launcher.
+ *
+ * Only the program is taken from the registry, never the launcher's flags: a
+ * hand-started agent should come back the way its owner ran it, not with an
+ * opinion it never asked for, such as Kimi's `--auto` approval mode. The
+ * built-in commands are plain enough for the first word to be that program.
+ */
 export function createManualAgentResumeState(
   agent: string,
   discoveryStartedAt: number,
 ): AgentResumeState | undefined {
-  let resumableAgent: ResumableAgentId;
-  let command: string;
-  switch (agent) {
-    case "claude":
-    case "codex":
-    case "opencode":
-      resumableAgent = agent;
-      command = agent;
-      break;
-    case "antigravity":
-      resumableAgent = agent;
-      command = "agy";
-      break;
-    default:
-      return undefined;
-  }
+  if (!isResumableAgentId(agent) || !MANUAL_ADOPTION[agent]) return undefined;
+  const command = AGENT_LAUNCHERS.find(
+    (launcher) => launcher.id === agent,
+  )?.defaultCommand.split(/\s+/)[0];
+  if (!command || !canAttachSession(agent, command)) return undefined;
   return {
-    agent: resumableAgent,
+    agent,
     command,
     armed: false,
     discoveryStartedAt,

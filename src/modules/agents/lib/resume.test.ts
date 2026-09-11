@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AGENT_LAUNCHERS } from "./launcher";
 import {
   AgentExitResumeGuard,
   buildAgentLaunchCommand,
@@ -136,6 +137,7 @@ describe("agent resume commands", () => {
     ["codex", "codex"],
     ["antigravity", "agy"],
     ["opencode", "opencode"],
+    ["kimi", "kimi"],
   ] as const)("adopts manually launched %s sessions", (agent, command) => {
     expect(createManualAgentResumeState(agent, 1234)).toEqual({
       agent,
@@ -146,10 +148,47 @@ describe("agent resume commands", () => {
     });
   });
 
+  it("adopts a hand-started agent without the launcher's own flags", () => {
+    // Kimi is registered as `kimi --auto`. Someone who typed plain `kimi`
+    // should get their session back, not auto-approval they never chose.
+    expect(createManualAgentResumeState("kimi", 1234)?.command).toBe("kimi");
+  });
+
   it("does not adopt unrequested manual agent families", () => {
+    // Pi is left out on purpose: it resumes from the launcher, not from a
+    // plain terminal. Grok has no exact resume at all.
     expect(createManualAgentResumeState("pi", 1234)).toBeUndefined();
     expect(createManualAgentResumeState("grok", 1234)).toBeUndefined();
     expect(createManualAgentResumeState("custom:aider", 1234)).toBeUndefined();
+  });
+
+  it("has an answer for every agent that can be resumed at all", () => {
+    // The checklist that used to live in someone's memory. A newly supported
+    // CLI lands here as a failure until adoption is decided for it, rather
+    // than being discovered months later as a tab that lost its resume.
+    const decided = new Set([
+      "claude",
+      "codex",
+      "antigravity",
+      "opencode",
+      "kimi",
+      "pi",
+    ]);
+    const resumable = AGENT_LAUNCHERS.filter(({ id }) =>
+      shouldPinAgentSession(id),
+    );
+    expect(resumable.length).toBeGreaterThan(0);
+    for (const launcher of resumable) {
+      expect(decided.has(launcher.id)).toBe(true);
+      const state = createManualAgentResumeState(launcher.id, 1234);
+      // Adopted or deliberately not, but an adopted one always relaunches the
+      // bare program, disarmed until its own session id is discovered.
+      if (state) {
+        expect(state.command).toBe(launcher.defaultCommand.split(/\s+/)[0]);
+        expect(state.armed).toBe(false);
+        expect(state.relaunchOnRestore).toBe(true);
+      }
+    }
   });
 
   it.each([
