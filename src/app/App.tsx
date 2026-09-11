@@ -43,6 +43,7 @@ import {
   type TerminalAutomationMethod,
 } from "@/modules/agents/lib/agentAutomationProtocol";
 import { agentIdFor } from "@/modules/agents/lib/agentIdentity";
+import { admitAgentResume } from "@/modules/agents/lib/resumeAdmission";
 import { AgentSessionDiscoveryQueue } from "@/modules/agents/lib/sessionDiscoveryQueue";
 import { useAgentStore } from "@/modules/agents/store/agentStore";
 import {
@@ -1124,15 +1125,51 @@ export default function App() {
             await new Promise<void>((resolve) => setTimeout(resolve, delay));
           }
           const mcpConfigured = await mcpReady;
-          try {
-            await invoke("resource_admit_agent", {
-              agent: leaf.resume.agent,
-              count: 1,
-            });
-          } catch (error) {
-            toast.error("Agent resume paused", { description: String(error) });
+          const pauseToast = `agent-resume-${leaf.id}`;
+          const admission = await admitAgentResume({
+            admit: () =>
+              invoke("resource_admit_agent", {
+                agent: leaf.resume.agent,
+                count: 1,
+              }),
+            abandoned: () =>
+              useAgentStore.getState().sessions[leaf.id] !== undefined ||
+              !tabsRef.current.some(
+                (tab) =>
+                  tab.kind === "terminal" &&
+                  collectAgentResumeLeaves(tab.paneTree).some(
+                    (candidate) => candidate.id === leaf.id,
+                  ),
+              ),
+            onPaused: (error, attempt) => {
+              if (attempt === 1) {
+                console.warn(
+                  `[anbo] agent resume for terminal ${leaf.id} paused:`,
+                  error,
+                );
+              }
+              toast.warning("Agent resume paused", {
+                id: pauseToast,
+                description: `${error} Anbo retries on its own for a few minutes.`,
+              });
+            },
+          });
+          if (admission.kind === "abandoned") {
+            toast.dismiss(pauseToast);
             return;
           }
+          if (admission.kind === "refused") {
+            console.error(
+              `[anbo] agent resume for terminal ${leaf.id} gave up after ${admission.attempts} attempts:`,
+              admission.error,
+            );
+            toast.error("Agent resume skipped", {
+              id: pauseToast,
+              description: `${admission.error} Start ${leaf.resume.agent} again from that terminal once memory is free.`,
+            });
+            return;
+          }
+          if (admission.attempts > 1) toast.dismiss(pauseToast);
           const resumeCommand = mcpConfigured
             ? withAgentMcpRuntime(
                 leaf.resume.agent,
