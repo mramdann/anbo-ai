@@ -11,6 +11,8 @@ import { isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   forwardRef,
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -19,7 +21,17 @@ import {
   useRef,
   useState,
 } from "react";
-import { ensureBrowserAutomationActivityListener } from "./automationActivity";
+import { toast } from "sonner";
+import { useAgentCallsign } from "@/modules/agents/lib/agentCallsign";
+import {
+  ensureBrowserAutomationActivityListener,
+  useBrowserAutomationActor,
+} from "./automationActivity";
+import {
+  applyBrowserDesignStatus,
+  getBrowserDesignStatus,
+  useBrowserDesign,
+} from "./design/designState";
 import {
   setAutomationEffectsEnabled,
   useAutomationEffectsEnabled,
@@ -43,6 +55,7 @@ import {
   type BrowserFocusEvent,
   type BrowserNavEvent,
   isOwnBrowserFocusEvent,
+  browserDesignSet,
   browserEmbedDispatch,
   browserEmbedInsertText,
   browserEmbedNavigate,
@@ -101,6 +114,11 @@ type DesiredBounds = {
   visible: boolean;
   effectsEnabled: boolean;
 };
+
+// Design mode is rare and its chrome is not small; neither belongs in the
+// eager bundle of a pane that mostly just hosts a page.
+const DesignToolbar = lazy(() => import("./design/DesignToolbar"));
+const DesignSendDialog = lazy(() => import("./design/DesignSendDialog"));
 
 const EMPTY_BOUNDS = { x: 0, y: 0, width: 0, height: 0 };
 const mountedOwnerCounts = new Map<number, number>();
@@ -198,6 +216,24 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
     const viewportTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const effectsEnabled = useAutomationEffectsEnabled();
     useEffect(ensureBrowserAutomationActivityListener, []);
+    const design = useBrowserDesign(id);
+    const [designSendOpen, setDesignSendOpen] = useState(false);
+    const automationActor = useBrowserAutomationActor(id);
+    const holdingAgent = useAgentCallsign(automationActor?.ptyId);
+    const toggleDesign = useCallback(() => {
+      const next = !getBrowserDesignStatus(id).active;
+      void browserDesignSet(id, next)
+        .then(applyBrowserDesignStatus)
+        .catch((error: unknown) => {
+          toast.error(
+            next ? "Design mode could not start" : "Design mode did not close",
+            {
+              description:
+                error instanceof Error ? error.message : String(error),
+            },
+          );
+        });
+    }, [id]);
     const [loading, setLoading] = useState(initialLoading);
     const onLoadingChangeRef = useRef(onLoadingChange);
     const lastHoleRef = useRef("");
@@ -768,6 +804,8 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
 
     const showXfoHint = !native && url ? !isLocalUrl(url) : false;
     const browserError = urlError ?? nativeError;
+    const designAvailable =
+      native && IS_WINDOWS && !!url && !browserError && !!workspaceRoot;
 
     return (
       <div
@@ -791,7 +829,33 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
           onDevice={handleDevice}
           effectsEnabled={effectsEnabled}
           onToggleEffects={() => setAutomationEffectsEnabled(!effectsEnabled)}
+          designActive={design.active}
+          onToggleDesign={
+            designAvailable || design.active ? toggleDesign : undefined
+          }
         />
+        {design.active ? (
+          <Suspense fallback={null}>
+            <DesignToolbar
+              tabId={id}
+              status={design}
+              onSend={() => setDesignSendOpen(true)}
+              onExit={toggleDesign}
+            />
+          </Suspense>
+        ) : null}
+        {designSendOpen ? (
+          <Suspense fallback={null}>
+            <DesignSendDialog
+              open={designSendOpen}
+              onOpenChange={setDesignSendOpen}
+              tabId={id}
+              workspaceRoot={workspaceRoot}
+              status={design}
+              preferredAgent={holdingAgent}
+            />
+          </Suspense>
+        ) : null}
         {showXfoHint ? (
           <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-border/60 bg-amber-500/8 px-3 text-[11px] text-amber-600 dark:text-amber-400">
             <HugeiconsIcon icon={Alert02Icon} size={12} strokeWidth={1.75} />

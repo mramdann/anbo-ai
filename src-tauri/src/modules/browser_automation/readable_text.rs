@@ -25,7 +25,7 @@ pub const READABLE_TEXT_JS: &str = r#"
             }
             if (node.nodeType !== 1 && node.nodeType !== 11) return;
             if (node.nodeType === 1) {
-                if (['SCRIPT','STYLE','NOSCRIPT','TEMPLATE','HEAD','ANBO-AUTOMATION-VISUAL'].includes(String(node.tagName).toUpperCase()) || node.hidden || node.getAttribute('aria-hidden') === 'true') return;
+                if (['SCRIPT','STYLE','NOSCRIPT','TEMPLATE','HEAD','ANBO-AUTOMATION-VISUAL','ANBO-DESIGN-LAYER'].includes(String(node.tagName).toUpperCase()) || node.hidden || node.getAttribute('aria-hidden') === 'true') return;
                 const style = getComputedStyle(node);
                 // display:none removes the box, so the text around it closes
                 // up. An invisible box still holds its line, which is why the

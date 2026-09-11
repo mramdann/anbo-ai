@@ -225,6 +225,31 @@ Native browser-internal warnings are not guaranteed to appear there.
 `timedOut` result from `browser_download_wait` is normal for a large file and
 keeps the `downloadId`. Poll it again rather than arming a second download.
 
+## Design feedback
+
+The user can mark up a page in Anbo's browser directly: boxes, arrows,
+sketches and picked elements, each with a numbered badge and an optional note.
+When they send it, you receive one message that names the page, the annotated
+capture (`.anbo/artifacts/design/<name>.png`, or `.jpg` for a very large
+viewport) and a JSON document next to it, followed by the numbered notes. Open
+the image to see the marks; the numbers on it match the list in the message
+and the `marks` array in the JSON.
+
+Each JSON mark carries `kind` (`box`, `pick`, `arrow` or `pen`), `note`,
+`rect` in document CSS pixels, `viewport` in viewport CSS pixels (multiply by
+`viewport.dpr` for image pixels), `inViewport`, and for marks on an element an
+`element` object with `tag`, `role`, `name`, `text`, `selector`, `testId` and
+a ready-made `locator` you can pass straight to `browser_find` or a
+single-target action. Prefer the locator over the raw pixel geometry; the
+selector is a bounded path and may drift after your own edits.
+
+While design mode is on, that tab's input tools return `input_not_ready` with
+a `design_mode` reason, because the drawing layer sits over the page. Reading,
+finding, navigating and reloading keep working, and `browser_screenshot`
+captures the page without the marks. Do not retry input against it; act on
+the feedback in the code, then reload the page and verify. Anbo's own overlay
+elements never appear in snapshots or find results.
+
 ## Terminals
 
 `terminal_open` and `terminal_execute` drive **shared** terminals, not the ones

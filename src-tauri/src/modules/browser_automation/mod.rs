@@ -4,6 +4,7 @@ pub mod activity;
 pub mod agent_actions;
 pub mod caller;
 pub mod cdp;
+pub mod design;
 pub mod download;
 pub mod http;
 pub mod locator;
@@ -88,6 +89,59 @@ pub async fn browser_set_agent_callsigns(
     Ok(())
 }
 
+fn ensure_main_window(window: &tauri::Window) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("only the main window may drive design mode".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn browser_design_set(
+    app: AppHandle,
+    window: tauri::Window,
+    tab_id: i64,
+    active: bool,
+) -> Result<design::Status, String> {
+    ensure_main_window(&window)?;
+    if tab_id <= 0 {
+        return Err("invalid browser tab id".into());
+    }
+    design::set_active(&app, tab_id, active).await
+}
+
+#[tauri::command]
+pub async fn browser_design_command(
+    app: AppHandle,
+    window: tauri::Window,
+    tab_id: i64,
+    command: String,
+) -> Result<design::Status, String> {
+    ensure_main_window(&window)?;
+    if tab_id <= 0 {
+        return Err("invalid browser tab id".into());
+    }
+    if command.len() > 32 {
+        return Err("unknown design command".into());
+    }
+    design::command(&app, tab_id, &command).await
+}
+
+#[tauri::command]
+pub async fn browser_design_capture(
+    app: AppHandle,
+    window: tauri::Window,
+    tab_id: i64,
+    workspace: String,
+    include_image: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    ensure_main_window(&window)?;
+    if tab_id <= 0 {
+        return Err("invalid browser tab id".into());
+    }
+    design::capture(&app, tab_id, &workspace, include_image.unwrap_or(false)).await
+}
+
 #[tauri::command]
 pub async fn browser_automation_handle_action(
     app: AppHandle,
@@ -116,6 +170,7 @@ pub async fn browser_automation_handle_action(
 pub fn on_exit() {
     server::stop_server();
     activity::clear();
+    design::clear();
     download::clear();
     registry::clear_tab_locks();
     snapshot::clear_generations();

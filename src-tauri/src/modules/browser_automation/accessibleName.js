@@ -15,7 +15,7 @@ const nameContent = (root, includeHidden = false) => {
         }
         if (node.nodeType !== 1 && node.nodeType !== 11) return;
         if (node.nodeType === 1) {
-            if (['SCRIPT', 'STYLE', 'TEMPLATE', 'NOSCRIPT', 'ANBO-AUTOMATION-VISUAL'].includes(node.tagName)) return;
+            if (['SCRIPT', 'STYLE', 'TEMPLATE', 'NOSCRIPT', 'ANBO-AUTOMATION-VISUAL', 'ANBO-DESIGN-LAYER'].includes(node.tagName)) return;
             if (!includeHidden) {
                 if (node.hidden || node.getAttribute('aria-hidden') === 'true') return;
                 const style = getComputedStyle(node);

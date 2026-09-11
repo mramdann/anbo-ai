@@ -570,6 +570,7 @@ async fn spawn_browser_child(
             let kind = match payload.event() {
                 PageLoadEvent::Started => {
                     crate::modules::browser_automation::activity::navigation(&webview);
+                    crate::modules::browser_automation::design::navigation(&webview);
                     event_loading.store(true, Ordering::Release);
                     event_navigation_generation.fetch_add(1, Ordering::AcqRel);
                     if let Ok(mut pending_url) = event_pending_url.lock() {
@@ -580,6 +581,7 @@ async fn spawn_browser_child(
                 PageLoadEvent::Finished => {
                     crate::modules::browser_automation::activity::navigation(&webview);
                     crate::modules::browser_automation::activity::restore(&webview);
+                    crate::modules::browser_automation::design::restore(&webview);
                     event_loading.store(false, Ordering::Release);
                     if let Ok(mut pending_url) = event_pending_url.lock() {
                         *pending_url = None;
@@ -1988,6 +1990,7 @@ pub async fn browser_embed_begin_session(
         crate::modules::browser_automation::download::remove_tab(tab_id);
         crate::modules::browser_automation::snapshot::remove_generation(tab_id);
         crate::modules::browser_automation::activity::remove(tab_id);
+        crate::modules::browser_automation::design::remove(tab_id);
         remove_tab_lock(tab_id);
     }
     if is_new_session {
@@ -2178,6 +2181,7 @@ async fn close_embed_locked(
         crate::modules::browser_automation::download::remove_tab(tab_id);
         crate::modules::browser_automation::snapshot::remove_generation(tab_id);
         crate::modules::browser_automation::activity::remove(tab_id);
+        crate::modules::browser_automation::design::remove(tab_id);
     }
     outcome.map(|()| existed)
 }

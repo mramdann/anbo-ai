@@ -245,7 +245,7 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                     if (hits.length >= collectLimit) break;
                     if (scanned >= maxScanned) {{ truncated = true; break; }}
                     const el = elements[index];
-                    if (el.tagName === 'ANBO-AUTOMATION-VISUAL') continue;
+                    if (el.tagName === 'ANBO-AUTOMATION-VISUAL' || el.tagName === 'ANBO-DESIGN-LAYER') continue;
                     scanned += 1;
                     const matched = isMatch(el);
                     const isVisible = matched && isRenderedElement(el);

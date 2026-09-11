@@ -16,6 +16,7 @@ import {
   ComputerPhoneSyncIcon,
   Remove01Icon,
   AiBrowserIcon,
+  DrawingModeIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { DEVICE_PRESETS, devicePreset, RESPONSIVE_DEVICE } from "./devices";
@@ -73,6 +74,9 @@ type Props = {
   emulatedFit?: number | null;
   effectsEnabled?: boolean;
   onToggleEffects?: () => void;
+  designActive?: boolean;
+  /** Absent when this pane cannot host design mode (no native page). */
+  onToggleDesign?: () => void;
 };
 
 export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
@@ -90,6 +94,8 @@ export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
       emulatedFit,
       effectsEnabled,
       onToggleEffects,
+      designActive,
+      onToggleDesign,
     },
     ref,
   ) {
@@ -248,6 +254,31 @@ export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
               }}
             />
           </div>
+          {onToggleDesign && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0"
+              onClick={onToggleDesign}
+              aria-pressed={designActive}
+              aria-label="Design mode"
+              title={
+                designActive
+                  ? "Leave design mode"
+                  : "Design mode: mark up this page and send it to an agent"
+              }
+            >
+              <HugeiconsIcon
+                icon={DrawingModeIcon}
+                size={15}
+                strokeWidth={1.75}
+                className={
+                  designActive ? "text-primary" : "text-muted-foreground"
+                }
+              />
+            </Button>
+          )}
           {onToggleEffects && (
             <Button
               type="button"

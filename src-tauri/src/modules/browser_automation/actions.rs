@@ -296,6 +296,20 @@ async fn handle_action_inner(
             "no browser session: call browser_start_session first, then run this action under the controlId it returns and close it with browser_end_session when the task is done".into(),
         ));
     }
+    // While the user is drawing on a tab, the layer sits over the page and
+    // would swallow any press or drag; refusing up front says why, where the
+    // pointer guard could only report a covered target.
+    if super::design::blocks_input(method)
+        && params
+            .get("tabId")
+            .and_then(Value::as_i64)
+            .is_some_and(super::design::is_active)
+    {
+        return Err((
+            error_codes::INPUT_NOT_READY.into(),
+            super::design::refusal(),
+        ));
+    }
     if params.get("locator").is_some() {
         if params.get("ref").is_some()
             || (method != "wait" && !super::locator_target::supports_locator(method))
@@ -1563,6 +1577,7 @@ async fn handle_action_inner(
                 encoding.format
             };
             let file_path = dir.join(format!("screenshot_{tab_id}_{ts}.{extension}"));
+            let _design_layer = super::design::hide_for_capture(&webview).await;
             let response = capture_screenshot(&webview, encoding)
                 .await
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;

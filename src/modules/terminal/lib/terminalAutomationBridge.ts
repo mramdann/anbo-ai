@@ -1,10 +1,10 @@
 import type {
+  AgentAutomationMethod,
   AgentAutomationResponse,
-  TerminalAutomationMethod,
 } from "@/modules/agents/lib/agentAutomationProtocol";
 
 type TerminalAutomationHandler = (
-  method: TerminalAutomationMethod,
+  method: AgentAutomationMethod,
   params: Record<string, unknown>,
 ) => Promise<AgentAutomationResponse>;
 
@@ -16,8 +16,13 @@ export function setTerminalAutomationHandler(
   handler = next;
 }
 
+/**
+ * The in-process route to the shared terminal and agent service: the same
+ * handler that answers MCP, without the Rust round trip. Terminal and agent
+ * methods both land here because the service routes by prefix.
+ */
 export function requestTerminalAutomation(
-  method: TerminalAutomationMethod,
+  method: AgentAutomationMethod,
   params: Record<string, unknown>,
 ): Promise<AgentAutomationResponse> {
   if (!handler) {

@@ -57,6 +57,69 @@ export type BrowserDataUsage = {
   complete: boolean;
 };
 
+/** Rust reports every design-mode change on this event, main window only. */
+export const BROWSER_DESIGN_EVENT = "anbo:browser-design";
+
+export type BrowserDesignTool = "pen" | "box" | "arrow" | "pick" | "hand";
+
+export type BrowserDesignCommand =
+  | `tool:${BrowserDesignTool}`
+  | "undo"
+  | "delete"
+  | "clear"
+  | "deselect"
+  | "flush"
+  | "status";
+
+export type BrowserDesignStatus = {
+  tabId: number;
+  active: boolean;
+  tool: BrowserDesignTool;
+  marks: number;
+  dirty: boolean;
+  limit?: string;
+};
+
+export type BrowserDesignLocator = {
+  by: string;
+  value: string;
+  name?: string;
+};
+
+export type BrowserDesignMark = {
+  n: number;
+  kind: string;
+  note: string;
+  inViewport?: boolean;
+  element?: {
+    tag?: string;
+    name?: string;
+    text?: string;
+    selector?: string;
+    testId?: string;
+    locator?: BrowserDesignLocator;
+  } | null;
+};
+
+export type BrowserDesignCapture = {
+  tabId: number;
+  url: string;
+  title: string | null;
+  viewport: {
+    width: number;
+    height: number;
+    dpr: number;
+    scrollX: number;
+    scrollY: number;
+  } | null;
+  imagePath: string;
+  jsonPath: string;
+  imageBytes: number;
+  marks: BrowserDesignMark[];
+  /** A data URL, present only when requested and the image is small enough. */
+  image: string | null;
+};
+
 const BROWSER_INSTANCE_ID = crypto.randomUUID();
 const browserOwnerIds = new Map<number, string>();
 let sessionReady: Promise<void> | null = null;
@@ -303,6 +366,35 @@ export async function browserEmbedSnapshot(
     tabId,
     instanceId: BROWSER_INSTANCE_ID,
     ownerId,
+  });
+}
+
+export function browserDesignSet(
+  tabId: number,
+  active: boolean,
+): Promise<BrowserDesignStatus> {
+  return invoke<BrowserDesignStatus>("browser_design_set", { tabId, active });
+}
+
+export function browserDesignCommand(
+  tabId: number,
+  command: BrowserDesignCommand,
+): Promise<BrowserDesignStatus> {
+  return invoke<BrowserDesignStatus>("browser_design_command", {
+    tabId,
+    command,
+  });
+}
+
+export function browserDesignCapture(
+  tabId: number,
+  workspace: string,
+  includeImage = false,
+): Promise<BrowserDesignCapture> {
+  return invoke<BrowserDesignCapture>("browser_design_capture", {
+    tabId,
+    workspace,
+    includeImage,
   });
 }
 
