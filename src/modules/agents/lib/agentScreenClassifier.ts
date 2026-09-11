@@ -128,7 +128,14 @@ export function classifyAgentScreen(
 
   switch (agentKind) {
     case "claude":
-      if (/shortcuts|manual mode|Claude *Code/.test(screen)) {
+      // The prompt glyph alone is not evidence of Claude: the screen has to
+      // carry one of Claude's own footers. "? for shortcuts" is the usual one,
+      // but a permission mode replaces it with "... on (shift+tab to cycle)",
+      // and after a long turn the banner has scrolled out of the buffer, so a
+      // ready prompt in bypass mode was being read as no prompt at all.
+      if (
+        /shortcuts|manual mode|Claude *Code|shift\+tab to cycle/i.test(screen)
+      ) {
         readyAt = lastPatternIndex(screen, /(?:\u276f|>)(?!\s*\d+\.)[^\n]*/u);
       }
       // The completion row uses changing, sometimes accented verbs. Its TUI

@@ -532,4 +532,24 @@ describe("kimi permission prompt", () => {
     ].join("\n");
     expect(classifyAgentScreen("kimi", approval)).toBe("attention");
   });
+
+  it("reads a bypass-mode prompt as ready once the banner has scrolled away", () => {
+    const lines = [
+      "  Verification. The tab was reloaded and the screenshot shows the change.",
+      "                                              ✻ Brewed for 1m 39s · done 7:29 PM",
+      "",
+      "※ recap: Built the landing page and applied all four marks. (disable recaps in /config)",
+      "",
+      "──────────────────❯ ",
+      "──────────────────",
+      "  Fable 5.1 Xhigh | ctx: [····] 0%",
+      "  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+    ];
+    const screen = lines.join("\n");
+    expect(classifyAgentScreen("claude", screen)).toBe("ready");
+    expect(isAgentScreenReady("claude", screen)).toBe(true);
+    // The same prompt without any Claude footer is still no evidence at all.
+    const bare = lines.slice(0, -1).join("\n");
+    expect(classifyAgentScreen("claude", bare)).toBeNull();
+  });
 });
