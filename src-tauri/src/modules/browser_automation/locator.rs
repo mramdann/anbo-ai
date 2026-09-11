@@ -231,11 +231,18 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                 if (by === 'alt') return compare(el.getAttribute('alt'));
                 return false;
             }};
+            // A text search wants the thing that says the words, not every
+            // ancestor that contains it. Ancestors come first in document
+            // order, so taking the first `limit` handed back the page shell and
+            // left the button itself off the list: collect wider, then keep the
+            // tightest match of each nest.
+            const hits = [];
+            const collectLimit = by === 'text' ? Math.min(limit * 5, 50) : limit;
             const visit = root => {{
-                if (!root || !root.querySelectorAll || matches.length >= limit) return;
+                if (!root || !root.querySelectorAll || hits.length >= collectLimit) return;
                 const elements = root.querySelectorAll('*');
                 for (let index = 0; index < elements.length; index++) {{
-                    if (matches.length >= limit) break;
+                    if (hits.length >= collectLimit) break;
                     if (scanned >= maxScanned) {{ truncated = true; break; }}
                     const el = elements[index];
                     if (el.tagName === 'ANBO-AUTOMATION-VISUAL') continue;
@@ -244,6 +251,14 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                     const isVisible = matched && isRenderedElement(el);
                     if (matched && !includeHidden && !isVisible) hidden += 1;
                     if (matched && (includeHidden || isVisible)) {{
+                        hits.push(el);
+                    }}
+                    if (el.shadowRoot) visit(el.shadowRoot);
+                }}
+            }};
+
+            const describe = el => {{
+                        const isVisible = isRenderedElement(el);
                         const ref = refPrefix + (matches.length + 1);
                         refRegistry.remember(ref, el);
                         const type = el.tagName === 'INPUT' ? String(el.type || '').toLowerCase() : '';
@@ -273,13 +288,18 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                             bounds: {{x:r.x,y:r.y,width:r.width,height:r.height}},
                             checked: ['checkbox','radio'].includes(type) ? (el.indeterminate ? null : el.checked) : (el.getAttribute('aria-checked') === 'true' ? true : el.getAttribute('aria-checked') === 'false' ? false : null)
                         }});
-                    }}
-                    if (el.shadowRoot) visit(el.shadowRoot);
-                }}
             }};
 
             try {{
                 visit(document);
+                let chosen = hits;
+                if (by === 'text' && hits.length > 1) {{
+                    chosen = hits.filter(el => !hits.some(other =>
+                        other !== el && el.contains(other)
+                    ));
+                    if (!chosen.length) chosen = hits;
+                }}
+                for (const el of chosen.slice(0, limit)) describe(el);
                 return JSON.stringify({{ matches, scanned, truncated, hidden, nameMisses: (nameNear.length ? nameNear : nameAny), visualPoint, error: null }});
             }} catch (error) {{
                 return JSON.stringify({{

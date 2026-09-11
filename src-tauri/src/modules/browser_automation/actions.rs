@@ -114,6 +114,12 @@ struct BrowserTabMetadata {
 struct BrowserTabsResponse {
     active_tab_id: Option<i64>,
     active_space_id: Option<String>,
+    /// Tabs in the active space that are not browser tabs. They are invisible
+    /// to every browser tool, yet they decide whether an opened tab appears in
+    /// front of the user, so a caller that cannot see them cannot predict
+    /// placement.
+    #[serde(default)]
+    other_tabs: usize,
     tabs: Vec<BrowserTabMetadata>,
 }
 
@@ -337,6 +343,7 @@ async fn handle_action_inner(
             let active_space_id = metadata
                 .as_ref()
                 .and_then(|response| response.active_space_id.clone());
+            let other_tabs = metadata.as_ref().map_or(0, |response| response.other_tabs);
             let mut by_id = metadata
                 .map(|response| {
                     response
@@ -385,6 +392,8 @@ async fn handle_action_inner(
                 "tabs": result,
                 "activeTabId": active_tab_id,
                 "activeSpaceId": active_space_id,
+                "otherTabsInSpace": other_tabs,
+                "workspaceHasTabs": other_tabs > 0 || !result.is_empty(),
             }))
         }
 
@@ -495,7 +504,12 @@ async fn handle_action_inner(
                 .and_then(Value::as_u64)
                 .and_then(|value| usize::try_from(value).ok())
                 .unwrap_or(DEFAULT_SNAPSHOT_MAX_CHARS);
-            let formatted = format_snapshot(&payload, gen, requested_max_chars);
+            let offset = params
+                .get("offset")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(0);
+            let formatted = format_snapshot(&payload, gen, requested_max_chars, offset);
 
             Ok(json!({
                 "tabId": tab_id,
@@ -508,6 +522,8 @@ async fn handle_action_inner(
                 "includedItems": formatted.included_items,
                 "totalItems": formatted.total_items,
                 "maxChars": formatted.max_chars,
+                "offset": formatted.offset,
+                "nextOffset": formatted.next_offset,
                 "includedFrames": included_frames,
                 "skippedFrames": skipped_frames
             }))
@@ -795,10 +811,15 @@ async fn handle_action_inner(
             let tab_id = extract_tab_id(&params)?;
             let source_ref = extract_named_ref(&params, "sourceRef")?;
             let target_ref = extract_named_ref(&params, "targetRef")?;
-            if source_ref == target_ref {
+            let source_position = extract_fraction_position(&params, "sourcePosition")?;
+            let target_position = extract_fraction_position(&params, "targetPosition")?;
+            // Two centres of the same element are the same point, so this used
+            // to be refused outright. With a fraction on each end it is the
+            // ordinary way to pan a chart or a map.
+            if source_ref == target_ref && source_position == target_position {
                 return Err((
                     error_codes::INVALID_REQUEST.to_string(),
-                    "sourceRef and targetRef must be different".to_string(),
+                    "sourceRef and targetRef are the same element; give sourcePosition and targetPosition to drag within it".to_string(),
                 ));
             }
             let tab_lock = get_tab_lock(tab_id);
@@ -821,7 +842,7 @@ async fn handle_action_inner(
                 source_target.as_ref(),
                 &source_ref,
                 generation,
-                ActionabilityRequirement::Click,
+                ActionabilityRequirement::ClickAt(source_position),
             )
             .await?;
             let dispatch = if source.draggable
@@ -832,7 +853,7 @@ async fn handle_action_inner(
                     destination_target.as_ref(),
                     &target_ref,
                     generation,
-                    ActionabilityRequirement::Click,
+                    ActionabilityRequirement::ClickAt(target_position),
                 )
                 .await?;
                 dispatch_dom_drag(
@@ -849,11 +870,24 @@ async fn handle_action_inner(
                     "dom-frame"
                 }
             } else {
-                let pair =
-                    wait_for_drag_pair(&webview, &source_ref, &target_ref, generation).await?;
-                dispatch_mouse_drag(&webview, pair, &source_ref, &target_ref, generation)
-                    .await
-                    .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+                let pair = wait_for_drag_pair(
+                    &webview,
+                    &source_ref,
+                    &target_ref,
+                    generation,
+                    (source_position, target_position),
+                )
+                .await?;
+                dispatch_mouse_drag(
+                    &webview,
+                    pair,
+                    &source_ref,
+                    &target_ref,
+                    generation,
+                    (source_position, target_position),
+                )
+                .await
+                .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
                 "devtools"
             };
             Ok(json!({
@@ -1158,14 +1192,21 @@ async fn handle_action_inner(
                 "key": key,
                 "ok": true,
                 "dispatch": "devtools",
-                "submissionObserved": observation.submit_event,
-                "navigationObserved": observation.navigation,
-                "observationPerformed": should_observe,
-                "observationWindowMs": if should_observe { observation_timeout_ms } else { 0 }
             });
             if let Some(expectation) = expectation {
+                // The caller asked a question and gets its answer. Repeating the
+                // observation flags beside it invited the reading that a
+                // successful submit had failed -- three of them said false while
+                // the postcondition said matched -- and re-submitting a form is
+                // not a harmless way to find out.
                 result["postcondition"] = timings.measure("postcondition", wait_for_page_state(&webview, tab_id, &expectation)).await
                     .map_err(|(code, message)| (code, format!("key was dispatched, but {message}; inspect the page before resubmitting")))?;
+            } else {
+                result["submissionObserved"] = json!(observation.submit_event);
+                result["navigationObserved"] = json!(observation.navigation);
+                result["observationPerformed"] = json!(should_observe);
+                result["observationWindowMs"] =
+                    json!(if should_observe { observation_timeout_ms } else { 0 });
             }
             Ok(result)
         }
@@ -1511,8 +1552,18 @@ async fn handle_action_inner(
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_millis())
                 .unwrap_or(0);
-            let file_path = dir.join(format!("screenshot_{tab_id}_{ts}.png"));
-            let response = capture_screenshot(&webview)
+            let encoding = super::cdp::ScreenshotEncoding::parse(
+                params.get("format").and_then(Value::as_str),
+                params.get("quality").and_then(Value::as_u64),
+            )
+            .map_err(|error| (error_codes::INVALID_REQUEST.to_string(), error))?;
+            let extension = if encoding.format == "jpeg" {
+                "jpg"
+            } else {
+                encoding.format
+            };
+            let file_path = dir.join(format!("screenshot_{tab_id}_{ts}.{extension}"));
+            let response = capture_screenshot(&webview, encoding)
                 .await
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
             let bytes = decode_screenshot_response(&response)
@@ -1527,7 +1578,8 @@ async fn handle_action_inner(
                 "tabId": tab_id,
                 "path": file_path.to_string_lossy(),
                 "size": bytes.len(),
-                "format": "png"
+                "format": encoding.format,
+                "quality": encoding.quality
             }))
         }
 
@@ -1862,11 +1914,18 @@ async fn handle_action_inner(
                     const accessibleText = domText ? '' : accessibleName(el);
                     const text = domText || accessibleText.trim();
                     const source = domText ? 'domText' : (text ? 'accessibleName' : 'empty');
+                    // A control that hides itself seconds later reads one way now
+                    // and another way then, and an accessible name can hold a
+                    // value the visible text has already moved past. Say which
+                    // reading this is rather than leaving it to be noticed.
+                    const sourceNote = source === 'accessibleName'
+                        ? 'the element renders no text, so this is its accessible name, which can lag the value on screen'
+                        : null;
                     const max = {max_length};
                     let truncated = readable.sourceTruncated;
                     let out = text;
                     if (text.length > max) {{ out = clipReadableText(text, max); truncated = true; }}
-                    return JSON.stringify({{ ok: true, text: out, source: source, visible: isRenderedElement(el), truncated: truncated, totalLength: text.length, totalLengthIsLowerBound: readable.sourceTruncated }});"#
+                    return JSON.stringify({{ ok: true, text: out, source: source, sourceNote: sourceNote, visible: isRenderedElement(el), truncated: truncated, totalLength: text.length, totalLengthIsLowerBound: readable.sourceTruncated }});"#
             );
             let js = if let Some(ref_id) = ref_id.as_deref() {
                 let generation = get_current_generation(tab_id);
@@ -1894,6 +1953,7 @@ async fn handle_action_inner(
                     "ref": ref_id,
                     "text": parsed.get("text").cloned().unwrap_or(Value::Null),
                     "source": parsed.get("source").cloned().unwrap_or(Value::Null),
+                    "sourceNote": parsed.get("sourceNote").cloned().unwrap_or(Value::Null),
                     "visible": parsed.get("visible").and_then(Value::as_bool).unwrap_or(false),
                     "truncated": parsed.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false),
                     "totalLength": parsed.get("totalLength").and_then(|v| v.as_u64()).unwrap_or(0),
@@ -1966,11 +2026,69 @@ async fn handle_action_inner(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
 
+            // One advert iframe can spend the whole budget on a single 1,800
+            // character tracking URL. This is the cheapest diagnostic tool
+            // there is; it should not be the most expensive to read.
+            let wanted: Option<Vec<String>> = match params.get("level") {
+                None => None,
+                Some(Value::String(one)) => Some(vec![one.to_ascii_lowercase()]),
+                Some(Value::Array(many)) => Some(
+                    many.iter()
+                        .filter_map(|v| v.as_str().map(str::to_ascii_lowercase))
+                        .collect(),
+                ),
+                Some(_) => {
+                    return Err((
+                        error_codes::INVALID_REQUEST.to_string(),
+                        "level takes a console level or a list of them".to_string(),
+                    ))
+                }
+            };
+            let per_message = params
+                .get("maxCharsPerMessage")
+                .and_then(Value::as_u64)
+                .map(|value| value.clamp(40, 4_000) as usize);
+            let since = params.get("since").and_then(Value::as_u64);
+
             let (logs, included_frames, skipped_frames) = collect_console_logs(&webview).await;
+            let total = logs.len();
+            let mut clipped = 0usize;
+            let logs: Vec<Value> = logs
+                .into_iter()
+                .filter(|entry| {
+                    wanted.as_ref().is_none_or(|levels| {
+                        entry
+                            .get("level")
+                            .and_then(Value::as_str)
+                            .is_some_and(|level| levels.iter().any(|w| w == &level.to_ascii_lowercase()))
+                    })
+                })
+                .filter(|entry| {
+                    since.is_none_or(|from| {
+                        entry.get("ts").and_then(Value::as_u64).unwrap_or(0) >= from
+                    })
+                })
+                .map(|mut entry| {
+                    if let (Some(max), Some(text)) = (
+                        per_message,
+                        entry.get("text").and_then(Value::as_str).map(str::to_string),
+                    ) {
+                        if text.chars().count() > max {
+                            let short: String = text.chars().take(max).collect();
+                            entry["text"] = json!(short);
+                            entry["textTruncated"] = json!(true);
+                            clipped += 1;
+                        }
+                    }
+                    entry
+                })
+                .collect();
             Ok(json!({
                 "logs": logs,
                 "includedFrames": included_frames,
-                "skippedFrames": skipped_frames
+                "skippedFrames": skipped_frames,
+                "totalBeforeFilter": total,
+                "truncatedMessages": clipped
             }))
         }
 
@@ -3120,6 +3238,9 @@ async fn execute_ref_script(
 #[derive(Clone, Copy)]
 enum ActionabilityRequirement {
     Click,
+    /// A click aimed at a fraction of the box rather than its centre, which is
+    /// how a drag inside one element picks its start and end.
+    ClickAt(Option<(f64, f64)>),
     Hover(Option<(f64, f64)>),
     Focus,
     Editable,
@@ -3135,7 +3256,15 @@ struct ActionableElement {
 }
 
 fn extract_hover_position(params: &Value) -> Result<Option<(f64, f64)>, (String, String)> {
-    let Some(position) = params.get("position") else {
+    extract_fraction_position(params, "position")
+}
+
+/// A point inside an element's box, given as fractions of its width and height.
+fn extract_fraction_position(
+    params: &Value,
+    key: &str,
+) -> Result<Option<(f64, f64)>, (String, String)> {
+    let Some(position) = params.get(key) else {
         return Ok(None);
     };
     let valid = position
@@ -3149,7 +3278,7 @@ fn extract_hover_position(params: &Value) -> Result<Option<(f64, f64)>, (String,
         });
     valid.map(Some).ok_or_else(|| (
         error_codes::INVALID_REQUEST.to_string(),
-        "hover position requires only x and y, finite fractions strictly between 0 and 1 (0.5 is the center), not pixels".to_string(),
+        format!("{key} requires only x and y, finite fractions strictly between 0 and 1 (0.5 is the center), not pixels"),
     ))
 }
 
@@ -3201,18 +3330,27 @@ fn drag_points_stable(previous: [f64; 4], current: [f64; 4]) -> bool {
     })
 }
 
+type DragPositions = (Option<(f64, f64)>, Option<(f64, f64)>);
+
+fn drag_position_literal(position: Option<(f64, f64)>) -> String {
+    position.map_or("null".to_string(), |(x, y)| format!("[{x},{y}]"))
+}
+
 async fn read_drag_pair(
     webview: &Webview,
     source_ref: &str,
     target_ref: &str,
     generation: u64,
     scroll: bool,
+    positions: DragPositions,
 ) -> Result<[f64; 4], String> {
     let source = deep_ref_expression(source_ref, "return el;");
     let destination = deep_ref_expression(target_ref, "return el;");
     let probe = include_str!("dragProbe.js");
+    let source_position = drag_position_literal(positions.0);
+    let target_position = drag_position_literal(positions.1);
     let script = format!(
-        "(() => {{ const source = {source}; const destination = {destination}; const generation = 'gen-{generation}'; const scroll = {scroll}; {VISIBILITY_JS} {probe} }})()"
+        "(() => {{ const source = {source}; const destination = {destination}; const generation = 'gen-{generation}'; const scroll = {scroll}; const sourcePosition = {source_position}; const targetPosition = {target_position}; {VISIBILITY_JS} {probe} }})()"
     );
     let response = ref_context::execute_main(webview, &script).await?;
     let decoded: String = serde_json::from_str(&response).unwrap_or(response);
@@ -3233,12 +3371,15 @@ async fn wait_for_drag_pair(
     source_ref: &str,
     target_ref: &str,
     generation: u64,
+    positions: DragPositions,
 ) -> Result<[f64; 4], (String, String)> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut previous = None;
     let mut scroll = true;
     loop {
-        let reason = match read_drag_pair(webview, source_ref, target_ref, generation, scroll).await
+        let reason =
+            match read_drag_pair(webview, source_ref, target_ref, generation, scroll, positions)
+                .await
         {
             Ok(points) => {
                 if previous.is_some_and(|before| drag_points_stable(before, points)) {
@@ -3278,7 +3419,9 @@ async fn wait_for_actionable_ref(
 ) -> Result<ActionableElement, (String, String)> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let position = match requirement {
-        ActionabilityRequirement::Hover(position) => position,
+        ActionabilityRequirement::Hover(position) | ActionabilityRequirement::ClickAt(position) => {
+            position
+        }
         _ => None,
     };
     let initial_script = actionable_probe_script(ref_id, generation, true, position);
@@ -3322,9 +3465,9 @@ async fn wait_for_actionable_ref(
         });
         previous_rect = Some(rect);
         let requirement_met = match requirement {
-            ActionabilityRequirement::Click | ActionabilityRequirement::Hover(_) => {
-                enabled && receives
-            }
+            ActionabilityRequirement::Click
+            | ActionabilityRequirement::ClickAt(_)
+            | ActionabilityRequirement::Hover(_) => enabled && receives,
             ActionabilityRequirement::Focus => enabled,
             ActionabilityRequirement::Editable => editable && receives,
         };
@@ -4384,6 +4527,7 @@ async fn dispatch_mouse_drag(
     source_ref: &str,
     target_ref: &str,
     generation: u64,
+    positions: DragPositions,
 ) -> Result<(), String> {
     let [source_x, source_y, target_x, target_y] = pair;
     call_devtools_with_retry(
@@ -4395,7 +4539,8 @@ async fn dispatch_mouse_drag(
     .await?;
     let start = mouse_event_params("mouseMoved", source_x, source_y, false, 0).to_string();
     call_devtools_with_retry(webview, "Input.dispatchMouseEvent", &start, 2).await?;
-    let current = read_drag_pair(webview, source_ref, target_ref, generation, false).await?;
+    let current =
+        read_drag_pair(webview, source_ref, target_ref, generation, false, positions).await?;
     if !drag_points_stable(pair, current) {
         return Err("drag geometry changed before press; no mouse button was pressed".into());
     }

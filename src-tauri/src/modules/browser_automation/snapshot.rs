@@ -334,6 +334,9 @@ pub struct FormattedSnapshot {
     pub included_items: usize,
     pub total_items: usize,
     pub max_chars: usize,
+    pub offset: usize,
+    /// Where to continue, when there is more of the same page to read.
+    pub next_offset: Option<usize>,
 }
 
 pub fn prioritize_snapshot_elements(elements: &mut Vec<SnapshotElement>, limit: usize) -> bool {
@@ -350,6 +353,17 @@ fn format_item(item: &SnapshotElement) -> Option<String> {
     let ref_id = item.ref_id.as_ref()?;
     let role = item.role.as_deref().unwrap_or("element");
     let label = item.label.as_deref().unwrap_or("");
+    // A link with no name, no text and no value cannot be described to anyone,
+    // and cannot be chosen from a list of its identical siblings either. A feed
+    // page produced dozens of them, each spending budget that a usable element
+    // could have had.
+    if label.trim().is_empty()
+        && item.value.as_deref().unwrap_or("").trim().is_empty()
+        && item.checked.is_none()
+        && matches!(role, "link" | "element" | "img" | "generic")
+    {
+        return None;
+    }
     let mut extra = String::new();
     if let Some(value) = &item.value {
         if !value.is_empty() && role.starts_with("input") {
@@ -369,6 +383,7 @@ pub fn format_snapshot(
     payload: &SnapshotPayload,
     generation_id: u64,
     requested_max_chars: usize,
+    offset: usize,
 ) -> FormattedSnapshot {
     let max_chars = requested_max_chars.clamp(MIN_SNAPSHOT_MAX_CHARS, MAX_SNAPSHOT_MAX_CHARS);
     let title = payload.title.chars().take(200).collect::<String>();
@@ -383,7 +398,7 @@ pub fn format_snapshot(
     ));
     lines.push("---".to_string());
 
-    let mut candidates = payload
+    let mut candidates: Vec<String> = payload
         .elements
         .iter()
         .filter(|item| item.in_viewport)
@@ -398,6 +413,11 @@ pub fn format_snapshot(
     );
 
     let total_items = candidates.len();
+    // Scrolling was the only way past the first screenful, though the rest was
+    // already in the DOM and already measured: gathering 617 elements costs the
+    // same however much of it is read back.
+    let offset = offset.min(total_items);
+    let candidates = candidates.split_off(offset);
     let content_limit = max_chars.saturating_sub(160);
     let mut current_chars = lines
         .iter()
@@ -416,10 +436,20 @@ pub fn format_snapshot(
         included_items += 1;
     }
 
+    let next_offset = offset + included_items;
     if truncated {
-        lines.push(format!(
-            "[truncated: showing {included_items} of {total_items} items; scroll and snapshot again for nearby content]"
-        ));
+        let more = total_items.saturating_sub(next_offset);
+        lines.push(if more > 0 {
+            format!(
+                "[truncated: showing items {}-{next_offset} of {total_items}; call again with offset={next_offset} for the next {more}]",
+                offset + 1
+            )
+        } else {
+            format!(
+                "[truncated: showing items {}-{next_offset} of {total_items}]",
+                offset + 1
+            )
+        });
     }
 
     FormattedSnapshot {
@@ -428,6 +458,8 @@ pub fn format_snapshot(
         included_items,
         total_items,
         max_chars,
+        offset,
+        next_offset: (next_offset < total_items).then_some(next_offset),
     }
 }
 
@@ -469,7 +501,7 @@ mod tests {
             source_truncated: false,
         };
 
-        let formatted = format_snapshot(&payload, 1, DEFAULT_SNAPSHOT_MAX_CHARS);
+        let formatted = format_snapshot(&payload, 1, DEFAULT_SNAPSHOT_MAX_CHARS, 0);
         assert!(formatted.text.contains("Title: Test Page"));
         assert!(formatted.text.contains("Generation: 1"));
         assert!(formatted.text.contains("[g1-e1] <button> Click Me"));
@@ -506,7 +538,7 @@ mod tests {
             source_truncated: false,
         };
 
-        let formatted = format_snapshot(&payload, 1, DEFAULT_SNAPSHOT_MAX_CHARS);
+        let formatted = format_snapshot(&payload, 1, DEFAULT_SNAPSHOT_MAX_CHARS, 0);
         assert!(formatted.text.contains("[value=\"[REDACTED]\"]"));
     }
 
@@ -574,7 +606,7 @@ mod tests {
             source_truncated: false,
         };
 
-        let formatted = format_snapshot(&payload, 1, usize::MAX);
+        let formatted = format_snapshot(&payload, 1, usize::MAX, 0);
         assert!(formatted.truncated);
         assert_eq!(formatted.max_chars, MAX_SNAPSHOT_MAX_CHARS);
         assert!(formatted.text.chars().count() <= MAX_SNAPSHOT_MAX_CHARS);
@@ -597,7 +629,7 @@ mod tests {
             elements: Vec::new(),
             source_truncated: false,
         };
-        let formatted = format_snapshot(&payload, u64::MAX, 2000);
+        let formatted = format_snapshot(&payload, u64::MAX, 2000, 0);
         assert!(formatted.truncated);
         assert!(formatted.text.chars().count() <= 2000);
         assert!(formatted.text.contains("[truncated: showing"));

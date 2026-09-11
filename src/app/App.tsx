@@ -1677,9 +1677,17 @@ export default function App() {
           },
         ];
       });
+      // Terminal, editor and agent tabs decide whether a newly opened browser
+      // tab lands in front of the user or behind them, and they are invisible
+      // to every browser tool -- so the placement looked arbitrary from the
+      // outside. Report how many of them the active space holds.
+      const otherTabs = tabsRef.current.filter(
+        (tab) => tab.kind !== "browser" && tab.spaceId === currentSpaceId,
+      ).length;
       void emit(`${BROWSER_TABS_RESPONSE_EVENT}:${requestId}`, {
         activeTabId: activeBrowserId,
         activeSpaceId: currentSpaceId,
+        otherTabs,
         tabs: metadata,
       });
     });

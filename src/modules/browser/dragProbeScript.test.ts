@@ -61,13 +61,19 @@ function fixture() {
   }
   const from = new Element(1200, 40),
     to = new Element(1600, 60);
-  const run = (scroll = true) =>
+  const run = (
+    scroll = true,
+    sourcePosition: [number, number] | null = null,
+    targetPosition: [number, number] | null = null,
+  ) =>
     JSON.parse(
       vm.runInNewContext(`(() => {${source}})()`, {
         source: from,
         destination: to,
         generation: "gen-1",
         scroll,
+        sourcePosition,
+        targetPosition,
         innerWidth: 800,
         innerHeight: 600,
         document: root,
@@ -78,6 +84,18 @@ function fixture() {
 }
 
 describe("shipped drag endpoint probe", () => {
+  it("takes each endpoint from its own fraction of the box", () => {
+    // Panning a chart or dragging a map starts and ends inside one element,
+    // where two centres are the same point and nothing moves.
+    const f = fixture();
+    const centres = f.run().points;
+    const offset = f.run(true, [0.25, 0.5], [0.75, 0.5]).points;
+    expect(offset[1]).toBe(centres[1]);
+    expect(offset[3]).toBe(centres[3]);
+    expect(offset[0]).toBeLessThan(centres[0]);
+    expect(offset[2]).toBeGreaterThan(centres[2]);
+  });
+
   it("measures both endpoints after all scrolling, not a cached source point", () => {
     const f = fixture();
     const result = f.run();

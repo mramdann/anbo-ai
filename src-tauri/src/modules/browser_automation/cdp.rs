@@ -150,7 +150,61 @@ pub async fn call_devtools_protocol_method(
 }
 
 #[cfg(windows)]
-pub async fn capture_screenshot(webview: &Webview) -> Result<String, String> {
+/// How the page should be encoded on the way out.
+///
+/// A layout check does not need a lossless capture at full device pixel
+/// ratio: an emulated phone at scale 3 produced a 248 KB PNG, three times the
+/// cost of reading it. PNG stays the default so nothing silently loses detail.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScreenshotEncoding {
+    pub format: &'static str,
+    pub quality: Option<u8>,
+}
+
+impl Default for ScreenshotEncoding {
+    fn default() -> Self {
+        Self {
+            format: "png",
+            quality: None,
+        }
+    }
+}
+
+impl ScreenshotEncoding {
+    pub fn parse(format: Option<&str>, quality: Option<u64>) -> Result<Self, String> {
+        let format = match format.unwrap_or("png") {
+            "png" => "png",
+            "jpeg" | "jpg" => "jpeg",
+            "webp" => "webp",
+            other => return Err(format!("unsupported screenshot format '{other}'")),
+        };
+        if format == "png" && quality.is_some() {
+            return Err("quality only applies to jpeg and webp".to_string());
+        }
+        Ok(Self {
+            format,
+            quality: quality.map(|value| value.clamp(1, 100) as u8),
+        })
+    }
+
+    fn params(self) -> String {
+        match self.quality {
+            Some(quality) if self.format != "png" => format!(
+                r#"{{"format":"{}","quality":{quality},"fromSurface":true,"captureBeyondViewport":false}}"#,
+                self.format
+            ),
+            _ => format!(
+                r#"{{"format":"{}","fromSurface":true,"captureBeyondViewport":false}}"#,
+                self.format
+            ),
+        }
+    }
+}
+
+pub async fn capture_screenshot(
+    webview: &Webview,
+    encoding: ScreenshotEncoding,
+) -> Result<String, String> {
     use windows::core::BOOL;
     use windows::Win32::Foundation::RECT;
     let _visual_capture = super::activity::prepare_capture(webview).await?;
@@ -200,7 +254,7 @@ pub async fn capture_screenshot(webview: &Webview) -> Result<String, String> {
     let result = call_devtools_protocol_method(
         webview,
         "Page.captureScreenshot",
-        r#"{"format":"png","fromSurface":true,"captureBeyondViewport":false}"#,
+        &encoding.params(),
         std::time::Duration::from_secs(10),
     )
     .await;
@@ -322,7 +376,10 @@ pub async fn call_devtools_protocol_method(
 }
 
 #[cfg(not(windows))]
-pub async fn capture_screenshot(_webview: &Webview) -> Result<String, String> {
+pub async fn capture_screenshot(
+    _webview: &Webview,
+    _encoding: ScreenshotEncoding,
+) -> Result<String, String> {
     Err("browser automation is only supported on Windows".to_string())
 }
 

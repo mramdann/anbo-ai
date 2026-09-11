@@ -27,12 +27,19 @@ pub const READABLE_TEXT_JS: &str = r#"
             if (node.nodeType === 1) {
                 if (['SCRIPT','STYLE','NOSCRIPT','TEMPLATE','HEAD','ANBO-AUTOMATION-VISUAL'].includes(String(node.tagName).toUpperCase()) || node.hidden || node.getAttribute('aria-hidden') === 'true') return;
                 const style = getComputedStyle(node);
-                if (style.display === 'none' || style.contentVisibility === 'hidden' || Number(style.opacity || 1) === 0) return;
-                visible = style.visibility !== 'hidden' && style.visibility !== 'collapse';
+                // display:none removes the box, so the text around it closes
+                // up. An invisible box still holds its line, which is why the
+                // break is decided before the content is skipped.
+                if (style.display === 'none') return;
                 // A line break belongs where the layout puts one. Inline boxes
                 // sit on the same line however many elements they are split
                 // across, which is how a ticker renders a changing digit.
                 block = !/^(inline|contents)/.test(String(style.display || ''));
+                if (style.contentVisibility === 'hidden' || Number(style.opacity || 1) === 0) {
+                    if (block) parts.push(BREAK);
+                    return;
+                }
+                visible = style.visibility !== 'hidden' && style.visibility !== 'collapse';
             }
             if (block) parts.push(BREAK);
             const assigned = String(node.tagName).toUpperCase() === 'SLOT' ? node.assignedNodes?.() : null;

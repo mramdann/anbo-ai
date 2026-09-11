@@ -74,18 +74,25 @@ describe("shipped isolated ref registry", () => {
     target.ownerDocument = {};
     expect(f.run("return refRegistry.resolve('g2-e1')")).toBeNull();
   });
-  it("replaces a generation and rejects late scans before touching current refs", () => {
+  it("keeps live refs until a scan actually registers one", () => {
     const f = fixture();
     const target = f.node();
     f.run("refRegistry.begin(1);refRegistry.remember('g1-e1', target)", {
       target,
     });
+
+    // A scan that starts and finds nothing has replaced nothing. Retiring the
+    // caller's refs here is what made one mistyped selector cost every target
+    // it was holding.
     f.run("refRegistry.begin(2)");
-    expect(target.attributes.size).toBe(0);
-    expect(f.run("return refRegistry.resolve('g1-e1')")).toBeNull();
+    expect(target.attributes.size).toBeGreaterThan(0);
+    expect(f.run("return refRegistry.resolve('g1-e1')")).toBe(target);
+
+    // The first ref the new scan registers is what retires the old ones.
     f.run("refRegistry.remember('g2-e1', target)");
-    expect(() => f.run("refRegistry.begin(1)")).toThrow("stale_scan");
+    expect(f.run("return refRegistry.resolve('g1-e1')")).toBeNull();
     expect(f.run("return refRegistry.resolve('g2-e1')")).toBe(target);
+    expect(() => f.run("refRegistry.begin(1)")).toThrow("stale_scan");
   });
   it("caps retained weak references at the snapshot limit", () => {
     const f = fixture();
@@ -442,7 +449,10 @@ describe("shipped isolated ref registry", () => {
     );
     target.isConnected = false;
     expect(f.run("return refRegistry.reason('g1-e1')")).toBe("node_detached");
+    // Beginning a scan is not enough to change generation; registering a ref
+    // in it is.
     f.run("refRegistry.begin(2)");
+    f.run("refRegistry.remember('g2-e1', f.node())", { f });
     expect(f.run("return refRegistry.reason('g1-e1')")).toBe(
       "generation_changed",
     );
