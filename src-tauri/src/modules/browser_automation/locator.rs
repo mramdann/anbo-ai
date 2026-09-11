@@ -57,6 +57,17 @@ pub struct LocatorPayload {
     pub scanned: usize,
     #[serde(default)]
     pub truncated: bool,
+    /// Elements that matched the locator but were dropped as not rendered.
+    ///
+    /// Without this a caller cannot tell "this page has no such element" from
+    /// "it is there, behind a collapsed menu" -- the two readings lead to
+    /// opposite next steps.
+    #[serde(default)]
+    pub hidden: usize,
+    /// A few accessible names that carried the wanted role but not the wanted
+    /// name, so a near miss can say what it saw instead.
+    #[serde(default)]
+    pub name_misses: Vec<String>,
     pub error: Option<String>,
 }
 
@@ -79,6 +90,13 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
             let visualPoint = null;
             let scanned = 0;
             let truncated = false;
+            let hidden = 0;
+            // Two buckets: names that share a word with the one asked for, and
+            // whatever else carried the role. The first bucket is the one that
+            // actually helps -- "Download this page as a PDF file" answers a
+            // search for "Download as PDF", the page's first five links do not.
+            const nameNear = [];
+            const nameAny = [];
 
             const normalize = input => String(input || '').replace(/\s+/g, ' ').trim();
             const expectedValue = normalize(wanted).toLocaleLowerCase();
@@ -88,6 +106,14 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                 return exact ? left === expected : left.includes(expected);
             }};
             const compare = input => compareValue(input, expectedValue);
+            const nameWords = expectedName.split(' ').filter(word => word.length > 2);
+            const rememberMiss = actual => {{
+                const seen = normalize(actual).slice(0, 80);
+                if (!seen) return;
+                const lower = seen.toLocaleLowerCase();
+                const bucket = nameWords.some(word => lower.includes(word)) ? nameNear : nameAny;
+                if (bucket.length < 5 && !bucket.includes(seen)) bucket.push(seen);
+            }};
             const implicitRole = el => {{
                 const explicit = normalize(el.getAttribute('role')).split(' ')[0];
                 if (explicit) return explicit;
@@ -117,8 +143,12 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                 }}
                 if (by === 'role') {{
                     const role = implicitRole(el);
-                    return !!role && compare(role) &&
-                        (!wantedName || compareValue(accessibleName(el), expectedName));
+                    if (!role || !compare(role)) return false;
+                    if (!wantedName) return true;
+                    const actual = accessibleName(el);
+                    if (compareValue(actual, expectedName)) return true;
+                    rememberMiss(actual);
+                    return false;
                 }}
                 if (by === 'text') {{
                     if (!compare(el.innerText || el.textContent)) return false;
@@ -148,6 +178,7 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                     scanned += 1;
                     const matched = isMatch(el);
                     const isVisible = matched && isRenderedElement(el);
+                    if (matched && !includeHidden && !isVisible) hidden += 1;
                     if (matched && (includeHidden || isVisible)) {{
                         const ref = refPrefix + (matches.length + 1);
                         refRegistry.remember(ref, el);
@@ -185,12 +216,14 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
 
             try {{
                 visit(document);
-                return JSON.stringify({{ matches, scanned, truncated, visualPoint, error: null }});
+                return JSON.stringify({{ matches, scanned, truncated, hidden, nameMisses: (nameNear.length ? nameNear : nameAny), visualPoint, error: null }});
             }} catch (error) {{
                 return JSON.stringify({{
                     matches: [],
                     scanned,
                     truncated,
+                    hidden,
+                    nameMisses: nameNear.length ? nameNear : nameAny,
                     error: error && error.message === 'invalid_selector' ? 'invalid_selector' : 'locator_failed'
                 }});
             }}
@@ -243,8 +276,17 @@ mod tests {
             },
         );
         assert!(script.contains(r#"const wantedName = "Save changes";"#));
-        assert!(script.contains("compareValue(accessibleName(el), expectedName)"));
+        assert!(script.contains("compareValue(actual, expectedName)"));
         assert!(script.contains("const expectedName = normalize(wantedName).toLocaleLowerCase()"));
-        assert!(script.contains("return !!role && compare(role)"));
+        assert!(script.contains("if (!role || !compare(role)) return false;"));
+        // A near miss keeps a few of the names it saw, so the caller is told
+        // what the page calls the thing instead of guessing again.
+        assert!(script.contains("bucket.push(seen)"));
+        // The payload is read as camelCase, so the script must emit it that way.
+        assert!(script.contains("nameMisses: (nameNear.length ? nameNear : nameAny)"));
+        assert!(script.contains("bucket.length < 5"));
+        assert!(script.contains("nameWords.some(word => lower.includes(word))"));
+        // Matches dropped for being out of sight are counted, never silent.
+        assert!(script.contains("if (matched && !includeHidden && !isVisible) hidden += 1;"));
     }
 }

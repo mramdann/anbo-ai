@@ -440,16 +440,29 @@ async fn handle_action_inner(
             let _lock = tab_lock.lock().await;
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
+            // Read the load state before cutting it: afterwards there is
+            // nothing left to distinguish "there was nothing to stop" from
+            // "a load was cut", and both report loading=false.
+            let was_loading = active_loading(tab_id);
+            let pending_url = active_pending_url(tab_id);
             let navigated = dispatch_navigation_action(&webview, tab_id, method)
                 .await
                 .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
-            Ok(json!({
+            let mut body = json!({
                 "tabId": tab_id,
                 "action": method,
                 "ok": true,
                 "navigated": navigated,
                 "loading": active_loading(tab_id)
-            }))
+            });
+            if method == "stop" {
+                body["wasLoading"] = json!(was_loading.unwrap_or(false));
+                body["cancelledUrl"] = json!(match was_loading {
+                    Some(true) => pending_url,
+                    _ => None,
+                });
+            }
+            Ok(body)
         }
 
         "snapshot" => {
@@ -542,7 +555,8 @@ async fn handle_action_inner(
                         "truncated": result.truncated,
                         "nodeLimitReached": result.node_limit_reached,
                         "includedFrames": result.included_frames,
-                        "skippedFrames": result.skipped_frames
+                        "skippedFrames": result.skipped_frames,
+                        "hiddenMatches": result.hidden
                     }));
                 }
                 empty_scans += 1;
@@ -2454,6 +2468,42 @@ struct CollectedLocatorMatches {
     node_limit_reached: bool,
     included_frames: usize,
     skipped_frames: usize,
+    hidden: usize,
+    name_misses: Vec<String>,
+}
+
+/// Name the elements that collided, so narrowing them does not cost another
+/// round trip.
+///
+/// "matched multiple elements" tells the caller to narrow without telling them
+/// what to narrow against; the two candidates are already in hand.
+fn describe_ambiguity(
+    error: (String, String),
+    matches: &[LocatorMatch],
+) -> (String, String) {
+    if error.0 != error_codes::AMBIGUOUS_TARGET || matches.is_empty() {
+        return error;
+    }
+    let candidates = matches
+        .iter()
+        .map(|item| {
+            let label = if item.name.is_empty() {
+                item.text.as_str()
+            } else {
+                item.name.as_str()
+            };
+            let label: String = label.chars().take(60).collect();
+            let position = item
+                .bounds
+                .as_ref()
+                .map(|b| format!(" at {:.0},{:.0}", b.x, b.y))
+                .unwrap_or_default();
+            let hidden = if item.visible { "" } else { ", hidden" };
+            format!("<{}> \"{label}\"{position}{hidden}", item.tag)
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    (error.0, format!("{}; candidates: {candidates}", error.1))
 }
 
 fn find_timeout(
@@ -2463,13 +2513,38 @@ fn find_timeout(
     scan_error: Option<&str>,
     last_empty_scan: Option<&CollectedLocatorMatches>,
 ) -> (String, String) {
+    // What the caller needs is not how many scans ran, but whether this is a
+    // verdict they can act on. A page scanned end to end with nothing matching
+    // is a real absence; a truncated scan is not; and a locator that matched
+    // elements nobody can see is neither -- it is a visibility filter the
+    // caller can lift.
+    let hidden = last_empty_scan.map_or(0, |scan| scan.hidden);
     let detail = if empty_scans == 0 {
         "no scan completed".to_string()
-    } else if last_empty_scan.is_some_and(|scan| scan.node_limit_reached || scan.skipped_frames > 0)
+    } else if let Some(scan) =
+        last_empty_scan.filter(|scan| scan.node_limit_reached || scan.skipped_frames > 0)
     {
-        format!("no match in the scanned portion of {empty_scans} completed scans; page coverage incomplete")
+        format!(
+            "page coverage incomplete after {empty_scans} scans ({} nodes scanned{}); the element may exist in the unscanned part, so this is not a confirmed absence",
+            scan.scanned,
+            if scan.skipped_frames > 0 { format!(", {} frames skipped", scan.skipped_frames) } else { String::new() },
+        )
+    } else if hidden > 0 {
+        format!(
+            "{hidden} element(s) matched but are not rendered, so they were filtered out; retry with includeHidden=true to address them"
+        )
+    } else if let Some(names) = last_empty_scan
+        .filter(|scan| !scan.name_misses.is_empty())
+        .map(|scan| scan.name_misses.join("\", \""))
+    {
+        format!(
+            "the role matched but no accessible name contained the requested one; names seen here: \"{names}\""
+        )
     } else {
-        format!("no matching element in {empty_scans} completed scans")
+        format!(
+            "page fully scanned {empty_scans} time(s) ({} nodes) and no element matched; this is a confirmed absence",
+            last_empty_scan.map_or(0, |scan| scan.scanned),
+        )
     };
     (
         error_codes::TIMEOUT.to_string(),
@@ -2622,10 +2697,11 @@ async fn resolve_target_locator(
                 first.is_some_and(|m| m.visible),
                 first.is_some_and(|m| m.enabled),
                 first.and_then(|m| m.checked),
-            )?
+            )
         } else {
-            super::locator_target::unique(result.matches.len(), complete)?
-        };
+            super::locator_target::unique(result.matches.len(), complete)
+        }
+        .map_err(|error| describe_ambiguity(error, &result.matches))?;
         if matched {
             return Ok(json!({
                 "ok":true, "tabId":tab_id, "generation":generation,
@@ -2703,6 +2779,8 @@ async fn collect_locator_matches(
             node_limit_reached: root.truncated,
             included_frames: 1,
             skipped_frames: 0,
+            hidden: root.hidden,
+            name_misses: std::mem::take(&mut root.name_misses),
         });
     }
     let (frame_ids, frame_limit_reached) = get_frame_ids(webview)
@@ -2733,6 +2811,8 @@ async fn collect_locator_matches(
     let mut node_limit_reached = root.truncated;
     let mut included_frames = 1usize;
     let mut skipped_frames = usize::from(frame_limit_reached);
+    let mut hidden = root.hidden;
+    let mut name_misses = std::mem::take(&mut root.name_misses);
 
     let frame_jobs = frame_ids
         .iter()
@@ -2778,6 +2858,12 @@ async fn collect_locator_matches(
         };
         included_frames += 1;
         scanned = scanned.saturating_add(payload.scanned);
+        hidden = hidden.saturating_add(payload.hidden);
+        for name in payload.name_misses {
+            if name_misses.len() < 5 && !name_misses.contains(&name) {
+                name_misses.push(name);
+            }
+        }
         truncated |= payload.truncated;
         node_limit_reached |= payload.truncated;
         truncated |= payload.matches.len() > remaining;
@@ -2804,6 +2890,8 @@ async fn collect_locator_matches(
         node_limit_reached,
         included_frames,
         skipped_frames,
+        hidden,
+        name_misses,
     })
 }
 
@@ -5009,37 +5097,116 @@ mod tests {
     }
 
     #[test]
-    fn find_timeout_distinguishes_empty_scans_from_an_unfinished_scan() {
+    fn an_ambiguous_target_names_the_elements_that_collided() {
+        let candidate = |tag: &str, name: &str, x: f64, visible: bool| LocatorMatch {
+            ref_id: "g1-e1".into(),
+            tag: tag.into(),
+            role: "link".into(),
+            name: name.into(),
+            text: "fallback text".into(),
+            value: None,
+            visible,
+            enabled: true,
+            checked: None,
+            editable: false,
+            read_only: false,
+            in_viewport: true,
+            bounds: Some(super::super::locator::LocatorBounds {
+                x,
+                y: 400.0,
+                width: 80.0,
+                height: 20.0,
+            }),
+        };
+        let error = (
+            error_codes::AMBIGUOUS_TARGET.to_string(),
+            "locator matched multiple elements".to_string(),
+        );
+        let described = describe_ambiguity(
+            error.clone(),
+            &[
+                candidate("a", "Manufacturers", 120.0, true),
+                candidate("button", "", 640.0, false),
+            ],
+        );
+        assert!(described.1.contains("<a> \"Manufacturers\" at 120,400"));
+        // A nameless candidate falls back to its text, and being out of sight
+        // is itself the thing that tells them apart.
+        assert!(described.1.contains("<button> \"fallback text\" at 640,400, hidden"));
+
+        // Every other failure is passed through untouched.
+        let other = (
+            error_codes::TIMEOUT.to_string(),
+            "timed out".to_string(),
+        );
+        assert_eq!(
+            describe_ambiguity(other.clone(), &[candidate("a", "x", 1.0, true)]),
+            other
+        );
+        assert_eq!(describe_ambiguity(error.clone(), &[]), error);
+    }
+
+    #[test]
+    fn find_timeout_says_what_the_caller_can_conclude() {
         let locator = extract_locator(&json!({"by":"css", "value":"#missing"})).unwrap();
-        let empty = find_timeout(&locator, 800, 3, None, None);
-        assert_eq!(empty.0, error_codes::TIMEOUT);
-        assert!(empty.1.contains("#missing"));
-        assert!(empty.1.contains("no matching element in 3 completed scans"));
-        let queued = find_timeout(&locator, 800, 0, Some("queue exceeded deadline"), None);
-        assert!(queued.1.contains("no scan completed"));
-        assert!(queued.1.contains("queue exceeded deadline"));
-        let partial = find_timeout(&locator, 800, 1, Some("scan exceeded deadline"), None);
-        assert!(partial.1.contains("1 completed scans; latest scan"));
-        let capped = CollectedLocatorMatches {
+        let scan = |hidden: usize, names: Vec<&str>| CollectedLocatorMatches {
             matches: vec![],
-            scanned: 50000,
-            truncated: true,
-            node_limit_reached: true,
+            scanned: 16_295,
+            truncated: false,
+            node_limit_reached: false,
             included_frames: 1,
             skipped_frames: 0,
+            hidden,
+            name_misses: names.into_iter().map(str::to_string).collect(),
         };
-        let error = find_timeout(&locator, 800, 2, None, Some(&capped));
-        assert!(error.1.contains("page coverage incomplete"));
-        assert!(error.1.contains("nodeLimitReached=true"));
-        assert!(error.1.contains("scanned=50000"));
+
+        // A page read end to end with nothing matching is a verdict, and says so.
+        let absent = find_timeout(&locator, 800, 3, None, Some(&scan(0, vec![])));
+        assert_eq!(absent.0, error_codes::TIMEOUT);
+        assert!(absent.1.contains("#missing"));
+        assert!(absent.1.contains("confirmed absence"));
+        assert!(absent.1.contains("16295"));
+
+        // An element behind a collapsed menu is not an absence, and the caller
+        // is told the one thing that would reach it.
+        let hidden = find_timeout(&locator, 800, 3, None, Some(&scan(2, vec![])));
+        assert!(hidden.1.contains("2 element(s) matched but are not rendered"));
+        assert!(hidden.1.contains("includeHidden=true"));
+        assert!(!hidden.1.contains("confirmed absence"));
+
+        // A role that matched under a different accessible name reports the
+        // names it saw rather than leaving the caller to guess.
+        let named = find_timeout(
+            &locator,
+            800,
+            3,
+            None,
+            Some(&scan(0, vec!["Download this page as a PDF file"])),
+        );
+        assert!(named.1.contains("Download this page as a PDF file"));
+        assert!(!named.1.contains("confirmed absence"));
+
+        // Truncated coverage must never read as a verdict.
+        let capped = CollectedLocatorMatches {
+            node_limit_reached: true,
+            scanned: 50_000,
+            ..scan(0, vec![])
+        };
+        let partial = find_timeout(&locator, 800, 2, None, Some(&capped));
+        assert!(partial.1.contains("page coverage incomplete"));
+        assert!(partial.1.contains("not a confirmed absence"));
         let skipped = CollectedLocatorMatches {
-            node_limit_reached: false,
             skipped_frames: 1,
-            ..capped
+            ..scan(0, vec![])
         };
         assert!(find_timeout(&locator, 800, 2, None, Some(&skipped))
             .1
-            .contains("skippedFrames=1"));
+            .contains("1 frames skipped"));
+
+        // No scan at all stays distinct from every reading above.
+        let queued = find_timeout(&locator, 800, 0, Some("queue exceeded deadline"), None);
+        assert!(queued.1.contains("no scan completed"));
+        assert!(queued.1.contains("queue exceeded deadline"));
     }
 
     #[test]
