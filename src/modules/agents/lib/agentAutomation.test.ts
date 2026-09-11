@@ -624,6 +624,51 @@ describe("agent messages", () => {
     service.dispose();
   });
 
+  it("waits for Kimi to echo a short message before pressing Enter", async () => {
+    // Not a first message and well under one paste, so this used to take the
+    // fixed-delay path and hand Kimi an Enter it quietly swallowed: the
+    // instruction stayed typed in the box while the sender believed it sent.
+    vi.useFakeTimers();
+    let buffer = "Welcome to Kimi Code!\ncontext: 0% (0/977k)\n> ";
+    const writes: Array<[number, string]> = [];
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab()] as Tab[],
+      getSpaces: () => [space()],
+      getSessions: () => ({
+        101: session({ agent: "kimi", name: "Atlas" }),
+      }),
+      getActiveTabId: () => null,
+      getBuffer: () => buffer,
+      write: (leafId, data) => {
+        writes.push([leafId, data]);
+        return true;
+      },
+      spawn: () => null,
+      subscribeSessions: () => () => {},
+    });
+
+    const pending = service.handle({
+      requestId: "request-kimi",
+      method: "agent_send",
+      params: {
+        workspace: "space-a",
+        agentId: "atlas-kimi:10",
+        message: "Sebutkan satu warna saja.",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(writes).toEqual([[101, "Sebutkan satu warna saja."]]);
+
+    buffer += "Sebutkansatuwarnasaja.";
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(pending).resolves.toMatchObject({ result: { ok: true } });
+    expect(writes).toEqual([
+      [101, "Sebutkan satu warna saja."],
+      [101, "\r"],
+    ]);
+    service.dispose();
+  });
+
   it("does not acknowledge or submit Codex input that was never rendered", async () => {
     vi.useFakeTimers();
     const writes: Array<[number, string]> = [];

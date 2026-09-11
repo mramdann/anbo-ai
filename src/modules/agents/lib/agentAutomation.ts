@@ -289,6 +289,19 @@ export async function waitForAgentTuiReady(
 }
 
 /**
+ * CLIs that only accept Enter once they have drawn what was typed.
+ *
+ * For these a fixed pause before the carriage return is a coin toss: Codex can
+ * still be mounting its input, and Kimi folds an Enter that arrives too soon
+ * into the box as a newline, leaving the message typed but never sent. Both
+ * are cheap to wait for -- the echo says when the text landed, and a settled
+ * screen says when it is safe to press Enter.
+ */
+function needsEchoedInput(cli: string): boolean {
+  return cli === "codex" || cli === "kimi";
+}
+
+/**
  * Hold until the screen stops moving, or the deadline passes.
  *
  * An echoed message proves the text arrived, not that the TUI has finished
@@ -812,7 +825,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     if (
       waitForReady &&
       (acceptsInitialSpawnMessage ||
-        normalizedCli === "codex" ||
+        needsEchoedInput(normalizedCli) ||
         (!isAntigravity && message.message.length > INPUT_CHUNK_CHARS)) &&
       !(await waitForAgentTuiReady(
         () => readPreparedBuffer(current.leafId),
@@ -841,7 +854,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       message.message,
       !isAntigravity &&
         (acceptsInitialSpawnMessage ||
-          normalizedCli === "codex" ||
+          needsEchoedInput(normalizedCli) ||
           message.message.length > INPUT_CHUNK_CHARS),
       isAntigravity ? ANTIGRAVITY_SUBMIT_DELAY_MS : SUBMIT_DELAY_MS,
       timeout,
