@@ -37,6 +37,7 @@ const INPUT_READY_POLL_MS = 25;
 const INPUT_CHUNK_CHARS = 256;
 const TUI_READY_POLL_MS = 100;
 const TUI_READY_STABLE_POLLS = 3;
+const SUBMIT_SETTLE_POLLS = 2;
 
 export type AgentDescriptor = {
   agentId: string;
@@ -287,6 +288,34 @@ export async function waitForAgentTuiReady(
   return false;
 }
 
+/**
+ * Hold until the screen stops moving, or the deadline passes.
+ *
+ * An echoed message proves the text arrived, not that the TUI has finished
+ * laying it out. A settled buffer is the closest a terminal comes to saying
+ * it is done drawing what it was just handed.
+ */
+async function waitForQuietBuffer(
+  getBuffer: (leafId: number) => string | null,
+  leafId: number,
+  deadline: number,
+): Promise<void> {
+  let previous = getBuffer(leafId);
+  let quiet = 0;
+  while (quiet < SUBMIT_SETTLE_POLLS && Date.now() < deadline) {
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, INPUT_READY_POLL_MS),
+    );
+    const current = getBuffer(leafId);
+    if (current === previous) {
+      quiet += 1;
+    } else {
+      quiet = 0;
+      previous = current;
+    }
+  }
+}
+
 export async function submitAgentMessage(
   write: (leafId: number, data: string) => boolean,
   getBuffer: (leafId: number) => string | null,
@@ -349,6 +378,14 @@ export async function submitAgentMessage(
       }
       offset = end;
     }
+    // Enter is only a send once the paste it follows has landed. A message
+    // long enough to be written in more than one piece arrives as a burst,
+    // and a carriage return caught inside that burst reads as a newline in
+    // the input box rather than a submit -- the message then sits there,
+    // typed but never sent. Let the prompt go quiet first, then press Enter
+    // on a settled screen.
+    await waitForQuietBuffer(getBuffer, leafId, deadline);
+    await new Promise<void>((resolve) => setTimeout(resolve, submitDelayMs));
   } else {
     if (!write(leafId, message)) return false;
     await new Promise<void>((resolve) => setTimeout(resolve, submitDelayMs));

@@ -337,6 +337,39 @@ describe("agent messages", () => {
     expect(writes).toEqual([message, "\r"]);
   });
 
+  it("lets a repainting prompt settle before pressing Enter", async () => {
+    // Kimi reads a message too wide for one paste as a burst, and folds a
+    // carriage return arriving inside that burst into the input box as a
+    // newline rather than a send -- the message is then typed but never sent.
+    // This box keeps repainting for a few frames after the last chunk lands,
+    // so Enter has to wait them out.
+    const repaintFrames = 6;
+    const message = "a".repeat(300);
+    const writes: string[] = [];
+    let frames = 0;
+    let framesAtEnter: number | null = null;
+    const submitted = await submitAgentMessage(
+      (_leafId, data) => {
+        writes.push(data);
+        if (data === "\r") framesAtEnter = frames;
+        return true;
+      },
+      () => {
+        frames += 1;
+        const typed = writes.filter((data) => data !== "\r").join("");
+        return frames < repaintFrames ? `${typed} frame ${frames}` : typed;
+      },
+      107,
+      message,
+      true,
+    );
+
+    expect(submitted).toBe(true);
+    expect(writes.filter((data) => data !== "\r").join("")).toBe(message);
+    expect(writes[writes.length - 1]).toBe("\r");
+    expect(framesAtEnter).toBeGreaterThan(repaintFrames);
+  });
+
   it("allows Antigravity input to settle before pressing Enter", async () => {
     vi.useFakeTimers();
     const writes: string[] = [];
@@ -502,7 +535,8 @@ describe("agent messages", () => {
     await vi.advanceTimersByTimeAsync(500);
     expect(writes).toEqual([[101, "SPICA AGENT OK"]]);
     buffer += "\nSPICAAGENTOK";
-    await vi.advanceTimersByTimeAsync(100);
+    // Enter follows the echo only once the prompt has held still.
+    await vi.advanceTimersByTimeAsync(500);
     await expect(pending).resolves.toMatchObject({ result: { ok: true } });
     expect(writes).toEqual([
       [101, "SPICA AGENT OK"],
@@ -580,7 +614,8 @@ describe("agent messages", () => {
     await vi.advanceTimersByTimeAsync(500);
     expect(writes).toEqual([[101, "SPICA AGENT OK"]]);
     buffer += "\nSPICAAGENTOK";
-    await vi.advanceTimersByTimeAsync(25);
+    // Enter follows the echo only once the prompt has held still.
+    await vi.advanceTimersByTimeAsync(500);
     await expect(pending).resolves.toMatchObject({ result: { ok: true } });
     expect(writes).toEqual([
       [101, "SPICA AGENT OK"],
