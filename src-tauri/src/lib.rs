@@ -398,6 +398,7 @@ pub fn run() {
             browser_automation::browser_automation_stop,
             browser_automation::browser_automation_status,
             browser_automation::browser_automation_handle_action,
+            browser_automation::browser_set_agent_callsigns,
             browser_automation::browser_automation_finish_turn,
             git::commands::git_resolve_repo,
             git::commands::git_panel_snapshot,

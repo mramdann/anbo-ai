@@ -58,6 +58,36 @@ pub async fn browser_automation_status() -> Result<serde_json::Value, String> {
     }))
 }
 
+/// Publish what each live agent goes by, keyed by the terminal it runs in.
+///
+/// Only the frontend mints a callsign, and only the browser side knows which
+/// terminal a caller speaks from; this is where the two meet, so a driven tab
+/// can say "Leander" instead of naming the CLI for the third time.
+#[tauri::command]
+pub async fn browser_set_agent_callsigns(
+    window: tauri::Window,
+    callsigns: std::collections::HashMap<u32, String>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("only the main window may publish agent callsigns".into());
+    }
+    const MAX_AGENTS: usize = 256;
+    const MAX_NAME: usize = 48;
+    if callsigns.len() > MAX_AGENTS {
+        return Err(format!("at most {MAX_AGENTS} callsigns"));
+    }
+    let bounded = callsigns
+        .into_iter()
+        .filter_map(|(pty, name)| {
+            let name = name.trim();
+            (!name.is_empty() && name.chars().count() <= MAX_NAME)
+                .then(|| (pty, name.to_string()))
+        })
+        .collect();
+    caller::set_agent_callsigns(bounded);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn browser_automation_handle_action(
     app: AppHandle,

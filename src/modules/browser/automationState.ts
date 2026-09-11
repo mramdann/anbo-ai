@@ -15,7 +15,7 @@ export type AutomationState = {
     | "done"
     | "error"
     | "ended";
-  actor: { brand: string; label: string };
+  actor: { brand: string; label: string; ptyId?: number };
 };
 
 const BRANDS: Record<string, string> = {
@@ -61,6 +61,13 @@ export function parseAutomationState(payload: unknown): AutomationState | null {
     typeof data.actor?.brand === "string" && BRAND_IDS.has(data.actor.brand)
       ? data.actor.brand
       : "remote";
+  // The transport never names the actor -- an arbitrary string here would be a
+  // free impersonation. It carries the terminal instead, and the callsign is
+  // looked up locally against the agents this window already knows.
+  const ptyId =
+    Number.isSafeInteger(data.actor?.ptyId) && Number(data.actor?.ptyId) > 0
+      ? (data.actor?.ptyId as number)
+      : undefined;
   return {
     ...(Number.isSafeInteger(data.controlId) && Number(data.controlId) > 0
       ? { controlId: data.controlId }
@@ -70,7 +77,7 @@ export function parseAutomationState(payload: unknown): AutomationState | null {
     sequence: data.sequence as number,
     method: data.method,
     phase: data.phase as AutomationState["phase"],
-    actor: { brand, label: BRANDS[brand] },
+    actor: { brand, label: BRANDS[brand], ...(ptyId ? { ptyId } : {}) },
   };
 }
 

@@ -600,7 +600,20 @@ fn render(webview: &Webview, tab_id: i64, event: &Activity) {
             .then(|| icon::for_brand(event.actor.brand))
             .flatten(),
     };
-    if let Ok(json) = serde_json::to_string(&visual) {
+    // The overlay payload is dispatched inside the visited page, where any
+    // script can read it. The badge needs the name; the terminal id behind it
+    // is Anbo's own business and stays in the window event.
+    let overlay = serde_json::to_value(&visual).ok().map(|mut value| {
+        if let Some(actor) = value
+            .get_mut("activity")
+            .and_then(|activity| activity.get_mut("actor"))
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            actor.remove("ptyId");
+        }
+        value.to_string()
+    });
+    if let Some(json) = overlay {
         let prefix = if install {
             include_str!("activityOverlay.js")
         } else {

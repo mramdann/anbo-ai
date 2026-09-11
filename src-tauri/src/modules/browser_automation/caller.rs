@@ -4,14 +4,49 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-#[derive(Clone, Debug, Serialize)]
+/// What each agent inside Anbo goes by.
+///
+/// The CLI brand names the tool, not the worker: several Claude agents can
+/// drive tabs at once, and a cursor that says "Claude" over all of them tells
+/// the user nothing about which one is acting. The callsign is minted in the
+/// frontend, so it is published here and looked up by the terminal the caller
+/// speaks from.
+static CALLSIGNS: Mutex<Option<HashMap<u32, String>>> = Mutex::new(None);
+
+pub fn set_agent_callsigns(names: HashMap<u32, String>) {
+    if let Ok(mut guard) = CALLSIGNS.lock() {
+        *guard = Some(names);
+    }
+}
+
+fn callsign_for(pty_id: Option<u32>) -> Option<String> {
+    let pty_id = pty_id?;
+    CALLSIGNS.lock().ok()?.as_ref()?.get(&pty_id).cloned()
+}
+
+#[derive(Clone, Debug)]
 pub struct Caller {
     pub brand: &'static str,
     pub label: &'static str,
-    #[serde(skip)]
     owner: Option<String>,
-    #[serde(skip)]
     pub(super) pty_id: Option<u32>,
+}
+
+impl Serialize for Caller {
+    /// The icon comes from the brand, the badge name from whoever is actually
+    /// holding the tab, and the terminal id travels alongside so the window can
+    /// resolve that name itself rather than trusting one off the wire.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("Caller", 3)?;
+        state.serialize_field("brand", self.brand)?;
+        state.serialize_field(
+            "label",
+            callsign_for(self.pty_id).as_deref().unwrap_or(self.label),
+        )?;
+        state.serialize_field("ptyId", &self.pty_id)?;
+        state.end()
+    }
 }
 
 /// Two calls are the same caller when they come from the same agent, not merely
@@ -189,6 +224,40 @@ pub fn clear_sessions() {
 }
 
 #[cfg(test)]
+mod callsign_tests {
+    use super::*;
+
+    #[test]
+    fn a_driven_tab_is_named_after_the_agent_not_its_cli() {
+        let claude = Caller::from_client_info(&serde_json::json!({"name":"claude-code"}))
+            .with_pty(Some(4242));
+        // Without a published roster there is nothing better than the brand.
+        let plain = serde_json::to_value(&claude).unwrap();
+        assert_eq!(plain["brand"], "claude");
+        assert_eq!(plain["label"], "Claude");
+        assert_eq!(plain["ptyId"], 4242);
+
+        set_agent_callsigns(HashMap::from([(4242, "Leander".to_string())]));
+        let named = serde_json::to_value(&claude).unwrap();
+        // The icon still follows the CLI; the name follows the worker.
+        assert_eq!(named["brand"], "claude");
+        assert_eq!(named["label"], "Leander");
+
+        // A caller from another terminal keeps its own answer, and one with no
+        // terminal at all is never mistaken for a named agent.
+        let other = Caller::from_client_info(&serde_json::json!({"name":"claude-code"}))
+            .with_pty(Some(99));
+        assert_eq!(serde_json::to_value(&other).unwrap()["label"], "Claude");
+        let anonymous = Caller::default();
+        assert_eq!(
+            serde_json::to_value(&anonymous).unwrap()["label"],
+            "Remote agent"
+        );
+        set_agent_callsigns(HashMap::new());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -240,10 +309,11 @@ mod tests {
         let caller = Caller::from_pipe_info(&info).with_pty(Some(123));
         assert_eq!(caller, Caller::from_pipe_info(&info).with_pty(Some(123)));
         assert_ne!(caller, Caller::from_client_info(&info));
-        assert_eq!(
-            serde_json::to_value(&caller).unwrap(),
-            json!({"brand":"codex", "label":"Codex"})
-        );
+        // The terminal travels so the window can name the agent itself; the
+        // connection instance never does.
+        let wire = serde_json::to_value(&caller).unwrap();
+        assert_eq!(wire, json!({"brand":"codex", "label":"Codex", "ptyId":123}));
+        assert!(!wire.to_string().contains(&"a".repeat(64)));
         assert_eq!(
             Caller::from_pipe_info(&json!({"name":"codex","instance":"invalid"})),
             Caller::from_client_info(&info)

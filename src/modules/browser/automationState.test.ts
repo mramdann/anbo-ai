@@ -19,6 +19,23 @@ describe("browser automation identity", () => {
       brand: "codex",
       label: "Codex",
     });
+    // The terminal is carried so this window can look the agent's callsign up
+    // for itself. A name off the wire would be a free impersonation, so it is
+    // still refused however it arrives.
+    expect(
+      parseAutomationState({
+        ...event,
+        actor: { brand: "codex", label: "Leander", ptyId: 4242 },
+      })?.actor,
+    ).toEqual({ brand: "codex", label: "Codex", ptyId: 4242 });
+    for (const bad of [0, -3, 1.5, "4242", null]) {
+      expect(
+        parseAutomationState({
+          ...event,
+          actor: { brand: "codex", ptyId: bad },
+        })?.actor,
+      ).toEqual({ brand: "codex", label: "Codex" });
+    }
     expect(
       parseAutomationState({ ...event, actor: { brand: "__proto__" } })?.actor,
     ).toEqual({ brand: "remote", label: "Remote agent" });

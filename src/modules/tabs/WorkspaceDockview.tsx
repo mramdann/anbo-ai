@@ -44,6 +44,7 @@ import {
   type IDockviewPanelProps,
 } from "dockview-react";
 import "dockview/dist/styles/dockview.css";
+import { useAgentCallsign } from "@/modules/agents/lib/agentCallsign";
 import { AgentIcon } from "@/modules/agents/lib/agentIcon";
 import {
   useBrowserAutomationActivity,
@@ -405,16 +406,22 @@ function BrowserAutomationTabIndicator({ tabId }: { tabId: number }) {
   // "an agent is somewhere in here" when the question worth answering is which
   // tab it is in.
   const focused = useBrowserAutomationFocused(tabId);
-  if (!action || !focused) return null;
   // Whichever store knows a name wins over the one that only knows "some
   // remote client". A tab opened by something Anbo could not identify, then
   // driven by an agent it can, was showing the anonymous answer for the whole
   // session while the page overlay named the agent correctly.
   const identity =
     actor && actor.brand !== "remote" ? actor : (activity?.actor ?? actor);
+  // The CLI names the tool, not the worker. Several agents of one CLI can hold
+  // tabs at once, so a strip that said "Claude" three times answered the wrong
+  // question; the callsign is resolved here, against the agents this window
+  // knows, and the brand stays behind the icon.
+  const callsign = useAgentCallsign(identity?.ptyId);
+  if (!action || !focused) return null;
+  const name = callsign ?? identity?.label;
   const title = activity
-    ? `${identity?.label ?? activity.actor.label}: ${automationLabel(activity)}`
-    : `${identity?.label ?? "Remote agent"}: ${action}`;
+    ? `${name ?? activity.actor.label}: ${automationLabel(activity)}`
+    : `${name ?? "Remote agent"}: ${action}`;
   // "held" is a live session with nothing in flight, "acting" is a call running
   // on this tab right now. When one agent holds several tabs this is the only
   // cue that says which of them to look at, so it drives the wave rather than

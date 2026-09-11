@@ -1649,6 +1649,33 @@ export default function App() {
     });
   }, [openBrowserTab]);
 
+  // A driven tab should name the agent holding it, not the CLI it happens to
+  // run. Only this side mints a callsign, and only the browser side knows which
+  // terminal a caller speaks from, so the pairing is published whenever the
+  // roster changes.
+  useEffect(() => {
+    // The store also moves on every activity tick, and the roster rarely does,
+    // so only a real change is worth an IPC call.
+    let published = "";
+    const publish = () => {
+      const sessions = useAgentStore.getState().sessions;
+      const callsigns: Record<number, string> = {};
+      for (const session of Object.values(sessions)) {
+        const ptyId = ptyIdForLeaf(session.leafId);
+        if (ptyId !== null && session.name) callsigns[ptyId] = session.name;
+      }
+      const key = Object.entries(callsigns)
+        .sort(([a], [b]) => Number(a) - Number(b))
+        .map(([pty, name]) => `${pty}:${name}`)
+        .join("|");
+      if (key === published) return;
+      published = key;
+      void invoke("browser_set_agent_callsigns", { callsigns }).catch(() => {});
+    };
+    publish();
+    return useAgentStore.subscribe(publish);
+  }, []);
+
   useEffect(() => {
     setBrowserTabsRequestHandler(({ requestId }) => {
       const { spaces, activeId: currentSpaceId } = useSpaces.getState();
