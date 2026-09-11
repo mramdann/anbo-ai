@@ -176,8 +176,31 @@ fn ensure_utf8_locale(cmd: &mut CommandBuilder) {
     cmd.env("LANG", fallback);
 }
 
+/// What a running Claude Code stamps on every process it starts.
+///
+/// A terminal inside Anbo is a fresh session for the user, not a child of
+/// whatever happened to launch Anbo. A Claude that inherits the child-session
+/// marker refuses to save its transcript, and an agent with no transcript has
+/// nothing to resume after a restart; the effort and session ids would leak a
+/// parent session's settings into it as well. The shell's own profile still
+/// applies whatever the user set there.
+pub const CLAUDE_CODE_SESSION_MARKERS: [&str; 9] = [
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_PID",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_EFFORT",
+];
+
 fn apply_common(cmd: &mut CommandBuilder, cwd: Option<String>, blocks: bool) {
     cmd.env_remove("NO_COLOR");
+    for key in CLAUDE_CODE_SESSION_MARKERS {
+        cmd.env_remove(key);
+    }
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("ANBO_TERMINAL", "1");
@@ -1167,6 +1190,24 @@ mod tests {
             cmd.get_env("COLORTERM").and_then(std::ffi::OsStr::to_str),
             Some("truecolor")
         );
+    }
+
+    #[test]
+    fn common_shell_environment_drops_claude_code_session_markers() {
+        let mut cmd = CommandBuilder::new("shell");
+        for key in super::CLAUDE_CODE_SESSION_MARKERS {
+            cmd.env(key, "inherited");
+        }
+        cmd.env("CLAUDE_CODE_USE_BEDROCK", "1");
+        cmd.env("ANTHROPIC_API_KEY", "keep");
+
+        apply_common(&mut cmd, None, false);
+
+        for key in super::CLAUDE_CODE_SESSION_MARKERS {
+            assert!(cmd.get_env(key).is_none(), "{key} should be dropped");
+        }
+        assert!(cmd.get_env("CLAUDE_CODE_USE_BEDROCK").is_some());
+        assert!(cmd.get_env("ANTHROPIC_API_KEY").is_some());
     }
 
     #[test]

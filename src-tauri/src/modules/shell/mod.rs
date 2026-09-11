@@ -377,6 +377,9 @@ pub(crate) fn build_oneshot_command(
     {
         let mut cmd = Command::new("/bin/sh");
         cmd.arg("-c").arg(command);
+        for key in crate::modules::pty::shell_init::CLAUDE_CODE_SESSION_MARKERS {
+            cmd.env_remove(key);
+        }
         for (key, value) in crate::modules::workspace::appimage_env_overrides() {
             match value {
                 Some(v) => {
@@ -393,6 +396,9 @@ pub(crate) fn build_oneshot_command(
     {
         let shell = crate::modules::pty::shell_init::windows_shell_path();
         let mut cmd = Command::new(&shell);
+        for key in crate::modules::pty::shell_init::CLAUDE_CODE_SESSION_MARKERS {
+            cmd.env_remove(key);
+        }
         let is_cmd = shell
             .file_name()
             .and_then(|s| s.to_str())
@@ -474,6 +480,19 @@ mod tests {
         let out = run(&format!("head -c {big} /dev/zero"), 10);
         assert!(out.truncated);
         assert!(out.stdout.len() <= MAX_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn build_oneshot_command_drops_claude_code_session_markers() {
+        let cmd = build_oneshot_command("echo hi", &WorkspaceEnv::Local, None).unwrap();
+        let removed: Vec<_> = cmd
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_os_string())
+            .collect();
+        for key in crate::modules::pty::shell_init::CLAUDE_CODE_SESSION_MARKERS {
+            assert!(removed.iter().any(|removed| removed == key), "{key}");
+        }
     }
 
     #[test]
