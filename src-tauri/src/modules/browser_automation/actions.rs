@@ -23,7 +23,8 @@ use crate::modules::browser_automation::cdp::{
 };
 use crate::modules::browser_automation::download;
 use crate::modules::browser_automation::locator::{
-    build_find_js, LocatorMatch, LocatorPayload, LocatorQuery, MAX_LOCATOR_MATCHES,
+    build_find_js, LocatorMatch, LocatorPayload, LocatorQuery, PageScanState,
+    MAX_LOCATOR_MATCHES, PAGE_SCAN_STATE_JS,
 };
 use crate::modules::browser_automation::page_state::{
     input_guard_body, PageExpectation, StableMatch, TitleSource,
@@ -515,6 +516,8 @@ async fn handle_action_inner(
 
             let mut empty_scans = 0;
             let mut last_empty_scan = None;
+            let mut scanned_state: Option<PageScanState> = None;
+            let mut quiet_waits = 0usize;
             loop {
                 if tokio::time::Instant::now() >= deadline {
                     return Err(find_timeout(
@@ -523,8 +526,29 @@ async fn handle_action_inner(
                         empty_scans,
                         None,
                         last_empty_scan.as_ref(),
+                        quiet_waits,
                     ));
                 }
+                // Walking the document again is only worth its cost if the
+                // document could have changed. Asking is a few microseconds of
+                // page time; the walk it replaces is tens of milliseconds.
+                if let Some(previous) = &scanned_state {
+                    if page_scan_state(&webview)
+                        .await
+                        .is_some_and(|current| previous.still_matches(&current))
+                    {
+                        quiet_waits += 1;
+                        tokio::time::sleep_until(
+                            (tokio::time::Instant::now() + Duration::from_millis(150))
+                                .min(deadline),
+                        )
+                        .await;
+                        continue;
+                    }
+                }
+                // Taken before the scan so that anything moving during the walk
+                // counts as a change worth looking at again.
+                scanned_state = page_scan_state(&webview).await;
                 let (generation, result) = scan_with_fresh_refs(tab_id, deadline, |generation| {
                     collect_locator_matches(&webview, tab_id, generation, &locator)
                 })
@@ -537,6 +561,7 @@ async fn handle_action_inner(
                             empty_scans,
                             Some(&error.1),
                             last_empty_scan.as_ref(),
+                            quiet_waits,
                         )
                     } else {
                         error
@@ -2477,6 +2502,18 @@ struct CollectedLocatorMatches {
 ///
 /// "matched multiple elements" tells the caller to narrow without telling them
 /// what to narrow against; the two candidates are already in hand.
+/// Read the page's change counter, installing it on first use.
+///
+/// A reading Anbo could not take is not evidence of quiet, so every failure
+/// answers None and the caller scans as it always did.
+async fn page_scan_state(webview: &Webview) -> Option<PageScanState> {
+    let raw = ref_context::execute_main(webview, PAGE_SCAN_STATE_JS)
+        .await
+        .ok()?;
+    let decoded: String = serde_json::from_str(&raw).unwrap_or(raw);
+    serde_json::from_str(&decoded).ok()
+}
+
 fn describe_ambiguity(
     error: (String, String),
     matches: &[LocatorMatch],
@@ -2512,6 +2549,7 @@ fn find_timeout(
     empty_scans: usize,
     scan_error: Option<&str>,
     last_empty_scan: Option<&CollectedLocatorMatches>,
+    quiet_waits: usize,
 ) -> (String, String) {
     // What the caller needs is not how many scans ran, but whether this is a
     // verdict they can act on. A page scanned end to end with nothing matching
@@ -2546,10 +2584,17 @@ fn find_timeout(
             last_empty_scan.map_or(0, |scan| scan.scanned),
         )
     };
+    // Saying the page never moved turns "it kept trying and failed" into "there
+    // was nothing left to try", which is a different instruction to the caller.
+    let quiet = if quiet_waits > 0 {
+        "; the page did not change while waiting, so re-scanning it could not have found anything new"
+    } else {
+        ""
+    };
     (
         error_codes::TIMEOUT.to_string(),
         format!(
-            "timed out finding {} '{}' after {timeout_ms}ms: {detail}{}{}",
+            "timed out finding {} '{}' after {timeout_ms}ms: {detail}{quiet}{}{}",
             locator.by,
             locator.value,
             scan_error
@@ -2675,10 +2720,26 @@ async fn resolve_target_locator(
         get_embed_webview(app, tab_id).map_err(|e| (error_codes::TAB_NOT_FOUND.into(), e))?;
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     let mut last_coverage = String::from("no completed scan");
+    let mut scanned_state: Option<PageScanState> = None;
     loop {
         if tokio::time::Instant::now() >= deadline {
             return Err((error_codes::TIMEOUT.into(), format!("locator {} timed out after {timeout_ms}ms; {last_coverage}; no input dispatched", state.unwrap_or("lookup"))));
         }
+        // Same retry, same page, same reasoning as find: an unchanged document
+        // cannot answer differently, so it is not walked again.
+        if let Some(previous) = &scanned_state {
+            if page_scan_state(&webview)
+                .await
+                .is_some_and(|current| previous.still_matches(&current))
+            {
+                tokio::time::sleep_until(
+                    (tokio::time::Instant::now() + Duration::from_millis(150)).min(deadline),
+                )
+                .await;
+                continue;
+            }
+        }
+        scanned_state = page_scan_state(&webview).await;
         let (generation, result) = scan_with_fresh_refs(tab_id, deadline, |generation| {
             collect_locator_matches(&webview, tab_id, generation, &locator)
         })
@@ -5161,7 +5222,7 @@ mod tests {
         };
 
         // A page read end to end with nothing matching is a verdict, and says so.
-        let absent = find_timeout(&locator, 800, 3, None, Some(&scan(0, vec![])));
+        let absent = find_timeout(&locator, 800, 3, None, Some(&scan(0, vec![])), 0);
         assert_eq!(absent.0, error_codes::TIMEOUT);
         assert!(absent.1.contains("#missing"));
         assert!(absent.1.contains("confirmed absence"));
@@ -5169,7 +5230,7 @@ mod tests {
 
         // An element behind a collapsed menu is not an absence, and the caller
         // is told the one thing that would reach it.
-        let hidden = find_timeout(&locator, 800, 3, None, Some(&scan(2, vec![])));
+        let hidden = find_timeout(&locator, 800, 3, None, Some(&scan(2, vec![])), 0);
         assert!(hidden.1.contains("2 element(s) matched but are not rendered"));
         assert!(hidden.1.contains("includeHidden=true"));
         assert!(!hidden.1.contains("confirmed absence"));
@@ -5182,6 +5243,7 @@ mod tests {
             3,
             None,
             Some(&scan(0, vec!["Download this page as a PDF file"])),
+            0,
         );
         assert!(named.1.contains("Download this page as a PDF file"));
         assert!(!named.1.contains("confirmed absence"));
@@ -5192,21 +5254,27 @@ mod tests {
             scanned: 50_000,
             ..scan(0, vec![])
         };
-        let partial = find_timeout(&locator, 800, 2, None, Some(&capped));
+        let partial = find_timeout(&locator, 800, 2, None, Some(&capped), 0);
         assert!(partial.1.contains("page coverage incomplete"));
         assert!(partial.1.contains("not a confirmed absence"));
         let skipped = CollectedLocatorMatches {
             skipped_frames: 1,
             ..scan(0, vec![])
         };
-        assert!(find_timeout(&locator, 800, 2, None, Some(&skipped))
+        assert!(find_timeout(&locator, 800, 2, None, Some(&skipped), 0)
             .1
             .contains("1 frames skipped"));
 
         // No scan at all stays distinct from every reading above.
-        let queued = find_timeout(&locator, 800, 0, Some("queue exceeded deadline"), None);
+        let queued = find_timeout(&locator, 800, 0, Some("queue exceeded deadline"), None, 0);
         assert!(queued.1.contains("no scan completed"));
         assert!(queued.1.contains("queue exceeded deadline"));
+    
+        // A wait spent on a page that never moved says so, because "keep
+        // retrying" is the wrong advice when re-reading cannot help.
+        let quiet = find_timeout(&locator, 800, 1, None, Some(&scan(0, vec![])), 7);
+        assert!(quiet.1.contains("the page did not change while waiting"));
+        assert!(!absent.1.contains("the page did not change while waiting"));
     }
 
     #[test]

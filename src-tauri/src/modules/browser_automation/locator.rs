@@ -71,6 +71,70 @@ pub struct LocatorPayload {
     pub error: Option<String>,
 }
 
+/// A page that cannot have changed cannot produce a different answer.
+///
+/// Retrying a locator re-walked the whole document every 150ms -- 141 full
+/// scans inside a 30-second lookup on a 16,000-node article, each one running
+/// on the page's own main thread for nothing. This installs one counter so a
+/// retry can ask the cheap question first: has anything moved since the scan
+/// that already said no?
+///
+/// A page with a running animation is never called quiet: appearance can
+/// change there without a mutation to observe. Neither is a page whose
+/// observer could not be installed, which reports -1 and keeps the old
+/// behaviour of scanning every time.
+pub const PAGE_SCAN_STATE_JS: &str = r#"(function() {
+    const state = (() => {
+        if (window.__anboScanState) return window.__anboScanState;
+        const created = { id: Math.random().toString(36).slice(2), mutations: 0 };
+        try {
+            const observer = new MutationObserver(records => {
+                created.mutations += records.length;
+            });
+            observer.observe(document, {
+                subtree: true,
+                childList: true,
+                attributes: true,
+                characterData: true,
+            });
+            created.observer = observer;
+        } catch (error) {
+            created.mutations = -1;
+        }
+        window.__anboScanState = created;
+        return created;
+    })();
+    let animating = true;
+    try {
+        animating = typeof document.getAnimations === 'function'
+            ? document.getAnimations().some(animation => animation.playState === 'running')
+            : false;
+    } catch (error) {
+        animating = true;
+    }
+    return JSON.stringify({ id: state.id, mutations: state.mutations, animating });
+})()"#;
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct PageScanState {
+    pub id: String,
+    pub mutations: i64,
+    pub animating: bool,
+}
+
+impl PageScanState {
+    /// Whether a fresh reading proves nothing could have changed since this one.
+    ///
+    /// A different id is a new document, a negative count is a page Anbo cannot
+    /// watch, and a running animation can repaint without mutating anything.
+    pub fn still_matches(&self, current: &PageScanState) -> bool {
+        self.mutations >= 0
+            && !current.animating
+            && current.id == self.id
+            && current.mutations == self.mutations
+    }
+}
+
 pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>) -> String {
     let limit = query.limit.clamp(1, MAX_LOCATOR_MATCHES);
     format!(
@@ -259,6 +323,41 @@ mod tests {
         assert!(script.contains(r#"const wanted = "a\"b";"#));
         assert!(script.contains("const limit = 20;"));
         assert!(script.contains("data-anbo-ref"));
+    }
+
+    #[test]
+    fn a_rescan_is_skipped_only_when_nothing_could_have_changed() {
+        let state = |id: &str, mutations: i64, animating: bool| PageScanState {
+            id: id.to_string(),
+            mutations,
+            animating,
+        };
+        let scanned = state("abc", 42, false);
+
+        // The same document, the same mutation count, nothing animating: the
+        // walk would read exactly what the last one read.
+        assert!(scanned.still_matches(&state("abc", 42, false)));
+
+        // Anything that moved, a reload that reset the counter, or an
+        // animation that can repaint without mutating, all earn a fresh scan.
+        assert!(!scanned.still_matches(&state("abc", 43, false)));
+        assert!(!scanned.still_matches(&state("xyz", 42, false)));
+        assert!(!scanned.still_matches(&state("abc", 42, true)));
+
+        // A page whose observer could not be installed reports -1 and is never
+        // called quiet, in either direction.
+        let unwatchable = state("abc", -1, false);
+        assert!(!unwatchable.still_matches(&state("abc", -1, false)));
+        assert!(!scanned.still_matches(&unwatchable));
+    }
+
+    #[test]
+    fn the_page_probe_installs_one_observer_and_reads_it() {
+        assert!(PAGE_SCAN_STATE_JS.contains("window.__anboScanState"));
+        assert!(PAGE_SCAN_STATE_JS.contains("new MutationObserver"));
+        // Every failure path has to answer "not quiet" rather than guess.
+        assert!(PAGE_SCAN_STATE_JS.contains("created.mutations = -1"));
+        assert!(PAGE_SCAN_STATE_JS.contains("animating = true"));
     }
 
     #[test]
