@@ -9,7 +9,7 @@
   const SVG = 'http://www.w3.org/2000/svg';
   const DRAG_THRESHOLD = 4;
   const ACCENT = '#ff4d6d', PICK = '#3b82f6';
-  let host, root, canvas, svg, docGroup, hover, hoverTag, note, noteInput, noteHead, hint;
+  let host, root, canvas, svg, docGroup, hover, hoverTag, note, noteInput, noteHead, noteRemove, hint;
   let tool = 'box', marks = [], nextId = 1, selected = null, undoStack = [], gesture = null, hoverNode = null;
   let presentation = 'normal', dirty = false, limitNotice = '';
   let frame = 0, stateTimer = 0, modelTimer = 0, scroll = { x: 0, y: 0 };
@@ -211,14 +211,15 @@
     .hover .tag{position:absolute;left:-2px;bottom:100%;margin-bottom:3px;max-width:320px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:2px 6px;border-radius:4px;background:${PICK};color:#fff;font:600 10px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
     .hover.below .tag{bottom:auto;top:100%;margin:3px 0 0}
     .note{position:absolute;left:0;top:0;display:none;width:280px;padding:8px;border:1px solid var(--anbo-design-border);border-radius:8px;background:var(--anbo-design-surface);color:var(--anbo-design-text);font:500 11px/1.4 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;box-shadow:0 8px 24px #00000040,0 1px 3px #00000030;pointer-events:auto}
-    .note .head{display:flex;align-items:center;gap:6px;margin-bottom:6px;color:var(--anbo-design-muted);font-size:10px}
-    .note .head b{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:50%;background:${ACCENT};color:#fff;font-size:10px}
+    .note .head{display:flex;align-items:center;gap:6px;min-width:0;margin-bottom:6px;color:var(--anbo-design-muted);font-size:10px}
+    .note .head b{display:inline-grid;flex:none;place-items:center;width:18px;height:18px;border-radius:50%;background:${ACCENT};color:#fff;font-size:10px}
+    .note .head .kind{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+    .note .head .remove{all:unset;flex:none;cursor:pointer;padding:2px 7px;border:1px solid var(--anbo-design-border);border-radius:5px;color:var(--anbo-design-muted);font:600 10px/1.4 ui-sans-serif,system-ui,sans-serif;white-space:nowrap}
+    .note .head .remove:hover,.note .head .remove:focus-visible{color:${ACCENT};border-color:${ACCENT};outline:none}
     .note textarea{display:block;width:100%;min-height:52px;max-height:160px;resize:vertical;padding:6px 8px;border:1px solid var(--anbo-design-border);border-radius:6px;background:var(--anbo-design-field);color:var(--anbo-design-text);font:500 12px/1.45 ui-sans-serif,system-ui,sans-serif;outline:none}
     .note textarea::placeholder{color:var(--anbo-design-muted)}
     .note textarea:focus{border-color:var(--anbo-design-accent)}
-    .note .keys{margin-top:5px;display:flex;justify-content:space-between;color:var(--anbo-design-muted);font-size:10px}
-    .note .keys button{all:unset;cursor:pointer;color:${ACCENT};font:inherit}
-    .note .keys button:hover{text-decoration:underline}
+    .note .keys{margin-top:5px;color:var(--anbo-design-muted);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .hint{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;max-width:calc(100% - 24px);padding:6px 10px;border:1px solid var(--anbo-design-border);border-radius:999px;background:var(--anbo-design-surface);color:var(--anbo-design-text);font:500 10.5px/1.4 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;white-space:nowrap;pointer-events:none;box-shadow:0 6px 18px #00000030}
     .hint .dot{width:7px;height:7px;border-radius:50%;background:${ACCENT}}
     .hint .dim{color:var(--anbo-design-muted)}
@@ -258,12 +259,12 @@
     noteInput.setAttribute('rows', '2');
     const keys = document.createElement('div');
     keys.className = 'keys';
-    const keyHint = document.createElement('span');
-    keyHint.textContent = 'Enter saves \u00b7 Shift+Enter new line \u00b7 Esc closes';
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.textContent = 'Remove mark';
-    keys.append(keyHint, remove);
+    keys.textContent = 'Enter saves \u00b7 Shift+Enter new line \u00b7 Esc closes';
+    noteRemove = document.createElement('button');
+    noteRemove.type = 'button';
+    noteRemove.className = 'remove';
+    noteRemove.textContent = 'Remove';
+    noteRemove.setAttribute('title', 'Remove this mark');
     note.append(noteHead, noteInput, keys);
     hint = document.createElement('div');
     hint.className = 'hint';
@@ -277,7 +278,7 @@
     on(svg, 'click', onBadgeClick);
     on(noteInput, 'keydown', onNoteKey);
     on(noteInput, 'input', onNoteInput);
-    on(remove, 'click', (event) => { event.preventDefault(); if (selected !== null) deleteMark(selected); });
+    on(noteRemove, 'click', (event) => { event.preventDefault(); if (selected !== null) deleteMark(selected); });
     on(window, 'keydown', onKey, true);
     on(document, 'scroll', onScroll, { capture: true, passive: true });
     on(window, 'resize', onResize, { passive: true });
@@ -513,9 +514,11 @@
     noteHead.replaceChildren();
     const n = document.createElement('b'); n.textContent = String(mark.n);
     const kind = document.createElement('span');
+    kind.className = 'kind';
     const label = mark.kind === 'pick' ? 'Element' : mark.kind === 'box' ? 'Area' : mark.kind === 'arrow' ? 'Arrow' : 'Sketch';
     kind.textContent = mark.element && mark.element.tag ? `${label} \u00b7 <${mark.element.tag}>${mark.element.name ? ' \u201c' + mark.element.name.slice(0, 32) + '\u201d' : ''}` : label;
-    noteHead.append(n, kind);
+    kind.setAttribute('title', kind.textContent);
+    noteHead.append(n, kind, noteRemove);
     noteInput.value = mark.note || '';
     note.style.display = 'block';
     positionNote();
@@ -802,7 +805,7 @@
     for (const off of listeners) { try { off(); } catch { /* already gone */ } }
     listeners = [];
     if (host) host.remove();
-    host = root = canvas = svg = docGroup = hover = hoverTag = note = noteInput = noteHead = hint = null;
+    host = root = canvas = svg = docGroup = hover = hoverTag = note = noteInput = noteHead = noteRemove = hint = null;
     marks = []; selected = null; undoStack = []; hoverNode = null;
     delete globalThis[KEY];
     return true;

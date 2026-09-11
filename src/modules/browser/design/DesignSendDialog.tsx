@@ -272,7 +272,7 @@ export default function DesignSendDialog({
             disabled={sending || status.marks === 0 || !workspaceRoot}
             onClick={() => void send()}
           >
-            {sending ? "Capturing..." : "Capture and send"}
+            {sending ? "Sending..." : "Send"}
           </Button>
         </DialogFooter>
       </DialogContent>

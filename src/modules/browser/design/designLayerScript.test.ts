@@ -1087,6 +1087,21 @@ describe("design layer script", () => {
     expect(h.api().status().marks).toBe(0);
   });
 
+  it("keeps the remove control in the note header and removes the mark", () => {
+    const h = harness();
+    h.install();
+    h.drag(60, 130, 160, 190);
+    const head = h.note().children[0] as FakeElement;
+    const remove = head.children.find(
+      (c) => (c as FakeElement).tagName === "BUTTON",
+    ) as FakeElement;
+    expect(remove.textContent).toBe("Remove");
+    expect((head.children[1] as FakeElement).className).toBe("kind");
+    remove.fire("click", { preventDefault() {} });
+    expect(h.api().status().marks).toBe(0);
+    expect(h.note().style.display).toBe("none");
+  });
+
   it("is skipped by the page scanners", () => {
     for (const file of [
       "accessibleName.js",
