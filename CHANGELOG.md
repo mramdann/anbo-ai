@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.0](https://github.com/mramdann/anbo-ai/compare/v0.29.0...v0.30.0) (2026-09-12)
+
+
+### Features
+
+* **browser:** let a session follow the agent instead of two tools ([8b8f4a4](https://github.com/mramdann/anbo-ai/commit/8b8f4a42a241d48353d3108b2b7f4dc38f26f7c0))
+
 ## [0.29.0](https://github.com/mramdann/anbo-ai/compare/v0.28.0...v0.29.0) (2026-09-12)
 
 
