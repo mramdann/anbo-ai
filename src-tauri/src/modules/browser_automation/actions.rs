@@ -666,8 +666,13 @@ async fn handle_action_inner(
             let mut scanned_state: Option<PageScanState> = None;
             let mut quiet_waits = 0usize;
             let mut backoff_ms = LOCATOR_RETRY_MS;
+            // When a full scan first proved the element absent. A confirmed
+            // absence on a DOM that then stays quiet cannot turn into a match,
+            // so the lookup need not run all the way to the deadline.
+            let mut absent_since: Option<tokio::time::Instant> = None;
             loop {
-                if tokio::time::Instant::now() >= deadline {
+                let now = tokio::time::Instant::now();
+                if now >= deadline {
                     return Err(find_timeout(
                         &locator,
                         timeout_ms,
@@ -681,18 +686,54 @@ async fn handle_action_inner(
                 // document could have changed. Asking is a few microseconds of
                 // page time; the walk it replaces is tens of milliseconds.
                 if let Some(previous) = &scanned_state {
-                    if page_scan_state(&webview)
-                        .await
-                        .is_some_and(|current| previous.still_matches(&current))
-                    {
-                        quiet_waits += 1;
-                        backoff_ms = (backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
-                        tokio::time::sleep_until(
-                            (tokio::time::Instant::now() + Duration::from_millis(backoff_ms))
-                                .min(deadline),
-                        )
-                        .await;
-                        continue;
+                    if let Some(current) = page_scan_state(&webview).await {
+                        // A proven absence whose DOM has not moved since can
+                        // only gain the element through a mutation this probe
+                        // would have caught. Once it has held past the settle
+                        // window on a page that is not loading, stop early
+                        // rather than re-walk to the deadline. A late render
+                        // mutates the DOM, which clears the clock below, so it
+                        // is never cut short.
+                        if let Some(since) = absent_since {
+                            if previous.absence_stable(&current) {
+                                if active_loading(tab_id) != Some(true)
+                                    && now.saturating_duration_since(since) >= ABSENCE_SETTLE
+                                {
+                                    let elapsed = timeout_ms.saturating_sub(
+                                        deadline.saturating_duration_since(now).as_millis() as u64,
+                                    );
+                                    return Err(find_timeout(
+                                        &locator,
+                                        elapsed,
+                                        empty_scans,
+                                        None,
+                                        last_empty_scan.as_ref(),
+                                        quiet_waits.max(1),
+                                    ));
+                                }
+                                // Quiet but not settled yet: wait it out rather
+                                // than re-walk a DOM that has not changed.
+                                quiet_waits += 1;
+                                backoff_ms = (backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
+                                tokio::time::sleep_until(
+                                    (now + Duration::from_millis(backoff_ms)).min(deadline),
+                                )
+                                .await;
+                                continue;
+                            }
+                            // The DOM moved; whatever the earlier scan proved
+                            // absent may be there now, so look again.
+                            absent_since = None;
+                        }
+                        if previous.still_matches(&current) {
+                            quiet_waits += 1;
+                            backoff_ms = (backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
+                            tokio::time::sleep_until(
+                                (now + Duration::from_millis(backoff_ms)).min(deadline),
+                            )
+                            .await;
+                            continue;
+                        }
                     }
                 }
                 // Taken before the scan so that anything moving during the walk
@@ -735,6 +776,12 @@ async fn handle_action_inner(
                         "skippedFrames": result.skipped_frames,
                         "hiddenMatches": result.hidden
                     }));
+                }
+                // A full read that found nothing at all starts the settle
+                // clock: from here a quiet DOM means the element is genuinely
+                // not coming, and the loop above can stop waiting early.
+                if absent_since.is_none() && absence_conclusive(&result) {
+                    absent_since = Some(tokio::time::Instant::now());
                 }
                 empty_scans += 1;
                 last_empty_scan = Some(result);
@@ -2921,6 +2968,25 @@ fn describe_ambiguity(
 /// every retry is a full document walk on the page's own main thread.
 const LOCATOR_RETRY_MS: u64 = 150;
 const MAX_LOCATOR_RETRY_MS: u64 = 1_000;
+
+/// How long a fully-scanned absence must stay put -- a settled, non-loading
+/// page whose DOM has not mutated -- before `find` concludes the element is
+/// genuinely not coming. Long enough that a page finishing its own late
+/// render (which mutates the DOM and resets the clock) is never cut short;
+/// short enough that a doomed selector no longer burns a 20-second timeout.
+const ABSENCE_SETTLE: Duration = Duration::from_millis(1_500);
+
+/// The one shape of empty scan that proves an element is absent rather than
+/// merely not found yet: the whole page was read, no frame was skipped, the
+/// node budget was not hit, and nothing matched at all -- not even a hidden
+/// element that an animation could later reveal.
+fn absence_conclusive(scan: &CollectedLocatorMatches) -> bool {
+    scan.matches.is_empty()
+        && scan.hidden == 0
+        && !scan.truncated
+        && !scan.node_limit_reached
+        && scan.skipped_frames == 0
+}
 
 fn find_timeout(
     locator: &LocatorRequest,
@@ -5769,6 +5835,44 @@ mod tests {
         let quiet = find_timeout(&locator, 800, 1, None, Some(&scan(0, vec![])), 7);
         assert!(quiet.1.contains("the page did not change while waiting"));
         assert!(!absent.1.contains("the page did not change while waiting"));
+    }
+
+    #[test]
+    fn only_a_whole_page_with_nothing_on_it_counts_as_a_proven_absence() {
+        // A fully-read, empty scan; each case tweaks one field from it.
+        let empty = || CollectedLocatorMatches {
+            matches: vec![],
+            scanned: 642,
+            truncated: false,
+            node_limit_reached: false,
+            included_frames: 1,
+            skipped_frames: 0,
+            hidden: 0,
+            name_misses: vec![],
+        };
+        // The Google Maps case: the whole page read, nothing there, so the
+        // settle clock may start and a doomed lookup can stop early.
+        assert!(absence_conclusive(&empty()));
+
+        // A hidden match could still be revealed by an animation; a capped or
+        // node-limited scan or a skipped frame leaves part of the page unread.
+        // None of these prove absence, so none may cut the wait short.
+        assert!(!absence_conclusive(&CollectedLocatorMatches {
+            hidden: 1,
+            ..empty()
+        }));
+        assert!(!absence_conclusive(&CollectedLocatorMatches {
+            truncated: true,
+            ..empty()
+        }));
+        assert!(!absence_conclusive(&CollectedLocatorMatches {
+            node_limit_reached: true,
+            ..empty()
+        }));
+        assert!(!absence_conclusive(&CollectedLocatorMatches {
+            skipped_frames: 1,
+            ..empty()
+        }));
     }
 
     #[test]

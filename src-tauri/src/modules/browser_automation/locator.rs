@@ -133,6 +133,19 @@ impl PageScanState {
             && current.id == self.id
             && current.mutations == self.mutations
     }
+
+    /// Whether a *confirmed absence* an earlier scan proved still holds.
+    ///
+    /// Unlike [`Self::still_matches`], this ignores animation. Once a full
+    /// scan has found no element at all -- not even a hidden one -- only a DOM
+    /// mutation can bring a match into being, and the observer catches every
+    /// mutation. A running animation can reveal or hide an element that
+    /// already exists, but it cannot create one, so it has no bearing on an
+    /// absence. Same document, same mutation count, and a count Anbo could
+    /// actually read.
+    pub fn absence_stable(&self, current: &PageScanState) -> bool {
+        self.mutations >= 0 && current.id == self.id && current.mutations == self.mutations
+    }
 }
 
 pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>) -> String {
@@ -394,6 +407,30 @@ mod tests {
         let unwatchable = state("abc", -1, false);
         assert!(!unwatchable.still_matches(&state("abc", -1, false)));
         assert!(!scanned.still_matches(&unwatchable));
+    }
+
+    #[test]
+    fn a_proven_absence_holds_through_animation_but_not_through_a_mutation() {
+        let state = |id: &str, mutations: i64, animating: bool| PageScanState {
+            id: id.to_string(),
+            mutations,
+            animating,
+        };
+        let scanned = state("abc", 42, false);
+
+        // The element was not there; nothing was added since. A canvas or a
+        // spinner repainting cannot create a match, so absence still holds
+        // even while the page animates -- this is the whole point.
+        assert!(scanned.absence_stable(&state("abc", 42, false)));
+        assert!(scanned.absence_stable(&state("abc", 42, true)));
+
+        // A mutation, or a fresh document, could have introduced the element:
+        // the absence is no longer proven.
+        assert!(!scanned.absence_stable(&state("abc", 43, false)));
+        assert!(!scanned.absence_stable(&state("xyz", 42, false)));
+
+        // An uninstallable observer (-1) is never trusted to prove absence.
+        assert!(!state("abc", -1, false).absence_stable(&state("abc", -1, false)));
     }
 
     #[test]
