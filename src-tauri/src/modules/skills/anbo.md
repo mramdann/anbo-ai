@@ -50,7 +50,10 @@ instead of resubmitting. `browser_wait` also takes `locator` + `state`
 **Reading pages well.** Use names in the page's own language; after a failed
 lookup, `browser_find` by text or a snapshot shows the real label. Bound your
 retries and report a blocker rather than searching for the same absent label
-again. `browser_screenshot` returns the viewport image in its reply (use
+again. A `confirmed absence` can come back well before your timeout once the
+page has settled and stopped changing: treat it as final, not a wait cut
+short, and switch to a snapshot or a different name instead of re-asking.
+`browser_screenshot` returns the viewport image in its reply (use
 `format: "jpeg"` to keep it small), and `browser_console_logs` is the cheapest
 explanation for a page that looks right and does nothing.
 
