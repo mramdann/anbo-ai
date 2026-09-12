@@ -21,7 +21,11 @@ export const STARTUP_BUDGETS = [
   {
     name: "settings window",
     html: "settings.html",
-    gzipLimitBytes: 305 * KIB,
+    // 310 since 0.29.0: the window landed at 306.6 KiB after the design-mode,
+    // agent-resume and browser-automation work grew the shared workspace
+    // chunk it imports; nothing new is loaded eagerly here, so the tripwire
+    // moves by 5 KiB and stays tight.
+    gzipLimitBytes: 310 * KIB,
   },
 ];
 
