@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.29.0](https://github.com/mramdann/anbo-ai/compare/v0.28.0...v0.29.0) (2026-09-12)
+
+
+### Features
+
+* **browser:** give design mode the app's theme and a pen icon ([c10da5e](https://github.com/mramdann/anbo-ai/commit/c10da5ea30fab0768426b2ba4d5cf5172db06664))
+* **browser:** let the user mark up a page and hand it to an agent ([09579ca](https://github.com/mramdann/anbo-ai/commit/09579ca580ed617c79c93031177e2587195e9506))
+
+
+### Bug Fixes
+
+* **agents:** adopt a hand-started Kimi into resume ([3dd55f3](https://github.com/mramdann/anbo-ai/commit/3dd55f3b220f4954b038900094681065827eeb8d))
+* **agents:** give Kimi the echoed-input path Codex already uses ([100df5a](https://github.com/mramdann/anbo-ai/commit/100df5a23aa8c007ccaed81801b5c803af4b7992))
+* **agents:** press Enter on a prompt that has stopped moving ([e8797a9](https://github.com/mramdann/anbo-ai/commit/e8797a9def97f29995ec04297ded6664bd0ae295))
+* **agents:** read a bypass-mode Claude prompt as ready ([2ae4991](https://github.com/mramdann/anbo-ai/commit/2ae499160ba59f3beecfae71164992c03c4276e7))
+* **agents:** retry a restore-time resume the memory guard refused ([aeda244](https://github.com/mramdann/anbo-ai/commit/aeda2449b9ca6767650a7d0c4aa31cfa2263cfc0))
+* **agents:** stop announcing a finished turn mid-answer ([9483c15](https://github.com/mramdann/anbo-ai/commit/9483c159402a3983a6cfdd26363c12cb54996dd6))
+* **browser:** draw the note's remove control as an icon ([cca2c32](https://github.com/mramdann/anbo-ai/commit/cca2c32583ed0a3dde1d70cec2c9560d85f44ab8))
+* **browser:** give design-mode restore a real tail on every platform ([bb4762c](https://github.com/mramdann/anbo-ai/commit/bb4762c7e78635e0afb4eb9a75651e39ba374b47))
+* **browser:** keep the note editor on one line each ([03b13ce](https://github.com/mramdann/anbo-ai/commit/03b13ce1be506e9c857b7212fb6788694830090c))
+* **browser:** keep the Windows-only screenshot path out of other platforms ([7c7789a](https://github.com/mramdann/anbo-ai/commit/7c7789adcf1e3dc155286f1c93f5731b20b8cc58))
+* **browser:** name the agent driving a tab, not its CLI ([4721e86](https://github.com/mramdann/anbo-ai/commit/4721e8601d1570db28354e48a66d3cda7fdf19b4))
+* **browser:** read an element's text the same way everywhere ([f2e98fe](https://github.com/mramdann/anbo-ai/commit/f2e98febaa32495f15f7403c52f2c260a3413564))
+* **browser:** stop a failed lookup from costing the caller its refs ([38938d9](https://github.com/mramdann/anbo-ai/commit/38938d92fac199c4bfaa6465f5459ca148b89141))
+* **browser:** tell a locator caller what actually happened ([3d060f4](https://github.com/mramdann/anbo-ai/commit/3d060f49dd93e31b00e486a32f350dd45df2a066))
+* **browser:** work through the rest of the tool benchmark ([6e6c879](https://github.com/mramdann/anbo-ai/commit/6e6c879f022d445615fbe7f7e3255adbfbd29220))
+* **pty:** strip Claude Code's session markers from spawned shells ([3d775e3](https://github.com/mramdann/anbo-ai/commit/3d775e3fdd3ca27bce27619802646a71a304b8a7))
+
+
+### Performance Improvements
+
+* **browser:** cut what an agent pays per task through MCP ([c6c5a19](https://github.com/mramdann/anbo-ai/commit/c6c5a19532ea42cefbf03d2a6c1d44f30dd690e0))
+* **browser:** let one reply answer where the page landed and what state it holds ([e3a63a0](https://github.com/mramdann/anbo-ai/commit/e3a63a0423cdb97509c389f785f9db1cdd18513b))
+* **browser:** stop a doomed find from burning its whole timeout ([b4fa576](https://github.com/mramdann/anbo-ai/commit/b4fa5765f300a67c275e8cfdcb1ce8643572c598))
+* **browser:** stop re-walking a page that has not moved ([1e58e1c](https://github.com/mramdann/anbo-ai/commit/1e58e1cb1749bd92120bdcdbb1462b7dfbc75e39))
+
 ## [0.28.0](https://github.com/mramdann/anbo-ai/compare/v0.27.1...v0.28.0) (2026-09-10)
 
 
