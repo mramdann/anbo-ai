@@ -68,7 +68,22 @@ pub struct LocatorPayload {
     /// name, so a near miss can say what it saw instead.
     #[serde(default)]
     pub name_misses: Vec<String>,
+    /// The first visible interactive controls the scan walked past, filled
+    /// only when nothing matched: a miss answered with something to act on,
+    /// as a role locator, instead of a request for a snapshot.
+    #[serde(default)]
+    pub candidates: Vec<Candidate>,
     pub error: Option<String>,
+}
+
+/// One control a failed lookup can offer instead: enough to build a locator.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Candidate {
+    pub role: String,
+    pub name: String,
+    #[serde(default)]
+    pub in_viewport: bool,
 }
 
 /// A page that cannot have changed cannot produce a different answer.
@@ -276,6 +291,38 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
             // tightest match of each nest.
             const hits = [];
             const collectLimit = by === 'text' ? Math.min(limit * 5, 50) : limit;
+            // What the page offers when the lookup finds nothing. The walk only
+            // pockets the first two hundred controls by tag; the costly part --
+            // rendering, role, name -- runs after it, and only on a miss, so a
+            // hit pays nothing. Never registered as refs: a failed lookup must
+            // not spend the caller's ref generation.
+            const candidatePool = [];
+            const pocketCandidate = el => {{
+                if (candidatePool.length >= 200) return;
+                const tag = el.tagName;
+                const control = tag === 'A' ? el.hasAttribute('href')
+                    : tag === 'INPUT' ? String(el.type || '').toLowerCase() !== 'hidden'
+                    : tag === 'BUTTON' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'SUMMARY'
+                      || el.hasAttribute('role') || el.isContentEditable || el.hasAttribute('tabindex');
+                if (control) candidatePool.push(el);
+            }};
+            const CONTROL_ROLES = new Set(['button','link','textbox','searchbox','combobox','checkbox','radio','switch','slider','spinbutton','menuitem','menuitemcheckbox','menuitemradio','tab','option','treeitem']);
+            const pickCandidates = () => {{
+                const picked = [];
+                for (const el of candidatePool) {{
+                    if (picked.length >= 12) break;
+                    if (!isRenderedElement(el)) continue;
+                    const role = implicitRole(el);
+                    if (!CONTROL_ROLES.has(role)) continue;
+                    const name = normalize(accessibleName(el)).slice(0, 60);
+                    if (!name) continue;
+                    const r = el.getBoundingClientRect();
+                    const inViewport = r.width > 0 && r.height > 0 && r.left < innerWidth && r.top < innerHeight && r.right > 0 && r.bottom > 0;
+                    picked.push({{role, name, inViewport}});
+                }}
+                // The viewport first: that is where the agent is looking.
+                return picked.filter(c => c.inViewport).concat(picked.filter(c => !c.inViewport)).slice(0, 8);
+            }};
             const visit = root => {{
                 if (!root || !root.querySelectorAll || hits.length >= collectLimit) return;
                 const elements = root.querySelectorAll('*');
@@ -285,6 +332,7 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                     const el = elements[index];
                     if (el.tagName === 'ANBO-AUTOMATION-VISUAL' || el.tagName === 'ANBO-DESIGN-LAYER') continue;
                     scanned += 1;
+                    pocketCandidate(el);
                     const matched = isMatch(el);
                     const isVisible = matched && isRenderedElement(el);
                     if (matched && !includeHidden && !isVisible) hidden += 1;
@@ -338,7 +386,8 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                     if (!chosen.length) chosen = hits;
                 }}
                 for (const el of chosen.slice(0, limit)) describe(el);
-                return JSON.stringify({{ matches, scanned, truncated, hidden, nameMisses: (nameNear.length ? nameNear : nameAny), visualPoint, error: null }});
+                const candidates = matches.length ? [] : pickCandidates();
+                return JSON.stringify({{ matches, scanned, truncated, hidden, nameMisses: (nameNear.length ? nameNear : nameAny), candidates, visualPoint, error: null }});
             }} catch (error) {{
                 return JSON.stringify({{
                     matches: [],
@@ -474,5 +523,30 @@ mod tests {
         assert!(script.contains("nameWords.some(word => lower.includes(word))"));
         // Matches dropped for being out of sight are counted, never silent.
         assert!(script.contains("if (matched && !includeHidden && !isVisible) hidden += 1;"));
+    }
+
+    #[test]
+    fn a_miss_pockets_controls_during_the_walk_and_resolves_them_only_then() {
+        let script = build_find_js(
+            2,
+            "g2-e",
+            &LocatorQuery {
+                by: "css",
+                value: "#searchboxinput",
+                name: None,
+                exact: false,
+                include_hidden: false,
+                limit: 10,
+            },
+        );
+        // Pocketed by tag on every element the walk visits, resolved (render,
+        // role, name) only when nothing matched, and reported without refs.
+        assert!(script.contains("pocketCandidate(el);"));
+        assert!(script.contains("const candidates = matches.length ? [] : pickCandidates();"));
+        assert!(script.contains("candidates, visualPoint"));
+        // Landmarks carry names too, but nothing to act on; only controls are offered.
+        assert!(script.contains("if (!CONTROL_ROLES.has(role)) continue;"));
+        assert!(!script.contains("refRegistry.remember(ref, el);
+                    candidates"));
     }
 }

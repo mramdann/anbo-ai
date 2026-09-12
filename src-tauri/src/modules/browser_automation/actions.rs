@@ -2926,6 +2926,7 @@ struct CollectedLocatorMatches {
     skipped_frames: usize,
     hidden: usize,
     name_misses: Vec<String>,
+    candidates: Vec<super::locator::Candidate>,
 }
 
 /// Name the elements that collided, so narrowing them does not cost another
@@ -3054,10 +3055,40 @@ fn find_timeout(
     } else {
         ""
     };
+    // A confirmed absence is worth more with something to do next. The scan
+    // already walked past the page's controls; naming a few of them, as role
+    // locators, saves the snapshot an agent otherwise spends a turn on before
+    // acting. Measured: Maps 3 of 3 sessions and Amazon 3 of 6 paid that turn.
+    let seen = last_empty_scan
+        .filter(|scan| {
+            scan_error.is_none()
+                && hidden == 0
+                && scan.name_misses.is_empty()
+                && !scan.candidates.is_empty()
+        })
+        .map(|scan| {
+            let list = scan
+                .candidates
+                .iter()
+                .take(8)
+                .map(|candidate| {
+                    format!(
+                        "{} \"{}\"",
+                        candidate.role,
+                        candidate.name.chars().take(40).collect::<String>()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "; interactive elements seen: {list} (each usable as locator {{by: \"role\", value: <role>, name: <name>}})"
+            )
+        })
+        .unwrap_or_default();
     (
         error_codes::TIMEOUT.to_string(),
         format!(
-            "timed out finding {} '{}' after {timeout_ms}ms: {detail}{quiet}{}{}",
+            "timed out finding {} '{}' after {timeout_ms}ms: {detail}{quiet}{seen}{}{}",
             locator.by,
             locator.value,
             scan_error
@@ -3335,6 +3366,7 @@ async fn collect_locator_matches(
             skipped_frames: 0,
             hidden: root.hidden,
             name_misses: std::mem::take(&mut root.name_misses),
+            candidates: std::mem::take(&mut root.candidates),
         });
     }
     let (frame_ids, frame_limit_reached) = get_frame_ids(webview)
@@ -3367,6 +3399,9 @@ async fn collect_locator_matches(
     let mut skipped_frames = usize::from(frame_limit_reached);
     let mut hidden = root.hidden;
     let mut name_misses = std::mem::take(&mut root.name_misses);
+    // Only the main document offers candidates; a frame's controls are a
+    // different page and would send the agent to the wrong one.
+    let candidates = std::mem::take(&mut root.candidates);
 
     let frame_jobs = frame_ids
         .iter()
@@ -3446,6 +3481,7 @@ async fn collect_locator_matches(
         skipped_frames,
         hidden,
         name_misses,
+        candidates,
     })
 }
 
@@ -5776,6 +5812,7 @@ mod tests {
             skipped_frames: 0,
             hidden,
             name_misses: names.into_iter().map(str::to_string).collect(),
+            candidates: vec![],
         };
 
         // A page read end to end with nothing matching is a verdict, and says so.
@@ -5860,6 +5897,7 @@ mod tests {
             skipped_frames: 0,
             hidden: 0,
             name_misses: vec![],
+            candidates: vec![],
         };
         // The Google Maps case: the whole page read, nothing there, so the
         // settle clock may start and a doomed lookup can stop early.
@@ -6146,5 +6184,53 @@ mod tests {
         .unwrap();
         assert_eq!(modifier_names(modifiers), ["Control", "Shift"]);
         assert!(extract_key_modifiers(&json!({ "modifiers": ["Hyper"] })).is_err());
+    }
+
+    #[test]
+    fn a_confirmed_absence_names_the_controls_it_saw() {
+        // Measured: when a first-choice selector missed (Maps 3 of 3 sessions,
+        // Amazon 3 of 6), the agent spent its next turn on a snapshot before
+        // acting. The scan had already walked past the controls it needed.
+        let locator = extract_locator(&json!({"by":"css", "value":"#searchboxinput"})).unwrap();
+        let candidate = |role: &str, name: &str| super::super::locator::Candidate {
+            role: role.into(),
+            name: name.into(),
+            in_viewport: true,
+        };
+        let with = |hidden: usize, misses: Vec<&str>| CollectedLocatorMatches {
+            matches: vec![],
+            scanned: 642,
+            truncated: false,
+            node_limit_reached: false,
+            included_frames: 1,
+            skipped_frames: 0,
+            hidden,
+            name_misses: misses.into_iter().map(str::to_string).collect(),
+            candidates: vec![
+                candidate("textbox", "Telusuri Google Maps"),
+                candidate("button", "Telusuri"),
+                candidate("button", "Rute"),
+            ],
+        };
+        let absent = find_timeout(&locator, 1_900, 2, None, Some(&with(0, vec![])), 3);
+        assert!(absent.1.contains("confirmed absence"), "{}", absent.1);
+        assert!(
+            absent.1.contains(
+                "interactive elements seen: textbox \"Telusuri Google Maps\", button \"Telusuri\", button \"Rute\""
+            ),
+            "{}",
+            absent.1
+        );
+        assert!(absent.1.contains("usable as locator"), "{}", absent.1);
+
+        // A hidden match or a near-name miss already carries its own advice;
+        // stacking the list on top would bury it.
+        let hidden = find_timeout(&locator, 1_900, 2, None, Some(&with(2, vec![])), 3);
+        assert!(!hidden.1.contains("interactive elements seen"), "{}", hidden.1);
+        let near = find_timeout(&locator, 1_900, 2, None, Some(&with(0, vec!["Search"])), 3);
+        assert!(!near.1.contains("interactive elements seen"), "{}", near.1);
+        // A scan cut off by the deadline proves nothing, so it offers nothing.
+        let cut = find_timeout(&locator, 1_900, 2, Some("deadline"), Some(&with(0, vec![])), 0);
+        assert!(!cut.1.contains("interactive elements seen"), "{}", cut.1);
     }
 }
