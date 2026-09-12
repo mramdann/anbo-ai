@@ -942,24 +942,33 @@ pub fn restore(webview: &Webview) {
     if !wanted {
         return;
     }
-    #[cfg(windows)]
-    {
-        let app = webview.app_handle().clone();
-        let webview = webview.clone();
-        tauri::async_runtime::spawn(async move {
-            let lock = super::registry::get_tab_lock(tab_id);
-            let _guard = lock.lock().await;
-            let still_wanted =
-                read_session(tab_id, |session| session.active && !session.installed).unwrap_or(false);
-            if !still_wanted {
-                return;
-            }
-            if install(&app, &webview, tab_id).await.is_ok() {
-                notify(&app, tab_id, "state");
-            }
-        });
-    }
+    restore_layer(webview, tab_id);
 }
+
+/// Put the layer back on the new document, off the page-load hook: the tab
+/// lock is taken first so a session that ended meanwhile is left alone.
+#[cfg(windows)]
+fn restore_layer(webview: &Webview, tab_id: i64) {
+    let app = webview.app_handle().clone();
+    let webview = webview.clone();
+    tauri::async_runtime::spawn(async move {
+        let lock = super::registry::get_tab_lock(tab_id);
+        let _guard = lock.lock().await;
+        let still_wanted =
+            read_session(tab_id, |session| session.active && !session.installed).unwrap_or(false);
+        if !still_wanted {
+            return;
+        }
+        if install(&app, &webview, tab_id).await.is_ok() {
+            notify(&app, tab_id, "state");
+        }
+    });
+}
+
+/// Design mode drives WebView2 directly; other platforms have no layer to
+/// put back, and giving restore() a real tail here keeps clippy honest.
+#[cfg(not(windows))]
+fn restore_layer(_webview: &Webview, _tab_id: i64) {}
 
 /// Keeps the user's marks out of an agent's screenshot for as long as the
 /// guard lives. Screenshots exclude Anbo's own surfaces; the marks reach the
