@@ -28,10 +28,14 @@ interactive elements, paged with `offset`). Both return refs like `g3-e12` and
 replace older refs; `stale_ref` means find it again. Act with `browser_click`,
 `browser_type`, `browser_press`, `browser_key`, `browser_hover`, `browser_drag`,
 `browser_select_option`, `browser_check`, `browser_scroll`; single-target actions
-also take `locator` instead of `ref`. Read the result with `browser_get_text`
-(a ref, or the body), `browser_page_info` or `browser_get_url`. Close the tab
-with `browser_close {tabId, workspace}` and, when the whole task is done or
-abandoned, call `browser_end_session {controlId}` once.
+also take `locator` instead of `ref`. Every action reply carries `page`
+(`url`, `title`, `loading`), so you never need a separate URL read after a
+click or a key. Read results with `browser_get_text` (a ref, or the body) or
+`browser_get_property` for live state such as `paused`, `currentTime`,
+`value`, `checked`, `scrollTop` (a closed list of plain DOM properties, one
+call, no page JavaScript). Close your last tab with `browser_close {tabId,
+workspace, endSession: true}`, which also ends the session; `browser_end_session
+{controlId}` ends it without closing tabs, for an abandoned task.
 
 **Waiting.** Navigation is asynchronous: `browser_navigate`, `browser_reload`
 and `browser_back` return at once. Put `waitFor: {url, title, text, timeout}`

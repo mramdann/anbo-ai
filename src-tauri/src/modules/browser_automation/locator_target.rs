@@ -17,6 +17,7 @@ pub fn supports_locator(method: &str) -> bool {
             | "select_option"
             | "scroll_to_element"
             | "get_text"
+            | "get_property"
             | "dialog"
             | "upload_files"
             | "download"

@@ -36,8 +36,11 @@ pub const SERVER_INSTRUCTIONS: &str = concat!(
     "scrolled or clicked, and cannot be handed back to them. ",
     "The usual shape of a browser task: browser_open with your own workspace ",
     "root, browser_find (role plus accessible name, or css) or browser_snapshot ",
-    "for a ref, one action with a waitFor describing the result you expect, a ",
-    "read of that result, browser_close, then browser_end_session once. ",
+    "for a ref, one action with a waitFor describing the result you expect (every ",
+    "action reply carries page.url and page.title, so no separate URL read), a ",
+    "read of that result with browser_get_text or browser_get_property (live ",
+    "state such as paused, currentTime, value, checked), then browser_close with ",
+    "endSession: true on your last tab. ",
     "Tools that take a workspace argument need your own workspace root, ",
     "never the one currently on screen. ",
     "For files, downloads, dialogs, terminals or other agents, call skills_list ",
@@ -45,7 +48,7 @@ pub const SERVER_INSTRUCTIONS: &str = concat!(
     "built-in skill, which skills_read returns section by section."
 );
 
-pub const BROWSER_SESSION_INSTRUCTIONS: &str = "Browser work runs in a session that names you as the tab's controller. The first browser tool you call opens it, and every browser result carries its controlId; browser_start_session only claims a tab early. When the task is finished, cancelled, or handed back to the user, including after an error, call browser_end_session once with that controlId, not between steps and not per tab. It hides the cursor and the tab badge without closing any tab or the MCP connection.";
+pub const BROWSER_SESSION_INSTRUCTIONS: &str = "Browser work runs in a session that names you as the tab's controller. The first browser tool you call opens it, and every browser result carries its controlId; browser_start_session only claims a tab early. When the task is finished, cancelled, or handed back to the user, including after an error, end the session once: browser_close with endSession: true on your last tab does it in the same call, and browser_end_session with that controlId ends it without closing tabs. Not between steps and not per tab. Ending hides the cursor and the tab badge without closing the MCP connection.";
 
 fn tab_id_prop() -> Value {
     json!({ "type": "integer", "description": "Active native browser tab id (from browser_tabs)." })
@@ -109,7 +112,7 @@ pub fn tool_definitions() -> Value {
         { "name": "skills_list", "description": "List the skills available in a workspace: project procedures kept in .anbo/skills, plus the skills Anbo ships. Returns names, one-line descriptions and, for skills read on demand, their section titles, so it stays cheap to scan. Check this before solving a task from first principles.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
         { "name": "skills_read", "description": "Read a skill and follow it. A skill read on demand returns its essentials plus a section index; pass section to read one section in full. Names come from skills_list.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "name": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Skill name from skills_list." }, "section": { "type": "string", "minLength": 1, "maxLength": 120, "description": "A section title from the skill's index, matched case-insensitively." } }, "required": ["workspace", "name"] } },
         { "name": "browser_open", "description": "Open a page in the user's real browser: a visible tab in this app, not a private fetch. Use it whenever a task needs a web page opened, read, or interacted with. Pass your own workspace root or space id; UI focus is never a fallback. The first tab in an empty active workspace is shown, later tabs stay in the background. The reply carries the tabId and the controlId of your session, which browser_end_session takes when the work is done.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["url", "workspace"] } },
-        { "name": "browser_close", "description": "Close a native browser tab in an explicitly selected Anbo workspace.", "annotations": { "destructiveHint": true, "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["tabId", "workspace"] } },
+        { "name": "browser_close", "description": "Close a native browser tab in an explicitly selected Anbo workspace. Pass endSession: true when this is the last tab of your task, so closing it and ending your session is one call instead of two.", "annotations": { "destructiveHint": true, "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." }, "endSession": { "type": "boolean", "default": false, "description": "Also end your control session after the tab closes; the reply then carries sessionEnded: true." } }, "required": ["tabId", "workspace"] } },
         { "name": "browser_tabs", "description": "List active native browser tabs with foreground, workspace, space, loading, pendingUrl, automation-target, automation-activity, and durationMs metadata. While loading, url remains the last committed URL and pendingUrl identifies the target when known.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "browser_get_url", "description": "Get the last committed URL, loading state and pendingUrl of a browser tab without waiting for page JavaScript. While loading, pendingUrl is the requested target when known; it is not proof of a committed navigation.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_navigate", "description": "Start navigating a browser tab to an http(s) URL and return immediately. Use browser_wait or browser_tabs to observe completion; browser_stop can interrupt the active load.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "url": { "type": "string" } }, "required": ["tabId", "url"] } },
@@ -142,6 +145,7 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_hover", "description": "Hover a ref with one native mouse move and CSS :hover verification. position picks a point inside the same target, e.g. to reveal auto-hiding media controls; CSS hover does not prove controls are visible. Child-frame targets fall back to a DOM-only hover.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "position": fraction_point_prop("Fractions strictly between 0 and 1 inside the painted target, not pixels; defaults to the center {x:0.5,y:0.5}. The point must be visible and unobscured.") }, "required": ["tabId", "ref"] } },
         { "name": "browser_scroll_to_element", "description": "Scroll an element into view by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_get_text", "description": "Get DOM text or the accessibility name of an element, or body text when ref is omitted. Returns visible and source; hidden accessible labels may be outdated. Reveal controls and read again before treating labels as live state.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "maxLength": { "type": "integer", "minimum": 1, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
+        { "name": "browser_get_property", "description": "Read live properties of an element by ref without page JavaScript: value, checked, disabled, readOnly, selected, paused, ended, muted, currentTime, duration, volume, playbackRate, scrollTop, scrollLeft, scrollHeight, scrollWidth, clientHeight, clientWidth, href, src, title, placeholder, open, hidden, tagName. One call answers whether a video is paused or what an input holds now.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "properties": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": { "type": "string", "enum": super::actions::ELEMENT_PROPERTIES } } }, "required": ["tabId", "ref", "properties"] } },
         { "name": "browser_page_info", "description": "Get native title and URL without waiting for page JavaScript. titleSource document opts into a bounded DOM-title read. When waiting for this title, pass the returned titleSource to waitFor; native and DOM titles can differ after SPA back/forward.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "titleSource": {"type":"string", "enum":["native","document"], "default":"native"} }, "required": ["tabId"] } },
         { "name": "browser_console_logs", "description": "Get up to 50 bounded recent console messages, uncaught runtime errors, and unhandled promise rejections from the main document and accessible child frames.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "level": { "description": "Keep only these console levels, as one name or a list.", "anyOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" }, "maxItems": 8 } ] }, "maxCharsPerMessage": { "type": "integer", "minimum": 40, "maximum": 4000, "description": "Clip each message; one advert frame can otherwise spend the whole budget on a single tracking URL." }, "since": { "type": "integer", "minimum": 0, "description": "Only entries at or after this timestamp." } }, "required": ["tabId"] } },
         { "name": "agent_spawn", "description": "Spawn one configured built-in or custom CLI agent in an explicitly selected open Anbo workspace. Displays its first tab only in an empty active workspace; later spawns stay in the background and inactive workspaces never activate. The stored command cannot be supplied or overridden by the caller.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agent": { "type": "string", "minLength": 1, "maxLength": 71, "description": "Built-in launcher id or label, or the display name or custom:<id> of an agent registered in Anbo Settings." }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 15000, "description": "How long to wait for live agent detection before returning pending: true." } }, "required": ["workspace", "agent"] } },
@@ -278,6 +282,7 @@ pub fn tool_name_to_method(name: &str) -> Option<&'static str> {
         "browser_hover" => "hover",
         "browser_scroll_to_element" => "scroll_to_element",
         "browser_get_text" => "get_text",
+        "browser_get_property" => "get_property",
         "browser_page_info" => "get_page_info",
         "browser_console_logs" => "console_logs",
         "agent_spawn" => "agent_spawn",
@@ -305,7 +310,7 @@ mod tests {
     #[test]
     fn tools_have_capability_prefixes_and_unique_names() {
         let tools = tool_definitions().as_array().unwrap().clone();
-        assert_eq!(tools.len(), 52);
+        assert_eq!(tools.len(), 53);
         let mut names = std::collections::HashSet::new();
         for t in &tools {
             let n = t.get("name").and_then(|v| v.as_str()).unwrap();
@@ -410,7 +415,51 @@ mod tests {
             .filter(|tool| tool["name"].as_str().unwrap().starts_with("browser_"))
             .collect();
         let size = serde_json::to_string(&browser).unwrap().len();
-        assert!(size <= 36_000, "browser tool schemas are {size} characters");
+        assert!(size <= 38_000, "browser tool schemas are {size} characters");
+    }
+
+    #[test]
+    fn get_property_reads_a_closed_list_and_takes_a_locator() {
+        // The list is the safety argument: the agent names a DOM property,
+        // never code. Measured on YouTube before this tool existed, "is the
+        // video paused" cost 12 finds, 3 focuses and 6 key presses per task.
+        let tools = tool_definitions();
+        let tool = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "browser_get_property")
+            .expect("browser_get_property");
+        let items = &tool["inputSchema"]["properties"]["properties"]["items"];
+        let allowed = items["enum"].as_array().expect("enum");
+        assert!(allowed.iter().any(|v| v == "paused"));
+        assert!(allowed.iter().any(|v| v == "value"));
+        assert!(!allowed.iter().any(|v| v == "innerHTML"));
+        assert_eq!(
+            allowed.len(),
+            super::super::actions::ELEMENT_PROPERTIES.len()
+        );
+        assert!(tool["inputSchema"]["properties"].get("locator").is_some());
+        assert_eq!(tool["annotations"]["readOnlyHint"], true);
+        assert_eq!(tool_name_to_method("browser_get_property"), Some("get_property"));
+    }
+
+    #[test]
+    fn closing_the_last_tab_can_end_the_session_in_the_same_call() {
+        // browser_close followed by browser_end_session was the last two calls
+        // of every one of fifteen measured tasks; the flag folds them.
+        let tools = tool_definitions();
+        let close = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "browser_close")
+            .unwrap();
+        assert_eq!(close["inputSchema"]["properties"]["endSession"]["type"], "boolean");
+        assert!(close["description"].as_str().unwrap().contains("endSession"));
+        assert!(SERVER_INSTRUCTIONS.contains("endSession: true"));
+        assert!(SERVER_INSTRUCTIONS.contains("page.url"));
+        assert!(BROWSER_SESSION_INSTRUCTIONS.contains("endSession: true"));
     }
 
     #[test]

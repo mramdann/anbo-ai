@@ -227,7 +227,7 @@ pub async fn handle_action_as(
             .filter(|id| *id > 0);
         let Some(control_id) = params
             .get("controlId")
-            .and_then(Value::as_u64)
+            .and_then(as_count)
             .filter(|id| *id > 0 && *id <= 9_007_199_254_740_991)
         else {
             return Err((
@@ -250,10 +250,13 @@ pub async fn handle_action_as(
     // heard about a freshly driven tab carried no identity, and it fell back to
     // the generic robot until a second, tracked call arrived.
     let actor = caller.clone();
+    let tab_id = params.get("tabId").and_then(Value::as_i64);
+    let end_session_after_close =
+        method == "close" && params.get("endSession").and_then(Value::as_bool) == Some(true);
     let result = super::activity::track(
         app,
         method,
-        params.get("tabId").and_then(Value::as_i64),
+        tab_id,
         caller,
         handle_action_inner(app, method, params, &mut timings, &actor),
     )
@@ -262,6 +265,23 @@ pub async fn handle_action_as(
     if method.starts_with("agent_") || method.starts_with("terminal_") {
         return result;
     }
+    let mut result = result;
+    if let Ok(value) = &mut result {
+        // An action that can move the page says where it landed. Without this
+        // the agent asked browser_get_url after almost every one: 19 times in
+        // 15 tasks, 14 of them right before closing the tab, each a full turn.
+        if LANDING_METHODS.contains(&method) {
+            if let Some(webview) = tab_id.and_then(|id| get_embed_webview(app, id).ok()) {
+                value["page"] = landing(&webview, tab_id.unwrap_or_default()).await;
+            }
+        }
+        // Closing the last tab of a task and ending the session were two calls
+        // in 15 of 15 measured tasks; the flag folds them into one.
+        if end_session_after_close {
+            super::activity::end_owner(app, &actor);
+            value["sessionEnded"] = json!(true);
+        }
+    }
     result.map(|mut value| {
         if let Some(object) = value.as_object_mut() {
             let elapsed = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -269,6 +289,80 @@ pub async fn handle_action_as(
         }
         value
     })
+}
+
+/// Plain DOM properties browser_get_property may read: state a page exposes
+/// directly and that an agent otherwise probes through several finds. Closed
+/// list, primitives only; nothing here runs page code or reaches storage.
+pub(crate) const ELEMENT_PROPERTIES: [&str; 25] = [
+    "value",
+    "checked",
+    "disabled",
+    "readOnly",
+    "selected",
+    "paused",
+    "ended",
+    "muted",
+    "currentTime",
+    "duration",
+    "volume",
+    "playbackRate",
+    "scrollTop",
+    "scrollLeft",
+    "scrollHeight",
+    "scrollWidth",
+    "clientHeight",
+    "clientWidth",
+    "href",
+    "src",
+    "title",
+    "placeholder",
+    "open",
+    "hidden",
+    "tagName",
+];
+
+/// Actions after which the agent wants to know where the tab is.
+const LANDING_METHODS: [&str; 11] = [
+    "click",
+    "double_click",
+    "press_key",
+    "press",
+    "key",
+    "wait",
+    "navigate",
+    "reload",
+    "back",
+    "forward",
+    "dialog",
+];
+
+/// The tab's committed URL and native title, read from WebView2 without page
+/// JavaScript, plus whether a load is still in flight. Bounded and best
+/// effort: a tab that cannot answer in half a second reports only its loading
+/// state rather than slowing the action it rides on.
+async fn landing(webview: &Webview, tab_id: i64) -> Value {
+    let mut page = json!({ "loading": active_loading(tab_id) });
+    if let Some(pending) = active_pending_url(tab_id) {
+        page["pendingUrl"] = json!(pending);
+    }
+    if let Ok((title, url)) = super::cdp::read_page_info(webview, Duration::from_millis(500)).await {
+        page["url"] = json!(url);
+        page["title"] = json!(title.chars().take(160).collect::<String>());
+    }
+    page
+}
+
+/// A count or size parameter: an integer, or a finite non-negative float
+/// truncated toward zero. `Value::as_u64` alone is None for `400.5`, and every
+/// caller then fell back to its own default without saying so. Measured on
+/// browser_find: timeout 400 took 413 ms, timeout 400.5 took 5,008 ms.
+fn as_count(value: &Value) -> Option<u64> {
+    if let Some(count) = value.as_u64() {
+        return Some(count);
+    }
+    let float = value.as_f64()?;
+    (float.is_finite() && float >= 0.0).then(|| float.trunc() as u64)
 }
 
 async fn handle_action_inner(
@@ -527,12 +621,12 @@ async fn handle_action_inner(
 
             let requested_max_chars = params
                 .get("maxChars")
-                .and_then(Value::as_u64)
+                .and_then(as_count)
                 .and_then(|value| usize::try_from(value).ok())
                 .unwrap_or(DEFAULT_SNAPSHOT_MAX_CHARS);
             let offset = params
                 .get("offset")
-                .and_then(Value::as_u64)
+                .and_then(as_count)
                 .and_then(|value| usize::try_from(value).ok())
                 .unwrap_or(0);
             let formatted = format_snapshot(&payload, gen, requested_max_chars, offset);
@@ -560,7 +654,7 @@ async fn handle_action_inner(
             let locator = extract_locator(&params)?;
             let timeout_ms = params
                 .get("timeout")
-                .and_then(Value::as_u64)
+                .and_then(as_count)
                 .unwrap_or(5_000)
                 .clamp(100, MAX_WAIT_TIMEOUT_MS);
             let webview = get_embed_webview(app, tab_id)
@@ -1122,7 +1216,7 @@ async fn handle_action_inner(
             }
             let observation_timeout_ms = params
                 .get("observationTimeout")
-                .and_then(Value::as_u64)
+                .and_then(as_count)
                 .unwrap_or(SUBMISSION_OBSERVATION_MS)
                 .min(10_000);
             let should_observe =
@@ -1324,7 +1418,7 @@ async fn handle_action_inner(
             let condition = extract_wait_condition(&params)?;
             let timeout_ms = params
                 .get("timeout")
-                .and_then(|v| v.as_u64())
+                .and_then(as_count)
                 .unwrap_or(10000)
                 .clamp(100, MAX_WAIT_TIMEOUT_MS);
 
@@ -1483,8 +1577,8 @@ async fn handle_action_inner(
 
         "emulate" => {
             let tab_id = extract_tab_id(&params)?;
-            let width = params.get("width").and_then(Value::as_u64).unwrap_or(0);
-            let height = params.get("height").and_then(Value::as_u64).unwrap_or(0);
+            let width = params.get("width").and_then(as_count).unwrap_or(0);
+            let height = params.get("height").and_then(as_count).unwrap_or(0);
             let scale = params.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
             let mobile = params
                 .get("mobile")
@@ -1581,7 +1675,7 @@ async fn handle_action_inner(
                 .unwrap_or(0);
             let encoding = super::cdp::ScreenshotEncoding::parse(
                 params.get("format").and_then(Value::as_str),
-                params.get("quality").and_then(Value::as_u64),
+                params.get("quality").and_then(as_count),
             )
             .map_err(|error| (error_codes::INVALID_REQUEST.to_string(), error))?;
             let extension = if encoding.format == "jpeg" {
@@ -1643,7 +1737,7 @@ async fn handle_action_inner(
             }
             let timeout_ms = params
                 .get("timeout")
-                .and_then(Value::as_u64)
+                .and_then(as_count)
                 .unwrap_or(10_000)
                 .clamp(100, MAX_WAIT_TIMEOUT_MS);
 
@@ -1705,7 +1799,7 @@ async fn handle_action_inner(
             let download_id = extract_download_id(&params)?;
             let timeout_ms = params
                 .get("timeout")
-                .and_then(Value::as_u64)
+                .and_then(as_count)
                 .unwrap_or(30_000)
                 .clamp(100, MAX_WAIT_TIMEOUT_MS);
             let record = download::find_download(download_id, &workspace_root)
@@ -1935,7 +2029,7 @@ async fn handle_action_inner(
             };
             let max_length = params
                 .get("maxLength")
-                .and_then(|v| v.as_u64())
+                .and_then(as_count)
                 .unwrap_or(8000)
                 .clamp(1, MAX_TEXT_OUTPUT_CHARS);
             let tab_lock = get_tab_lock(tab_id);
@@ -2002,7 +2096,7 @@ async fn handle_action_inner(
                     "sourceNote": parsed.get("sourceNote").cloned().unwrap_or(Value::Null),
                     "visible": parsed.get("visible").and_then(Value::as_bool).unwrap_or(false),
                     "truncated": parsed.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false),
-                    "totalLength": parsed.get("totalLength").and_then(|v| v.as_u64()).unwrap_or(0),
+                    "totalLength": parsed.get("totalLength").and_then(as_count).unwrap_or(0),
                     "totalLengthIsLowerBound": parsed.get("totalLengthIsLowerBound").and_then(Value::as_bool).unwrap_or(false)
                 }))
             } else {
@@ -2014,6 +2108,101 @@ async fn handle_action_inner(
                     error_codes::STALE_REF.to_string(),
                     format!(
                         "get_text failed: {err} (reason: {})",
+                        ref_failure_reason(&parsed)
+                    ),
+                ))
+            }
+        }
+
+        "get_property" => {
+            // Live element state without page JavaScript. Measured on YouTube:
+            // an agent that wanted to know whether the video was paused spent
+            // 12 finds, 3 focuses and 6 key presses per task probing hidden
+            // controls, where a tool with JS eval read `paused` once. The list
+            // is closed on purpose: every name is a plain DOM property that
+            // reads without side effects, and nothing here runs caller code.
+            let tab_id = extract_tab_id(&params)?;
+            let ref_id = extract_ref(&params)?;
+            let names: Vec<String> = match params.get("properties") {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect(),
+                Some(Value::String(one)) => vec![one.clone()],
+                _ => Vec::new(),
+            };
+            if names.is_empty() || names.len() > 8 {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    format!(
+                        "properties must name 1 to 8 of: {}",
+                        ELEMENT_PROPERTIES.join(", ")
+                    ),
+                ));
+            }
+            if let Some(unknown) = names
+                .iter()
+                .find(|name| !ELEMENT_PROPERTIES.contains(&name.as_str()))
+            {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    format!(
+                        "'{unknown}' is not a readable property; choose from: {}",
+                        ELEMENT_PROPERTIES.join(", ")
+                    ),
+                ));
+            }
+            let tab_lock = get_tab_lock(tab_id);
+            let _lock = tab_lock.lock().await;
+            let webview = get_embed_webview(app, tab_id)
+                .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
+            let generation = get_current_generation(tab_id);
+            ensure_current_ref(&ref_id, generation)?;
+            let target = get_ref_frame_target(tab_id, &ref_id);
+            let wanted = serde_json::to_string(&names).unwrap_or_else(|_| "[]".into());
+            let js = deep_ref_expression(
+                &ref_id,
+                &format!(
+                    r#"
+                    if (!el || el.getAttribute('data-anbo-gen') !== "gen-{generation}") {{
+                        return JSON.stringify({{ ok: false, error: "stale_ref", reason: refRegistry.reason(refId) }});
+                    }}
+                    const wanted = {wanted};
+                    const values = {{}};
+                    const missing = [];
+                    for (const name of wanted) {{
+                        let value;
+                        try {{ value = el[name]; }} catch (_) {{ value = undefined; }}
+                        if (typeof value === 'string') values[name] = value.slice(0, 500);
+                        else if (typeof value === 'boolean' || value === null) values[name] = value;
+                        else if (typeof value === 'number') values[name] = Number.isFinite(value) ? value : null;
+                        else missing.push(name);
+                    }}
+                    return JSON.stringify({{ ok: true, values: values, missing: missing }});"#
+                ),
+            );
+            let res = execute_ref_script(&webview, target.as_ref(), &js)
+                .await
+                .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
+            let unquoted: String = serde_json::from_str(&res).unwrap_or(res);
+            let parsed: Value = serde_json::from_str(&unquoted).unwrap_or_default();
+            if parsed.get("ok").and_then(Value::as_bool) == Some(true) {
+                Ok(json!({
+                    "tabId": tab_id,
+                    "ref": ref_id,
+                    "values": parsed.get("values").cloned().unwrap_or(json!({})),
+                    "missing": parsed.get("missing").cloned().unwrap_or(json!([])),
+                }))
+            } else {
+                let err = parsed
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("stale_ref");
+                Err((
+                    error_codes::STALE_REF.to_string(),
+                    format!(
+                        "get_property failed: {err} (reason: {})",
                         ref_failure_reason(&parsed)
                     ),
                 ))
@@ -2092,9 +2281,9 @@ async fn handle_action_inner(
             };
             let per_message = params
                 .get("maxCharsPerMessage")
-                .and_then(Value::as_u64)
+                .and_then(as_count)
                 .map(|value| value.clamp(40, 4_000) as usize);
-            let since = params.get("since").and_then(Value::as_u64);
+            let since = params.get("since").and_then(as_count);
 
             let (logs, included_frames, skipped_frames) = collect_console_logs(&webview).await;
             let total = logs.len();
@@ -2111,7 +2300,7 @@ async fn handle_action_inner(
                 })
                 .filter(|entry| {
                     since.is_none_or(|from| {
-                        entry.get("ts").and_then(Value::as_u64).unwrap_or(0) >= from
+                        entry.get("ts").and_then(as_count).unwrap_or(0) >= from
                     })
                 })
                 .map(|mut entry| {
@@ -2537,7 +2726,7 @@ fn parse_console_entries(raw: &str, frame: &str) -> Vec<Value> {
         .filter_map(|entry| {
             let message = entry.get("msg")?.as_str()?;
             let level = entry.get("level").and_then(Value::as_str).unwrap_or("info");
-            let timestamp = entry.get("ts").and_then(Value::as_u64).unwrap_or(0);
+            let timestamp = entry.get("ts").and_then(as_count).unwrap_or(0);
             Some(json!({
                 "level": level.chars().take(16).collect::<String>(),
                 "msg": message.chars().take(4_000).collect::<String>(),
@@ -2589,7 +2778,7 @@ async fn collect_console_logs(webview: &Webview) -> (Vec<Value>, usize, usize) {
         included_frames = usize::from(!logs.is_empty());
     }
 
-    logs.sort_by_key(|entry| entry.get("ts").and_then(Value::as_u64).unwrap_or(0));
+    logs.sort_by_key(|entry| entry.get("ts").and_then(as_count).unwrap_or(0));
     if logs.len() > 50 {
         logs.drain(..logs.len() - 50);
     }
@@ -2859,7 +3048,7 @@ fn extract_locator(params: &Value) -> Result<LocatorRequest, (String, String)> {
             .unwrap_or(false),
         limit: params
             .get("limit")
-            .and_then(Value::as_u64)
+            .and_then(as_count)
             .and_then(|value| usize::try_from(value).ok())
             .unwrap_or(10)
             .clamp(1, MAX_LOCATOR_MATCHES),
@@ -2884,8 +3073,7 @@ async fn resolve_target_locator(
         None => None,
         Some(_) if !waiting => return Err(invalid()),
         Some(value) => Some(
-            value
-                .as_u64()
+            as_count(value)
                 .filter(|n| (1..=MAX_LOCATOR_MATCHES as u64).contains(n))
                 .ok_or_else(invalid)? as usize,
         ),
@@ -2919,8 +3107,7 @@ async fn resolve_target_locator(
     let timeout_ms = if waiting {
         match params.get("timeout") {
             None => 10_000,
-            Some(value) => value
-                .as_u64()
+            Some(value) => as_count(value)
                 .filter(|n| (100..=ACCEPTED_WAIT_TIMEOUT_MS).contains(n))
                 .ok_or_else(invalid)?
                 .min(MAX_WAIT_TIMEOUT_MS),
@@ -3636,7 +3823,7 @@ async fn dom_click_ref(
     } else {
         let dispatched = parsed
             .get("clicksDispatched")
-            .and_then(Value::as_u64)
+            .and_then(as_count)
             .unwrap_or(0);
         Err((
             error_codes::STALE_REF.to_string(),
