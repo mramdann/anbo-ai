@@ -206,6 +206,34 @@ describe("shipped compound page predicate", () => {
     expect(matches({ url: "*q=one*one" })).toBe(false);
     expect(matches({ url: "https://example.test/results?q=one" })).toBe(true);
   });
+  it("matches text and title case-insensitively and past the snapshot cap", () => {
+    // Measured on TradingView: "Symbol Search" never matched "Symbol search",
+    // and a dialog appended after 16k characters of page text was invisible
+    // to a probe that reused the snapshot's bounded reader. Nine of fifteen
+    // agent tasks paid a 10-20 s timeout for one of these.
+    expect(matches({ text: "RESULT ready" })).toBe(true);
+    expect(matches({ title: "results" })).toBe(true);
+    const deep = element("BODY", [
+      element("DIV", [text("x".repeat(20000))]),
+      element("DIV", [text("Deep dialog title")]),
+    ]);
+    const run = (body: Node, expected: Record<string, string>) =>
+      vm.runInNewContext(
+        script("pub fn script", { expected: JSON.stringify(expected) }),
+        {
+          location: { href: "https://example.test/" },
+          document: { readyState: "complete", title: "", body },
+          getComputedStyle: styles,
+        },
+      );
+    expect(run(deep, { text: "deep dialog" })).toBe(true);
+    expect(run(deep, { text: "absent dialog" })).toBe(false);
+    // The native innerText is the fast path when the page offers one.
+    const native = { ...element("BODY", []), innerText: "Native  Ready\nText" };
+    expect(run(native as Node, { text: "native ready" })).toBe(true);
+    expect(run(native as Node, { text: "ready native" })).toBe(false);
+  });
+
   it("does not accept hidden slot fallback as visible readiness text", () => {
     const run = (text: string) =>
       vm.runInNewContext(

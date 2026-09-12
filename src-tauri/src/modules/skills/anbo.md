@@ -1,6 +1,7 @@
 ---
 name: anbo
-description: How to drive Anbo from an agent CLI, including workspace isolation, browser readiness, refs, terminals, other agents, and artifacts. Read this before using any anbomcp tool.
+description: How to drive Anbo from an agent CLI. The essentials for browser work come first; workspace isolation, files, terminals, other agents and the finer browser behaviour are sections you read only when a task needs them.
+sections: on-demand
 ---
 
 # Working inside Anbo
@@ -9,221 +10,133 @@ You are running inside Anbo, a desktop workspace that gives you a browser,
 terminals, and the other agents in this project through MCP tools named
 `browser_*`, `terminal_*`, `agent_*` and `skills_*`.
 
-## Workspace isolation comes first
+**Workspace isolation.** Tools that take `workspace` need **your own
+workspace root** (the directory you were started in) or the space id you were
+given. Anbo never falls back to whatever the user is looking at. Needed by
+every `skills_*`, `agent_*` and `terminal_*` call, plus `browser_open`,
+`browser_close`, `browser_upload` and the download tools; the other browser
+tools are addressed by `tabId`. `workspace_not_found` means the path is not one
+Anbo has open: use the root you were launched in.
 
-Several tools require a `workspace` argument, and it is not a formality. Pass
-**your own workspace root**, the directory you were started in, or the space
-id you were given. Anbo never falls back to whatever the user happens to be
-looking at, because a tab opened in someone else's workspace lands in front of
-them with no explanation.
+**A browser task.** `browser_open {url, workspace}` returns a `tabId` and the
+`controlId` of your session, which opens itself on your first browser call.
+Find a target with `browser_find {tabId, by: "role", value: "button", name:
+"Search"}` (also `text`, `label`, `placeholder`, `testId`, `css`; implicit
+roles include heading, searchbox, textbox, combobox, dialog, list, table and
+landmarks), or read the page with `browser_snapshot` (viewport text first, then
+interactive elements, paged with `offset`). Both return refs like `g3-e12` and
+replace older refs; `stale_ref` means find it again. Act with `browser_click`,
+`browser_type`, `browser_press`, `browser_key`, `browser_hover`, `browser_drag`,
+`browser_select_option`, `browser_check`, `browser_scroll`; single-target actions
+also take `locator` instead of `ref`. Read the result with `browser_get_text`
+(a ref, or the body), `browser_page_info` or `browser_get_url`. Close the tab
+with `browser_close {tabId, workspace}` and, when the whole task is done or
+abandoned, call `browser_end_session {controlId}` once.
 
-If a tool refuses with `workspace_not_found`, the path was not one Anbo has
-open. Use the root you were launched in rather than guessing.
+**Waiting.** Navigation is asynchronous: `browser_navigate`, `browser_reload`
+and `browser_back` return at once. Put `waitFor: {url, title, text, timeout}`
+on click, press or wait to verify the state you expect; `text` is a
+case-insensitive substring of the visible page text, `url` a glob. A reply of
+`matched: true, stable: false` means the condition held but the page kept
+changing (a live price, a ticker, an advert): treat it as matched. A timed-out
+postcondition never repeats the action, so inspect the page before retrying
+instead of resubmitting. `browser_wait` also takes `locator` + `state`
+(including `absent`) with a top-level `timeout`.
 
-Which tools need it: every `skills_*`, `agent_*` and `terminal_*` call, plus
-`browser_open`, `browser_close`, `browser_upload`, `browser_download` and the
-two download status tools. `browser_screenshot` takes it optionally, to choose
-where the PNG lands. The rest of the browser tools are addressed by `tabId`
-alone, and `browser_tabs` takes no arguments at all.
+**Reading pages well.** Use names in the page's own language; after a failed
+lookup, `browser_find` by text or a snapshot shows the real label. Bound your
+retries and report a blocker rather than searching for the same absent label
+again. `browser_screenshot` returns the viewport image in its reply (use
+`format: "jpeg"` to keep it small), and `browser_console_logs` is the cheapest
+explanation for a page that looks right and does nothing.
 
-## Browser
+**Typing.** `browser_type` sets the value once (input and change events); a
+site that reacts per keystroke needs `browser_key` or `browser_press`. Enter in
+a search box may pick a highlighted suggestion instead of submitting the typed
+text, so verify the URL and results afterwards. `browser_press` accepts the
+input `ref` plus `expectedValue` to refuse typing into a replaced field.
 
-`browser_open` needs `url` and `workspace`; it returns a `tabId` used by every
-other browser tool. Close what you open with `browser_close`, which needs the
-same `workspace`.
+**Where files land.** Screenshots and downloads go under `.anbo/` in the
+workspace that asked for them: `.anbo/artifacts/` and `.anbo/downloads/`.
+Uploads accept paths inside the selected workspace only. Never use another
+workspace's files, cookies or sessions as test data.
 
-Tool map. Navigation: `browser_navigate`, `browser_reload`, `browser_back`,
-`browser_forward`, `browser_stop`. Reading: `browser_snapshot`, `browser_find`,
-`browser_get_text`, `browser_page_info`, `browser_get_url`, `browser_tabs`,
-`browser_console_logs`, `browser_screenshot`. Acting: `browser_click`,
-`browser_double_click`, `browser_type`, `browser_press`, `browser_key`,
-`browser_check`, `browser_select_option`, `browser_hover`, `browser_focus`,
-`browser_drag`, `browser_dialog`, `browser_scroll`, `browser_scroll_to_element`.
-Files: `browser_upload`, `browser_download`, `browser_download_status`,
-`browser_download_wait`. Waiting: `browser_wait`, plus the `waitFor`
-postcondition available on click, press and wait.
+## Browser details
 
-The usual shape of a browser task is `browser_open`, then `browser_find` or
-`browser_snapshot` for a ref, then one action carrying a `waitFor` that
-describes the result you expect, then a read of that result, and finally
-`browser_end_session`. Reach for a screenshot or `browser_console_logs` when
-the accessibility view cannot explain what happened.
+Refs are generation-scoped. A reused link whose resolved URL changes also
+returns `stale_ref`, including refs inside that link, as do controls in
+recognizable list items, rows and cards whose identity changed; large or
+unrecognized containers keep only node identity protection. Re-find controls
+after replacing a list and verify the current item before acting. A capped scan
+or skipped frame does not prove absence: inspect `nodeLimitReached`,
+`skippedFrames` and the timeout's coverage diagnostics. Open Shadow DOM and
+child frames are searched; CSS descendant combinators do not cross a shadow
+boundary.
 
-Single-target actions also accept `locator` instead of `ref`, for example
-`browser_click: {tabId, locator: {by: "role", value: "button", name: "Search", exact: true}}`.
-Use exactly one target form. The lookup requires a unique match across the
-bounded document/frame scan and creates fresh refs. Ambiguous or incomplete
-scans dispatch no input. `locator.timeout` bounds lookup only; actionability
-guards still run afterward. Other concurrent scans or page replacement can
-still invalidate the resolved ref: inspect before explicitly trying again.
-No click, submit or other input is automatically replayed. Drag retains its
-two explicit refs so both endpoints come from the same generation.
+`locator` on a single-target action, for example `browser_click: {tabId,
+locator: {by: "role", value: "button", name: "Search", exact: true}}`, requires
+one unique match across the bounded scan and creates fresh refs; ambiguous or
+incomplete scans dispatch no input, and `locator.timeout` bounds the lookup only.
+To wait without a ref: `browser_wait: {tabId, locator: {by: "testId", value:
+"loading"}, state: "absent", timeout: 5000}`; hidden matches are included,
+`hidden` accepts absence or one non-rendered match, `absent` requires none, and
+`minCount` waits for several. Do not mix locator waits with ref, text, URL,
+loadState or waitFor.
 
-To wait without an existing ref, use `browser_wait: {tabId, locator: {by:
-"testId", value: "loading"}, state: "absent", timeout: 5000}`. Hidden matches
-are included automatically. Use top-level timeout, not locator.timeout; do not
-mix locator waits with ref, text, URL, loadState or waitFor. `hidden` accepts
-absence or one non-rendered match; `absent` requires no matches. Ambiguous
-matches are rejected. Capped or skipped scans never prove either state.
-Find metadata includes editable, readOnly, inViewport and frame-local bounds.
-These describe the element, not permission or proof that a click can reach it.
+A control session is a contract with you, not with a tab: one `controlId`
+covers every tab you open or act on, and browser results repeat it. Never
+invent one from a tabId. `browser_start_session` is optional; pass `tabId` to it
+to paint a tab as yours before any action runs. `browser_end_session` once at
+the end (also after errors) removes the cursor and badge; it closes no tab,
+terminal or connection, and a new task starts a new session by itself.
 
-A control session is a contract with you, not with a tab. `browser_start_session`
-opens one and returns the `controlId` that names it; every tab you then open or
-act on belongs to that same session, so one id covers the whole task. Calling it
-again while you hold a session returns the id you already have, and passing a
-`tabId` only paints that tab immediately -- useful right after `browser_open`, so
-the tab shows who is driving it before any action has run. The call is optional:
-the first browser action opens a session anyway. Browser actions return the same
-`controlId`; never invent one from tabId or automationTarget.
-Keep it active between tool calls, including while thinking or reading results.
-When the browser task finishes, is cancelled, or needs to be handed back to the
-user, call `browser_end_session` once with that `controlId`. One call closes the
-session and every tab it painted; there is no need to end tabs one by one, and
-`tabId` is accepted and ignored. Do this in cleanup after errors too. This removes the cursor and card;
-it does not close the browser tab, terminal, or MCP connection. A new task starts
-a new visual session automatically. Tool completion alone does not end it.
+Postconditions: `browser_press` reports `observationPerformed: false` when
+`waitFor` replaces the legacy Enter observation window; read
+`postcondition.matched` then. A failed postcondition does not undo a click or
+submit. Check `browser_tabs` for a newly opened background tab before clicking
+an equivalent link: a popup does not navigate the source tab. A target that
+moves, hides, disables or gets covered after pointer movement returns
+`input_not_ready` before mouse-down; a double-click can stop after its first
+click and reports how many clicks were dispatched. Failure never means no input
+reached the page.
 
-Navigation is asynchronous by design. `browser_navigate` and `browser_reload`
-return as soon as the load starts. Prefer `browser_wait` with a `waitFor`
-URL and meaningful visible text for SPA readiness. Native loading and
-networkIdle are lifecycle signals, not proof that a dynamic result is ready.
-Put timeout inside `waitFor`, for example
-`waitFor: {url: "*search*", text: "Exact result title", timeout: 10000}`.
-Do not combine `waitFor` with top-level timeout or legacy wait conditions.
-Choose a result unique to the new action; a common word can still match the
-previous SPA screen while its new results are loading.
-Long streams can prevent networkIdle. `activeTabId: null` is normal while a
-terminal is in front; do not activate a browser to make this field non-null.
+Page titles: `browser_page_info` defaults to fast native metadata
+(`titleSource: native`); `titleSource: document` reads the DOM title. Snapshot
+titles are document titles. When waiting for a title you just read, pass the
+same source. `browser_get_url` returns `loading` and `pendingUrl`; while
+loading, `url` is the last committed address.
+
+`browser_get_text` reports `source` and `visible`; a hidden accessible label is
+not proof of live state, especially for auto-hiding media controls. For those,
+hover the video once, then hover the same ref at `position: {x: 0.6, y: 0.5}`
+(entering from outside or repeating the exact center can leave controls
+hidden), start a bounded `browser_wait` for the clock ref to become visible, and
+read the clock element itself. Verify playback with two visible clock readings;
+distinguish ads, paused playback and hidden UI before calling a video frozen.
+Charts can expose axis labels without the plotted value: verify with a
+screenshot when semantics are not enough. Screenshots cover the viewport,
+exclude remote-control effects and do not replace postcondition checks.
+
+`browser_drag` takes two refs, or the same ref twice with `sourcePosition` and
+`targetPosition` as fractions of the element to pan inside it. Both points must
+be visible; nothing is retried automatically. `browser_emulate` lays a page out
+as another device would; `width: 0` clears it, it survives navigation, and it
+never resizes the application window. `browser_key` modifiers are per call:
+pass the whole combination on every key event. `browser_dialog` clicks a ref
+and answers the alert, confirm or prompt it raises, reporting `clickDispatched`
+and `dialogOpened` separately. `browser_download` arms exactly one download and
+clicks a ref; a `timedOut` result from `browser_download_wait` is normal for a
+large file and keeps the `downloadId`, so poll it again rather than arming a
+second download. `browser_console_logs` returns up to 50 recent bounded
+messages, uncaught errors and unhandled rejections from the main document and
+reachable frames.
+
 When the active workspace has no tabs, `browser_open`, `terminal_open` and
-`agent_spawn` display their first tab automatically (`placement: visible-first-tab`)
-so the user can review it. Any existing tab, regardless of kind, keeps later
-opens in the background; an inactive workspace is never activated. This changes
-only the selected tab, not the application window size or position.
-`automationTarget` is the workspace's browser routing selection, not proof of
-a live remote session; use `automationActive` to inspect session activity.
-
-To read a page, prefer `browser_snapshot`: it returns a bounded accessibility
-view with element refs you can click. Prefer targeted `browser_find` when the
-element is known, usually by role plus an exact accessible name. CSS uses real
-selector semantics, not a remembered selector from another site version.
-Use names from the current page's language, not translated guesses. After a
-failed exact-name lookup, inspect a targeted snapshot/find to discover the
-actual label before retrying. Bound recovery attempts and report a blocker
-instead of repeatedly searching for the same absent label.
-Open Shadow DOM and child frames are supported; CSS descendant combinators do
-not cross a shadow boundary. An editor still needs to be genuinely editable.
-
-Both find and snapshot replace older refs. Reuse current refs while the same
-nodes and link destinations survive, including ordinary text updates. A reused
-link whose resolved URL changes also returns `stale_ref`, including refs inside
-that link. Find the target again and verify its current identity. This is a
-destination guard, with additional bounded context checks for controls in
-recognizable list items, rows and cards. Changing an item's explicit identity
-or links can invalidate its old menu-button ref. This is not universal semantic
-validation of JavaScript handlers: large or unrecognized containers may have
-only node/container identity protection. Re-find controls after replacing a
-list, and verify the current item before acting. Diagnostic reasons such as
-`destination_changed` and `context_changed` retain the `stale_ref` error code.
-Do not snapshot between find and action unnecessarily. Retry
-scans can advance generation several times within one find call. A capped
-scan or skipped frame does not prove absence: inspect `nodeLimitReached`,
-`skippedFrames`, and the timeout's coverage diagnostics.
-
-Before submitting, `browser_press` can check an input `ref` and `expectedValue`.
-After click or press, `waitFor` checks a bounded stable result. If the error
-says the action was dispatched, inspect its effects before retrying: a failed
-postcondition does not undo the click or submit, and must not trigger a blind
-repeat. Check `browser_tabs` for a newly opened background tab before clicking
-an equivalent link: a popup does not navigate the source tab. For a known ref,
-wait supports hidden/detached as well as visible.
-
-A target that moves, becomes hidden/disabled, or gets covered after pointer
-movement can return `input_not_ready` before mouse-down. Inspect the current
-page and find the target again before a deliberate retry. A double-click can
-stop after its first click; the error reports how many clicks were dispatched.
-Do not assume failure means no input reached the page.
-
-`browser_press` reports `observationPerformed: false` when waitFor replaces the
-legacy Enter observation window. In that mode, read postcondition.matched;
-false legacy submission/navigation flags are not evidence that the action failed.
-
-Search autocomplete may turn Enter into selection of a highlighted suggestion,
-even when the input value matched immediately before key-down. For an exact
-query, deliberately move the pointer outside the suggestions or dismiss them,
-then verify the submitted URL and visible results. Do not automatically repeat
-Enter or navigate to a different URL to make a failed postcondition pass.
-
-Page title sources can differ after SPA back/forward. `browser_page_info`
-defaults to fast native metadata and returns `titleSource: native`.
-`titleSource: document` requests a bounded DOM-title read. Snapshot titles are
-document titles. When waiting for a title you just read, pass that same source:
-`waitFor: {title: info.title, titleSource: info.titleSource}`. The wait default
-remains document for compatibility. Browser tab-list titles may be UI metadata.
-
-`browser_get_url` also returns `loading` and `pendingUrl`. While loading, `url`
-is the last committed address and `pendingUrl` is only a requested target when
-known. Wait for the intended URL and page state before treating navigation as
-complete.
-
-For a ref-drift test, obtain the target and an unchanged control in one find or
-snapshot generation. Change the page without another find/snapshot, verify the
-new state, then test both old refs. A surviving control rules out a generation
-change but does not prove that a neighboring link object was reused. A hovercard
-alone does not test a destination mutation, and a standalone wait timeout does
-not test whether a previously dispatched click is replayed.
-
-`browser_get_text` reports `source` and `visible`. A hidden accessible label
-is not proof of current live state, especially for auto-hiding media controls.
-`browser_hover` defaults to the target's center. Its optional `position` uses
-fractions strictly between 0 and 1 within a painted target fragment, not pixels.
-For auto-hiding controls, hover the video once, then explicitly hover the same
-ref at `position: {x: 0.6, y: 0.5}`. This moves inside the video: entering from
-outside or repeating the exact center can leave controls hidden because some
-players cache the entry coordinates. Each call still dispatches only one native
-move; there is no automatic replay. Immediately start a bounded
-`browser_wait` for the clock ref to become visible, then read it. The first
-read can precede a reveal animation; a delayed read can miss the visible window.
-Distinguish ads, paused playback and a hidden UI before diagnosing a frozen
-video. CSS hover success alone does not prove playback or visible controls. Charts
-can expose axis labels without exposing the actual plotted value; verify with
-a screenshot when semantics are insufficient. Screenshots cover the viewport,
-exclude remote-control effects, and do not replace postcondition checks.
-Read the clock element itself, not the player container: captions or a visible
-ancestor do not prove that the clock is visible. Verify progression with two
-visible clock readings on the same playback item. For a later reveal, alternate
-between the center and another interior position, not an unbounded retry loop.
-If ads, loading, or hidden
-controls prevent that, report it as unverified, not as a passed playback test
-or a confirmed frozen video.
-
-`browser_emulate` lays a page out as another device would see it. Pass `width`
-0 to clear it. It survives navigation until you clear it.
-Use it when a pane is too narrow for the site's intended layout, not as a
-mandatory step for every page. Mobile pages can honor a fixed meta viewport;
-a layout wider than the emulated device is not by itself a failed emulation.
-Never resize the user's application window as part of browser testing.
-
-`browser_type` sets the field value and emits input and change once. It does
-not replay per-character key events, so a site that only reacts to keystrokes
-needs `browser_key` or `browser_press` as well. Modifiers on `browser_key` are
-per call: pass the whole combination on every key event, because nothing stays
-held between tools and modified mouse clicks are not supported.
-
-`browser_dialog` clicks a ref and answers the alert, confirm or prompt it
-raises. It reports `clickDispatched` and `dialogOpened` separately: when no
-dialog appears `ok` is false, but the click already happened, so inspect the
-page instead of repeating it.
-
-`browser_console_logs` returns up to 50 recent bounded messages, uncaught
-errors and unhandled rejections from the main document and reachable frames.
-It is the cheapest way to explain a page that looks right and does nothing.
-Native browser-internal warnings are not guaranteed to appear there.
-
-`browser_screenshot` captures the viewport, not the full page.
-`browser_download` arms exactly one download and then clicks a ref, so a
-`timedOut` result from `browser_download_wait` is normal for a large file and
-keeps the `downloadId`. Poll it again rather than arming a second download.
+`agent_spawn` display their first tab automatically (`placement:
+visible-first-tab`); any existing tab keeps later opens in the background, and
+an inactive workspace is never activated. `activeTabId: null` is normal while a
+terminal is in front. `automationTarget` is the workspace's routing selection,
+not proof of a live session; `automationActive` says whether one is running.
 
 ## Design feedback
 
@@ -301,23 +214,18 @@ changed rather than as new work.
 There is no agent close tool, deliberately. Ending another agent's session
 stays the user's call, so deliver your instruction and leave the tab alone.
 
-## Where files land
-
-Screenshots and downloads go under `.anbo/` in the workspace that asked for
-them: `.anbo/artifacts/` and `.anbo/downloads/`. Skills live in
-`.anbo/skills/<name>/SKILL.md`.
-Uploads accept paths relative to the selected workspace or authorized absolute
-paths within it. Never use another workspace's files, cookies, or sessions as
-test data. Changing file inputs does not itself submit a form.
-
 ## Skills
 
-`skills_list` gives every skill in this workspace with a one-line description;
-`skills_read` returns one in full. Check the list before solving something from
-first principles; a project's own procedures live there, and following them
-matters more than being clever.
+`skills_list` gives every skill in this workspace with a one-line description
+and, for skills read on demand, their section titles. `skills_read` returns a
+skill in full, or its essentials plus a section index for one that reads on
+demand, or one section when you pass `section`. Check the list before solving
+something from first principles; a project's own procedures live there, and
+following them matters more than being clever.
 
 To add one, create `.anbo/skills/<name>/SKILL.md` with frontmatter carrying a
 `name` and a `description`, then the instructions. Names are lowercase letters,
-digits and single hyphens. A workspace skill replaces an Anbo built-in of the
-same name, so this page can be corrected for a project that works differently.
+digits and single hyphens. Add `sections: on-demand` to the frontmatter to have
+a long skill read as essentials plus sections. A workspace skill replaces an
+Anbo built-in of the same name, so this page can be corrected for a project
+that works differently.

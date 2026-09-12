@@ -61,6 +61,10 @@ const MAX_URL_BYTES: usize = 8 * 1024;
 const MAX_INPUT_TEXT_BYTES: usize = 64 * 1024;
 const MAX_WAIT_TEXT_BYTES: usize = 2 * 1024;
 const MAX_LOCATOR_VALUE_BYTES: usize = 4 * 1024;
+/// A screenshot up to this size rides along in the tool reply as an image;
+/// larger ones are only written to disk, since a full-quality PNG of a large
+/// viewport costs more context than the turn it saves.
+const INLINE_SCREENSHOT_LIMIT: usize = 600 * 1024;
 const MAX_KEY_BYTES: usize = 64;
 const MAX_WORKSPACE_BYTES: usize = 4 * 1024;
 const MAX_REF_BYTES: usize = 32;
@@ -291,10 +295,18 @@ async fn handle_action_inner(
         && !caller.is_internal()
         && !super::activity::holds_control(caller)
     {
-        return Err((
-            error_codes::INVALID_REQUEST.into(),
-            "no browser session: call browser_start_session first, then run this action under the controlId it returns and close it with browser_end_session when the task is done".into(),
-        ));
+        // The first browser tool opens the session itself. The caller is named
+        // by its terminal or connection either way, so refusing here bought no
+        // attribution; measured over fifteen agent-driven tasks it only cost
+        // browser_start_session on top of every task. A session with no tab
+        // claims nothing yet: the action that follows paints the tab it
+        // touches under this same id, and the reply carries the controlId.
+        if super::activity::begin_session(app, None, caller).is_none() {
+            return Err((
+                error_codes::INVALID_REQUEST.into(),
+                "too many open control sessions; end one with browser_end_session first".into(),
+            ));
+        }
     }
     // While the user is drawing on a tab, the layer sits over the page and
     // would swallow any press or drag; refusing up front says why, where the
@@ -1463,7 +1475,8 @@ async fn handle_action_inner(
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            let skill = crate::modules::skills::read_skill(&root, name)
+            let section = params.get("section").and_then(Value::as_str);
+            let skill = crate::modules::skills::read_skill(&root, name, section)
                 .map_err(|e| (error_codes::INVALID_REQUEST.to_string(), e))?;
             Ok(serde_json::to_value(skill).unwrap_or_default())
         }
@@ -1589,13 +1602,31 @@ async fn handle_action_inner(
                     format!("failed to write screenshot: {e}"),
                 )
             })?;
-            Ok(json!({
+            let mut result = json!({
                 "tabId": tab_id,
                 "path": file_path.to_string_lossy(),
                 "size": bytes.len(),
                 "format": encoding.format,
                 "quality": encoding.quality
-            }))
+            });
+            // The agent asked to see the page; handing back only a path made
+            // it spend another call reading the file. Measured: three extra
+            // reads in one TradingView task. The image rides along in the
+            // reply unless it is too large to be worth a turn of context.
+            let inline = params
+                .get("inline")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            if inline && bytes.len() <= INLINE_SCREENSHOT_LIMIT {
+                use base64::Engine as _;
+                result["inlineImage"] = json!({
+                    "mimeType": format!("image/{}", encoding.format),
+                    "data": base64::engine::general_purpose::STANDARD.encode(&bytes),
+                });
+            } else if inline {
+                result["inlineSkipped"] = json!("larger than 600 KB; read the file instead");
+            }
+            Ok(result)
         }
 
         "download" => {
@@ -3888,10 +3919,8 @@ fn build_wait_for_text_js(text: &str) -> String {
         r#"(function() {{
             const needle = {};
             {READABLE_TEXT_JS}
-            const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
-            const normalizedNeedle = normalize(needle);
-            if (normalize(document.title).includes(normalizedNeedle)) return true;
-            if (document.body && normalize(readableText(document.body).text).includes(normalizedNeedle)) return true;
+            if (pageTextIncludes(needle)) return true;
+            const wanted = normalizeLoose(needle);
             const candidates = document.querySelectorAll('[aria-label],[placeholder],[alt],[title]');
             const limit = Math.min(candidates.length, 2000);
             for (let i = 0; i < limit; i++) {{
@@ -3902,7 +3931,7 @@ fn build_wait_for_text_js(text: &str) -> String {
                     el.getAttribute('alt'),
                     el.getAttribute('title')
                 ];
-                if (values.some(value => value && normalize(value).includes(normalizedNeedle))) return true;
+                if (values.some(value => value && normalizeLoose(value).includes(wanted))) return true;
             }}
             return false;
         }})()"#,
@@ -3920,6 +3949,7 @@ async fn wait_for_page_state(
     let script = expectation.script();
     let lock = get_tab_lock(tab_id);
     let mut stable = StableMatch::default();
+    let mut first_match: Option<u64> = None;
     let mut navigation = active_navigation_generation(tab_id);
     while tokio::time::Instant::now() < deadline {
         let mut matched = tokio::time::timeout_at(deadline, async {
@@ -3947,13 +3977,16 @@ async fn wait_for_page_state(
             navigation = current_navigation;
             matched = false;
         }
+        if matched {
+            first_match.get_or_insert(started.elapsed().as_millis().min(u64::MAX as u128) as u64);
+        }
         if stable.observe(
             matched,
             started.elapsed(),
             Duration::from_millis(expectation.stable_for),
         ) {
             return Ok(
-                json!({"matched":true, "stableForMs":expectation.stable_for, "durationMs":started.elapsed().as_millis().min(u64::MAX as u128) as u64}),
+                json!({"matched":true, "stable":true, "stableForMs":expectation.stable_for, "durationMs":started.elapsed().as_millis().min(u64::MAX as u128) as u64}),
             );
         }
         tokio::time::sleep_until(
@@ -3961,17 +3994,52 @@ async fn wait_for_page_state(
         )
         .await;
     }
+    let duration = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    if let Some(at) = first_match {
+        // The condition did hold, so the action's effect was seen; only the
+        // stability window never closed. On a live page -- a price in the
+        // title, a ticker, an advert -- that is the page's nature, not a failed
+        // action, and reporting it as a timeout sent agents back to repeat
+        // clicks that had already worked. Nine of fifteen agent-driven tasks
+        // paid that timeout before this was measured.
+        return Ok(json!({
+            "matched": true,
+            "stable": false,
+            "firstMatchedAtMs": at,
+            "durationMs": duration,
+            "note": "the condition matched but the page kept changing; the action was not repeated"
+        }));
+    }
+    // Never matched: say what the page showed instead, so the next wait can
+    // be aimed at the real title or URL rather than guessed again.
+    let seen = observe_page_identity(webview).await;
     Err((
         error_codes::TIMEOUT.to_string(),
         format!(
-            "expected page state was not stable within {}ms (titleSource: {})",
+            "expected page state never matched within {}ms{}; the action was not repeated",
             expectation.timeout,
-            if expectation.uses_native_title() {
-                "native"
-            } else {
-                "document"
-            }
+            seen.map(|(title, url)| format!(" (page showed title {title:?} at {url})"))
+                .unwrap_or_default()
         ),
+    ))
+}
+
+/// The page's own title and URL, for an error message that says what was
+/// there instead of what was expected. Best effort and bounded: a page that
+/// cannot answer in half a second gets no detail rather than a slower error.
+async fn observe_page_identity(webview: &Webview) -> Option<(String, String)> {
+    let script = "JSON.stringify({title: String(document.title || '').slice(0, 200), url: String(location.href || '').slice(0, 500)})";
+    let raw = execute_script_with_timeout(webview, script, Duration::from_millis(500))
+        .await
+        .ok()?;
+    let value: Value = serde_json::from_str(raw.trim()).ok()?;
+    let value: Value = match value {
+        Value::String(inner) => serde_json::from_str(&inner).ok()?,
+        other => other,
+    };
+    Some((
+        value.get("title")?.as_str()?.to_string(),
+        value.get("url")?.as_str()?.to_string(),
     ))
 }
 

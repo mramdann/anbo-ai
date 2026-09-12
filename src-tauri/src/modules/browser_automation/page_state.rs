@@ -88,8 +88,8 @@ impl PageExpectation {
             }};
             if (!document.body || document.readyState === 'loading') return false;
             return (!expected.url || glob(location.href, expected.url)) &&
-                (!expected.title || expected.titleSource === 'native' || normalize(document.title) === normalize(expected.title)) &&
-                (!expected.text || normalize(readableText(document.body).text).includes(normalize(expected.text)));
+                (!expected.title || expected.titleSource === 'native' || normalizeLoose(document.title) === normalizeLoose(expected.title)) &&
+                (!expected.text || pageTextIncludes(expected.text));
         }})()"#
         )
     }

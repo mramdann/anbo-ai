@@ -277,9 +277,7 @@ async fn dispatch(
             let action_method = mcp::tool_name_to_method(name)
                 .ok_or_else(|| (-32601, format!("unknown tool '{name}'")))?;
             match handle_action_as(app, action_method, arguments, caller).await {
-                Ok(val) => Ok(json!({
-                    "content": [{ "type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default() }]
-                })),
+                Ok(val) => Ok(tool_result(val)),
                 Err((code, msg)) => Ok(json!({
                     "isError": true,
                     "content": [{ "type": "text", "text": format!("Error: [{code}] {msg}") }]
@@ -288,6 +286,30 @@ async fn dispatch(
         }
         _ => Err((-32601, format!("Method not found: {method}"))),
     }
+}
+
+/// One tool reply: the JSON as compact text, plus an image block when the
+/// action produced one.
+///
+/// Compact rather than pretty: the indentation of a pretty-printed reply is
+/// tokens the model pays for on every later turn and reads nothing from.
+/// Measured over fifteen agent-driven tasks, tool replies were a third of the
+/// text the model read. A screenshot travels as MCP image content so the agent
+/// sees it in the same turn instead of spending another call reading the file.
+fn tool_result(mut value: Value) -> Value {
+    let image = value
+        .as_object_mut()
+        .and_then(|object| object.remove("inlineImage"));
+    let mut content = vec![json!({ "type": "text", "text": serde_json::to_string(&value).unwrap_or_default() })];
+    if let Some(image) = image {
+        if let (Some(data), Some(mime)) = (
+            image.get("data").and_then(Value::as_str),
+            image.get("mimeType").and_then(Value::as_str),
+        ) {
+            content.push(json!({ "type": "image", "data": data, "mimeType": mime }));
+        }
+    }
+    json!({ "content": content })
 }
 
 fn rpc_success(id: Value, result: Value) -> Value {

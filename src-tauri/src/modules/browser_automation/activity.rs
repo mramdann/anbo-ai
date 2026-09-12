@@ -208,11 +208,14 @@ where
                 None,
             );
             guard.finished = true;
-            match &mut result {
-                Ok(value) => if let Some(object) = value.as_object_mut() {
+            // Successes carry the id; errors used to carry a reminder to end
+            // the session as well, which every error of every task then
+            // repeated into the model's context. The connect message says it
+            // once, and the id is on the next successful reply anyway.
+            if let Ok(value) = &mut result {
+                if let Some(object) = value.as_object_mut() {
                     object.insert("controlId".into(), control_id.into());
-                },
-                Err((_, message)) => message.push_str(&format!(" (browser controlId: {control_id}; call browser_end_session when the task ends)")),
+                }
             }
             result
         })

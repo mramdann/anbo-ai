@@ -195,10 +195,35 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                     if (['button', 'submit', 'reset', 'image'].includes(type)) return 'button';
                     if (type === 'range') return 'slider';
                     if (type === 'number') return 'spinbutton';
+                    if (type === 'search') return 'searchbox';
                     if (type !== 'hidden') return 'textbox';
+                }}
+                // Structural roles agents ask for by habit from other tools.
+                // Measured: a heading lookup on every Wikipedia step and a
+                // searchbox on TradingView fell through to css because none
+                // of these existed here.
+                if (/^h[1-6]$/.test(tag)) return 'heading';
+                if (tag === 'dialog') return 'dialog';
+                if (tag === 'ul' || tag === 'ol') return 'list';
+                if (tag === 'li') return 'listitem';
+                if (tag === 'table') return 'table';
+                if (tag === 'tr') return 'row';
+                if (tag === 'th') return 'columnheader';
+                if (tag === 'td') return 'cell';
+                if (tag === 'nav') return 'navigation';
+                if (tag === 'main') return 'main';
+                if (tag === 'article') return 'article';
+                if (tag === 'form') return 'form';
+                if (tag === 'progress') return 'progressbar';
+                if (tag === 'hr') return 'separator';
+                if (tag === 'header' || tag === 'footer') {{
+                    const nested = el.closest ? el.closest('article,aside,main,nav,section') : null;
+                    return nested ? '' : (tag === 'header' ? 'banner' : 'contentinfo');
                 }}
                 return '';
             }};
+            // A search field is a textbox to most callers; let either name reach it.
+            const roleMatches = role => compare(role) || (role === 'searchbox' && compare('textbox'));
             {ACCESSIBLE_NAME_JS}
             {VISIBILITY_JS}
             const isMatch = el => {{
@@ -207,7 +232,7 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                 }}
                 if (by === 'role') {{
                     const role = implicitRole(el);
-                    if (!role || !compare(role)) return false;
+                    if (!role || !roleMatches(role)) return false;
                     if (!wantedName) return true;
                     const actual = accessibleName(el);
                     if (compareValue(actual, expectedName)) return true;
@@ -397,7 +422,12 @@ mod tests {
         assert!(script.contains(r#"const wantedName = "Save changes";"#));
         assert!(script.contains("compareValue(actual, expectedName)"));
         assert!(script.contains("const expectedName = normalize(wantedName).toLocaleLowerCase()"));
-        assert!(script.contains("if (!role || !compare(role)) return false;"));
+        assert!(script.contains("if (!role || !roleMatches(role)) return false;"));
+        // A search field answers to textbox as well, and the structural roles
+        // agents ask for by habit exist: both were measured as css fallbacks.
+        assert!(script.contains("role === 'searchbox' && compare('textbox')"));
+        assert!(script.contains("if (/^h[1-6]$/.test(tag)) return 'heading';"));
+        assert!(script.contains("if (type === 'search') return 'searchbox';"));
         // A near miss keeps a few of the names it saw, so the caller is told
         // what the page calls the thing instead of guessing again.
         assert!(script.contains("bucket.push(seen)"));
