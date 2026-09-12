@@ -169,7 +169,7 @@ export function receiveBrowserAutomationActivity(payload: unknown): void {
       detail.actor,
       detail.controlId
         ? null
-        : ["done", "error"].includes(detail.phase)
+        : ["done", "error", "idle"].includes(detail.phase)
           ? 1800
           : 120_000,
     );

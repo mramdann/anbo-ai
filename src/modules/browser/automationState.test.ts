@@ -91,3 +91,29 @@ describe("browser automation identity", () => {
     expect(JSON.stringify(current)).not.toContain("secret");
   });
 });
+
+// A parked tab: the sweep found the session silent, the tab is still held.
+const parked = parseAutomationState({
+  tabId: 4,
+  requestId: 9,
+  sequence: 12,
+  method: "click",
+  phase: "idle",
+  controlId: 3,
+  actor: { brand: "claude" },
+});
+it("names a parked tab as still held", () => {
+  if (!parked) throw new Error("idle was rejected");
+  expect(automationLabel(parked)).toBe("Idle, still holding this tab");
+});
+it("lets work resume on a parked tab", () => {
+  if (!parked) throw new Error("idle was rejected");
+  expect(
+    acceptsAutomationState(parked, {
+      ...parked,
+      requestId: 10,
+      sequence: 13,
+      phase: "queued",
+    }),
+  ).toBe(true);
+});

@@ -33,9 +33,12 @@ also take `locator` instead of `ref`. Every action reply carries `page`
 click or a key. Read results with `browser_get_text` (a ref, or the body) or
 `browser_get_property` for live state such as `paused`, `currentTime`,
 `value`, `checked`, `scrollTop` (a closed list of plain DOM properties, one
-call, no page JavaScript). Close your last tab with `browser_close {tabId,
-workspace, endSession: true}`, which also ends the session; `browser_end_session
-{controlId}` ends it without closing tabs, for an abandoned task.
+call, no page JavaScript). When the task is done, put `endSession: true` on
+your last call: `browser_close {tabId, workspace, endSession: true}` if you
+close the tab, or that final read (`browser_get_text`, `browser_screenshot`,
+`browser_get_property`, `browser_snapshot`) if the page stays open for the
+user. The cursor and badge go at once; there is nothing to start and nothing
+else to end.
 
 **Waiting.** Navigation is asynchronous: `browser_navigate`, `browser_reload`
 and `browser_back` return at once. Put `waitFor: {url, title, text, timeout}`
@@ -92,10 +95,13 @@ loadState or waitFor.
 
 A control session is a contract with you, not with a tab: one `controlId`
 covers every tab you open or act on, and browser results repeat it. Never
-invent one from a tabId. `browser_start_session` is optional; pass `tabId` to it
-to paint a tab as yours before any action runs. `browser_end_session` once at
-the end (also after errors) removes the cursor and badge; it closes no tab,
-terminal or connection, and a new task starts a new session by itself.
+invent one from a tabId, and never look for a start tool: your first action
+on a tab paints it as yours. `endSession: true` on a successful last call
+releases it at once (an error leaves it, so you can recover). A session you
+leave alone is drawn as idle after a minute and a half, released after ten
+minutes of silence or when your terminal turn ends, and a new task starts a
+new session by itself. Another agent acting on your tab takes it over: the
+tab follows whoever acted last.
 
 Postconditions: `browser_press` reports `observationPerformed: false` when
 `waitFor` replaces the legacy Enter observation window; read

@@ -428,6 +428,9 @@ function BrowserAutomationTabIndicator({ tabId }: { tabId: number }) {
   // switching it off. An event without rich state is treated as acting, which
   // is how the indicator behaved before the session model existed.
   const held = activity?.phase === "done" || activity?.phase === "error";
+  // "idle" is a held tab nobody has touched for a while: the sweep parked it,
+  // so the wave slows to a crawl and the badge dims, but the name stays.
+  const parked = activity?.phase === "idle";
 
   return (
     <span
@@ -437,7 +440,7 @@ function BrowserAutomationTabIndicator({ tabId }: { tabId: number }) {
       title={title}
       className="anbo-browser-automation-indicator"
       data-phase={activity?.phase}
-      data-state={held ? "held" : "acting"}
+      data-state={parked ? "idle" : held ? "held" : "acting"}
     >
       <AgentIcon
         agent={identity?.brand ?? "robot"}

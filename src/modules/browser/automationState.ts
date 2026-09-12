@@ -14,6 +14,7 @@ export type AutomationState = {
     | "frame"
     | "done"
     | "error"
+    | "idle"
     | "ended";
   actor: { brand: string; label: string; ptyId?: number };
 };
@@ -38,6 +39,7 @@ const PHASES = new Set([
   "frame",
   "done",
   "error",
+  "idle",
   "ended",
 ]);
 
@@ -97,11 +99,11 @@ export function acceptsAutomationState(
   if (next.phase === "ended") return next.controlId === previous.controlId;
   if (
     next.phase === "queued" &&
-    !["queued", "done", "error", "ended"].includes(previous.phase)
+    !["queued", "done", "error", "idle", "ended"].includes(previous.phase)
   )
     return false;
   return !(
-    ["done", "error"].includes(next.phase) &&
+    ["done", "error", "idle"].includes(next.phase) &&
     next.requestId !== previous.requestId
   );
 }
@@ -133,6 +135,8 @@ const ACTIONS: Record<string, string> = {
 export function automationLabel(state: AutomationState): string {
   if (state.phase === "queued") return "Waiting to act";
   if (state.phase === "ended") return "Remote session ended";
+  // Parked by the sweep: nothing has happened for a while, the tab is still held.
+  if (state.phase === "idle") return "Idle, still holding this tab";
   if (state.method === "start_session") return "Holding this tab";
   if (state.phase === "done") return "Action complete";
   if (state.phase === "error") return "Action stopped";

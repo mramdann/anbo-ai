@@ -21,14 +21,25 @@ static TABS: Mutex<Option<HashMap<i64, Surface>>> = Mutex::new(None);
 /// question worth asking -- which tab is it in right now.
 static CONTROL: Mutex<Option<HashMap<u64, (Caller, Instant)>>> = Mutex::new(None);
 const MAX_CONTROLS: usize = 64;
-/// How long a session may sit untouched before it is reclaimed.
+/// How long a session may sit without a browser call before it is over.
 ///
-/// Sessions are meant to be closed by the caller, and end_owner closes them when
-/// a connection drops -- but a client that simply goes away announces nothing,
-/// so without this the registry fills with sessions nobody will ever end and the
-/// next real agent is refused. Measured the hard way: a polling loop that
-/// reconnected each time exhausted all 64 slots in a couple of minutes.
-const CONTROL_TTL: Duration = Duration::from_secs(30 * 60);
+/// A session used to end only when its caller said so, when its connection
+/// dropped, or when its terminal turn finished. A remote MCP client has no turn
+/// to observe and keeps one HTTP session for a whole conversation, so a task
+/// that handed the page back to the user left the badge and cursor on the tab
+/// for the full thirty minutes this used to be. Ten minutes of silence is the
+/// task being over; the sweep below releases it, and a caller that was merely
+/// slow opens a fresh session with its next call, since actions never check
+/// the id they carry. Still measured on the session, not the tab: an agent
+/// working its third tab is not idle because its first tab is.
+const CONTROL_TTL: Duration = Duration::from_secs(10 * 60);
+/// How long a session may sit without a browser call before its tab is drawn
+/// as parked: cursor gone, badge dimmed, ownership kept and still named.
+/// Longer than a model spends writing a long answer, so an agent between two
+/// calls of the same task is never dimmed mid-thought.
+const IDLE_DIM: Duration = Duration::from_secs(90);
+/// How often the sweep looks for sessions to park, release, or finish.
+const SWEEP_EVERY: Duration = Duration::from_secs(15);
 const MAX_SURFACES: usize = 256;
 /// A session younger than this is never closed by turn observation.
 ///
@@ -95,7 +106,7 @@ impl Surface {
             || self.latest_request != event.request_id
             || event.actor.pty_id != Some(target.pty_id)
             || event.sequence != target.sequence
-            || !matches!(event.phase, "done" | "error")
+            || !matches!(event.phase, "done" | "error" | "idle")
         {
             return None;
         }
@@ -236,7 +247,14 @@ fn control_for(caller: &Caller, next: u64) -> Option<u64> {
         return Some(id);
     }
     if controls.len() >= MAX_CONTROLS {
-        return None;
+        // A full registry is sixty-four sessions nobody ended, not a reason to
+        // refuse the agent in front of us: the one silent the longest gives
+        // way. Its surfaces are finished by the next sweep.
+        let evict = controls
+            .iter()
+            .max_by_key(|(_, (_, touched))| touched.elapsed())
+            .map(|(id, _)| *id)?;
+        controls.remove(&evict);
     }
     controls.insert(next, (caller.clone(), Instant::now()));
     Some(next)
@@ -489,7 +507,9 @@ fn accepts(previous: &Activity, next: &Activity) -> bool {
     if matches!(next.phase, "done" | "error") && previous.request_id != next.request_id {
         return false;
     }
-    if next.phase == "queued" && !matches!(previous.phase, "done" | "error" | "queued" | "ended") {
+    if next.phase == "queued"
+        && !matches!(previous.phase, "done" | "error" | "idle" | "queued" | "ended")
+    {
         return false;
     }
     if previous.request_id == next.request_id && previous.phase == "move" && next.phase == "move" {
@@ -837,6 +857,125 @@ pub fn end_owner(app: &AppHandle, caller: &Caller) {
     for (control_id, owner) in controls_where(|owner| owner == caller) {
         end_session(app, control_id, &owner);
     }
+}
+
+static SWEEP_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Start the session sweep once per process.
+///
+/// Every SWEEP_EVERY it parks sessions silent past IDLE_DIM, releases those
+/// silent past CONTROL_TTL, and finishes any tab still painted for a session
+/// the registry no longer holds (evicted at the cap, or released here). This
+/// is what lets an agent leave without a closing call: the tab stops claiming
+/// it is being worked, then stops claiming it is held, in that order.
+pub fn start_sweep(app: AppHandle) {
+    if SWEEP_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(SWEEP_EVERY).await;
+            sweep(&app);
+        }
+    });
+}
+
+/// Which sessions have been silent long enough to release, and which only long
+/// enough to park. Pure over the registry, so seeded ages can test it.
+fn sweep_candidates() -> (Vec<(u64, Caller)>, Vec<u64>) {
+    let mut release = Vec::new();
+    let mut park = Vec::new();
+    if let Ok(guard) = CONTROL.lock() {
+        if let Some(controls) = guard.as_ref() {
+            for (id, (caller, touched)) in controls {
+                let idle = touched.elapsed();
+                if idle >= CONTROL_TTL {
+                    release.push((*id, caller.clone()));
+                } else if idle >= IDLE_DIM {
+                    park.push(*id);
+                }
+            }
+        }
+    }
+    (release, park)
+}
+
+fn sweep(app: &AppHandle) {
+    let (release, park) = sweep_candidates();
+    for (control_id, caller) in release {
+        if end_session(app, control_id, &caller) {
+            log::info!(
+                "[browser_automation] session {control_id} released after {} s of silence",
+                CONTROL_TTL.as_secs()
+            );
+        }
+    }
+    for control_id in park {
+        if let Some(event) = park_session(control_id) {
+            log::info!(
+                "[browser_automation] session {control_id} idle, tab {} parked",
+                event.tab_id
+            );
+            notify_frontend(app, &event);
+            if let Some(webview) =
+                app.get_webview(&crate::modules::browser::embed::embed_label(event.tab_id))
+            {
+                render(&webview, event.tab_id, &event);
+            }
+        }
+    }
+    for event in orphaned_surfaces() {
+        publish_end(app, &event);
+    }
+}
+
+/// Draw the current tab of a silent session as parked: same holder, no cursor.
+///
+/// Only a settled surface parks. A call in flight, or a tab already parked or
+/// ended, is left alone, and the event keeps the request id of the action it
+/// follows, so accepts() reads it as that action going quiet, not as new work.
+fn park_session(control_id: u64) -> Option<Activity> {
+    let tab_id = session_current(control_id)?;
+    let mut guard = TABS.lock().ok()?;
+    let surface = guard.as_mut()?.get_mut(&tab_id)?;
+    if surface.in_flight != 0 {
+        return None;
+    }
+    let (last, _) = surface.last.as_ref()?;
+    if !matches!(last.phase, "done" | "error") {
+        return None;
+    }
+    let mut event = last.clone();
+    event.phase = "idle";
+    event.point = None;
+    event.sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    surface.last = Some((event.clone(), Instant::now()));
+    Some(event)
+}
+
+/// Tabs still painted for a session the registry no longer holds, finished.
+fn orphaned_surfaces() -> Vec<Activity> {
+    let live: std::collections::HashSet<u64> = CONTROL
+        .lock()
+        .ok()
+        .and_then(|guard| Some(guard.as_ref()?.keys().copied().collect()))
+        .unwrap_or_default();
+    let Ok(mut guard) = TABS.lock() else {
+        return Vec::new();
+    };
+    let Some(tabs) = guard.as_mut() else {
+        return Vec::new();
+    };
+    tabs.values_mut()
+        .filter_map(|surface| {
+            let (event, _) = surface.last.as_ref()?;
+            if event.phase == "ended" || live.contains(&event.control_id) {
+                return None;
+            }
+            let (control_id, caller) = (event.control_id, event.actor.clone());
+            surface.finish(control_id, &caller, SEQUENCE.fetch_add(1, Ordering::Relaxed))
+        })
+        .collect()
 }
 
 pub struct CaptureGuard(Option<Webview>);
@@ -1317,5 +1456,159 @@ mod tests {
         assert!(!accepts(&previous, &next));
         next.point.as_mut().unwrap().x = 11.0;
         assert!(accepts(&previous, &next));
+    }
+
+    #[test]
+    fn the_cap_evicts_the_longest_idle_session_instead_of_refusing() {
+        let _serial = CONTROL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_controls();
+        // Sixty-four live sessions, each a little more silent than the last:
+        // none stale enough to reclaim, so the old rule refused the newcomer.
+        if let Ok(mut guard) = CONTROL.lock() {
+            let controls = guard.get_or_insert_with(HashMap::new);
+            for slot in 1..=MAX_CONTROLS as u64 {
+                let held = Caller::from_pipe_info(
+                    &serde_json::json!({"name":"codex","instance":format!("{slot:064x}")}),
+                );
+                controls.insert(slot, (held, Instant::now() - Duration::from_secs(slot)));
+            }
+        }
+        let fresh = Caller::from_client_info(&serde_json::json!({"name":"claude"}));
+        let id = control_for(&fresh, 9_001).expect("the live agent gets a session");
+        assert_eq!(id, 9_001);
+        let (len, evicted_gone, newest_kept) = CONTROL
+            .lock()
+            .ok()
+            .and_then(|guard| {
+                let controls = guard.as_ref()?;
+                Some((
+                    controls.len(),
+                    !controls.contains_key(&(MAX_CONTROLS as u64)),
+                    controls.contains_key(&1),
+                ))
+            })
+            .unwrap();
+        assert_eq!(len, MAX_CONTROLS, "one out, one in");
+        assert!(evicted_gone, "the session silent the longest gave way");
+        assert!(newest_kept, "the busiest session was not touched");
+        reset_controls();
+    }
+
+    #[test]
+    fn silence_parks_a_session_first_and_releases_it_later() {
+        let _serial = CONTROL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_controls();
+        let claude = Caller::from_client_info(&serde_json::json!({"name":"claude"}));
+        seed_control(5, &claude, IDLE_DIM + Duration::from_secs(1));
+        seed_control(6, &claude, CONTROL_TTL + Duration::from_secs(1));
+        seed_control(7, &claude, Duration::from_secs(5));
+        let (release, park) = sweep_candidates();
+        assert_eq!(park, vec![5], "quiet past the dim line, still held");
+        assert_eq!(
+            release.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![6],
+            "quiet past the release line is over"
+        );
+        reset_controls();
+    }
+
+    #[test]
+    fn parking_marks_the_tab_the_session_is_in_and_keeps_its_holder() {
+        let _serial = CONTROL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_controls();
+        let claude = Caller::from_client_info(&serde_json::json!({"name":"claude"}));
+        seed_control(9, &claude, IDLE_DIM + Duration::from_secs(1));
+        if let Ok(mut guard) = TABS.lock() {
+            let tabs = guard.get_or_insert_with(HashMap::new);
+            tabs.retain(|id, _| *id < 800 || *id > 899);
+            let mut done = event(9, "done", 40);
+            done.tab_id = 801;
+            done.actor = claude.clone();
+            tabs.insert(
+                801,
+                Surface {
+                    last: Some((done, Instant::now())),
+                    ..Surface::default()
+                },
+            );
+        }
+        let parked = park_session(9).expect("a settled tab parks");
+        assert_eq!(parked.phase, "idle");
+        assert_eq!(parked.tab_id, 801);
+        assert_eq!(parked.actor, claude, "still the same holder");
+        assert_eq!(parked.request_id, 9, "reads as that action going quiet");
+        assert!(parked.point.is_none());
+        // Parking is not repeated, and a parked tab is still where the session is.
+        assert!(park_session(9).is_none());
+        assert_eq!(session_current(9), Some(801));
+        // A call in flight is never parked under.
+        if let Ok(mut guard) = TABS.lock() {
+            if let Some(surface) = guard.as_mut().and_then(|tabs| tabs.get_mut(&801)) {
+                surface.in_flight = 1;
+                if let Some((event, _)) = surface.last.as_mut() {
+                    event.phase = "done";
+                }
+            }
+        }
+        assert!(park_session(9).is_none());
+        if let Ok(mut guard) = TABS.lock() {
+            if let Some(tabs) = guard.as_mut() {
+                tabs.remove(&801);
+            }
+        }
+        reset_controls();
+    }
+
+    #[test]
+    fn a_tab_painted_for_a_session_the_registry_dropped_is_finished() {
+        let _serial = CONTROL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_controls();
+        let claude = Caller::from_client_info(&serde_json::json!({"name":"claude"}));
+        seed_control(21, &claude, Duration::from_secs(1));
+        if let Ok(mut guard) = TABS.lock() {
+            let tabs = guard.get_or_insert_with(HashMap::new);
+            for (tab, control) in [(811_i64, 21_u64), (812, 22)] {
+                let mut done = event(control, "done", 50);
+                done.tab_id = tab;
+                done.actor = claude.clone();
+                tabs.insert(
+                    tab,
+                    Surface {
+                        last: Some((done, Instant::now())),
+                        ..Surface::default()
+                    },
+                );
+            }
+        }
+        // 22 was evicted at the cap; 21 is live. Only the orphan is finished.
+        let finished = orphaned_surfaces();
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].tab_id, 812);
+        assert_eq!(finished[0].phase, "ended");
+        assert!(orphaned_surfaces().is_empty(), "finishing is not repeated");
+        assert_eq!(session_current(21), Some(811), "the live session is untouched");
+        if let Ok(mut guard) = TABS.lock() {
+            if let Some(tabs) = guard.as_mut() {
+                tabs.remove(&811);
+                tabs.remove(&812);
+            }
+        }
+        reset_controls();
+    }
+
+    #[test]
+    fn work_may_resume_on_a_parked_tab_and_a_park_is_not_repeated() {
+        assert!(accepts(&event(1, "idle", 5), &event(2, "queued", 6)));
+        assert!(!accepts(&event(1, "idle", 5), &event(1, "idle", 6)));
+        // Once ended, not even a park revives the tab.
+        assert!(!accepts(&event(1, "ended", 5), &event(1, "idle", 6)));
     }
 }

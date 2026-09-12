@@ -39,8 +39,9 @@ pub const SERVER_INSTRUCTIONS: &str = concat!(
     "for a ref, one action with a waitFor describing the result you expect (every ",
     "action reply carries page.url and page.title, so no separate URL read), a ",
     "read of that result with browser_get_text or browser_get_property (live ",
-    "state such as paused, currentTime, value, checked), then browser_close with ",
-    "endSession: true on your last tab. ",
+    "state such as paused, currentTime, value, checked), then endSession: true ",
+    "on your last call: browser_close if you close the tab, or that final read ",
+    "if the page stays open for the user. ",
     "Tools that take a workspace argument need your own workspace root, ",
     "never the one currently on screen. ",
     "For files, downloads, dialogs, terminals or other agents, call skills_list ",
@@ -48,7 +49,21 @@ pub const SERVER_INSTRUCTIONS: &str = concat!(
     "built-in skill, which skills_read returns section by section."
 );
 
-pub const BROWSER_SESSION_INSTRUCTIONS: &str = "Browser work runs in a session that names you as the tab's controller. The first browser tool you call opens it, and every browser result carries its controlId; browser_start_session only claims a tab early. When the task is finished, cancelled, or handed back to the user, including after an error, end the session once: browser_close with endSession: true on your last tab does it in the same call, and browser_end_session with that controlId ends it without closing tabs. Not between steps and not per tab. Ending hides the cursor and the tab badge without closing the MCP connection.";
+pub const BROWSER_SESSION_INSTRUCTIONS: &str = "Browser work runs in a session that names you as the tab's controller. The first browser tool you call opens it, and every browser result carries its controlId; there is nothing to start. When the task is finished or handed back to the user, put endSession: true on your last call: browser_close if you close the tab, or the final read (browser_get_text, browser_get_property, browser_screenshot, browser_snapshot), click, press, key or wait if the page stays open. The cursor and tab badge go at once, tabs and the MCP connection stay. Not between steps and not per tab. A session left alone is drawn as idle after a minute and a half and released after ten minutes of silence, or when your terminal turn ends, so forgetting costs nothing but a lingering badge.";
+
+/// The calls a task can end on. Each takes endSession so the release rides the
+/// last call instead of costing one more; browser_close carries it in its own
+/// definition, since closing the last tab is the other way a task ends.
+const LAST_CALL_TOOLS: [&str; 8] = [
+    "browser_click",
+    "browser_press",
+    "browser_key",
+    "browser_wait",
+    "browser_get_text",
+    "browser_get_property",
+    "browser_screenshot",
+    "browser_snapshot",
+];
 
 fn tab_id_prop() -> Value {
     json!({ "type": "integer", "description": "Active native browser tab id (from browser_tabs)." })
@@ -111,7 +126,7 @@ pub fn tool_definitions() -> Value {
     let mut definitions = tool_array![
         { "name": "skills_list", "description": "List the skills available in a workspace: project procedures kept in .anbo/skills, plus the skills Anbo ships. Returns names, one-line descriptions and, for skills read on demand, their section titles, so it stays cheap to scan. Check this before solving a task from first principles.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
         { "name": "skills_read", "description": "Read a skill and follow it. A skill read on demand returns its essentials plus a section index; pass section to read one section in full. Names come from skills_list.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "name": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Skill name from skills_list." }, "section": { "type": "string", "minLength": 1, "maxLength": 120, "description": "A section title from the skill's index, matched case-insensitively." } }, "required": ["workspace", "name"] } },
-        { "name": "browser_open", "description": "Open a page in the user's real browser: a visible tab in this app, not a private fetch. Use it whenever a task needs a web page opened, read, or interacted with. Pass your own workspace root or space id; UI focus is never a fallback. The first tab in an empty active workspace is shown, later tabs stay in the background. The reply carries the tabId and the controlId of your session, which browser_end_session takes when the work is done.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["url", "workspace"] } },
+        { "name": "browser_open", "description": "Open a page in the user's real browser: a visible tab in this app, not a private fetch. Use it whenever a task needs a web page opened, read, or interacted with. Pass your own workspace root or space id; UI focus is never a fallback. The first tab in an empty active workspace is shown, later tabs stay in the background. The reply carries the tabId and the controlId of your session.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["url", "workspace"] } },
         { "name": "browser_close", "description": "Close a native browser tab in an explicitly selected Anbo workspace. Pass endSession: true when this is the last tab of your task, so closing it and ending your session is one call instead of two.", "annotations": { "destructiveHint": true, "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." }, "endSession": { "type": "boolean", "default": false, "description": "Also end your control session after the tab closes; the reply then carries sessionEnded: true." } }, "required": ["tabId", "workspace"] } },
         { "name": "browser_tabs", "description": "List active native browser tabs with foreground, workspace, space, loading, pendingUrl, automation-target, automation-activity, and durationMs metadata. While loading, url remains the last committed URL and pendingUrl identifies the target when known.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "browser_get_url", "description": "Get the last committed URL, loading state and pendingUrl of a browser tab without waiting for page JavaScript. While loading, pendingUrl is the requested target when known; it is not proof of a committed navigation.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
@@ -121,8 +136,6 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_back", "description": "Start navigating a browser tab back in history and return immediately.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_forward", "description": "Start navigating a browser tab forward in history and return immediately.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_stop", "description": "Stop a browser tab's page load. Reports wasLoading, whether a load was actually in flight when the call arrived, and cancelledUrl, the target that was interrupted when one was known.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
-        { "name": "browser_start_session", "description": "Optional: the first browser tool you call opens your session and returns its controlId, so this is only needed to claim a tab before acting on it (tabId paints it straight away). One session covers every tab of the task; calling it again returns the same controlId. Close it once with browser_end_session when the work is done.", "annotations": { "destructiveHint": false, "idempotentHint": true }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() } } },
-        { "name": "browser_end_session", "description": "End your browser session once, when the task is finished, cancelled, or handed back to the user, including after an error; not between steps and not per tab. It hides the cursor and tab badge without closing any tab or the connection.", "annotations": { "destructiveHint": false, "idempotentHint": true }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "controlId": { "type": "integer", "minimum": 1, "description": "The controlId your browser results carried; it names the whole session." } }, "required": ["controlId"] } },
         { "name": "browser_snapshot", "description": "Token-bounded accessibility snapshot: viewport text first, then interactive elements with refs; 8000 characters by default, 16000 at most, paged with offset and nextOffset. Snapshot and find both replace older refs; prefer find when the element is already known.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "offset": { "type": "integer", "minimum": 0, "description": "Skip this many items; the reply carries nextOffset while more of the page is waiting." }, "maxChars": { "type": "integer", "minimum": 2000, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
         { "name": "browser_find", "description": "Find elements by role (with the computed accessible name), text, label, placeholder, testId, title, alt, or CSS across open Shadow DOM and child frames, and return fresh refs. Implicit roles cover links, buttons, inputs (textbox, searchbox, combobox, checkbox...), headings, dialogs, lists, tables and landmarks. Elements that are not rendered are left out and counted as hiddenMatches; a timeout says whether the page was scanned end to end, and a confirmed absence returns once the page settles and stops changing rather than only at the timeout.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "by": { "type": "string", "enum": ["role", "text", "label", "placeholder", "testId", "title", "alt", "css"] }, "value": { "type": "string", "minLength": 1, "maxLength": 4096 }, "name": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Optional computed accessible-name filter for a role locator. It may come from aria-label, aria-labelledby, an associated label, alt, title, or visible text." }, "exact": { "type": "boolean", "default": false }, "includeHidden": { "type": "boolean", "default": false }, "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 5000 } }, "required": ["tabId", "by", "value"] } },
         { "name": "browser_click", "description": "Click an element by ref after bounded visibility, stability, enabled, and hit-target checks.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
@@ -239,6 +252,12 @@ pub fn tool_definitions() -> Value {
         if name == "browser_find" {
             tool["description"] = json!(format!("{} Matches also carry editable, readOnly, inViewport and bounds as metadata.", tool["description"].as_str().unwrap()));
         }
+        if LAST_CALL_TOOLS.iter().any(|last| *last == name) {
+            tool["inputSchema"]["properties"]["endSession"] = json!({
+                "type": "boolean", "default": false,
+                "description": "End your session after this call succeeds: cursor and badge go, tabs stay open."
+            });
+        }
     }
     definitions
 }
@@ -258,8 +277,6 @@ pub fn tool_name_to_method(name: &str) -> Option<&'static str> {
         "browser_back" => "back",
         "browser_forward" => "forward",
         "browser_stop" => "stop",
-        "browser_start_session" => "start_session",
-        "browser_end_session" => "end_session",
         "browser_snapshot" => "snapshot",
         "browser_find" => "find",
         "browser_click" => "click",
@@ -310,7 +327,7 @@ mod tests {
     #[test]
     fn tools_have_capability_prefixes_and_unique_names() {
         let tools = tool_definitions().as_array().unwrap().clone();
-        assert_eq!(tools.len(), 53);
+        assert_eq!(tools.len(), 51);
         let mut names = std::collections::HashSet::new();
         for t in &tools {
             let n = t.get("name").and_then(|v| v.as_str()).unwrap();
@@ -330,48 +347,53 @@ mod tests {
     }
 
     #[test]
-    fn a_session_can_be_started_as_well_as_ended() {
-        // end_session shipped without a counterpart, so a session could only ever
-        // begin as a side effect of the first action. An agent had no way to claim
-        // a tab before acting, and browser_open -- which cannot be tracked, since
-        // the tab has no id while it runs -- could not start one at all.
+    fn the_session_tools_are_gone_and_the_flag_rides_the_last_call() {
+        // Measured over forty-five agent-driven tasks: browser_start_session
+        // was never called once the first action opened the session itself,
+        // and browser_end_session was only ever the call after the last real
+        // one. Both are gone; endSession on that last call does the ending,
+        // and a session left alone is parked and then released by the sweep.
         let tools = tool_definitions().as_array().unwrap().clone();
         let names: Vec<&str> = tools
             .iter()
             .filter_map(|t| t.get("name").and_then(|v| v.as_str()))
             .collect();
-        assert!(names.contains(&"browser_start_session"));
-        assert!(names.contains(&"browser_end_session"));
-        assert_eq!(
-            tool_name_to_method("browser_start_session"),
-            Some("start_session")
-        );
+        assert!(!names.contains(&"browser_start_session"));
+        assert!(!names.contains(&"browser_end_session"));
+        assert_eq!(tool_name_to_method("browser_start_session"), None);
+        assert_eq!(tool_name_to_method("browser_end_session"), None);
+        for last in LAST_CALL_TOOLS.iter().chain(["browser_close"].iter()) {
+            let tool = tools
+                .iter()
+                .find(|tool| tool["name"] == *last)
+                .unwrap_or_else(|| panic!("{last} is a tool"));
+            assert_eq!(
+                tool["inputSchema"]["properties"]["endSession"]["type"], "boolean",
+                "{last} takes endSession"
+            );
+        }
+        // No tool text sends the agent to a tool that no longer exists.
+        for tool in &tools {
+            let description = tool["description"].as_str().unwrap_or_default();
+            assert!(!description.contains("browser_end_session"), "{description}");
+            assert!(!description.contains("browser_start_session"), "{description}");
+        }
     }
 
     #[test]
     fn the_first_browser_tool_opens_the_session_and_the_text_says_so() {
         // The gate used to refuse any action without an explicit
-        // browser_start_session. Measured over fifteen agent-driven tasks, that
-        // cost two protocol calls per task and nothing else: the caller is
-        // named by its connection or terminal either way, so the first action
-        // can open the session itself. The text has to say that, or an agent
-        // keeps paying for the explicit call out of habit.
-        let definitions = tool_definitions();
-        let start = definitions
-            .as_array()
-            .expect("tools")
-            .iter()
-            .find(|tool| tool["name"] == "browser_start_session")
-            .expect("browser_start_session");
-        let description = start["description"].as_str().unwrap_or_default();
-        assert!(description.starts_with("Optional"), "{description}");
-        assert!(description.contains("first browser tool"), "{description}");
-        assert!(description.contains("browser_end_session"), "{description}");
-        assert!(
-            BROWSER_SESSION_INSTRUCTIONS.contains("first browser tool")
-                && BROWSER_SESSION_INSTRUCTIONS.contains("browser_end_session"),
-            "the connect message has to describe the implicit session"
-        );
+        // browser_start_session; the first action opens the session itself
+        // now, and the connect message has to say so, or an agent keeps
+        // looking for a start call out of habit. It also has to say how a
+        // task ends without an end tool, and what happens if it never does.
+        assert!(BROWSER_SESSION_INSTRUCTIONS.contains("first browser tool"));
+        assert!(BROWSER_SESSION_INSTRUCTIONS.contains("nothing to start"));
+        assert!(BROWSER_SESSION_INSTRUCTIONS.contains("endSession: true on your last call"));
+        assert!(BROWSER_SESSION_INSTRUCTIONS.contains("released after ten minutes"));
+        assert!(!BROWSER_SESSION_INSTRUCTIONS.contains("browser_end_session"));
+        assert!(!BROWSER_SESSION_INSTRUCTIONS.contains("browser_start_session"));
+        assert!(!SERVER_INSTRUCTIONS.contains("browser_end_session"));
     }
 
     #[test]
@@ -476,7 +498,6 @@ mod tests {
             .expect("browser_open");
         let description = open["description"].as_str().unwrap_or_default();
         assert!(description.contains("controlId"), "{description}");
-        assert!(description.contains("browser_end_session"), "{description}");
     }
 
     #[test]

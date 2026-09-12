@@ -394,6 +394,13 @@
   --anbo-automation-period: 3.4s;
 }
 
+/* Parked: the session is still named, but nothing has happened for a while. */
+.anbo-browser-automation-indicator[data-state="idle"] {
+  --anbo-automation-wave: 18%;
+  --anbo-automation-period: 6s;
+  opacity: 0.55;
+}
+
 .anbo-browser-automation-indicator::before,
 .anbo-browser-automation-indicator::after {
   position: absolute;

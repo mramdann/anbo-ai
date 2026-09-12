@@ -122,6 +122,10 @@ pub fn start_server(app: AppHandle) -> Result<(), String> {
     // failure is logged inside the task and does not disable the pipe path).
     // Cloned before the spawn below moves `app` into the pipe task.
     let _ = crate::modules::browser_automation::http::start(app.clone());
+    // Sessions end by themselves when their callers stop: parked, then
+    // released, then any tab still painted for them finished. Once per
+    // process, whatever the server does after this.
+    super::activity::start_sweep(app.clone());
 
     tauri::async_runtime::spawn(async move {
         #[cfg(windows)]

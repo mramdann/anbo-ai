@@ -193,6 +193,9 @@ pub async fn handle_action_as(
     caller: super::caller::Caller,
 ) -> Result<Value, (String, String)> {
     let started = Instant::now();
+    // start_session and end_session are no longer MCP tools: the first browser
+    // call opens the session and endSession on the last call closes it. The
+    // named-pipe protocol still dispatches both by name, so they stay for it.
     if method == "start_session" {
         // tabId is optional: the session is a contract with this caller, not
         // with one tab. Passing one just paints that tab straight away.
@@ -251,8 +254,15 @@ pub async fn handle_action_as(
     // the generic robot until a second, tracked call arrived.
     let actor = caller.clone();
     let tab_id = params.get("tabId").and_then(Value::as_i64);
-    let end_session_after_close =
-        method == "close" && params.get("endSession").and_then(Value::as_bool) == Some(true);
+    // endSession rides whatever call is the last of the task: closing the tab,
+    // or the final read when the page stays open for the user. Measured through
+    // MCP, close plus browser_end_session were the last two calls of every
+    // task; with the flag on any last call there is no session tool to
+    // remember, and nothing to forget.
+    let end_session_after = params.get("endSession").and_then(Value::as_bool) == Some(true)
+        && !method.starts_with("agent_")
+        && !method.starts_with("terminal_")
+        && !method.starts_with("skills_");
     let result = super::activity::track(
         app,
         method,
@@ -275,9 +285,10 @@ pub async fn handle_action_as(
                 value["page"] = landing(&webview, tab_id.unwrap_or_default()).await;
             }
         }
-        // Closing the last tab of a task and ending the session were two calls
-        // in 15 of 15 measured tasks; the flag folds them into one.
-        if end_session_after_close {
+        // A successful last call releases the session: cursor and badge go,
+        // tabs stay unless this was browser_close. An error leaves it, so the
+        // agent can recover, and the sweep covers whatever is then forgotten.
+        if end_session_after {
             super::activity::end_owner(app, &actor);
             value["sessionEnded"] = json!(true);
         }

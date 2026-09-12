@@ -61,6 +61,9 @@
       .track{position:absolute;inset:0;overflow:hidden}
       :host([data-idle]) .track{visibility:hidden}
       :host([data-idle]) .edge{opacity:.3}
+      :host([data-parked]) .cursor{display:none!important}
+      :host([data-parked]) .badge{opacity:.55}
+      :host([data-parked]) .edge{opacity:.12}
       .orb{position:absolute;width:72px;height:4px;border-radius:50%;background:linear-gradient(90deg,transparent,var(--b),#fff,var(--c),transparent);opacity:.9;will-change:transform}
       .badge{position:absolute;left:0;top:0;width:max-content;max-width:min(340px,calc(100% - 20px));visibility:hidden;display:flex;align-items:center;gap:8px;padding:7px 10px 7px 8px;border:1px solid #79cad42e;border-radius:6px;background:#0d202bf5;color:#e4f2f5;font:500 10px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;box-shadow:0 6px 18px #00000024,0 1px 3px #00000024;transition:transform var(--travel,220ms) cubic-bezier(.22,.61,.36,1)}
       .logo{position:relative;display:grid;place-items:center;flex:none;width:24px;height:24px;border:1px solid #8ce0e51a;border-radius:50%;background:#6ed0dc12;color:#aad7df;font:650 11px system-ui,sans-serif}
@@ -181,18 +184,23 @@
     if (actorChanged) resetPointer();
     badgeActor = data.actor?.brand;
     control = data.controlId;
-    idle = data.phase === 'done' || data.phase === 'error';
+    idle = data.phase === 'done' || data.phase === 'error' || data.phase === 'idle';
     host.toggleAttribute('data-idle', idle);
+    // Parked is quieter than held: the session is still named, but nothing
+    // has happened for a while, so the cursor goes and the badge docks.
+    const parked = data.phase === 'idle';
+    host.toggleAttribute('data-parked', parked);
+    if (parked) resetPointer();
     for (const animation of animations) { if (idle) animation.pause(); else animation.play(); }
     const name = String(data.actor?.label || 'Remote agent').slice(0,32);
     if (actorChanged || !logo.childNodes.length) paintIcon(name);
     const canonicalMethod = Object.hasOwn(aliases, data.method) ? aliases[data.method] : data.method;
     const knownMethod = Object.hasOwn(verbs, canonicalMethod);
     const method = knownMethod ? 'browser_' + (canonicalMethod === 'scroll_to' ? 'scroll_to_element' : canonicalMethod) : 'browser_action';
-    const action = data.phase === 'error' ? 'Action stopped' : canonicalMethod === 'start_session' ? 'Holding this tab' : data.phase === 'done' ? 'Action complete' : data.phase === 'frame' ? 'Interacting in a frame' : (knownMethod ? verbs[canonicalMethod] : 'Working');
+    const action = data.phase === 'error' ? 'Action stopped' : data.phase === 'idle' ? 'Idle, still holding this tab' : canonicalMethod === 'start_session' ? 'Holding this tab' : data.phase === 'done' ? 'Action complete' : data.phase === 'frame' ? 'Interacting in a frame' : (knownMethod ? verbs[canonicalMethod] : 'Working');
     if (label.textContent !== name) label.textContent = name;
     if (tool.textContent !== method) tool.textContent = method;
-    badge.dataset.state = data.phase === 'error' ? 'error' : data.phase === 'done' ? 'done' : 'working';
+    badge.dataset.state = data.phase === 'error' ? 'error' : data.phase === 'idle' ? 'idle' : data.phase === 'done' ? 'done' : 'working';
     const point = data.point;
     const smoothPoint = Boolean(badgePoint);
     if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
@@ -223,7 +231,7 @@
     // point is dropped and the page's script is rebuilt from nothing, so
     // without this the tab sits there with a badge and no pointer until the
     // agent happens to run an action that carries coordinates.
-    if (!badgePoint && data.phase !== 'ended') {
+    if (!badgePoint && data.phase !== 'ended' && !parked) {
       badgePoint = { x: Math.round(innerWidth / 2), y: Math.round(innerHeight / 2) };
       cursor.style.transition = 'none';
       cursor.style.display = 'block';
