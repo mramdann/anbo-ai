@@ -149,7 +149,6 @@ pub async fn call_devtools_protocol_method(
         .map_err(|_| format!("DevTools method '{method}' was cancelled"))?
 }
 
-#[cfg(windows)]
 /// How the page should be encoded on the way out.
 ///
 /// A layout check does not need a lossless capture at full device pixel
@@ -187,6 +186,7 @@ impl ScreenshotEncoding {
         })
     }
 
+    #[cfg(windows)]
     fn params(self) -> String {
         match self.quality {
             Some(quality) if self.format != "png" => format!(
@@ -201,6 +201,7 @@ impl ScreenshotEncoding {
     }
 }
 
+#[cfg(windows)]
 pub async fn capture_screenshot(
     webview: &Webview,
     encoding: ScreenshotEncoding,
@@ -378,8 +379,11 @@ pub async fn call_devtools_protocol_method(
 #[cfg(not(windows))]
 pub async fn capture_screenshot(
     _webview: &Webview,
-    _encoding: ScreenshotEncoding,
+    encoding: ScreenshotEncoding,
 ) -> Result<String, String> {
+    // Read the fields so a platform that cannot capture still consumes the
+    // request shape; otherwise clippy -D warnings reports them never read.
+    let _ = (encoding.format, encoding.quality);
     Err("browser automation is only supported on Windows".to_string())
 }
 
