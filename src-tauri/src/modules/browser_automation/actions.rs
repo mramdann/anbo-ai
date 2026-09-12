@@ -429,6 +429,8 @@ async fn handle_action_inner(
     }
     if params.get("locator").is_some() {
         if params.get("ref").is_some()
+            || (method == "drag"
+                && (params.get("sourceRef").is_some() || params.get("targetRef").is_some()))
             || (method != "wait" && !super::locator_target::supports_locator(method))
         {
             return Err((
@@ -446,6 +448,19 @@ async fn handle_action_inner(
             return Ok(resolved);
         }
         params["ref"] = resolved["ref"].clone();
+        if method == "drag" {
+            // One element, two positions: a locator on drag means "pan inside
+            // this". Every measured canvas drag was exactly that, and each cost
+            // a find first because drag took refs only.
+            if params.get("sourcePosition").is_none() || params.get("targetPosition").is_none() {
+                return Err((
+                    error_codes::INVALID_REQUEST.into(),
+                    "drag with locator pans inside one element: pass sourcePosition and targetPosition".into(),
+                ));
+            }
+            params["sourceRef"] = resolved["ref"].clone();
+            params["targetRef"] = resolved["ref"].clone();
+        }
     }
     match method {
         "open" => {
@@ -2927,6 +2942,7 @@ struct CollectedLocatorMatches {
     hidden: usize,
     name_misses: Vec<String>,
     candidates: Vec<super::locator::Candidate>,
+    nearest: Option<super::locator::NearestCss>,
 }
 
 /// Name the elements that collided, so narrowing them does not cost another
@@ -3085,10 +3101,40 @@ fn find_timeout(
             )
         })
         .unwrap_or_default();
+    // An over-specific css selector that misses is usually one rung above a
+    // selector the page does have. Measured: every canvas miss on Maps and
+    // TradingView was followed by find(css:canvas). Say so in this reply.
+    let nearest = last_empty_scan
+        .filter(|_| scan_error.is_none() && hidden == 0)
+        .and_then(|scan| scan.nearest.as_ref())
+        .map(|near| {
+            let examples = near
+                .examples
+                .iter()
+                .take(3)
+                .map(|example| {
+                    let label = if example.role.is_empty() { example.tag.as_str() } else { example.role.as_str() };
+                    if example.name.is_empty() {
+                        label.to_string()
+                    } else {
+                        format!("{label} \"{}\"", example.name)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "; nearest css match: '{}' matches {} ({} visible{}); use it with browser_find by css, or narrow it",
+                near.selector,
+                near.count,
+                near.visible,
+                if examples.is_empty() { String::new() } else { format!(": {examples}") }
+            )
+        })
+        .unwrap_or_default();
     (
         error_codes::TIMEOUT.to_string(),
         format!(
-            "timed out finding {} '{}' after {timeout_ms}ms: {detail}{quiet}{seen}{}{}",
+            "timed out finding {} '{}' after {timeout_ms}ms: {detail}{quiet}{nearest}{seen}{}{}",
             locator.by,
             locator.value,
             scan_error
@@ -3367,6 +3413,7 @@ async fn collect_locator_matches(
             hidden: root.hidden,
             name_misses: std::mem::take(&mut root.name_misses),
             candidates: std::mem::take(&mut root.candidates),
+            nearest: root.nearest.take(),
         });
     }
     let (frame_ids, frame_limit_reached) = get_frame_ids(webview)
@@ -3402,6 +3449,7 @@ async fn collect_locator_matches(
     // Only the main document offers candidates; a frame's controls are a
     // different page and would send the agent to the wrong one.
     let candidates = std::mem::take(&mut root.candidates);
+    let nearest = root.nearest.take();
 
     let frame_jobs = frame_ids
         .iter()
@@ -3482,6 +3530,7 @@ async fn collect_locator_matches(
         hidden,
         name_misses,
         candidates,
+        nearest,
     })
 }
 
@@ -5813,6 +5862,7 @@ mod tests {
             hidden,
             name_misses: names.into_iter().map(str::to_string).collect(),
             candidates: vec![],
+            nearest: None,
         };
 
         // A page read end to end with nothing matching is a verdict, and says so.
@@ -5898,6 +5948,7 @@ mod tests {
             hidden: 0,
             name_misses: vec![],
             candidates: vec![],
+            nearest: None,
         };
         // The Google Maps case: the whole page read, nothing there, so the
         // settle clock may start and a doomed lookup can stop early.
@@ -6211,6 +6262,7 @@ mod tests {
                 candidate("button", "Telusuri"),
                 candidate("button", "Rute"),
             ],
+            nearest: None,
         };
         let absent = find_timeout(&locator, 1_900, 2, None, Some(&with(0, vec![])), 3);
         assert!(absent.1.contains("confirmed absence"), "{}", absent.1);
@@ -6232,5 +6284,44 @@ mod tests {
         // A scan cut off by the deadline proves nothing, so it offers nothing.
         let cut = find_timeout(&locator, 1_900, 2, Some("deadline"), Some(&with(0, vec![])), 0);
         assert!(!cut.1.contains("interactive elements seen"), "{}", cut.1);
+    }
+
+    #[test]
+    fn a_css_miss_names_the_nearest_selector_that_matches() {
+        // Measured: every canvas miss on Maps and TradingView was followed by
+        // find(css:canvas). The reply that reports the miss now says so.
+        let locator = extract_locator(&json!({"by":"css", "value":"table.chart-markup-table.pane canvas"})).unwrap();
+        let scan = |nearest: Option<super::super::locator::NearestCss>| CollectedLocatorMatches {
+            matches: vec![],
+            scanned: 3_058,
+            truncated: false,
+            node_limit_reached: false,
+            included_frames: 1,
+            skipped_frames: 0,
+            hidden: 0,
+            name_misses: vec![],
+            candidates: vec![],
+            nearest,
+        };
+        let near = super::super::locator::NearestCss {
+            selector: "canvas".into(),
+            count: 3,
+            visible: 1,
+            examples: vec![super::super::locator::NearestExample {
+                tag: "canvas".into(),
+                role: String::new(),
+                name: String::new(),
+            }],
+        };
+        let absent = find_timeout(&locator, 1_900, 2, None, Some(&scan(Some(near.clone()))), 3);
+        assert!(absent.1.contains("confirmed absence"), "{}", absent.1);
+        assert!(
+            absent.1.contains("nearest css match: 'canvas' matches 3 (1 visible: canvas); use it with browser_find by css"),
+            "{}",
+            absent.1
+        );
+        // Nothing to offer, nothing said; a scan cut short offers nothing either.
+        assert!(!find_timeout(&locator, 1_900, 2, None, Some(&scan(None)), 3).1.contains("nearest css match"));
+        assert!(!find_timeout(&locator, 1_900, 2, Some("deadline"), Some(&scan(Some(near))), 0).1.contains("nearest css match"));
     }
 }

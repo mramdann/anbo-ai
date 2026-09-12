@@ -22,6 +22,7 @@ pub fn supports_locator(method: &str) -> bool {
             | "upload_files"
             | "download"
             | "press_key"
+            | "drag"
     )
 }
 

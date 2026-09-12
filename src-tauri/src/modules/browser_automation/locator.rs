@@ -73,7 +73,292 @@ pub struct LocatorPayload {
     /// as a role locator, instead of a request for a snapshot.
     #[serde(default)]
     pub candidates: Vec<Candidate>,
+    /// For a css miss: the first simpler selector on the relaxation ladder
+    /// that does match something, with how much and what it looks like.
+    #[serde(default)]
+    pub nearest: Option<NearestCss>,
     pub error: Option<String>,
+}
+
+/// What an over-specific css selector could have meant, as the page has it.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NearestCss {
+    pub selector: String,
+    pub count: usize,
+    pub visible: usize,
+    #[serde(default)]
+    pub examples: Vec<NearestExample>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct NearestExample {
+    pub tag: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+/// Simpler selectors an over-specific css lookup could have meant, most
+/// specific first, at most twelve. Built here, pure and tested; the page only
+/// evaluates them, and only after a miss. Measured: every canvas miss (Maps
+/// `#scene canvas, canvas.widget-scene-canvas`, TradingView
+/// `table.chart-markup-table.pane canvas`) was answered by the agent with
+/// the bare tag on its next call. Nothing generic enough to match the whole
+/// page is offered.
+pub fn css_relaxations(selector: &str) -> Vec<String> {
+    const TOO_GENERIC: &[&str] = &[
+        "*", "div", "span", "p", "li", "ul", "ol", "a", "section", "article", "header",
+        "footer", "nav", "main", "i", "b", "em", "strong", "td", "tr", "th", "tbody",
+        "thead", "label",
+    ];
+    let original = selector.trim();
+    let mut out: Vec<String> = Vec::new();
+    fn offer(out: &mut Vec<String>, original: &str, candidate: String) {
+        const TOO_GENERIC: &[&str] = &[
+            "*", "div", "span", "p", "li", "ul", "ol", "a", "section", "article", "header",
+            "footer", "nav", "main", "i", "b", "em", "strong", "td", "tr", "th", "tbody",
+            "thead", "label",
+        ];
+        let candidate = candidate.trim().to_string();
+        if candidate.is_empty()
+            || candidate == original
+            || TOO_GENERIC.contains(&candidate.as_str())
+            || out.contains(&candidate)
+            || out.len() >= 12
+        {
+            return;
+        }
+        out.push(candidate);
+    }
+    let _ = TOO_GENERIC;
+    for alternative in split_top_level(original, ',').into_iter().take(3) {
+        let compounds = split_compounds(&alternative);
+        if compounds.is_empty() {
+            continue;
+        }
+        let valueless: Vec<String> = compounds.iter().map(|c| drop_attr_values(c)).collect();
+        if valueless != compounds {
+            offer(&mut out, original, valueless.join(" "));
+        }
+        for start in 1..compounds.len() {
+            offer(&mut out, original, compounds[start..].join(" "));
+        }
+        let (tag, qualifiers) = split_compound(compounds.last().map(String::as_str).unwrap_or(""));
+        for keep in (0..qualifiers.len()).rev() {
+            offer(&mut out, original, format!("{tag}{}", qualifiers[..keep].concat()));
+        }
+    }
+    out
+}
+
+/// Split on a separator at bracket and paren depth zero, outside quotes.
+fn split_top_level(input: &str, separator: char) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    for ch in input.chars() {
+        if let Some(open) = quote {
+            current.push(ch);
+            if ch == open {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => {
+                quote = Some(ch);
+                current.push(ch);
+            }
+            '[' | '(' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ']' | ')' => {
+                depth -= 1;
+                current.push(ch);
+            }
+            c if c == separator && depth <= 0 => {
+                parts.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    parts.push(current.trim().to_string());
+    parts.into_iter().filter(|part| !part.is_empty()).collect()
+}
+
+/// The compound selectors of one alternative, combinators dropped.
+fn split_compounds(alternative: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    for ch in alternative.chars() {
+        if let Some(open) = quote {
+            current.push(ch);
+            if ch == open {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => {
+                quote = Some(ch);
+                current.push(ch);
+            }
+            '[' | '(' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ']' | ')' => {
+                depth -= 1;
+                current.push(ch);
+            }
+            ' ' | '\t' | '>' | '+' | '~' if depth <= 0 => {
+                let piece = current.trim().to_string();
+                if !piece.is_empty() {
+                    parts.push(piece);
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    let piece = current.trim().to_string();
+    if !piece.is_empty() {
+        parts.push(piece);
+    }
+    parts
+}
+
+/// `[name="value"]` becomes `[name]`: the attribute the author meant, without
+/// the value the page may spell differently.
+fn drop_attr_values(compound: &str) -> String {
+    let mut out = String::new();
+    let mut rest = compound;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = attr_close(after) else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let inner = &after[..close];
+        let name_end = inner
+            .find(['=', '~', '|', '^', '$', '*', ']'])
+            .unwrap_or(inner.len());
+        out.push('[');
+        out.push_str(inner[..name_end].trim());
+        out.push(']');
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn attr_close(after: &str) -> Option<usize> {
+    let mut quote: Option<char> = None;
+    for (index, ch) in after.char_indices() {
+        if let Some(open) = quote {
+            if ch == open {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            ']' => return Some(index),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A compound selector as its tag plus its qualifiers, in order.
+fn split_compound(compound: &str) -> (String, Vec<String>) {
+    let chars: Vec<char> = compound.chars().collect();
+    let mut index = 0;
+    let mut tag = String::new();
+    while index < chars.len()
+        && (chars[index].is_alphanumeric() || matches!(chars[index], '-' | '_' | '*'))
+    {
+        tag.push(chars[index]);
+        index += 1;
+    }
+    let mut qualifiers = Vec::new();
+    while index < chars.len() {
+        let start = index;
+        match chars[index] {
+            '#' | '.' => {
+                index += 1;
+                while index < chars.len()
+                    && (chars[index].is_alphanumeric() || matches!(chars[index], '-' | '_'))
+                {
+                    index += 1;
+                }
+            }
+            '[' => {
+                let mut depth = 0i32;
+                let mut quote: Option<char> = None;
+                while index < chars.len() {
+                    let ch = chars[index];
+                    index += 1;
+                    if let Some(open) = quote {
+                        if ch == open {
+                            quote = None;
+                        }
+                        continue;
+                    }
+                    match ch {
+                        '"' | '\'' => quote = Some(ch),
+                        '[' => depth += 1,
+                        ']' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            ':' => {
+                index += 1;
+                while index < chars.len()
+                    && (chars[index].is_alphanumeric() || matches!(chars[index], '-' | '_' | ':'))
+                {
+                    index += 1;
+                }
+                if index < chars.len() && chars[index] == '(' {
+                    let mut depth = 0i32;
+                    while index < chars.len() {
+                        let ch = chars[index];
+                        index += 1;
+                        match ch {
+                            '(' => depth += 1,
+                            ')' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => index += 1,
+        }
+        let piece: String = chars[start..index].iter().collect();
+        if !piece.trim().is_empty() {
+            qualifiers.push(piece);
+        }
+    }
+    (tag, qualifiers)
 }
 
 /// One control a failed lookup can offer instead: enough to build a locator.
@@ -177,6 +462,7 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
             const exact = {exact};
             const includeHidden = {include_hidden};
             const limit = {limit};
+            const relaxations = {relaxations};
             const maxScanned = 50000;
             const matches = [];
             let visualPoint = null;
@@ -323,6 +609,25 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                 // The viewport first: that is where the agent is looking.
                 return picked.filter(c => c.inViewport).concat(picked.filter(c => !c.inViewport)).slice(0, 8);
             }};
+            // The first rung of the relaxation ladder the page actually has,
+            // with a count and a few visible examples. Only on a css miss.
+            const nearestCss = () => {{
+                for (const sel of relaxations) {{
+                    let list;
+                    try {{ list = document.querySelectorAll(sel); }} catch (_) {{ continue; }}
+                    if (!list.length) continue;
+                    let visible = 0;
+                    const examples = [];
+                    for (let i = 0; i < list.length && i < 50; i++) {{
+                        const el = list[i];
+                        if (!isRenderedElement(el)) continue;
+                        visible += 1;
+                        if (examples.length < 3) examples.push({{tag: el.tagName.toLowerCase(), role: implicitRole(el) || '', name: normalize(accessibleName(el)).slice(0, 40)}});
+                    }}
+                    return {{selector: sel, count: list.length, visible, examples}};
+                }}
+                return null;
+            }};
             const visit = root => {{
                 if (!root || !root.querySelectorAll || hits.length >= collectLimit) return;
                 const elements = root.querySelectorAll('*');
@@ -387,7 +692,8 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                 }}
                 for (const el of chosen.slice(0, limit)) describe(el);
                 const candidates = matches.length ? [] : pickCandidates();
-                return JSON.stringify({{ matches, scanned, truncated, hidden, nameMisses: (nameNear.length ? nameNear : nameAny), candidates, visualPoint, error: null }});
+                const nearest = (by === 'css' && !matches.length) ? nearestCss() : null;
+                return JSON.stringify({{ matches, scanned, truncated, hidden, nameMisses: (nameNear.length ? nameNear : nameAny), candidates, nearest, visualPoint, error: null }});
             }} catch (error) {{
                 return JSON.stringify({{
                     matches: [],
@@ -406,6 +712,12 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
         exact = query.exact,
         include_hidden = query.include_hidden,
         limit = limit,
+        relaxations = serde_json::to_string(&if query.by == "css" {
+            css_relaxations(query.value)
+        } else {
+            Vec::new()
+        })
+        .unwrap(),
     )
 }
 
@@ -543,10 +855,75 @@ mod tests {
         // role, name) only when nothing matched, and reported without refs.
         assert!(script.contains("pocketCandidate(el);"));
         assert!(script.contains("const candidates = matches.length ? [] : pickCandidates();"));
-        assert!(script.contains("candidates, visualPoint"));
+        assert!(script.contains("candidates, nearest, visualPoint"));
         // Landmarks carry names too, but nothing to act on; only controls are offered.
         assert!(script.contains("if (!CONTROL_ROLES.has(role)) continue;"));
         assert!(!script.contains("refRegistry.remember(ref, el);
                     candidates"));
+    }
+
+    #[test]
+    fn an_over_specific_css_selector_relaxes_toward_what_the_page_has() {
+        // Every measured canvas miss was answered by the agent with the bare
+        // tag on its next call; the ladder offers that in the same reply.
+        assert_eq!(css_relaxations("table.chart-markup-table.pane canvas"), vec!["canvas"]);
+        assert_eq!(css_relaxations("#scene canvas, canvas.widget-scene-canvas"), vec!["canvas"]);
+        assert_eq!(
+            css_relaxations("div[data-component-type=\"s-search-result\"] h2 a"),
+            vec!["div[data-component-type] h2 a", "h2 a"]
+        );
+        assert_eq!(
+            css_relaxations("input#search, input[name=\"search_query\"]"),
+            vec!["input", "input[name]"]
+        );
+        assert_eq!(
+            css_relaxations("table.chart-markup-table td.chart-markup-table .chart-gui-wrapper canvas"),
+            vec![
+                "td.chart-markup-table .chart-gui-wrapper canvas",
+                ".chart-gui-wrapper canvas",
+                "canvas"
+            ]
+        );
+        // Nothing generic enough to match the whole page is ever offered, and
+        // the selector itself is not its own relaxation.
+        assert!(css_relaxations("div.foo span").is_empty());
+        assert!(css_relaxations("canvas").is_empty());
+        // Values inside :not() are dropped too, and a quoted comma does not split.
+        assert_eq!(
+            css_relaxations("div.s-main-slot > div[data-asin]:not([data-asin=\"\"]) h2 a")[0],
+            "div.s-main-slot div[data-asin]:not([data-asin]) h2 a"
+        );
+        assert_eq!(css_relaxations("a[title=\"x, y\"] img"), vec!["a[title] img", "img"]);
+    }
+
+    #[test]
+    fn a_css_miss_evaluates_the_ladder_in_the_page_and_a_role_lookup_does_not() {
+        let css = build_find_js(
+            3,
+            "g3-e",
+            &LocatorQuery {
+                by: "css",
+                value: "table.chart-markup-table.pane canvas",
+                name: None,
+                exact: false,
+                include_hidden: false,
+                limit: 10,
+            },
+        );
+        assert!(css.contains("const relaxations = [\"canvas\"];"), "{css}");
+        assert!(css.contains("const nearest = (by === 'css' && !matches.length) ? nearestCss() : null;"));
+        let role = build_find_js(
+            3,
+            "g3-e",
+            &LocatorQuery {
+                by: "role",
+                value: "button",
+                name: Some("Search"),
+                exact: false,
+                include_hidden: false,
+                limit: 10,
+            },
+        );
+        assert!(role.contains("const relaxations = [];"), "a role lookup ships no ladder");
     }
 }

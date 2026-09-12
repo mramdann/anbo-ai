@@ -56,7 +56,9 @@ retries and report a blocker rather than searching for the same absent label
 again. A `confirmed absence` can come back well before your timeout once the
 page has settled and stopped changing: treat it as final, not a wait cut
 short. It also lists the interactive elements the scan saw, by role and name:
-act on one of them with `locator` instead of asking for a snapshot.
+act on one of them with `locator` instead of asking for a snapshot. A css miss
+names the nearest simpler selector that does match, with counts, so the next
+call can use it rather than guess.
 `browser_screenshot` returns the viewport image in its reply (use
 `format: "jpeg"` to keep it small), and `browser_console_logs` is the cheapest
 explanation for a page that looks right and does nothing.
@@ -132,8 +134,9 @@ screenshot when semantics are not enough. Screenshots cover the viewport,
 exclude remote-control effects and do not replace postcondition checks.
 
 `browser_drag` takes two refs, or the same ref twice with `sourcePosition` and
-`targetPosition` as fractions of the element to pan inside it. Both points must
-be visible; nothing is retried automatically. `browser_emulate` lays a page out
+`targetPosition` as fractions of the element to pan inside it, or a `locator`
+with both positions to pan inside one element straight from a missed find.
+Both points must be visible; nothing is retried automatically. `browser_emulate` lays a page out
 as another device would; `width: 0` clears it, it survives navigation, and it
 never resizes the application window. `browser_key` modifiers are per call:
 pass the whole combination on every key event. `browser_dialog` clicks a ref

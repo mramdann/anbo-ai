@@ -137,7 +137,7 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_forward", "description": "Start navigating a browser tab forward in history and return immediately.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_stop", "description": "Stop a browser tab's page load. Reports wasLoading, whether a load was actually in flight when the call arrived, and cancelledUrl, the target that was interrupted when one was known.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_snapshot", "description": "Token-bounded accessibility snapshot: viewport text first, then interactive elements with refs; 8000 characters by default, 16000 at most, paged with offset and nextOffset. Snapshot and find both replace older refs; prefer find when the element is already known.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "offset": { "type": "integer", "minimum": 0, "description": "Skip this many items; the reply carries nextOffset while more of the page is waiting." }, "maxChars": { "type": "integer", "minimum": 2000, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
-        { "name": "browser_find", "description": "Find elements by role (with the computed accessible name), text, label, placeholder, testId, title, alt, or CSS across open Shadow DOM and child frames, and return fresh refs. Implicit roles cover links, buttons, inputs (textbox, searchbox, combobox, checkbox...), headings, dialogs, lists, tables and landmarks. Elements that are not rendered are left out and counted as hiddenMatches; a timeout says whether the page was scanned end to end, and a confirmed absence returns once the page settles and stops changing rather than only at the timeout. A confirmed absence also lists the interactive elements the scan saw, each usable as a role locator.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "by": { "type": "string", "enum": ["role", "text", "label", "placeholder", "testId", "title", "alt", "css"] }, "value": { "type": "string", "minLength": 1, "maxLength": 4096 }, "name": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Optional computed accessible-name filter for a role locator. It may come from aria-label, aria-labelledby, an associated label, alt, title, or visible text." }, "exact": { "type": "boolean", "default": false }, "includeHidden": { "type": "boolean", "default": false }, "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 5000 } }, "required": ["tabId", "by", "value"] } },
+        { "name": "browser_find", "description": "Find elements by role (with the computed accessible name), text, label, placeholder, testId, title, alt, or CSS across open Shadow DOM and child frames, and return fresh refs. Implicit roles cover links, buttons, inputs (textbox, searchbox, combobox, checkbox...), headings, dialogs, lists, tables and landmarks. Elements that are not rendered are left out and counted as hiddenMatches; a timeout says whether the page was scanned end to end, and a confirmed absence returns once the page settles and stops changing rather than only at the timeout. A confirmed absence also lists the interactive elements the scan saw, each usable as a role locator, and a css miss names the nearest simpler selector that does match, with counts.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "by": { "type": "string", "enum": ["role", "text", "label", "placeholder", "testId", "title", "alt", "css"] }, "value": { "type": "string", "minLength": 1, "maxLength": 4096 }, "name": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Optional computed accessible-name filter for a role locator. It may come from aria-label, aria-labelledby, an associated label, alt, title, or visible text." }, "exact": { "type": "boolean", "default": false }, "includeHidden": { "type": "boolean", "default": false }, "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 5000 } }, "required": ["tabId", "by", "value"] } },
         { "name": "browser_click", "description": "Click an element by ref after bounded visibility, stability, enabled, and hit-target checks.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_double_click", "description": "Double-click an actionable element by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_focus", "description": "Focus a visible enabled element by ref without activating the user's workspace.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
@@ -247,6 +247,13 @@ pub fn tool_definitions() -> Value {
                     required.retain(|field| field != "ref");
                 }
                 tool["description"] = json!(format!("{} Accepts exactly one ref or unique locator.", tool["description"].as_str().unwrap()));
+            }
+            if name == "browser_drag" {
+                // Every measured canvas drag was a pan inside one element, and
+                // each cost a find first because drag took refs only. A locator
+                // plus the two positions goes straight there.
+                tool["inputSchema"]["required"] = json!(["tabId"]);
+                tool["description"] = json!(format!("{} With locator instead of refs, sourcePosition and targetPosition are required and the drag pans inside that one element.", tool["description"].as_str().unwrap()));
             }
         }
         if name == "browser_find" {
@@ -420,7 +427,9 @@ mod tests {
             }
         }
         assert!(drag["inputSchema"].get("sourcePosition").is_none());
-        assert_eq!(drag["inputSchema"]["required"], json!(["tabId", "sourceRef", "targetRef"]));
+        // Refs are no longer required: a locator with both positions pans inside
+        // one element (a_drag_can_pan_inside_one_element_found_by_locator).
+        assert_eq!(drag["inputSchema"]["required"], json!(["tabId"]));
     }
 
     #[test]
@@ -437,7 +446,9 @@ mod tests {
             .filter(|tool| tool["name"].as_str().unwrap().starts_with("browser_"))
             .collect();
         let size = serde_json::to_string(&browser).unwrap().len();
-        assert!(size <= 38_000, "browser tool schemas are {size} characters");
+        // 39.5k since round 6: the locator object rides on browser_drag too, and
+        // browser_find and browser_drag say what a miss and a locator drag give.
+        assert!(size <= 39_500, "browser tool schemas are {size} characters");
     }
 
     #[test]
@@ -756,5 +767,22 @@ mod tests {
                 .as_array()
                 .is_some_and(|required| required.contains(&json!("workspace"))));
         }
+    }
+
+    #[test]
+    fn a_drag_can_pan_inside_one_element_found_by_locator() {
+        // Every measured canvas drag on Maps and TradingView was a pan inside
+        // one element, reached by find(css:canvas) after a missed selector;
+        // with a locator on drag the miss goes straight to the drag.
+        let tools = tool_definitions();
+        let drag = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "browser_drag")
+            .unwrap();
+        assert_eq!(drag["inputSchema"]["properties"]["locator"]["type"], "object");
+        assert_eq!(drag["inputSchema"]["required"], json!(["tabId"]));
+        assert!(drag["description"].as_str().unwrap().contains("pans inside that one element"));
     }
 }
