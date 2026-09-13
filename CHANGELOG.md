@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.30.0](https://github.com/mramdann/anbo-ai/compare/v0.29.0...v0.30.0) (2026-09-13)
+
+
+### Features
+
+* **browser:** let a session follow the agent instead of two tools ([8b8f4a4](https://github.com/mramdann/anbo-ai/commit/8b8f4a42a241d48353d3108b2b7f4dc38f26f7c0))
+* **browser:** steer locators to observed targets and wait on a title prefix ([f570cff](https://github.com/mramdann/anbo-ai/commit/f570cff4da47c1f9cd8082e8a3222dcb42e5e49d))
+
+
+### Bug Fixes
+
+* **browser:** keep accepting MCP clients after the 128th session ([fcf837a](https://github.com/mramdann/anbo-ai/commit/fcf837ac6c0d8677368766bed64d797bdb003313))
+* **browser:** keep the session sweep alive across a panicking pass ([a1835ab](https://github.com/mramdann/anbo-ai/commit/a1835ab80b6e5098d2462f651b52128972f2d8c2))
+* **browser:** read a labelled odometer as its number, not aria-hidden digits ([eefb0ab](https://github.com/mramdann/anbo-ai/commit/eefb0ab25bccd6b504d33040846f1eb8ba8a19c1))
+* **markdown:** show the rendered preview's scrollbar ([357e9e9](https://github.com/mramdann/anbo-ai/commit/357e9e98eff668a8d2b416a444873c63b13f5cfe))
+
+
+### Performance Improvements
+
+* **browser:** keep refs alive through later finds, and fill a form in one call ([38b4fbb](https://github.com/mramdann/anbo-ai/commit/38b4fbbe9455be8690cfd71a338c208591f67b51))
+* **browser:** let a missed find hand back the controls it walked past ([0d12117](https://github.com/mramdann/anbo-ai/commit/0d121176a30cab59493c43990ae68d8ba4331f76))
+* **browser:** tell a missed css find what the page has, and let drag pan by locator ([9bbb67c](https://github.com/mramdann/anbo-ai/commit/9bbb67ced1197eda4b8d1d4583fde6ec3cd880f8))
+
 ## [0.29.0](https://github.com/mramdann/anbo-ai/compare/v0.28.0...v0.29.0) (2026-09-12)
 
 
