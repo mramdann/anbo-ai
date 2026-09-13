@@ -163,14 +163,25 @@ impl Sessions {
             .retain(|_, (_, touched)| now.saturating_duration_since(*touched) < SESSION_TTL);
     }
 
-    fn insert(&mut self, id: String, mut caller: Caller, now: Instant) -> Result<(), String> {
+    fn insert(&mut self, id: String, mut caller: Caller, now: Instant) {
         self.prune(now);
+        // A client that never says goodbye must not lock everyone else out.
+        // Print-mode agents open a session per run and close none, and after
+        // the 128th every new agent got 503 until Anbo restarted; the session
+        // touched longest ago makes room instead, and a client that is still
+        // alive simply initializes again on its next call.
         if self.0.len() >= MAX_SESSIONS {
-            return Err("too many MCP sessions; close an unused client".into());
+            if let Some(stalest) = self
+                .0
+                .iter()
+                .min_by_key(|(_, (_, touched))| *touched)
+                .map(|(id, _)| id.clone())
+            {
+                self.0.remove(&stalest);
+            }
         }
         caller.owner = Some(format!("http:{id}"));
         self.0.insert(id, (caller, now));
-        Ok(())
     }
 
     fn caller(&mut self, id: &str, now: Instant) -> Option<Caller> {
@@ -198,7 +209,7 @@ pub fn create_session(info: &Value, pty_id: Option<u32>) -> Result<String, Strin
         id.clone(),
         Caller::from_client_info(info).with_pty(pty_id),
         Instant::now(),
-    )?;
+    );
     Ok(id)
 }
 
@@ -245,8 +256,8 @@ mod callsign_tests {
 
         // A caller from another terminal keeps its own answer, and one with no
         // terminal at all is never mistaken for a named agent.
-        let other = Caller::from_client_info(&serde_json::json!({"name":"claude-code"}))
-            .with_pty(Some(99));
+        let other =
+            Caller::from_client_info(&serde_json::json!({"name":"claude-code"})).with_pty(Some(99));
         assert_eq!(serde_json::to_value(&other).unwrap()["label"], "Claude");
         let anonymous = Caller::default();
         assert_eq!(
@@ -349,20 +360,16 @@ mod tests {
         let now = Instant::now();
         let first = "a".repeat(64);
         let second = "b".repeat(64);
-        sessions
-            .insert(
-                first.clone(),
-                Caller::from_client_info(&json!({"name":"claude-code"})),
-                now,
-            )
-            .unwrap();
-        sessions
-            .insert(
-                second.clone(),
-                Caller::from_client_info(&json!({"name":"codex_cli_rs"})),
-                now,
-            )
-            .unwrap();
+        sessions.insert(
+            first.clone(),
+            Caller::from_client_info(&json!({"name":"claude-code"})),
+            now,
+        );
+        sessions.insert(
+            second.clone(),
+            Caller::from_client_info(&json!({"name":"codex_cli_rs"})),
+            now,
+        );
         assert_eq!(sessions.caller(&first, now).unwrap().brand, "claude");
         assert_eq!(sessions.caller(&second, now).unwrap().brand, "codex");
         sessions.0.remove(&first);
@@ -372,22 +379,50 @@ mod tests {
     }
 
     #[test]
-    fn sessions_are_bounded_and_expire_only_after_inactivity() {
+    fn a_full_registry_makes_room_by_forgetting_the_stalest_session() {
         let mut sessions = Sessions::default();
         let now = Instant::now();
         for id in 0..MAX_SESSIONS {
-            sessions
-                .insert(format!("{id:064x}"), Caller::default(), now)
-                .unwrap();
+            sessions.insert(
+                format!("{id:064x}"),
+                Caller::default(),
+                now + Duration::from_secs(id as u64),
+            );
         }
+        assert_eq!(sessions.0.len(), MAX_SESSIONS);
+        let stalest = format!("{:064x}", 0);
+        let newest = format!("{:064x}", MAX_SESSIONS - 1);
+        let later = now + Duration::from_secs(MAX_SESSIONS as u64);
+        // The client after the cap is served; the session touched longest ago goes.
+        sessions.insert("e".repeat(64), Caller::default(), later);
+        assert_eq!(sessions.0.len(), MAX_SESSIONS);
+        assert!(sessions.caller(&stalest, later).is_none());
+        assert!(sessions.caller(&newest, later).is_some());
+        assert!(sessions.caller(&"e".repeat(64), later).is_some());
+        // A session that is still being used is not the one to go.
+        let second = format!("{:064x}", 1);
         assert!(sessions
-            .insert("e".repeat(64), Caller::default(), now)
-            .is_err());
+            .caller(&second, later + Duration::from_secs(1))
+            .is_some());
+        sessions.insert(
+            "f".repeat(64),
+            Caller::default(),
+            later + Duration::from_secs(2),
+        );
+        let after = later + Duration::from_secs(3);
+        assert!(sessions.caller(&second, after).is_some());
+        assert!(sessions.caller(&format!("{:064x}", 2), after).is_none());
+    }
+
+    #[test]
+    fn sessions_expire_only_after_a_day_of_inactivity() {
+        let mut sessions = Sessions::default();
+        let now = Instant::now();
         let live = "0".repeat(64);
+        sessions.insert(live.clone(), Caller::default(), now);
         assert!(sessions.caller(&live, now + SESSION_TTL / 2).is_some());
-        sessions
-            .insert("e".repeat(64), Caller::default(), now + SESSION_TTL)
-            .unwrap();
+        sessions.insert("e".repeat(64), Caller::default(), now + SESSION_TTL);
+        // The half-day touch kept it; a full day after that touch it is gone.
         assert_eq!(sessions.0.len(), 2);
         assert!(sessions.caller(&live, now + SESSION_TTL * 2).is_none());
     }
