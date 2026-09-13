@@ -875,7 +875,27 @@ pub fn start_sweep(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(SWEEP_EVERY).await;
-            sweep(&app);
+            // This loop is the only thing that releases a session an agent
+            // walked away from, and it has to run for the whole life of the
+            // process. A panic in one pass -- a webview call that faulted, a
+            // lock a helper did not expect to be poisoned -- must not take the
+            // task down for good, or from then on every abandoned session
+            // would hold its slot and its badge until Anbo restarted. Each
+            // pass locks and releases within its helpers and emits outside
+            // those locks, so containing a pass and going on to the next is
+            // sound: nothing is left half-updated across the boundary.
+            if let Err(panic) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sweep(&app)))
+            {
+                let detail = panic
+                    .downcast_ref::<&str>()
+                    .map(|message| (*message).to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown".to_string());
+                log::error!(
+                    "[browser_automation] sweep pass panicked and was contained: {detail}"
+                );
+            }
         }
     });
 }
