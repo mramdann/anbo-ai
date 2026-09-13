@@ -190,10 +190,10 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                        rect.top <= window.innerHeight && rect.left <= window.innerWidth;
             }}
 
-            function processShadow(el, depth) {{
+            function processShadow(el, depth, ariaHidden) {{
                 if (!el || !el.shadowRoot) return;
                 for (let i = 0; i < el.shadowRoot.childNodes.length; i++) {{
-                    process(el.shadowRoot.childNodes[i], depth + 1);
+                    process(el.shadowRoot.childNodes[i], depth + 1, ariaHidden);
                     if (scannedNodes >= maxNodes) {{ sourceTruncated = true; break; }}
                 }}
             }}
@@ -230,7 +230,7 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                 return out.replace(/\s+/g, ' ').trim();
             }}
 
-            function process(node, depth = 0) {{
+            function process(node, depth = 0, ariaHidden = false) {{
                 if (!node) return;
                 if (scannedNodes >= maxNodes || depth > 256) {{
                     sourceTruncated = true;
@@ -238,6 +238,12 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                 }}
                 scannedNodes++;
                 if (node.nodeType === 3) {{
+                    // Text inside an aria-hidden subtree is not in the
+                    // accessibility tree: a live odometer redraws each digit in
+                    // its own aria-hidden span, so emitting these read as a
+                    // column of lone digits that are neither the number nor
+                    // separate values. Skip it.
+                    if (ariaHidden) return;
                     // Emit the whole inline run at once, not one item per text
                     // node. A ticker that redraws a changing digit as its own
                     // span was reported as "99.02" and "8" on two lines, which
@@ -265,6 +271,10 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                 const tag = el.tagName.toLowerCase();
                 if (tag === 'script' || tag === 'style' || tag === 'noscript') return;
 
+                // Are we inside, or now entering, an aria-hidden subtree? The
+                // flag rides the whole walk so descendant text is suppressed.
+                const nowHidden = ariaHidden || el.getAttribute('aria-hidden') === 'true';
+
                 const roleAttr = el.getAttribute('role') || '';
                 const inputType = tag === 'input'
                     ? (el.getAttribute('type') || 'text').toLowerCase()
@@ -282,7 +292,7 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                     const inViewport = isInViewport(el);
                     if ((inViewport ? viewportElements : elements).length >= maxItems) {{
                         sourceTruncated = true;
-                        processShadow(el, depth);
+                        processShadow(el, depth, nowHidden);
                         return;
                     }}
                     const ref = refPrefix + (refIdx++);
@@ -312,17 +322,41 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                         disabled: el.disabled || false,
                         in_viewport: inViewport
                     }});
-                    processShadow(el, depth);
+                    processShadow(el, depth, nowHidden);
                     return;
                 }}
 
+                // A labelled container whose visible text is drawn in
+                // aria-hidden children -- a live viewer count written as
+                // <div aria-label="7,772 watching now"><span aria-hidden>7</span>...>
+                // -- contributes nothing once those digits are skipped. Emit its
+                // accessible name once so the number survives, then still descend
+                // so any non-hidden child text is emitted as usual.
+                if (!nowHidden && !emittedRuns.has(el) && isVisible(el) && isInViewport(el)) {{
+                    let hasHiddenChild = false;
+                    for (const child of el.childNodes) {{
+                        if (child.nodeType === 1 && child.getAttribute &&
+                            child.getAttribute('aria-hidden') === 'true') {{
+                            hasHiddenChild = true;
+                            break;
+                        }}
+                    }}
+                    if (hasHiddenChild) {{
+                        const named = accessibleName(el).trim();
+                        if (named.length > 0) {{
+                            emittedRuns.add(el);
+                            add({{ type: 'text', text: named.substring(0, 300), in_viewport: true }});
+                        }}
+                    }}
+                }}
+
                 for (let i = 0; i < el.childNodes.length; i++) {{
-                    process(el.childNodes[i], depth + 1);
+                    process(el.childNodes[i], depth + 1, nowHidden);
                     if (scannedNodes >= maxNodes) {{ sourceTruncated = true; break; }}
                 }}
                 // Traverse open Shadow DOM roots used by modern upload UIs.
                 // Closed roots remain inaccessible by browser design.
-                processShadow(el, depth);
+                processShadow(el, depth, nowHidden);
             }}
 
             if (document.body) {{

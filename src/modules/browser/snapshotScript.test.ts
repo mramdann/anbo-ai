@@ -222,6 +222,36 @@ describe("shipped browser snapshot script", () => {
     expect(() => run(1)).toThrow("stale_scan");
     expect(target.getAttribute("data-anbo-ref")).toBe(fresh.elements[0].ref_id);
   });
+
+  it("reads a labelled odometer as its name, not a column of aria-hidden digits", () => {
+    // A live viewer count draws each digit in its own aria-hidden span while
+    // the container carries the real number as its accessible name.
+    const odometer = new Element("DIV", "", true);
+    odometer.setAttribute("aria-label", "7,772 watching now");
+    odometer.childNodes = ["7", ",", "7", "7", "2"].map((digit) => {
+      const span = new Element("SPAN", digit, true);
+      span.setAttribute("aria-hidden", "true");
+      return span;
+    });
+    const texts = fixture([odometer])(1)
+      .elements.filter((item) => (item as { type?: string }).type === "text")
+      .map((item) => (item as { text: string }).text);
+    expect(texts).toContain("7,772 watching now");
+    expect(texts).not.toContain("7");
+    expect(texts).not.toContain("2");
+  });
+
+  it("still descends a labelled container that hides nothing, keeping its text", () => {
+    // A label with no aria-hidden children must not shadow real content.
+    const section = new Element("DIV", "", true);
+    section.setAttribute("aria-label", "Results");
+    section.childNodes = [new Element("P", "real content", true)];
+    const texts = fixture([section])(1)
+      .elements.filter((item) => (item as { type?: string }).type === "text")
+      .map((item) => (item as { text: string }).text);
+    expect(texts).toContain("real content");
+    expect(texts).not.toContain("Results");
+  });
 });
 
 const actionsSource = readFileSync(
