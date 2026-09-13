@@ -83,7 +83,12 @@ export function MarkdownPreviewPane({ path, visible, onSetView }: Props) {
       )}
     >
       <MarkdownViewToggle mode="rendered" onChange={onSetView} />
-      <div className="flex-1 overflow-auto">
+      {/* The app hides every scrollbar globally (see globals.css); a scroll
+          pane opts its bar back in with panel-scrollbar, the same way the file
+          explorer, git history and source-control panes do. Without it this
+          pane still scrolled by wheel but showed no bar, while the raw view
+          did because CodeMirror re-enables its own. */}
+      <div className="panel-scrollbar min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
         <div className="px-8 py-6">
           {status.kind === "loading" && (
             <p className="text-[12px] text-muted-foreground">Loading…</p>
