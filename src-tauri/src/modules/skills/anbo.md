@@ -24,11 +24,16 @@ Find a target with `browser_find {tabId, by: "role", value: "button", name:
 "Search"}` (also `text`, `label`, `placeholder`, `testId`, `css`; implicit
 roles include heading, searchbox, textbox, combobox, dialog, list, table and
 landmarks), or read the page with `browser_snapshot` (viewport text first, then
-interactive elements, paged with `offset`). Both return refs like `g3-e12` and
-replace older refs; `stale_ref` means find it again. Act with `browser_click`,
+interactive elements, paged with `offset`). Both return refs like `g3-e12`; a ref
+stays valid while its element is on the page, through the next eight finds or
+snapshots, so find A, find B, drag A onto B just works. `stale_ref` means the
+element is gone or the ref is older than that: find it again. Act with `browser_click`,
 `browser_type`, `browser_press`, `browser_key`, `browser_hover`, `browser_drag`,
 `browser_select_option`, `browser_check`, `browser_scroll`; single-target actions
-also take `locator` instead of `ref`. Every action reply carries `page`
+also take `locator` instead of `ref`. A form is one call: `browser_fill_form
+{tabId, fields: [{locator, text}, {locator, checked: true}, {ref, option}]}`
+runs type, check or select per field in order and stops at the first failure,
+naming the fields already done; submit separately with `browser_click`. Every action reply carries `page`
 (`url`, `title`, `loading`), so you never need a separate URL read after a
 click or a key. Read results with `browser_get_text` (a ref, or the body) or
 `browser_get_property` for live state such as `paused`, `currentTime`,

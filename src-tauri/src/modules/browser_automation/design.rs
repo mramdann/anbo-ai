@@ -264,6 +264,7 @@ pub fn blocks_input(method: &str) -> bool {
             | "drag"
             | "type_text"
             | "type"
+            | "fill_form"
             | "upload_files"
             | "upload"
             | "press_key"

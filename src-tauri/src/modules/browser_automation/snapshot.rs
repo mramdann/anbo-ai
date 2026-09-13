@@ -20,6 +20,12 @@ pub struct RefFrameTarget {
     pub is_main: bool,
 }
 
+/// How many scans back a ref stays usable. A find or snapshot moves the
+/// generation on, but the refs of the last eight scans still resolve while
+/// their node is on the page, so find A, find B, drag A onto B works. The
+/// page registry keeps the same window (`KEEP` in refRegistry.js).
+pub const REF_GENERATIONS_KEPT: u64 = 8;
+
 fn generations() -> &'static Mutex<Option<HashMap<i64, u64>>> {
     &SNAPSHOT_GENERATIONS
 }
@@ -102,11 +108,26 @@ pub fn clear_generations() {
     }
 }
 
-pub fn replace_ref_frame_targets(tab_id: i64, targets: HashMap<String, RefFrameTarget>) {
+/// Record the frame refs a scan produced. Refs from the last
+/// `REF_GENERATIONS_KEPT` scans stay resolvable, so their frame targets stay
+/// too; only targets older than the window are dropped.
+pub fn record_ref_frame_targets(tab_id: i64, targets: HashMap<String, RefFrameTarget>) {
     let mut guard = REF_FRAME_TARGETS.lock().unwrap();
-    guard
+    let map = guard
         .get_or_insert_with(HashMap::new)
-        .insert(tab_id, targets);
+        .entry(tab_id)
+        .or_default();
+    map.extend(targets);
+    if let Some(newest) = map.keys().filter_map(|ref_id| ref_generation(ref_id)).max() {
+        map.retain(|ref_id, _| {
+            ref_generation(ref_id)
+                .is_some_and(|generation| generation + REF_GENERATIONS_KEPT >= newest)
+        });
+    }
+}
+
+fn ref_generation(ref_id: &str) -> Option<u64> {
+    ref_id.strip_prefix('g')?.split('-').next()?.parse().ok()
 }
 
 pub fn get_ref_frame_target(tab_id: i64, ref_id: &str) -> Option<RefFrameTarget> {
@@ -560,27 +581,45 @@ mod tests {
     }
 
     #[test]
-    fn ref_frame_targets_are_replaced_per_snapshot() {
+    fn ref_frame_targets_outlive_the_next_scans_and_expire_after_the_window() {
         let tab_id = 98_765;
-        replace_ref_frame_targets(
+        let target = |frame_id: &str| RefFrameTarget {
+            frame_id: frame_id.to_string(),
+            is_main: false,
+        };
+        record_ref_frame_targets(
             tab_id,
-            HashMap::from([(
-                "g1-f1-e1".to_string(),
-                RefFrameTarget {
-                    frame_id: "child-a".to_string(),
-                    is_main: false,
-                },
-            )]),
+            HashMap::from([("g1-f1-e1".to_string(), target("child-a"))]),
         );
         assert_eq!(
             get_ref_frame_target(tab_id, "g1-f1-e1"),
-            Some(RefFrameTarget {
-                frame_id: "child-a".to_string(),
-                is_main: false,
-            })
+            Some(target("child-a"))
         );
-        replace_ref_frame_targets(tab_id, HashMap::new());
+        // A scan that found nothing keeps what the caller holds.
+        record_ref_frame_targets(tab_id, HashMap::new());
+        assert_eq!(
+            get_ref_frame_target(tab_id, "g1-f1-e1"),
+            Some(target("child-a"))
+        );
+        // Eight scans later the ref is still inside the window.
+        record_ref_frame_targets(
+            tab_id,
+            HashMap::from([("g9-f1-e1".to_string(), target("child-b"))]),
+        );
+        assert_eq!(
+            get_ref_frame_target(tab_id, "g1-f1-e1"),
+            Some(target("child-a"))
+        );
+        // The ninth pushes it out; the newer one stays.
+        record_ref_frame_targets(
+            tab_id,
+            HashMap::from([("g10-f1-e1".to_string(), target("child-c"))]),
+        );
         assert!(get_ref_frame_target(tab_id, "g1-f1-e1").is_none());
+        assert_eq!(
+            get_ref_frame_target(tab_id, "g9-f1-e1"),
+            Some(target("child-b"))
+        );
         remove_generation(tab_id);
     }
 

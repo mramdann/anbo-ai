@@ -134,11 +134,11 @@ impl StableMatch {
     }
 }
 
-pub fn input_guard_body(generation: u64, expected_value: Option<&str>) -> String {
+pub fn input_guard_body(expected_value: Option<&str>) -> String {
     let expected = json!(expected_value);
     format!(
         r#"
-        if (!el || !el.isConnected || el.getAttribute('data-anbo-gen') !== 'gen-{generation}') return JSON.stringify({{ok:false,error:'stale_ref'}});
+        if (!el || !el.isConnected) return JSON.stringify({{ok:false,error:'stale_ref'}});
         const expected = {expected};
         const value = el.isContentEditable ? (el.textContent || '') : el.value;
         if (expected !== null && value !== expected) return JSON.stringify({{ok:false,error:'input_mismatch'}});
@@ -199,7 +199,7 @@ mod tests {
         assert!(expectation
             .script()
             .contains(&serde_json::to_string(value).unwrap()));
-        assert!(input_guard_body(4, Some(value)).contains(&serde_json::to_string(value).unwrap()));
+        assert!(input_guard_body(Some(value)).contains(&serde_json::to_string(value).unwrap()));
     }
 
     #[test]

@@ -69,7 +69,7 @@ fn tab_id_prop() -> Value {
     json!({ "type": "integer", "description": "Active native browser tab id (from browser_tabs)." })
 }
 fn ref_prop() -> Value {
-    json!({ "type": "string", "description": "Ref from this tab's latest snapshot or find, e.g. \"g3-e12\"; each new snapshot or find replaces older refs." })
+    json!({ "type": "string", "description": "Ref from a find or snapshot on this tab, e.g. \"g3-e12\"; valid while the element stays on the page, through the next 8 finds or snapshots." })
 }
 
 fn fraction_point_prop(description: &str) -> Value {
@@ -144,6 +144,7 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_check", "description": "Set a checkbox or radio ref to the requested checked state and verify the result.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "checked": { "type": "boolean", "default": true } }, "required": ["tabId", "ref"] } },
         { "name": "browser_drag", "description": "Native mouse drag from one ref to another, or inside one element by passing the same ref twice with sourcePosition and targetPosition (fractions of the element, e.g. {x:0.7,y:0.5} to {x:0.4,y:0.5} pans a chart left). Both points must be visible; nothing is retried automatically.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "sourceRef": refr.clone(), "targetRef": refr.clone(), "sourcePosition": fraction_point_prop("Where the press lands inside sourceRef, as fractions strictly between 0 and 1 (0.5 is the center), not pixels."), "targetPosition": fraction_point_prop("Where the release lands inside targetRef, as fractions strictly between 0 and 1, not pixels.") }, "required": ["tabId", "sourceRef", "targetRef"] } },
         { "name": "browser_type", "description": "Type text into an input element by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "text": { "type": "string" }, "append": { "type": "boolean", "description": "Append to existing value instead of replacing it." } }, "required": ["tabId", "ref", "text"] } },
+        { "name": "browser_fill_form", "description": "Fill several fields in one call, in order. Each field names its target by ref or a unique locator and carries exactly one of text (typed and verified like browser_type, replacing the value), checked (checkbox or radio) or option (select value or label). Stops at the first field that fails and says which fields were done; never submits.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "fields": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "type": "object", "additionalProperties": false, "properties": { "ref": refr.clone(), "text": { "type": "string" }, "checked": { "type": "boolean" }, "option": { "type": "string" } } } } }, "required": ["tabId", "fields"] } },
         { "name": "browser_press", "description": "Press a keyboard key through the browser input pipeline (e.g. Enter, Tab). Key dispatch holds the tab lock, but Enter observation does not, so stop and navigation remain responsive. submissionObserved and navigationObserved report only effects seen within the bounded observation window; false does not mean dispatch failed.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "key": { "type": "string" }, "observationTimeout": { "type": "integer", "minimum": 0, "maximum": 10000, "default": 3000, "description": "Milliseconds to observe submit or navigation after Enter without holding the tab lock. Ignored for other keys." } }, "required": ["tabId", "key"] } },
         { "name": "browser_key", "description": "Dispatch a keyboard press, key-down, or key-up. Alt, Control, Meta, and Shift modifiers are per-call: pass them on each key event. Holding a modifier across tools or modifying mouse clicks is not supported.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "key": { "type": "string", "minLength": 1, "maxLength": 64 }, "keyAction": { "type": "string", "enum": ["press", "down", "up"], "default": "press" }, "modifiers": { "type": "array", "maxItems": 4, "uniqueItems": true, "items": { "type": "string", "enum": ["Alt", "Control", "Meta", "Shift"] } } }, "required": ["tabId", "key"] } },
         { "name": "browser_scroll", "description": "Scroll the page by x/y pixels.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "x": { "type": "number" }, "y": { "type": "number" } }, "required": ["tabId"] } },
@@ -246,7 +247,10 @@ pub fn tool_definitions() -> Value {
                 if required.iter().any(|field| field == "ref") {
                     required.retain(|field| field != "ref");
                 }
-                tool["description"] = json!(format!("{} Accepts exactly one ref or unique locator.", tool["description"].as_str().unwrap()));
+                tool["description"] = json!(format!(
+                    "{} Accepts exactly one ref or unique locator.",
+                    tool["description"].as_str().unwrap()
+                ));
             }
             if name == "browser_drag" {
                 // Every measured canvas drag was a pan inside one element, and
@@ -257,7 +261,10 @@ pub fn tool_definitions() -> Value {
             }
         }
         if name == "browser_find" {
-            tool["description"] = json!(format!("{} Matches also carry editable, readOnly, inViewport and bounds as metadata.", tool["description"].as_str().unwrap()));
+            tool["description"] = json!(format!(
+                "{} Matches also carry editable, readOnly, inViewport and bounds as metadata.",
+                tool["description"].as_str().unwrap()
+            ));
         }
         if LAST_CALL_TOOLS.iter().any(|last| *last == name) {
             tool["inputSchema"]["properties"]["endSession"] = json!({
@@ -265,6 +272,23 @@ pub fn tool_definitions() -> Value {
                 "description": "End your session after this call succeeds: cursor and badge go, tabs stay open."
             });
         }
+    }
+    // The fields of browser_fill_form take the same compact locator as the
+    // single-target tools; copied from browser_type once the loop built it.
+    let locator = definitions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "browser_type")
+        .unwrap()["inputSchema"]["properties"]["locator"]
+        .clone();
+    if let Some(tool) = definitions
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|tool| tool["name"] == "browser_fill_form")
+    {
+        tool["inputSchema"]["properties"]["fields"]["items"]["properties"]["locator"] = locator;
     }
     definitions
 }
@@ -292,6 +316,7 @@ pub fn tool_name_to_method(name: &str) -> Option<&'static str> {
         "browser_check" => "check",
         "browser_drag" => "drag",
         "browser_type" => "type_text",
+        "browser_fill_form" => "fill_form",
         "browser_press" => "press_key",
         "browser_key" => "key",
         "browser_scroll" => "scroll",
@@ -334,7 +359,7 @@ mod tests {
     #[test]
     fn tools_have_capability_prefixes_and_unique_names() {
         let tools = tool_definitions().as_array().unwrap().clone();
-        assert_eq!(tools.len(), 51);
+        assert_eq!(tools.len(), 52);
         let mut names = std::collections::HashSet::new();
         for t in &tools {
             let n = t.get("name").and_then(|v| v.as_str()).unwrap();
@@ -382,8 +407,14 @@ mod tests {
         // No tool text sends the agent to a tool that no longer exists.
         for tool in &tools {
             let description = tool["description"].as_str().unwrap_or_default();
-            assert!(!description.contains("browser_end_session"), "{description}");
-            assert!(!description.contains("browser_start_session"), "{description}");
+            assert!(
+                !description.contains("browser_end_session"),
+                "{description}"
+            );
+            assert!(
+                !description.contains("browser_start_session"),
+                "{description}"
+            );
         }
     }
 
@@ -433,6 +464,30 @@ mod tests {
     }
 
     #[test]
+    fn a_form_fills_in_one_call_with_ref_or_locator_per_field() {
+        let tools = tool_definitions();
+        let tool = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "browser_fill_form")
+            .expect("browser_fill_form");
+        assert_eq!(tool["inputSchema"]["required"], json!(["tabId", "fields"]));
+        let item = &tool["inputSchema"]["properties"]["fields"]["items"]["properties"];
+        for key in ["ref", "locator", "text", "checked", "option"] {
+            assert!(item.get(key).is_some(), "field item lacks {key}");
+        }
+        assert_eq!(item["locator"]["required"], json!(["by", "value"]));
+        assert_eq!(
+            tool["inputSchema"]["properties"]["fields"]["maxItems"],
+            json!(20)
+        );
+        // The call itself takes no locator: each field names its own target.
+        assert!(tool["inputSchema"]["properties"].get("locator").is_none());
+        assert_eq!(tool_name_to_method("browser_fill_form"), Some("fill_form"));
+    }
+
+    #[test]
     fn browser_tool_schemas_fit_the_token_budget() {
         // Every schema an agent loads is prompt it pays for on each turn. The
         // browser tools measured 44,792 characters before the trim, most of it
@@ -448,7 +503,7 @@ mod tests {
         let size = serde_json::to_string(&browser).unwrap().len();
         // 39.5k since round 6: the locator object rides on browser_drag too, and
         // browser_find and browser_drag say what a miss and a locator drag give.
-        assert!(size <= 39_500, "browser tool schemas are {size} characters");
+        assert!(size <= 41_000, "browser tool schemas are {size} characters");
     }
 
     #[test]
@@ -474,7 +529,10 @@ mod tests {
         );
         assert!(tool["inputSchema"]["properties"].get("locator").is_some());
         assert_eq!(tool["annotations"]["readOnlyHint"], true);
-        assert_eq!(tool_name_to_method("browser_get_property"), Some("get_property"));
+        assert_eq!(
+            tool_name_to_method("browser_get_property"),
+            Some("get_property")
+        );
     }
 
     #[test]
@@ -488,8 +546,14 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "browser_close")
             .unwrap();
-        assert_eq!(close["inputSchema"]["properties"]["endSession"]["type"], "boolean");
-        assert!(close["description"].as_str().unwrap().contains("endSession"));
+        assert_eq!(
+            close["inputSchema"]["properties"]["endSession"]["type"],
+            "boolean"
+        );
+        assert!(close["description"]
+            .as_str()
+            .unwrap()
+            .contains("endSession"));
         assert!(SERVER_INSTRUCTIONS.contains("endSession: true"));
         assert!(SERVER_INSTRUCTIONS.contains("page.url"));
         assert!(BROWSER_SESSION_INSTRUCTIONS.contains("endSession: true"));
@@ -654,6 +718,7 @@ mod tests {
             ("browser_focus", "focus"),
             ("browser_check", "check"),
             ("browser_drag", "drag"),
+            ("browser_fill_form", "fill_form"),
             ("browser_key", "key"),
             ("browser_dialog", "dialog"),
         ] {
@@ -781,8 +846,14 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "browser_drag")
             .unwrap();
-        assert_eq!(drag["inputSchema"]["properties"]["locator"]["type"], "object");
+        assert_eq!(
+            drag["inputSchema"]["properties"]["locator"]["type"],
+            "object"
+        );
         assert_eq!(drag["inputSchema"]["required"], json!(["tabId"]));
-        assert!(drag["description"].as_str().unwrap().contains("pans inside that one element"));
+        assert!(drag["description"]
+            .as_str()
+            .unwrap()
+            .contains("pans inside that one element"));
     }
 }

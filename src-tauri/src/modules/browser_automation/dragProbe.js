@@ -1,4 +1,4 @@
-if (!source || !destination || source.getAttribute('data-anbo-gen') !== generation || destination.getAttribute('data-anbo-gen') !== generation) {
+if (!source || !destination) {
     return JSON.stringify({error:'stale_ref'});
 }
 if (scroll) {

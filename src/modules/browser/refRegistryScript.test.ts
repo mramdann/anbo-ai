@@ -88,11 +88,57 @@ describe("shipped isolated ref registry", () => {
     expect(target.attributes.size).toBeGreaterThan(0);
     expect(f.run("return refRegistry.resolve('g1-e1')")).toBe(target);
 
-    // The first ref the new scan registers is what retires the old ones.
+    // The first ref the new scan registers is what moves the window on. The
+    // node keeps its newest label, and the older ref still names it: a caller
+    // that found A, then found B, can still act on A.
     f.run("refRegistry.remember('g2-e1', target)");
-    expect(f.run("return refRegistry.resolve('g1-e1')")).toBeNull();
+    expect(f.run("return refRegistry.resolve('g1-e1')")).toBe(target);
     expect(f.run("return refRegistry.resolve('g2-e1')")).toBe(target);
+    expect(target.getAttribute("data-anbo-ref")).toBe("g2-e1");
     expect(() => f.run("refRegistry.begin(1)")).toThrow("stale_scan");
+  });
+  it("keeps a ref through the next eight scans and drops it after", () => {
+    const f = fixture();
+    const a = f.node();
+    const others = Array.from({ length: 9 }, () => f.node());
+    f.run("refRegistry.begin(1);refRegistry.remember('g1-e1', a)", { a, others });
+    for (let scan = 2; scan <= 9; scan++) {
+      f.run(`refRegistry.begin(${scan});refRegistry.remember('g${scan}-e1', others[${scan - 2}])`);
+      expect(f.run("return refRegistry.resolve('g1-e1')")).toBe(a);
+    }
+    // The ninth scan after it is one too many: the ref and its label go.
+    f.run("refRegistry.begin(10);refRegistry.remember('g10-e1', others[8])");
+    expect(f.run("return refRegistry.resolve('g1-e1')")).toBeNull();
+    expect(f.run("return refRegistry.reason('g1-e1')")).toBe("generation_changed");
+    expect(a.getAttribute("data-anbo-ref")).toBeNull();
+    expect(f.run("return refRegistry.resolve('g2-e1')")).toBe(others[0]);
+    // A ref from a scan that has not happened is never valid.
+    expect(f.run("return refRegistry.resolve('g11-e1')")).toBeNull();
+    expect(f.run("return refRegistry.reason('g11-e1')")).toBe("generation_changed");
+  });
+  it("still rejects a retained ref whose node left the document", () => {
+    const f = fixture();
+    const a = f.node();
+    const b = f.node();
+    f.run("refRegistry.begin(1);refRegistry.remember('g1-e1', a)", { a, b });
+    f.run("refRegistry.begin(2);refRegistry.remember('g2-e1', b)");
+    a.isConnected = false;
+    expect(f.run("return refRegistry.resolve('g1-e1')")).toBeNull();
+    expect(f.run("return refRegistry.reason('g1-e1')")).toBe("node_detached");
+  });
+  it("evicts an old label only if the node still carries it", () => {
+    const f = fixture();
+    const a = f.node();
+    f.run("refRegistry.begin(1);refRegistry.remember('g1-e1', a)", { a });
+    // Re-found under a newer ref: the node now wears that label.
+    f.run("refRegistry.begin(5);refRegistry.remember('g5-e1', a)");
+    for (let scan = 6; scan <= 10; scan++) {
+      f.run(`refRegistry.begin(${scan});refRegistry.remember('g${scan}-e1', a)`);
+    }
+    // g1 fell out of the window, but the label belongs to g10 and stays.
+    expect(f.run("return refRegistry.resolve('g1-e1')")).toBeNull();
+    expect(a.getAttribute("data-anbo-ref")).toBe("g10-e1");
+    expect(f.run("return refRegistry.resolve('g5-e1')")).toBe(a);
   });
   it("caps retained weak references at the snapshot limit", () => {
     const f = fixture();
@@ -106,6 +152,8 @@ describe("shipped isolated ref registry", () => {
     ).toThrow("ref_limit");
     f.run("refRegistry.begin(2);refRegistry.remember('g2-e1', nodes[1000])");
     expect(f.run("return refRegistry.resolve('g2-e1')")).toBe(nodes[1000]);
+    // The cap is per scan: the thousand refs of the first scan are still held.
+    expect(f.run("return refRegistry.resolve('g1-e0')")).toBe(nodes[0]);
   });
   it("does not share a registry across execution worlds", () => {
     const first = fixture();
@@ -449,10 +497,14 @@ describe("shipped isolated ref registry", () => {
     );
     target.isConnected = false;
     expect(f.run("return refRegistry.reason('g1-e1')")).toBe("node_detached");
-    // Beginning a scan is not enough to change generation; registering a ref
-    // in it is.
+    // A later scan keeps the ref inside the window, so the node is still the
+    // reason; only a scan past the window reports the generation.
     f.run("refRegistry.begin(2)");
     f.run("refRegistry.remember('g2-e1', f.node())", { f });
+    expect(f.run("return refRegistry.reason('g1-e1')")).toBe("node_detached");
+    for (let scan = 3; scan <= 10; scan++) {
+      f.run(`refRegistry.begin(${scan});refRegistry.remember('g${scan}-e1', f.node())`);
+    }
     expect(f.run("return refRegistry.reason('g1-e1')")).toBe(
       "generation_changed",
     );

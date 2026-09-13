@@ -1,12 +1,24 @@
 const refRegistry = (() => {
     const key = '__anboBrowserRefs';
     if (globalThis[key]) return globalThis[key];
+    // Refs from the last KEEP scans stay usable while their node lives: a
+    // caller that found A, then found B, can still drag A onto B. Rust keeps
+    // the same window (REF_GENERATIONS_KEPT) and refuses older refs up front.
+    const KEEP = 8;
     let generation = 0;
     // The generation a scan asked for but has not earned yet. A scan that ends
     // up registering nothing has replaced nothing, so the refs the caller is
     // still holding must outlive it.
     let pending = 0;
+    // Every retained ref by id; the id carries its scan, so one map holds the
+    // whole window. `current` counts the live scan against the cap.
     const refs = new Map();
+    let current = 0;
+    const scanOf = ref => {
+        const match = /^g(\d+)-/.exec(ref);
+        return match ? Number(match[1]) : NaN;
+    };
+    const retained = scan => Number.isFinite(scan) && scan <= generation && scan + KEEP >= generation;
     const parent = node => node.assignedSlot || node.parentElement || node.getRootNode?.().host || null;
     const identityAttributes = ['data-item-id', 'data-id', 'data-key', 'data-video-id'];
     const repeatedItem = node => {
@@ -93,24 +105,32 @@ const refRegistry = (() => {
         remember(ref, node) {
             if (!ref.startsWith('g' + pending + '-')) throw new Error('ref_limit');
             if (pending !== generation) {
-                for (const entry of refs.values()) {
-                    const old = entry.node.deref();
-                    old?.removeAttribute('data-anbo-ref');
-                    old?.removeAttribute('data-anbo-gen');
+                // A new scan retires only what falls out of the window. A node
+                // keeps its newest label, so an older ref that was re-found
+                // under a new one leaves that label alone.
+                for (const [old, entry] of refs) {
+                    if (scanOf(old) + KEEP >= pending) continue;
+                    const stale = entry.node.deref();
+                    if (stale?.getAttribute('data-anbo-ref') === old) {
+                        stale.removeAttribute('data-anbo-ref');
+                        stale.removeAttribute('data-anbo-gen');
+                    }
+                    refs.delete(old);
                 }
-                refs.clear();
                 generation = pending;
+                current = 0;
             }
-            if (refs.size >= 1000) throw new Error('ref_limit');
+            if (current >= 1000) throw new Error('ref_limit');
             const url = destination(node);
             const context = url === null ? itemContext(node) : null;
             refs.set(ref, { node: new WeakRef(node), destination: url, context,
                 reason: url === undefined ? 'destination_limit' : context === undefined ? 'context_limit' : null });
+            current += 1;
             node.setAttribute('data-anbo-ref', ref);
             node.setAttribute('data-anbo-gen', 'gen-' + generation);
         },
         resolve(ref) {
-            if (!ref.startsWith('g' + generation + '-')) return null;
+            if (!retained(scanOf(ref))) return null;
             const entry = refs.get(ref);
             const node = entry?.node.deref();
             if (!node?.isConnected || node.ownerDocument !== document || entry.reason) return null;
@@ -135,7 +155,7 @@ const refRegistry = (() => {
             return !!entry && (entry.destination != null || entry.context != null);
         },
         reason(ref) {
-            if (!ref.startsWith('g' + generation + '-')) return 'generation_changed';
+            if (!retained(scanOf(ref))) return 'generation_changed';
             const entry = refs.get(ref), node = entry?.node.deref();
             if (!node?.isConnected || node.ownerDocument !== document) return 'node_detached';
             return entry.reason || 'ref_invalid';

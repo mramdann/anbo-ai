@@ -23,8 +23,8 @@ use crate::modules::browser_automation::cdp::{
 };
 use crate::modules::browser_automation::download;
 use crate::modules::browser_automation::locator::{
-    build_find_js, LocatorMatch, LocatorPayload, LocatorQuery, PageScanState,
-    MAX_LOCATOR_MATCHES, PAGE_SCAN_STATE_JS,
+    build_find_js, LocatorMatch, LocatorPayload, LocatorQuery, PageScanState, MAX_LOCATOR_MATCHES,
+    PAGE_SCAN_STATE_JS,
 };
 use crate::modules::browser_automation::page_state::{
     input_guard_body, PageExpectation, StableMatch, TitleSource,
@@ -39,7 +39,8 @@ use crate::modules::browser_automation::registry::{
 use crate::modules::browser_automation::snapshot::{
     build_frame_snapshot_js, build_snapshot_js, format_snapshot, get_current_generation,
     get_next_generation, get_ref_frame_target, prioritize_snapshot_elements,
-    replace_ref_frame_targets, RefFrameTarget, SnapshotPayload, DEFAULT_SNAPSHOT_MAX_CHARS,
+    record_ref_frame_targets, RefFrameTarget, SnapshotPayload, DEFAULT_SNAPSHOT_MAX_CHARS,
+    REF_GENERATIONS_KEPT,
 };
 use crate::modules::browser_automation::timings::ActionTimings;
 use crate::modules::browser_automation::visibility::VISIBILITY_JS;
@@ -357,7 +358,8 @@ async fn landing(webview: &Webview, tab_id: i64) -> Value {
     if let Some(pending) = active_pending_url(tab_id) {
         page["pendingUrl"] = json!(pending);
     }
-    if let Ok((title, url)) = super::cdp::read_page_info(webview, Duration::from_millis(500)).await {
+    if let Ok((title, url)) = super::cdp::read_page_info(webview, Duration::from_millis(500)).await
+    {
         page["url"] = json!(url);
         page["title"] = json!(title.chars().take(160).collect::<String>());
     }
@@ -840,7 +842,7 @@ async fn handle_action_inner(
                 let popup_url = timings
                     .measure(
                         "popupLookup",
-                        popup_url_for_ref(&webview, target.as_ref(), &ref_id, generation),
+                        popup_url_for_ref(&webview, target.as_ref(), &ref_id),
                     )
                     .await
                     .unwrap_or(None);
@@ -880,12 +882,11 @@ async fn handle_action_inner(
                 &webview,
                 target.as_ref(),
                 &ref_id,
-                generation,
                 ActionabilityRequirement::Click,
             )
             .await?;
             let dispatch = if target.as_ref().is_some_and(|target| !target.is_main) {
-                dom_click_ref(&webview, target.as_ref(), &ref_id, generation, 2).await?;
+                dom_click_ref(&webview, target.as_ref(), &ref_id, 2).await?;
                 "dom-frame"
             } else {
                 dispatch_mouse_click(&webview, &actionable, &ref_id, 2).await?;
@@ -914,21 +915,18 @@ async fn handle_action_inner(
                 &webview,
                 target.as_ref(),
                 &ref_id,
-                generation,
                 ActionabilityRequirement::Focus,
             )
             .await?;
             let script = deep_ref_expression(
                 &ref_id,
-                &format!(
-                    r#"
-                    if (!el || el.getAttribute('data-anbo-gen') !== "gen-{generation}") {{
-                        return JSON.stringify({{ ok: false, error: 'stale_ref' }});
-                    }}
-                    el.focus({{ preventScroll: true }});
+                r#"
+                    if (!el) {
+                        return JSON.stringify({ ok: false, error: 'stale_ref' });
+                    }
+                    el.focus({ preventScroll: true });
                     const root = el.getRootNode && el.getRootNode();
-                    return JSON.stringify({{ ok: !!root && root.activeElement === el }});"#
-                ),
+                    return JSON.stringify({ ok: !!root && root.activeElement === el });"#,
             );
             let response = execute_ref_script(&webview, target.as_ref(), &script)
                 .await
@@ -962,7 +960,6 @@ async fn handle_action_inner(
                 &webview,
                 target.as_ref(),
                 &ref_id,
-                generation,
                 ActionabilityRequirement::Click,
             )
             .await?;
@@ -983,14 +980,13 @@ async fn handle_action_inner(
             let before = actionable.checked.unwrap_or(false);
             if before != requested {
                 if target.as_ref().is_some_and(|target| !target.is_main) {
-                    dom_click_ref(&webview, target.as_ref(), &ref_id, generation, 1).await?;
+                    dom_click_ref(&webview, target.as_ref(), &ref_id, 1).await?;
                 } else {
                     dispatch_mouse_click(&webview, &actionable, &ref_id, 1).await?;
                 }
             }
             let checked =
-                wait_for_checked_state(&webview, target.as_ref(), &ref_id, generation, requested)
-                    .await?;
+                wait_for_checked_state(&webview, target.as_ref(), &ref_id, requested).await?;
             Ok(json!({
                 "tabId": tab_id,
                 "ref": ref_id,
@@ -1034,7 +1030,6 @@ async fn handle_action_inner(
                 &webview,
                 source_target.as_ref(),
                 &source_ref,
-                generation,
                 ActionabilityRequirement::ClickAt(source_position),
             )
             .await?;
@@ -1045,18 +1040,11 @@ async fn handle_action_inner(
                     &webview,
                     destination_target.as_ref(),
                     &target_ref,
-                    generation,
                     ActionabilityRequirement::ClickAt(target_position),
                 )
                 .await?;
-                dispatch_dom_drag(
-                    &webview,
-                    source_target.as_ref(),
-                    &source_ref,
-                    &target_ref,
-                    generation,
-                )
-                .await?;
+                dispatch_dom_drag(&webview, source_target.as_ref(), &source_ref, &target_ref)
+                    .await?;
                 if source.draggable {
                     "dom-html5"
                 } else {
@@ -1067,7 +1055,6 @@ async fn handle_action_inner(
                     &webview,
                     &source_ref,
                     &target_ref,
-                    generation,
                     (source_position, target_position),
                 )
                 .await?;
@@ -1076,7 +1063,6 @@ async fn handle_action_inner(
                     pair,
                     &source_ref,
                     &target_ref,
-                    generation,
                     (source_position, target_position),
                 )
                 .await
@@ -1089,6 +1075,78 @@ async fn handle_action_inner(
                 "targetRef": target_ref,
                 "ok": true,
                 "dispatch": dispatch
+            }))
+        }
+
+        // Several fields, one call: each runs the same type, check or select path
+        // as its single-target tool, in order, so every guard those tools apply
+        // still applies. Measured on a five-field form the agent spent one turn
+        // per field; the comparison filled the form in a single turn.
+        "fill_form" => {
+            let tab_id = extract_tab_id(&params)?;
+            let fields = params
+                .get("fields")
+                .and_then(Value::as_array)
+                .filter(|fields| !fields.is_empty())
+                .ok_or_else(|| {
+                    (
+                        error_codes::INVALID_REQUEST.to_string(),
+                        "fields must be a non-empty array".to_string(),
+                    )
+                })?;
+            if fields.len() > MAX_FORM_FIELDS {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    format!(
+                        "fields holds {} entries; at most {MAX_FORM_FIELDS} per call",
+                        fields.len()
+                    ),
+                ));
+            }
+            let mut done: Vec<Value> = Vec::new();
+            for (index, field) in fields.iter().enumerate() {
+                let number = index + 1;
+                let (method, mut field_params) = form_field_action(field, tab_id, number)?;
+                let result = Box::pin(handle_action_inner(
+                    app,
+                    method,
+                    field_params.take(),
+                    timings,
+                    caller,
+                ))
+                .await;
+                match result {
+                    Ok(value) => done.push(json!({
+                        "field": number,
+                        "action": method,
+                        "ref": value.get("ref").cloned().unwrap_or(Value::Null),
+                        "ok": true
+                    })),
+                    Err((code, message)) => {
+                        let filled = if done.is_empty() {
+                            "none".to_string()
+                        } else {
+                            done.iter()
+                                .filter_map(|entry| entry["field"].as_u64())
+                                .map(|n| n.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        };
+                        return Err((
+                            code,
+                            format!(
+                                "field {number} of {} ({method}) failed: {message}; fields done before it: {filled}",
+                                fields.len()
+                            ),
+                        ));
+                    }
+                }
+            }
+            Ok(json!({
+                "tabId": tab_id,
+                "ok": true,
+                "filled": done.len(),
+                "fields": done
             }))
         }
 
@@ -1118,7 +1176,6 @@ async fn handle_action_inner(
                 &webview,
                 target.as_ref(),
                 &ref_id,
-                cur_gen,
                 ActionabilityRequirement::Editable,
             )
             .await?;
@@ -1127,7 +1184,7 @@ async fn handle_action_inner(
                 &ref_id,
                 &format!(
                     r#"
-                    if (!el || el.getAttribute('data-anbo-gen') !== "gen-{cur_gen}") {{
+                    if (!el) {{
                         return JSON.stringify({{ ok: false, error: "stale_ref" }});
                     }}
                     el.focus();
@@ -1204,8 +1261,7 @@ async fn handle_action_inner(
             let current_generation = get_current_generation(tab_id);
             ensure_current_ref(&ref_id, current_generation)?;
             let target = get_ref_frame_target(tab_id, &ref_id);
-            let preflight =
-                inspect_file_input(&webview, target.as_ref(), &ref_id, current_generation).await?;
+            let preflight = inspect_file_input(&webview, target.as_ref(), &ref_id).await?;
             if preflight.get("disabled").and_then(Value::as_bool) == Some(true) {
                 return Err((
                     error_codes::INVALID_REQUEST.to_string(),
@@ -1222,8 +1278,7 @@ async fn handle_action_inner(
             set_file_input_files(&webview, target.as_ref(), &ref_id, &files)
                 .await
                 .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
-            let selected =
-                inspect_file_input(&webview, target.as_ref(), &ref_id, current_generation).await?;
+            let selected = inspect_file_input(&webview, target.as_ref(), &ref_id).await?;
             let selected_names = selected
                 .get("files")
                 .and_then(Value::as_array)
@@ -1333,7 +1388,7 @@ async fn handle_action_inner(
                         let generation = get_current_generation(tab_id);
                         ensure_current_ref(ref_id, generation)?;
                         let target = get_ref_frame_target(tab_id, ref_id);
-                        let script = deep_ref_expression(ref_id, &input_guard_body(generation, expected_value));
+                        let script = deep_ref_expression(ref_id, &input_guard_body(expected_value));
                         let response = timings.measure("inputGuard", execute_ref_script(&webview, target.as_ref(), &script))
                             .await.map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
                         let decoded: String = serde_json::from_str(&response).unwrap_or(response);
@@ -1398,8 +1453,11 @@ async fn handle_action_inner(
                 result["submissionObserved"] = json!(observation.submit_event);
                 result["navigationObserved"] = json!(observation.navigation);
                 result["observationPerformed"] = json!(should_observe);
-                result["observationWindowMs"] =
-                    json!(if should_observe { observation_timeout_ms } else { 0 });
+                result["observationWindowMs"] = json!(if should_observe {
+                    observation_timeout_ms
+                } else {
+                    0
+                });
             }
             Ok(result)
         }
@@ -1577,14 +1635,13 @@ async fn handle_action_inner(
                 &webview,
                 target.as_ref(),
                 &ref_id,
-                generation,
                 ActionabilityRequirement::Click,
             )
             .await?;
             install_dialog_capture(&webview, target.as_ref(), action == "accept", prompt_text)
                 .await?;
             let trigger_result = if target.as_ref().is_some_and(|target| !target.is_main) {
-                dom_click_ref(&webview, target.as_ref(), &ref_id, generation, 1)
+                dom_click_ref(&webview, target.as_ref(), &ref_id, 1)
                     .await
                     .map(|_| "dom-frame")
             } else {
@@ -1919,7 +1976,6 @@ async fn handle_action_inner(
                 &webview,
                 target.as_ref(),
                 &ref_id,
-                cur_gen,
                 ActionabilityRequirement::Focus,
             )
             .await?;
@@ -1928,7 +1984,7 @@ async fn handle_action_inner(
                 &ref_id,
                 &format!(
                     r#"
-                    if (!el || el.getAttribute('data-anbo-gen') !== "gen-{cur_gen}") {{
+                    if (!el) {{
                         return JSON.stringify({{ ok: false, error: "stale_ref" }});
                     }}
                     if (el.tagName !== 'SELECT') return JSON.stringify({{ ok: false, error: "not_a_select" }});
@@ -1993,7 +2049,6 @@ async fn handle_action_inner(
                 &webview,
                 target.as_ref(),
                 &ref_id,
-                cur_gen,
                 ActionabilityRequirement::Hover(position),
             )
             .await?;
@@ -2007,7 +2062,7 @@ async fn handle_action_inner(
                 &ref_id,
                 &format!(
                     r#"
-                    if (!el || el.getAttribute('data-anbo-gen') !== "gen-{cur_gen}") {{
+                    if (!el) {{
                         return JSON.stringify({{ ok: false, error: "stale_ref" }});
                     }}
                     if (!{main_document}) {{
@@ -2063,15 +2118,13 @@ async fn handle_action_inner(
             let target = get_ref_frame_target(tab_id, &ref_id);
             let js = deep_ref_expression(
                 &ref_id,
-                &format!(
-                    r#"
-                    if (!el || el.getAttribute('data-anbo-gen') !== "gen-{cur_gen}") {{
-                        return JSON.stringify({{ ok: false, error: "stale_ref" }});
-                    }}
-                    el.scrollIntoView({{ block: 'center', inline: 'center' }});
+                r#"
+                    if (!el) {
+                        return JSON.stringify({ ok: false, error: "stale_ref" });
+                    }
+                    el.scrollIntoView({ block: 'center', inline: 'center' });
                     const r = el.getBoundingClientRect();
-                    return JSON.stringify({{ ok: true, rect: {{ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }} }});"#
-                ),
+                    return JSON.stringify({ ok: true, rect: { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) } });"#,
             );
             let res = execute_ref_script(&webview, target.as_ref(), &js)
                 .await
@@ -2141,12 +2194,11 @@ async fn handle_action_inner(
                     return JSON.stringify({{ ok: true, text: out, source: source, sourceNote: sourceNote, visible: isRenderedElement(el), truncated: truncated, totalLength: text.length, totalLengthIsLowerBound: readable.sourceTruncated }});"#
             );
             let js = if let Some(ref_id) = ref_id.as_deref() {
-                let generation = get_current_generation(tab_id);
                 deep_ref_expression(
                     ref_id,
                     &format!(
                         r#"
-                        if (!el || el.getAttribute('data-anbo-gen') !== "gen-{generation}") {{
+                        if (!el) {{
                             return JSON.stringify({{ ok: false, error: "stale_ref", reason: refRegistry.reason(refId) }});
                         }}
                         {text_body}"#
@@ -2238,7 +2290,7 @@ async fn handle_action_inner(
                 &ref_id,
                 &format!(
                     r#"
-                    if (!el || el.getAttribute('data-anbo-gen') !== "gen-{generation}") {{
+                    if (!el) {{
                         return JSON.stringify({{ ok: false, error: "stale_ref", reason: refRegistry.reason(refId) }});
                     }}
                     const wanted = {wanted};
@@ -2368,18 +2420,21 @@ async fn handle_action_inner(
                         entry
                             .get("level")
                             .and_then(Value::as_str)
-                            .is_some_and(|level| levels.iter().any(|w| w == &level.to_ascii_lowercase()))
+                            .is_some_and(|level| {
+                                levels.iter().any(|w| w == &level.to_ascii_lowercase())
+                            })
                     })
                 })
                 .filter(|entry| {
-                    since.is_none_or(|from| {
-                        entry.get("ts").and_then(as_count).unwrap_or(0) >= from
-                    })
+                    since.is_none_or(|from| entry.get("ts").and_then(as_count).unwrap_or(0) >= from)
                 })
                 .map(|mut entry| {
                     if let (Some(max), Some(text)) = (
                         per_message,
-                        entry.get("text").and_then(Value::as_str).map(str::to_string),
+                        entry
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
                     ) {
                         if text.chars().count() > max {
                             let short: String = text.chars().take(max).collect();
@@ -2542,11 +2597,10 @@ async fn inspect_file_input(
     webview: &Webview,
     target: Option<&RefFrameTarget>,
     ref_id: &str,
-    current_generation: u64,
 ) -> Result<Value, (String, String)> {
     let body = format!(
         r#"
-            if (!el || el.getAttribute('data-anbo-gen') !== "gen-{current_generation}") {{
+            if (!el) {{
                 return JSON.stringify({{ ok: false, error: "stale_ref" }});
             }}
             if (!(el instanceof HTMLInputElement) || String(el.type).toLowerCase() !== 'file') {{
@@ -2962,10 +3016,7 @@ async fn page_scan_state(webview: &Webview) -> Option<PageScanState> {
     serde_json::from_str(&decoded).ok()
 }
 
-fn describe_ambiguity(
-    error: (String, String),
-    matches: &[LocatorMatch],
-) -> (String, String) {
+fn describe_ambiguity(error: (String, String), matches: &[LocatorMatch]) -> (String, String) {
     if error.0 != error_codes::AMBIGUOUS_TARGET || matches.is_empty() {
         return error;
     }
@@ -3402,7 +3453,7 @@ async fn collect_locator_matches(
                 )
             })
             .collect();
-        replace_ref_frame_targets(tab_id, targets);
+        record_ref_frame_targets(tab_id, targets);
         return Ok(CollectedLocatorMatches {
             matches: root.matches,
             scanned: root.scanned,
@@ -3519,7 +3570,7 @@ async fn collect_locator_matches(
             break;
         }
     }
-    replace_ref_frame_targets(tab_id, targets);
+    record_ref_frame_targets(tab_id, targets);
     Ok(CollectedLocatorMatches {
         matches,
         scanned,
@@ -3613,7 +3664,7 @@ async fn collect_snapshot_payload(
         .filter_map(|element| element.ref_id.as_deref())
         .collect::<HashSet<_>>();
     targets.retain(|ref_id, _| retained.contains(ref_id.as_str()));
-    replace_ref_frame_targets(tab_id, targets);
+    record_ref_frame_targets(tab_id, targets);
     Ok((payload, included_frames, skipped_frames))
 }
 
@@ -3677,12 +3728,7 @@ fn extract_fraction_position(
     ))
 }
 
-fn actionable_probe_script(
-    ref_id: &str,
-    generation: u64,
-    scroll: bool,
-    position: Option<(f64, f64)>,
-) -> String {
+fn actionable_probe_script(ref_id: &str, scroll: bool, position: Option<(f64, f64)>) -> String {
     let action_rect = include_str!("actionRect.js");
     let position = position
         .map(|(x, y)| json!({"x": x, "y": y}))
@@ -3691,7 +3737,7 @@ fn actionable_probe_script(
         ref_id,
         &format!(
             r#"
-            if (!el || el.getAttribute('data-anbo-gen') !== "gen-{generation}") {{
+            if (!el) {{
                 return JSON.stringify({{ ok: false, error: 'stale_ref', reason: refRegistry.reason(refId) }});
             }}
             {action_rect}
@@ -3735,7 +3781,6 @@ async fn read_drag_pair(
     webview: &Webview,
     source_ref: &str,
     target_ref: &str,
-    generation: u64,
     scroll: bool,
     positions: DragPositions,
 ) -> Result<[f64; 4], String> {
@@ -3745,7 +3790,7 @@ async fn read_drag_pair(
     let source_position = drag_position_literal(positions.0);
     let target_position = drag_position_literal(positions.1);
     let script = format!(
-        "(() => {{ const source = {source}; const destination = {destination}; const generation = 'gen-{generation}'; const scroll = {scroll}; const sourcePosition = {source_position}; const targetPosition = {target_position}; {VISIBILITY_JS} {probe} }})()"
+        "(() => {{ const source = {source}; const destination = {destination}; const scroll = {scroll}; const sourcePosition = {source_position}; const targetPosition = {target_position}; {VISIBILITY_JS} {probe} }})()"
     );
     let response = ref_context::execute_main(webview, &script).await?;
     let decoded: String = serde_json::from_str(&response).unwrap_or(response);
@@ -3765,16 +3810,13 @@ async fn wait_for_drag_pair(
     webview: &Webview,
     source_ref: &str,
     target_ref: &str,
-    generation: u64,
     positions: DragPositions,
 ) -> Result<[f64; 4], (String, String)> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut previous = None;
     let mut scroll = true;
     loop {
-        let reason =
-            match read_drag_pair(webview, source_ref, target_ref, generation, scroll, positions)
-                .await
+        let reason = match read_drag_pair(webview, source_ref, target_ref, scroll, positions).await
         {
             Ok(points) => {
                 if previous.is_some_and(|before| drag_points_stable(before, points)) {
@@ -3809,7 +3851,6 @@ async fn wait_for_actionable_ref(
     webview: &Webview,
     target: Option<&RefFrameTarget>,
     ref_id: &str,
-    generation: u64,
     requirement: ActionabilityRequirement,
 ) -> Result<ActionableElement, (String, String)> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -3819,8 +3860,8 @@ async fn wait_for_actionable_ref(
         }
         _ => None,
     };
-    let initial_script = actionable_probe_script(ref_id, generation, true, position);
-    let settled_script = actionable_probe_script(ref_id, generation, false, position);
+    let initial_script = actionable_probe_script(ref_id, true, position);
+    let settled_script = actionable_probe_script(ref_id, false, position);
     let mut script = &initial_script;
     let mut previous_rect: Option<(f64, f64, f64, f64)> = None;
     loop {
@@ -3935,7 +3976,6 @@ async fn dom_click_ref(
     webview: &Webview,
     target: Option<&RefFrameTarget>,
     ref_id: &str,
-    generation: u64,
     count: u8,
 ) -> Result<(), (String, String)> {
     super::activity::stage("frame");
@@ -3951,7 +3991,7 @@ async fn dom_click_ref(
         ref_id,
         &format!(
             r#"
-            if (!el || el.getAttribute('data-anbo-gen') !== "gen-{generation}") {{
+            if (!el) {{
                 return JSON.stringify({{ ok: false, error: 'stale_ref' }});
             }}
             el.focus({{ preventScroll: true }});
@@ -3998,19 +4038,16 @@ async fn wait_for_checked_state(
     webview: &Webview,
     target: Option<&RefFrameTarget>,
     ref_id: &str,
-    generation: u64,
     expected: bool,
 ) -> Result<bool, (String, String)> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     let script = deep_ref_expression(
         ref_id,
-        &format!(
-            r#"
-            if (!el || el.getAttribute('data-anbo-gen') !== "gen-{generation}") {{
-                return JSON.stringify({{ ok: false, error: 'stale_ref' }});
-            }}
-            return JSON.stringify({{ ok: true, checked: el.checked === true }});"#
-        ),
+        r#"
+            if (!el) {
+                return JSON.stringify({ ok: false, error: 'stale_ref' });
+            }
+            return JSON.stringify({ ok: true, checked: el.checked === true });"#,
     );
     loop {
         let response = execute_ref_script(webview, target, &script)
@@ -4121,17 +4158,14 @@ async fn popup_url_for_ref(
     webview: &Webview,
     target: Option<&RefFrameTarget>,
     ref_id: &str,
-    generation: u64,
 ) -> Result<Option<String>, String> {
     let script = deep_ref_expression(
         ref_id,
-        &format!(
-            r#"
-            if (!el || el.getAttribute('data-anbo-gen') !== "gen-{generation}") return null;
+        r#"
+            if (!el) return null;
             const link = el.closest ? el.closest('a[href]') : null;
             if (!link || String(link.target || '').toLowerCase() !== '_blank') return null;
-            return String(link.href || '');"#
-        ),
+            return String(link.href || '');"#,
     );
     let response = execute_ref_script(webview, target, &script).await?;
     let popup_url = serde_json::from_str::<Option<String>>(&response).unwrap_or(None);
@@ -4176,18 +4210,15 @@ async fn dispatch_dom_drag(
     target: Option<&RefFrameTarget>,
     source_ref: &str,
     destination_ref: &str,
-    generation: u64,
 ) -> Result<(), (String, String)> {
     let source_json = serde_json::to_string(source_ref).unwrap();
     let destination_json = serde_json::to_string(destination_ref).unwrap();
     let script = format!(
         r#"(function() {{
-            const generation = "gen-{generation}";
             {REF_REGISTRY_JS}
             const source = refRegistry.resolve({source_json});
             const destination = refRegistry.resolve({destination_json});
-            if (!source || !destination || source.getAttribute('data-anbo-gen') !== generation ||
-                destination.getAttribute('data-anbo-gen') !== generation) {{
+            if (!source || !destination) {{
                 return JSON.stringify({{ ok: false, error: 'stale_ref' }});
             }}
             const dataTransfer = new DataTransfer();
@@ -4245,7 +4276,6 @@ async fn click_ref_profiled(
                 webview,
                 target.as_ref(),
                 ref_id,
-                current_generation,
                 ActionabilityRequirement::Click,
             ),
         )
@@ -4254,7 +4284,7 @@ async fn click_ref_profiled(
         timings
             .measure(
                 "frameClick",
-                dom_click_ref(webview, target.as_ref(), ref_id, current_generation, 1),
+                dom_click_ref(webview, target.as_ref(), ref_id, 1),
             )
             .await?;
         return Ok("dom-frame");
@@ -4540,12 +4570,12 @@ fn glob_matches(pattern: &str, value: &str) -> bool {
     !ends_anchored || value.ends_with(parts.last().copied().unwrap_or_default())
 }
 
-fn build_ref_state_js(ref_id: &str, generation: u64, state: &str) -> String {
+fn build_ref_state_js(ref_id: &str, state: &str) -> String {
     deep_ref_expression(
         ref_id,
         &format!(
             r#"
-            const current = el && el.getAttribute('data-anbo-gen') === "gen-{generation}" ? el : null;
+            const current = el || null;
             if ({state} === 'detached') return !current || !current.isConnected;
             {VISIBILITY_JS}
             if ({state} === 'hidden') return !isRenderedElement(current);
@@ -4609,7 +4639,7 @@ async fn wait_condition_matches(
             let generation = get_current_generation(tab_id);
             ensure_current_ref(ref_id, generation)?;
             let target = get_ref_frame_target(tab_id, ref_id);
-            let script = build_ref_state_js(ref_id, generation, state);
+            let script = build_ref_state_js(ref_id, state);
             let result = execute_ref_script(webview, target.as_ref(), &script)
                 .await
                 .unwrap_or_default();
@@ -4958,7 +4988,6 @@ async fn dispatch_mouse_drag(
     pair: [f64; 4],
     source_ref: &str,
     target_ref: &str,
-    generation: u64,
     positions: DragPositions,
 ) -> Result<(), String> {
     let [source_x, source_y, target_x, target_y] = pair;
@@ -4971,8 +5000,7 @@ async fn dispatch_mouse_drag(
     .await?;
     let start = mouse_event_params("mouseMoved", source_x, source_y, false, 0).to_string();
     call_devtools_with_retry(webview, "Input.dispatchMouseEvent", &start, 2).await?;
-    let current =
-        read_drag_pair(webview, source_ref, target_ref, generation, false, positions).await?;
+    let current = read_drag_pair(webview, source_ref, target_ref, false, positions).await?;
     if !drag_points_stable(pair, current) {
         return Err("drag geometry changed before press; no mouse button was pressed".into());
     }
@@ -5585,6 +5613,50 @@ fn extract_named_ref(params: &Value, field: &str) -> Result<String, (String, Str
     Ok(ref_id.to_string())
 }
 
+/// Fields per browser_fill_form call.
+const MAX_FORM_FIELDS: usize = 20;
+
+/// One form field becomes the single-target action it stands for: text types,
+/// checked checks, option selects. The target is the field's own ref or
+/// locator, and exactly one value kind is allowed.
+fn form_field_action(
+    field: &Value,
+    tab_id: i64,
+    number: usize,
+) -> Result<(&'static str, Value), (String, String)> {
+    let invalid = |message: String| (error_codes::INVALID_REQUEST.to_string(), message);
+    let object = field
+        .as_object()
+        .ok_or_else(|| invalid(format!("field {number} is not an object")))?;
+    let text = object.get("text").filter(|value| value.is_string());
+    let checked = object.get("checked").filter(|value| value.is_boolean());
+    let option = object.get("option").filter(|value| value.is_string());
+    let (method, mut params) = match (text, checked, option) {
+        (Some(text), None, None) => ("type_text", json!({ "tabId": tab_id, "text": text })),
+        (None, Some(checked), None) => ("check", json!({ "tabId": tab_id, "checked": checked })),
+        (None, None, Some(option)) => (
+            "select_option",
+            json!({ "tabId": tab_id, "value": option }),
+        ),
+        _ => {
+            return Err(invalid(format!(
+                "field {number}: give exactly one of text (string), checked (boolean) or option (string)"
+            )))
+        }
+    };
+    for key in ["ref", "locator"] {
+        if let Some(value) = object.get(key) {
+            params[key] = value.clone();
+        }
+    }
+    if params.get("ref").is_none() && params.get("locator").is_none() {
+        return Err(invalid(format!(
+            "field {number}: name the target with ref or locator"
+        )));
+    }
+    Ok((method, params))
+}
+
 fn parse_ref_generation(ref_id: &str) -> Result<u64, ()> {
     let rest = ref_id.strip_prefix('g').ok_or(())?;
     let (generation, suffix) = rest.split_once('-').ok_or(())?;
@@ -5624,12 +5696,24 @@ fn invalid_ref_error() -> (String, String) {
     )
 }
 
+/// A ref is usable while its scan is inside the retained window; whether the
+/// node itself is still there is the page registry's call. Before this, any
+/// find retired every earlier ref, so find A, find B, drag A onto B always
+/// failed on A.
 fn ensure_current_ref(ref_id: &str, current_generation: u64) -> Result<(), (String, String)> {
     let generation = parse_ref_generation(ref_id).map_err(|_| invalid_ref_error())?;
-    if generation != current_generation {
+    if generation > current_generation {
         return Err((
             error_codes::STALE_REF.to_string(),
             format!("element ref '{ref_id}' is stale or no longer valid"),
+        ));
+    }
+    if generation + REF_GENERATIONS_KEPT < current_generation {
+        return Err((
+            error_codes::STALE_REF.to_string(),
+            format!(
+                "element ref '{ref_id}' is from scan {generation}; only the last {REF_GENERATIONS_KEPT} finds or snapshots are kept (this tab is at {current_generation}), find it again"
+            ),
         ));
     }
     Ok(())
@@ -5638,6 +5722,60 @@ fn ensure_current_ref(ref_id: &str, current_generation: u64) -> Result<(), (Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_ref_stays_usable_for_the_kept_scans_and_expires_after() {
+        assert!(ensure_current_ref("g3-e1", 3).is_ok());
+        assert!(ensure_current_ref("g3-e1", 3 + REF_GENERATIONS_KEPT).is_ok());
+        assert!(ensure_current_ref("g3-f1-e2", 3 + REF_GENERATIONS_KEPT).is_ok());
+        let expired = ensure_current_ref("g3-e1", 4 + REF_GENERATIONS_KEPT).unwrap_err();
+        assert_eq!(expired.0, error_codes::STALE_REF);
+        assert!(expired.1.contains("find it again"), "{}", expired.1);
+        // A ref from a scan that has not happened is never valid.
+        assert_eq!(
+            ensure_current_ref("g5-e1", 4).unwrap_err().0,
+            error_codes::STALE_REF
+        );
+        // The page registry must keep the same window.
+        assert!(
+            REF_REGISTRY_JS.contains(&format!("const KEEP = {REF_GENERATIONS_KEPT};")),
+            "refRegistry.js KEEP differs from REF_GENERATIONS_KEPT"
+        );
+    }
+
+    #[test]
+    fn a_form_field_maps_to_the_single_target_action_it_stands_for() {
+        let (method, params) = form_field_action(
+            &json!({ "locator": { "by": "css", "value": "#firstName" }, "text": "Budi" }),
+            7,
+            1,
+        )
+        .unwrap();
+        assert_eq!(method, "type_text");
+        assert_eq!(params["tabId"], json!(7));
+        assert_eq!(params["text"], json!("Budi"));
+        assert_eq!(params["locator"]["value"], json!("#firstName"));
+        let (method, params) =
+            form_field_action(&json!({ "ref": "g2-e4", "checked": true }), 7, 2).unwrap();
+        assert_eq!(method, "check");
+        assert_eq!(params["ref"], json!("g2-e4"));
+        assert_eq!(params["checked"], json!(true));
+        let (method, params) =
+            form_field_action(&json!({ "ref": "g2-e5", "option": "Yes" }), 7, 3).unwrap();
+        assert_eq!(method, "select_option");
+        assert_eq!(params["value"], json!("Yes"));
+        // Exactly one value kind, and a target, or the field is refused up front.
+        for field in [
+            json!({ "ref": "g2-e4" }),
+            json!({ "ref": "g2-e4", "text": "a", "checked": true }),
+            json!({ "text": "a" }),
+            json!("not an object"),
+        ] {
+            let (code, message) = form_field_action(&field, 7, 4).unwrap_err();
+            assert_eq!(code, error_codes::INVALID_REQUEST);
+            assert!(message.starts_with("field 4"), "{message}");
+        }
+    }
 
     #[test]
     fn ref_failure_diagnostics_allow_only_known_reasons() {
@@ -5704,11 +5842,14 @@ mod tests {
     }
 
     #[test]
-    fn refs_are_scoped_to_the_current_snapshot_generation() {
+    fn refs_are_refused_only_outside_the_retained_window() {
         assert!(ensure_current_ref("g2-e1", 2).is_ok());
         assert!(ensure_current_ref("g2-f1-e1", 2).is_ok());
-
-        let error = ensure_current_ref("g1-e1", 2).unwrap_err();
+        // An older ref stays usable while the window keeps it...
+        assert!(ensure_current_ref("g1-e1", 2).is_ok());
+        assert!(ensure_current_ref("g1-e1", 1 + REF_GENERATIONS_KEPT).is_ok());
+        // ...and is refused once the window has moved on.
+        let error = ensure_current_ref("g1-e1", 2 + REF_GENERATIONS_KEPT).unwrap_err();
         assert_eq!(error.0, error_codes::STALE_REF);
         assert!(error.1.contains("g1-e1"));
     }
@@ -5835,13 +5976,12 @@ mod tests {
         assert!(described.1.contains("<a> \"Manufacturers\" at 120,400"));
         // A nameless candidate falls back to its text, and being out of sight
         // is itself the thing that tells them apart.
-        assert!(described.1.contains("<button> \"fallback text\" at 640,400, hidden"));
+        assert!(described
+            .1
+            .contains("<button> \"fallback text\" at 640,400, hidden"));
 
         // Every other failure is passed through untouched.
-        let other = (
-            error_codes::TIMEOUT.to_string(),
-            "timed out".to_string(),
-        );
+        let other = (error_codes::TIMEOUT.to_string(), "timed out".to_string());
         assert_eq!(
             describe_ambiguity(other.clone(), &[candidate("a", "x", 1.0, true)]),
             other
@@ -5875,7 +6015,9 @@ mod tests {
         // An element behind a collapsed menu is not an absence, and the caller
         // is told the one thing that would reach it.
         let hidden = find_timeout(&locator, 800, 3, None, Some(&scan(2, vec![])), 0);
-        assert!(hidden.1.contains("2 element(s) matched but are not rendered"));
+        assert!(hidden
+            .1
+            .contains("2 element(s) matched but are not rendered"));
         assert!(hidden.1.contains("includeHidden=true"));
         assert!(!hidden.1.contains("confirmed absence"));
 
@@ -5927,7 +6069,7 @@ mod tests {
         );
         assert!(cut.1.contains("cut short by the deadline"));
         assert!(!cut.1.contains("confirmed absence"));
-    
+
         // A wait spent on a page that never moved says so, because "keep
         // retrying" is the wrong advice when re-reading cannot help.
         let quiet = find_timeout(&locator, 800, 1, None, Some(&scan(0, vec![])), 7);
@@ -6155,13 +6297,13 @@ mod tests {
     #[test]
     fn hover_probe_checks_requested_position_during_initial_and_settled_sampling() {
         for scroll in [true, false] {
-            let script = actionable_probe_script("g1-e1", 1, scroll, Some((0.6, 0.5)));
+            let script = actionable_probe_script("g1-e1", scroll, Some((0.6, 0.5)));
             assert!(script.contains(&format!(
                 "prepareActionPoint(el, {scroll}, {{\"x\":0.6,\"y\":0.5}})"
             )));
             assert!(script.contains("receivesActionPointer(el, point)"));
         }
-        assert!(actionable_probe_script("g1-e1", 1, false, None)
+        assert!(actionable_probe_script("g1-e1", false, None)
             .contains("prepareActionPoint(el, false, null)"));
     }
 
@@ -6278,11 +6420,22 @@ mod tests {
         // A hidden match or a near-name miss already carries its own advice;
         // stacking the list on top would bury it.
         let hidden = find_timeout(&locator, 1_900, 2, None, Some(&with(2, vec![])), 3);
-        assert!(!hidden.1.contains("interactive elements seen"), "{}", hidden.1);
+        assert!(
+            !hidden.1.contains("interactive elements seen"),
+            "{}",
+            hidden.1
+        );
         let near = find_timeout(&locator, 1_900, 2, None, Some(&with(0, vec!["Search"])), 3);
         assert!(!near.1.contains("interactive elements seen"), "{}", near.1);
         // A scan cut off by the deadline proves nothing, so it offers nothing.
-        let cut = find_timeout(&locator, 1_900, 2, Some("deadline"), Some(&with(0, vec![])), 0);
+        let cut = find_timeout(
+            &locator,
+            1_900,
+            2,
+            Some("deadline"),
+            Some(&with(0, vec![])),
+            0,
+        );
         assert!(!cut.1.contains("interactive elements seen"), "{}", cut.1);
     }
 
@@ -6290,7 +6443,9 @@ mod tests {
     fn a_css_miss_names_the_nearest_selector_that_matches() {
         // Measured: every canvas miss on Maps and TradingView was followed by
         // find(css:canvas). The reply that reports the miss now says so.
-        let locator = extract_locator(&json!({"by":"css", "value":"table.chart-markup-table.pane canvas"})).unwrap();
+        let locator =
+            extract_locator(&json!({"by":"css", "value":"table.chart-markup-table.pane canvas"}))
+                .unwrap();
         let scan = |nearest: Option<super::super::locator::NearestCss>| CollectedLocatorMatches {
             matches: vec![],
             scanned: 3_058,
@@ -6321,7 +6476,20 @@ mod tests {
             absent.1
         );
         // Nothing to offer, nothing said; a scan cut short offers nothing either.
-        assert!(!find_timeout(&locator, 1_900, 2, None, Some(&scan(None)), 3).1.contains("nearest css match"));
-        assert!(!find_timeout(&locator, 1_900, 2, Some("deadline"), Some(&scan(Some(near))), 0).1.contains("nearest css match"));
+        assert!(
+            !find_timeout(&locator, 1_900, 2, None, Some(&scan(None)), 3)
+                .1
+                .contains("nearest css match")
+        );
+        assert!(!find_timeout(
+            &locator,
+            1_900,
+            2,
+            Some("deadline"),
+            Some(&scan(Some(near))),
+            0
+        )
+        .1
+        .contains("nearest css match"));
     }
 }

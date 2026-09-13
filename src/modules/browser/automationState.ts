@@ -128,6 +128,7 @@ const ACTIONS: Record<string, string> = {
   wait: "Waiting for the page",
   screenshot: "Capturing",
   check: "Changing selection",
+  fill_form: "Filling a form",
   select_option: "Selecting",
   focus: "Focusing",
   upload: "Attaching files",
