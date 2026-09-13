@@ -20,20 +20,18 @@ Anbo has open: use the root you were launched in.
 
 **A browser task.** `browser_open {url, workspace}` returns a `tabId` and the
 `controlId` of your session, which opens itself on your first browser call.
-Find a target with `browser_find {tabId, by: "role", value: "button", name:
+Reuse a live ref, or act/read directly with a known unique `locator`, e.g.
+`browser_type {tabId, locator: {by: "label", value: "Email", exact: true},
+text: "person@example.test"}`. Do not find before every action. To discover
+or disambiguate, use `browser_find {tabId, by: "role", value: "button", name:
 "Search"}` (also `text`, `label`, `placeholder`, `testId`, `css`; implicit
 roles include heading, searchbox, textbox, combobox, dialog, list, table and
 landmarks), or read the page with `browser_snapshot` (viewport text first, then
 interactive elements, paged with `offset`). Both return refs like `g3-e12`; a ref
 stays valid while its element is on the page, through the next eight finds or
 snapshots, so find A, find B, drag A onto B just works. `stale_ref` means the
-element is gone or the ref is older than that: find it again. Act with `browser_click`,
-`browser_type`, `browser_press`, `browser_key`, `browser_hover`, `browser_drag`,
-`browser_select_option`, `browser_check`, `browser_scroll`; single-target actions
-also take `locator` instead of `ref`. A form is one call: `browser_fill_form
-{tabId, fields: [{locator, text}, {locator, checked: true}, {ref, option}]}`
-runs type, check or select per field in order and stops at the first failure,
-naming the fields already done; submit separately with `browser_click`. Every action reply carries `page`
+element is gone or the ref is older than that: find it again. Single-target
+actions and reads take either `ref` or `locator`. Navigation-shaped replies carry `page`
 (`url`, `title`, `loading`), so you never need a separate URL read after a
 click or a key. Read results with `browser_get_text` (a ref, or the body) or
 `browser_get_property` for live state such as `paused`, `currentTime`,
@@ -48,7 +46,11 @@ else to end.
 **Waiting.** Navigation is asynchronous: `browser_navigate`, `browser_reload`
 and `browser_back` return at once. Put `waitFor: {url, title, text, timeout}`
 on click, press or wait to verify the state you expect; `text` is a
-case-insensitive substring of the visible page text, `url` a glob. A reply of
+case-insensitive substring of the visible page text, `url` a glob. `title`
+matches exactly by default; `*` is literal. For a changing title suffix use
+`waitFor: {title: "Report", titleMatch: "prefix"}` without a wildcard. The
+prefix ignores case and whitespace; the existing stability window still applies.
+A reply of
 `matched: true, stable: false` means the condition held but the page kept
 changing (a live price, a ticker, an advert): treat it as matched. A timed-out
 postcondition never repeats the action, so inspect the page before retrying
@@ -58,9 +60,14 @@ instead of resubmitting. `browser_wait` also takes `locator` + `state`
 **Reading pages well.** Use names in the page's own language; after a failed
 lookup, `browser_find` by text or a snapshot shows the real label. Bound your
 retries and report a blocker rather than searching for the same absent label
-again. A `confirmed absence` can come back well before your timeout once the
-page has settled and stopped changing: treat it as final, not a wait cut
-short. It also lists the interactive elements the scan saw, by role and name:
+again. Prefer role plus accessible name or label using the page's visible
+wording. Use CSS/testId only when observed, not guessed internal attributes.
+Reuse a valid ref; a known unique target can go straight into an action or
+read's `locator`. If several elements match, inspect them with find and pick
+the intended ref; do not bypass ambiguity by blindly taking the first.
+A `confirmed absence`
+reports the latest complete scan after settling, not a prediction that a late
+render cannot add the target. It also lists controls by role and name:
 act on one of them with `locator` instead of asking for a snapshot. A css miss
 names the nearest simpler selector that does match, with counts, so the next
 call can use it rather than guess.
@@ -80,6 +87,11 @@ Uploads accept paths inside the selected workspace only. Never use another
 workspace's files, cookies or sessions as test data.
 
 ## Browser details
+
+`browser_fill_form {tabId, fields: [{locator, text}, {locator, checked: true},
+{ref, option}]}` runs type, check or select per field in order. It stops at the
+first failure and names the fields already done; submit separately with
+`browser_click` or `browser_press`.
 
 Refs are generation-scoped. A reused link whose resolved URL changes also
 returns `stale_ref`, including refs inside that link, as do controls in

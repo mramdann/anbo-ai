@@ -23,8 +23,8 @@ use crate::modules::browser_automation::cdp::{
 };
 use crate::modules::browser_automation::download;
 use crate::modules::browser_automation::locator::{
-    build_find_js, LocatorMatch, LocatorPayload, LocatorQuery, PageScanState, MAX_LOCATOR_MATCHES,
-    PAGE_SCAN_STATE_JS,
+    build_find_js, LocatorMatch, LocatorPayload, LocatorQuery, PageScanState, MAX_CACHED_SCAN_AGE,
+    MAX_LOCATOR_MATCHES, PAGE_SCAN_STATE_JS,
 };
 use crate::modules::browser_automation::page_state::{
     input_guard_body, PageExpectation, StableMatch, TitleSource,
@@ -692,11 +692,10 @@ async fn handle_action_inner(
             let mut empty_scans = 0;
             let mut last_empty_scan = None;
             let mut scanned_state: Option<PageScanState> = None;
+            let mut scanned_at = tokio::time::Instant::now();
             let mut quiet_waits = 0usize;
             let mut backoff_ms = LOCATOR_RETRY_MS;
-            // When a full scan first proved the element absent. A confirmed
-            // absence on a DOM that then stays quiet cannot turn into a match,
-            // so the lookup need not run all the way to the deadline.
+            // Early absence requires another complete scan after settling.
             let mut absent_since: Option<tokio::time::Instant> = None;
             loop {
                 let now = tokio::time::Instant::now();
@@ -710,63 +709,36 @@ async fn handle_action_inner(
                         quiet_waits,
                     ));
                 }
-                // Walking the document again is only worth its cost if the
-                // document could have changed. Asking is a few microseconds of
-                // page time; the walk it replaces is tens of milliseconds.
+                let current_state = page_scan_state(&webview).await;
                 if let Some(previous) = &scanned_state {
-                    if let Some(current) = page_scan_state(&webview).await {
-                        // A proven absence whose DOM has not moved since can
-                        // only gain the element through a mutation this probe
-                        // would have caught. Once it has held past the settle
-                        // window on a page that is not loading, stop early
-                        // rather than re-walk to the deadline. A late render
-                        // mutates the DOM, which clears the clock below, so it
-                        // is never cut short.
-                        if let Some(since) = absent_since {
-                            if previous.absence_stable(&current) {
-                                if active_loading(tab_id) != Some(true)
-                                    && now.saturating_duration_since(since) >= ABSENCE_SETTLE
-                                {
-                                    let elapsed = timeout_ms.saturating_sub(
-                                        deadline.saturating_duration_since(now).as_millis() as u64,
-                                    );
-                                    return Err(find_timeout(
-                                        &locator,
-                                        elapsed,
-                                        empty_scans,
-                                        None,
-                                        last_empty_scan.as_ref(),
-                                        quiet_waits.max(1),
-                                    ));
-                                }
-                                // Quiet but not settled yet: wait it out rather
-                                // than re-walk a DOM that has not changed.
-                                quiet_waits += 1;
-                                backoff_ms = (backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
-                                tokio::time::sleep_until(
-                                    (now + Duration::from_millis(backoff_ms)).min(deadline),
-                                )
-                                .await;
-                                continue;
-                            }
-                            // The DOM moved; whatever the earlier scan proved
-                            // absent may be there now, so look again.
+                    if let Some(current) = &current_state {
+                        if !previous.same_revision(current) {
                             absent_since = None;
                         }
-                        if previous.still_matches(&current) {
+                        let settled = absent_since.is_some_and(|since| {
+                            now.saturating_duration_since(since) >= ABSENCE_SETTLE
+                        });
+                        if !settled
+                            && previous.can_reuse(
+                                current,
+                                now.saturating_duration_since(scanned_at),
+                                absent_since.is_some(),
+                            )
+                        {
                             quiet_waits += 1;
                             backoff_ms = (backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
-                            tokio::time::sleep_until(
-                                (now + Duration::from_millis(backoff_ms)).min(deadline),
-                            )
+                            tokio::time::sleep_until(locator_retry_at(
+                                now, scanned_at, backoff_ms, deadline,
+                            ))
                             .await;
                             continue;
                         }
+                    } else {
+                        absent_since = None;
                     }
                 }
-                // Taken before the scan so that anything moving during the walk
-                // counts as a change worth looking at again.
-                scanned_state = page_scan_state(&webview).await;
+                scanned_state = current_state;
+                scanned_at = tokio::time::Instant::now();
                 let (generation, result) = scan_with_fresh_refs(
                     tab_id,
                     deadline,
@@ -805,21 +777,44 @@ async fn handle_action_inner(
                         "hiddenMatches": result.hidden
                     }));
                 }
-                // A full read that found nothing at all starts the settle
-                // clock: from here a quiet DOM means the element is genuinely
-                // not coming, and the loop above can stop waiting early.
-                if absent_since.is_none() && absence_conclusive(&result) {
-                    absent_since = Some(tokio::time::Instant::now());
-                }
                 empty_scans += 1;
+                let completed = tokio::time::Instant::now();
+                if absence_conclusive(&result)
+                    && scanned_state
+                        .as_ref()
+                        .is_some_and(|state| state.mutations >= 0)
+                {
+                    if absent_since.is_some_and(|since| {
+                        completed.saturating_duration_since(since) >= ABSENCE_SETTLE
+                    }) && active_loading(tab_id) != Some(true)
+                    {
+                        let elapsed = timeout_ms.saturating_sub(
+                            deadline.saturating_duration_since(completed).as_millis() as u64,
+                        );
+                        return Err(find_timeout(
+                            &locator,
+                            elapsed,
+                            empty_scans,
+                            None,
+                            Some(&result),
+                            quiet_waits,
+                        ));
+                    }
+                    absent_since.get_or_insert(completed);
+                } else {
+                    absent_since = None;
+                }
                 last_empty_scan = Some(result);
                 // A page that has already disappointed twice rarely answers on
                 // the third ask either, and every ask is a full walk on the
                 // user's own main thread. Back off rather than hammer it.
                 backoff_ms = (backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
-                tokio::time::sleep_until(
-                    (tokio::time::Instant::now() + Duration::from_millis(backoff_ms)).min(deadline),
-                )
+                tokio::time::sleep_until(locator_retry_at(
+                    tokio::time::Instant::now(),
+                    scanned_at,
+                    backoff_ms,
+                    deadline,
+                ))
                 .await;
             }
         }
@@ -3048,11 +3043,19 @@ fn describe_ambiguity(error: (String, String), matches: &[LocatorMatch]) -> (Str
 const LOCATOR_RETRY_MS: u64 = 150;
 const MAX_LOCATOR_RETRY_MS: u64 = 1_000;
 
-/// How long a fully-scanned absence must stay put -- a settled, non-loading
-/// page whose DOM has not mutated -- before `find` concludes the element is
-/// genuinely not coming. Long enough that a page finishing its own late
-/// render (which mutates the DOM and resets the clock) is never cut short;
-/// short enough that a doomed selector no longer burns a 20-second timeout.
+fn locator_retry_at(
+    now: tokio::time::Instant,
+    scanned_at: tokio::time::Instant,
+    backoff_ms: u64,
+    deadline: tokio::time::Instant,
+) -> tokio::time::Instant {
+    (now + Duration::from_millis(backoff_ms))
+        .min(scanned_at + MAX_CACHED_SCAN_AGE)
+        .max(now + Duration::from_millis(LOCATOR_RETRY_MS))
+        .min(deadline)
+}
+
+// A fresh complete scan must reconfirm absence after the settle window.
 const ABSENCE_SETTLE: Duration = Duration::from_millis(1_500);
 
 /// The one shape of empty scan that proves an element is absent rather than
@@ -3111,14 +3114,12 @@ fn find_timeout(
         )
     } else {
         format!(
-            "page fully scanned {empty_scans} time(s) ({} nodes) and no element matched; this is a confirmed absence",
+            "page fully scanned {empty_scans} time(s) ({} nodes); confirmed absence in the last completed scan, not a guarantee about later changes",
             last_empty_scan.map_or(0, |scan| scan.scanned),
         )
     };
-    // Saying the page never moved turns "it kept trying and failed" into "there
-    // was nothing left to try", which is a different instruction to the caller.
     let quiet = if quiet_waits > 0 {
-        "; the page did not change while waiting, so re-scanning it could not have found anything new"
+        "; unchanged root-DOM samples skipped short retries; cached scans expire to recheck unobserved changes"
     } else {
         ""
     };
@@ -3326,28 +3327,31 @@ async fn resolve_target_locator(
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     let mut last_coverage = String::from("no completed scan");
     let mut scanned_state: Option<PageScanState> = None;
+    let mut scanned_at = tokio::time::Instant::now();
     let mut wait_backoff_ms = LOCATOR_RETRY_MS;
     loop {
         if tokio::time::Instant::now() >= deadline {
             return Err((error_codes::TIMEOUT.into(), format!("locator {} timed out after {timeout_ms}ms; {last_coverage}; no input dispatched", state.unwrap_or("lookup"))));
         }
-        // Same retry, same page, same reasoning as find: an unchanged document
-        // cannot answer differently, so it is not walked again.
+        let current_state = page_scan_state(&webview).await;
         if let Some(previous) = &scanned_state {
-            if page_scan_state(&webview)
-                .await
-                .is_some_and(|current| previous.still_matches(&current))
+            if current_state
+                .as_ref()
+                .is_some_and(|current| previous.can_reuse(current, scanned_at.elapsed(), false))
             {
                 wait_backoff_ms = (wait_backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
-                tokio::time::sleep_until(
-                    (tokio::time::Instant::now() + Duration::from_millis(wait_backoff_ms))
-                        .min(deadline),
-                )
+                tokio::time::sleep_until(locator_retry_at(
+                    tokio::time::Instant::now(),
+                    scanned_at,
+                    wait_backoff_ms,
+                    deadline,
+                ))
                 .await;
                 continue;
             }
         }
-        scanned_state = page_scan_state(&webview).await;
+        scanned_state = current_state;
+        scanned_at = tokio::time::Instant::now();
         let (generation, result) = scan_with_fresh_refs(
             tab_id,
             deadline,
@@ -3393,9 +3397,12 @@ async fn resolve_target_locator(
             }));
         }
         wait_backoff_ms = (wait_backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
-        tokio::time::sleep_until(
-            (tokio::time::Instant::now() + Duration::from_millis(wait_backoff_ms)).min(deadline),
-        )
+        tokio::time::sleep_until(locator_retry_at(
+            tokio::time::Instant::now(),
+            scanned_at,
+            wait_backoff_ms,
+            deadline,
+        ))
         .await;
     }
 }
@@ -6070,11 +6077,33 @@ mod tests {
         assert!(cut.1.contains("cut short by the deadline"));
         assert!(!cut.1.contains("confirmed absence"));
 
-        // A wait spent on a page that never moved says so, because "keep
-        // retrying" is the wrong advice when re-reading cannot help.
         let quiet = find_timeout(&locator, 800, 1, None, Some(&scan(0, vec![])), 7);
-        assert!(quiet.1.contains("the page did not change while waiting"));
-        assert!(!absent.1.contains("the page did not change while waiting"));
+        assert!(quiet.1.contains("cached scans expire"));
+        assert!(!quiet.1.contains("could not have found anything new"));
+        assert!(!absent.1.contains("cached scans expire"));
+    }
+
+    #[test]
+    fn locator_retries_wake_at_cache_expiry_without_spinning_or_exceeding_the_deadline() {
+        let start = tokio::time::Instant::now();
+        let deadline = start + Duration::from_secs(5);
+        assert_eq!(
+            locator_retry_at(start + Duration::from_millis(300), start, 600, deadline),
+            start + Duration::from_millis(750)
+        );
+        assert_eq!(
+            locator_retry_at(start + Duration::from_secs(2), start, 1000, deadline),
+            start + Duration::from_millis(2150)
+        );
+        assert_eq!(
+            locator_retry_at(
+                start + Duration::from_millis(300),
+                start,
+                600,
+                start + Duration::from_millis(400)
+            ),
+            start + Duration::from_millis(400)
+        );
     }
 
     #[test]

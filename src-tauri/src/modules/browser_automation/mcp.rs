@@ -35,8 +35,11 @@ pub const SERVER_INSTRUCTIONS: &str = concat!(
     "yourself. A page you read privately is not on the user's screen, cannot be ",
     "scrolled or clicked, and cannot be handed back to them. ",
     "The usual shape of a browser task: browser_open with your own workspace ",
-    "root, browser_find (role plus accessible name, or css) or browser_snapshot ",
-    "for a ref, one action with a waitFor describing the result you expect (every ",
+    "root, reuse a live ref or act/read directly with a known unique locator. ",
+    "Prefer role plus name or label from the page's visible wording; do not ",
+    "guess CSS attributes. Use browser_find for discovery or disambiguation, ",
+    "not before every action; browser_snapshot is for unfamiliar page structure. ",
+    "Use waitFor to describe the result you expect (each navigation-shaped ",
     "action reply carries page.url and page.title, so no separate URL read), a ",
     "read of that result with browser_get_text or browser_get_property (live ",
     "state such as paused, currentTime, value, checked), then endSession: true ",
@@ -66,10 +69,10 @@ const LAST_CALL_TOOLS: [&str; 8] = [
 ];
 
 fn tab_id_prop() -> Value {
-    json!({ "type": "integer", "description": "Active native browser tab id (from browser_tabs)." })
+    json!({ "type": "integer", "description": "tabId from browser_open/browser_tabs." })
 }
 fn ref_prop() -> Value {
-    json!({ "type": "string", "description": "Ref from a find or snapshot on this tab, e.g. \"g3-e12\"; valid while the element stays on the page, through the next 8 finds or snapshots." })
+    json!({ "type": "string", "description": "Live ref from this tab's last 8 scans, e.g. g3-e12. Reuse until stale_ref, then find again." })
 }
 
 fn fraction_point_prop(description: &str) -> Value {
@@ -102,11 +105,12 @@ fn terminal_id_prop() -> Value {
 fn page_expectation_prop() -> Value {
     json!({
         "type": "object", "additionalProperties": false,
-        "description": "After dispatch, wait until every given condition holds for stableFor ms. A timeout never repeats the action; a match that kept changing comes back as matched:true, stable:false, not as an error.",
+        "description": "All conditions must hold for stableFor ms. A timeout never repeats input.",
         "properties": {
             "url": {"type":"string", "minLength":1, "maxLength":8192, "description":"Exact URL or a glob with * wildcards."},
-            "title": {"type":"string", "minLength":1, "maxLength":2048, "description":"Page title, whitespace and case normalized."},
-            "titleSource": {"type":"string", "enum":["document","native"], "default":"document", "description":"Requires title; the source page_info returned."},
+            "title": {"type":"string", "minLength":1, "maxLength":2048, "description":"Exact by default; * is literal. Use titleMatch:prefix for a changing suffix."},
+            "titleSource": {"type":"string", "enum":["document","native"], "default":"document", "description":"Requires title; match page_info source."},
+            "titleMatch": {"type":"string", "enum":["exact","prefix"], "default":"exact", "description":"Requires title. prefix compares its start; pass plain text, no *."},
             "text": {"type":"string", "minLength":1, "maxLength":2048, "description":"Case-insensitive substring of visible text or title."},
             "timeout": {"type":"integer", "minimum":100, "maximum":60000, "default":10000},
             "stableFor": {"type":"integer", "minimum":0, "maximum":2000, "default":200, "description":"Continuous match window in ms."}
@@ -136,14 +140,14 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_back", "description": "Start navigating a browser tab back in history and return immediately.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_forward", "description": "Start navigating a browser tab forward in history and return immediately.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_stop", "description": "Stop a browser tab's page load. Reports wasLoading, whether a load was actually in flight when the call arrived, and cancelledUrl, the target that was interrupted when one was known.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
-        { "name": "browser_snapshot", "description": "Token-bounded accessibility snapshot: viewport text first, then interactive elements with refs; 8000 characters by default, 16000 at most, paged with offset and nextOffset. Snapshot and find both replace older refs; prefer find when the element is already known.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "offset": { "type": "integer", "minimum": 0, "description": "Skip this many items; the reply carries nextOffset while more of the page is waiting." }, "maxChars": { "type": "integer", "minimum": 2000, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
-        { "name": "browser_find", "description": "Find elements by role (with the computed accessible name), text, label, placeholder, testId, title, alt, or CSS across open Shadow DOM and child frames, and return fresh refs. Implicit roles cover links, buttons, inputs (textbox, searchbox, combobox, checkbox...), headings, dialogs, lists, tables and landmarks. Elements that are not rendered are left out and counted as hiddenMatches; a timeout says whether the page was scanned end to end, and a confirmed absence returns once the page settles and stops changing rather than only at the timeout. A confirmed absence also lists the interactive elements the scan saw, each usable as a role locator, and a css miss names the nearest simpler selector that does match, with counts.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "by": { "type": "string", "enum": ["role", "text", "label", "placeholder", "testId", "title", "alt", "css"] }, "value": { "type": "string", "minLength": 1, "maxLength": 4096 }, "name": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Optional computed accessible-name filter for a role locator. It may come from aria-label, aria-labelledby, an associated label, alt, title, or visible text." }, "exact": { "type": "boolean", "default": false }, "includeHidden": { "type": "boolean", "default": false }, "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 5000 } }, "required": ["tabId", "by", "value"] } },
+        { "name": "browser_snapshot", "description": "Token-bounded accessibility snapshot: viewport text first, then interactive elements with refs; 8000 characters by default, 16000 at most, paged with offset and nextOffset. Reuse live refs through the next 8 scans; a new find or snapshot alone does not invalidate them.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "offset": { "type": "integer", "minimum": 0, "description": "Skip this many items; the reply carries nextOffset while more of the page is waiting." }, "maxChars": { "type": "integer", "minimum": 2000, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
+        { "name": "browser_find", "description": "Discover or disambiguate elements and return refs across Shadow DOM and child frames. Prefer role + name or label using visible wording; do not guess CSS attributes. Known unique targets can go directly into an action/read's locator without find. Implicit roles include link, button, textbox, searchbox, combobox, heading and dialog. hiddenMatches counts non-rendered matches. A settled complete miss can return early with observed controls and nearest simpler CSS; these are discovery hints, not automatic fallback targets. Inspect candidates before choosing a ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "by": { "type": "string", "enum": ["role", "text", "label", "placeholder", "testId", "title", "alt", "css"] }, "value": { "type": "string", "minLength": 1, "maxLength": 4096 }, "name": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Computed accessible-name filter for role: visible text, referenced/associated label, aria-label, alt or title. Not a CSS name attribute." }, "exact": { "type": "boolean", "default": false }, "includeHidden": { "type": "boolean", "default": false }, "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 5000 } }, "required": ["tabId", "by", "value"] } },
         { "name": "browser_click", "description": "Click an element by ref after bounded visibility, stability, enabled, and hit-target checks.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_double_click", "description": "Double-click an actionable element by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_focus", "description": "Focus a visible enabled element by ref without activating the user's workspace.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_check", "description": "Set a checkbox or radio ref to the requested checked state and verify the result.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "checked": { "type": "boolean", "default": true } }, "required": ["tabId", "ref"] } },
         { "name": "browser_drag", "description": "Native mouse drag from one ref to another, or inside one element by passing the same ref twice with sourcePosition and targetPosition (fractions of the element, e.g. {x:0.7,y:0.5} to {x:0.4,y:0.5} pans a chart left). Both points must be visible; nothing is retried automatically.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "sourceRef": refr.clone(), "targetRef": refr.clone(), "sourcePosition": fraction_point_prop("Where the press lands inside sourceRef, as fractions strictly between 0 and 1 (0.5 is the center), not pixels."), "targetPosition": fraction_point_prop("Where the release lands inside targetRef, as fractions strictly between 0 and 1, not pixels.") }, "required": ["tabId", "sourceRef", "targetRef"] } },
-        { "name": "browser_type", "description": "Type text into an input element by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "text": { "type": "string" }, "append": { "type": "boolean", "description": "Append to existing value instead of replacing it." } }, "required": ["tabId", "ref", "text"] } },
+        { "name": "browser_type", "description": "Fill a known input directly using its ref or semantic locator; find only to discover or disambiguate. Sets value and emits input/change once, not per-key events. Returns the ref and immediate valueVerified; submit separately with press and waitFor.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "text": { "type": "string" }, "append": { "type": "boolean", "description": "Append to existing value instead of replacing it." } }, "required": ["tabId", "ref", "text"] } },
         { "name": "browser_fill_form", "description": "Fill several fields in one call, in order. Each field names its target by ref or a unique locator and carries exactly one of text (typed and verified like browser_type, replacing the value), checked (checkbox or radio) or option (select value or label). Stops at the first field that fails and says which fields were done; never submits.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "fields": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "type": "object", "additionalProperties": false, "properties": { "ref": refr.clone(), "text": { "type": "string" }, "checked": { "type": "boolean" }, "option": { "type": "string" } } } } }, "required": ["tabId", "fields"] } },
         { "name": "browser_press", "description": "Press a keyboard key through the browser input pipeline (e.g. Enter, Tab). Key dispatch holds the tab lock, but Enter observation does not, so stop and navigation remain responsive. submissionObserved and navigationObserved report only effects seen within the bounded observation window; false does not mean dispatch failed.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "key": { "type": "string" }, "observationTimeout": { "type": "integer", "minimum": 0, "maximum": 10000, "default": 3000, "description": "Milliseconds to observe submit or navigation after Enter without holding the tab lock. Ignored for other keys." } }, "required": ["tabId", "key"] } },
         { "name": "browser_key", "description": "Dispatch a keyboard press, key-down, or key-up. Alt, Control, Meta, and Shift modifiers are per-call: pass them on each key event. Holding a modifier across tools or modifying mouse clicks is not supported.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "key": { "type": "string", "minLength": 1, "maxLength": 64 }, "keyAction": { "type": "string", "enum": ["press", "down", "up"], "default": "press" }, "modifiers": { "type": "array", "maxItems": 4, "uniqueItems": true, "items": { "type": "string", "enum": ["Alt", "Control", "Meta", "Shift"] } } }, "required": ["tabId", "key"] } },
@@ -158,8 +162,8 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_select_option", "description": "Select an option on a <select> element by ref (by value or label).", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "value": { "type": "string" } }, "required": ["tabId", "ref", "value"] } },
         { "name": "browser_hover", "description": "Hover a ref with one native mouse move and CSS :hover verification. position picks a point inside the same target, e.g. to reveal auto-hiding media controls; CSS hover does not prove controls are visible. Child-frame targets fall back to a DOM-only hover.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "position": fraction_point_prop("Fractions strictly between 0 and 1 inside the painted target, not pixels; defaults to the center {x:0.5,y:0.5}. The point must be visible and unobscured.") }, "required": ["tabId", "ref"] } },
         { "name": "browser_scroll_to_element", "description": "Scroll an element into view by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
-        { "name": "browser_get_text", "description": "Get DOM text or the accessibility name of an element, or body text when ref is omitted. Returns visible and source; hidden accessible labels may be outdated. Reveal controls and read again before treating labels as live state.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "maxLength": { "type": "integer", "minimum": 1, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
-        { "name": "browser_get_property", "description": "Read live properties of an element by ref without page JavaScript: value, checked, disabled, readOnly, selected, paused, ended, muted, currentTime, duration, volume, playbackRate, scrollTop, scrollLeft, scrollHeight, scrollWidth, clientHeight, clientWidth, href, src, title, placeholder, open, hidden, tagName. One call answers whether a video is paused or what an input holds now.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "properties": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": { "type": "string", "enum": super::actions::ELEMENT_PROPERTIES } } }, "required": ["tabId", "ref", "properties"] } },
+        { "name": "browser_get_text", "description": "Read a known target directly by ref or locator; omit both for body text. Returns DOM text or accessible name, visible and source. Hidden labels may be outdated: reveal controls before treating their text as live state.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "maxLength": { "type": "integer", "minimum": 1, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
+        { "name": "browser_get_property", "description": "Read up to 8 live properties by ref or locator in one call, e.g. paused/currentTime or value/checked. Only the listed DOM properties are allowed, never caller-supplied JavaScript. Reuse the returned ref for a later state check.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "properties": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": { "type": "string", "enum": super::actions::ELEMENT_PROPERTIES } } }, "required": ["tabId", "ref", "properties"] } },
         { "name": "browser_page_info", "description": "Get native title and URL without waiting for page JavaScript. titleSource document opts into a bounded DOM-title read. When waiting for this title, pass the returned titleSource to waitFor; native and DOM titles can differ after SPA back/forward.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "titleSource": {"type":"string", "enum":["native","document"], "default":"native"} }, "required": ["tabId"] } },
         { "name": "browser_console_logs", "description": "Get up to 50 bounded recent console messages, uncaught runtime errors, and unhandled promise rejections from the main document and accessible child frames.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "level": { "description": "Keep only these console levels, as one name or a list.", "anyOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" }, "maxItems": 8 } ] }, "maxCharsPerMessage": { "type": "integer", "minimum": 40, "maximum": 4000, "description": "Clip each message; one advert frame can otherwise spend the whole budget on a single tracking URL." }, "since": { "type": "integer", "minimum": 0, "description": "Only entries at or after this timestamp." } }, "required": ["tabId"] } },
         { "name": "agent_spawn", "description": "Spawn one configured built-in or custom CLI agent in an explicitly selected open Anbo workspace. Displays its first tab only in an empty active workspace; later spawns stay in the background and inactive workspaces never activate. The stored command cannot be supplied or overridden by the caller.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agent": { "type": "string", "minLength": 1, "maxLength": 71, "description": "Built-in launcher id or label, or the display name or custom:<id> of an agent registered in Anbo Settings." }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 15000, "description": "How long to wait for live agent detection before returning pending: true." } }, "required": ["workspace", "agent"] } },
@@ -226,7 +230,7 @@ pub fn tool_definitions() -> Value {
                 .collect();
             tool["inputSchema"]["properties"]["locator"] = json!({
                 "type":"object", "properties":props, "required":["by","value"], "additionalProperties":false,
-                "description": if waiting { "Locator (browser_find fields, hidden included); unique unless minCount. Uses the top-level timeout." } else { "Instead of ref: browser_find fields naming one unique element." }
+                "description": if waiting { "Locator (hidden included); unique unless minCount. Top-level timeout." } else { "Known unique target, no find needed. Prefer role+name/label; CSS only when observed. Ambiguous targets send no input." }
             });
             if waiting {
                 tool["inputSchema"]["properties"]["condition"]["enum"]
@@ -269,7 +273,7 @@ pub fn tool_definitions() -> Value {
         if LAST_CALL_TOOLS.iter().any(|last| *last == name) {
             tool["inputSchema"]["properties"]["endSession"] = json!({
                 "type": "boolean", "default": false,
-                "description": "End your session after this call succeeds: cursor and badge go, tabs stay open."
+                "description": "Last call only: end control on success; keep tabs open."
             });
         }
     }
@@ -507,6 +511,49 @@ mod tests {
     }
 
     #[test]
+    fn locator_guidance_skips_redundant_discovery_without_weakening_targets() {
+        assert!(SERVER_INSTRUCTIONS.contains("known unique locator"));
+        assert!(SERVER_INSTRUCTIONS.contains("do not guess CSS attributes"));
+        let tools = tool_definitions();
+        for tool in tools.as_array().unwrap() {
+            let Some(locator) = tool["inputSchema"]["properties"].get("locator") else {
+                continue;
+            };
+            if tool["name"] == "browser_wait" {
+                continue;
+            }
+            let description = locator["description"].as_str().unwrap();
+            assert!(description.contains("Known unique target, no find needed"));
+            assert!(description.contains("CSS only when observed"));
+            assert!(description.contains("Ambiguous targets send no input"));
+            assert_eq!(locator["additionalProperties"], false);
+            assert_eq!(locator["required"], json!(["by", "value"]));
+            assert!(locator["properties"].get("index").is_none());
+            assert!(locator["properties"].get("first").is_none());
+        }
+        let find = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "browser_find")
+            .unwrap();
+        assert!(find["description"]
+            .as_str()
+            .unwrap()
+            .contains("Inspect candidates"));
+        let type_tool = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "browser_type")
+            .unwrap();
+        assert!(type_tool["description"]
+            .as_str()
+            .unwrap()
+            .contains("immediate valueVerified"));
+    }
+
+    #[test]
     fn get_property_reads_a_closed_list_and_takes_a_locator() {
         // The list is the safety argument: the agent names a DOM property,
         // never code. Measured on YouTube before this tool existed, "is the
@@ -736,10 +783,23 @@ mod tests {
             .find(|tool| tool["name"] == "browser_find")
             .unwrap();
         assert_eq!(find["inputSchema"]["properties"]["limit"]["maximum"], 20);
-        assert_eq!(
-            find["inputSchema"]["properties"]["name"]["description"],
-            "Optional computed accessible-name filter for a role locator. It may come from aria-label, aria-labelledby, an associated label, alt, title, or visible text."
-        );
+        let name_description = find["inputSchema"]["properties"]["name"]["description"]
+            .as_str()
+            .unwrap();
+        for source in [
+            "accessible-name",
+            "role",
+            "visible text",
+            "referenced/associated label",
+            "aria-label",
+            "alt",
+            "title",
+        ] {
+            assert!(
+                name_description.contains(source),
+                "missing name source: {source}"
+            );
+        }
         let press = tools
             .as_array()
             .unwrap()
@@ -769,10 +829,36 @@ mod tests {
             assert_eq!(properties["diagnostics"]["default"], false);
             assert_eq!(properties["waitFor"]["additionalProperties"], false);
             assert_eq!(
+                properties["waitFor"]["properties"]["titleMatch"]["enum"],
+                json!(["exact", "prefix"])
+            );
+            assert_eq!(
+                properties["waitFor"]["properties"]["titleMatch"]["default"],
+                "exact"
+            );
+            assert!(properties["waitFor"]["properties"]["title"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("* is literal"));
+            assert_eq!(
                 properties["waitFor"]["properties"]["stableFor"]["maximum"],
                 2000
             );
         }
+    }
+
+    #[test]
+    fn snapshot_description_preserves_retained_refs() {
+        let tools = tool_definitions();
+        let snapshot = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "browser_snapshot")
+            .unwrap();
+        let description = snapshot["description"].as_str().unwrap();
+        assert!(description.contains("Reuse live refs through the next 8 scans"));
+        assert!(!description.contains("replace older refs"));
     }
 
     #[test]

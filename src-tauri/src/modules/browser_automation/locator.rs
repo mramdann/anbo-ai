@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 use super::accessible_name::ACCESSIBLE_NAME_JS;
 use super::ref_context::REF_REGISTRY_JS;
 use super::visibility::VISIBILITY_JS;
 
 pub const MAX_LOCATOR_MATCHES: usize = 20;
+pub const MAX_CACHED_SCAN_AGE: Duration = Duration::from_millis(750);
 
 #[derive(Clone, Copy)]
 pub struct LocatorQuery<'a> {
@@ -109,17 +111,16 @@ pub struct NearestExample {
 /// page is offered.
 pub fn css_relaxations(selector: &str) -> Vec<String> {
     const TOO_GENERIC: &[&str] = &[
-        "*", "div", "span", "p", "li", "ul", "ol", "a", "section", "article", "header",
-        "footer", "nav", "main", "i", "b", "em", "strong", "td", "tr", "th", "tbody",
-        "thead", "label",
+        "*", "div", "span", "p", "li", "ul", "ol", "a", "section", "article", "header", "footer",
+        "nav", "main", "i", "b", "em", "strong", "td", "tr", "th", "tbody", "thead", "label",
     ];
     let original = selector.trim();
     let mut out: Vec<String> = Vec::new();
     fn offer(out: &mut Vec<String>, original: &str, candidate: String) {
         const TOO_GENERIC: &[&str] = &[
             "*", "div", "span", "p", "li", "ul", "ol", "a", "section", "article", "header",
-            "footer", "nav", "main", "i", "b", "em", "strong", "td", "tr", "th", "tbody",
-            "thead", "label",
+            "footer", "nav", "main", "i", "b", "em", "strong", "td", "tr", "th", "tbody", "thead",
+            "label",
         ];
         let candidate = candidate.trim().to_string();
         if candidate.is_empty()
@@ -147,7 +148,11 @@ pub fn css_relaxations(selector: &str) -> Vec<String> {
         }
         let (tag, qualifiers) = split_compound(compounds.last().map(String::as_str).unwrap_or(""));
         for keep in (0..qualifiers.len()).rev() {
-            offer(&mut out, original, format!("{tag}{}", qualifiers[..keep].concat()));
+            offer(
+                &mut out,
+                original,
+                format!("{tag}{}", qualifiers[..keep].concat()),
+            );
         }
     }
     out
@@ -373,20 +378,12 @@ pub struct Candidate {
 
 /// A page that cannot have changed cannot produce a different answer.
 ///
-/// Retrying a locator re-walked the whole document every 150ms -- 141 full
-/// scans inside a 30-second lookup on a 16,000-node article, each one running
-/// on the page's own main thread for nothing. This installs one counter so a
-/// retry can ask the cheap question first: has anything moved since the scan
-/// that already said no?
-///
-/// A page with a running animation is never called quiet: appearance can
-/// change there without a mutation to observe. Neither is a page whose
-/// observer could not be installed, which reports -1 and keeps the old
-/// behaviour of scanning every time.
+// The root counter is a hint: shadow roots, child frames and live properties
+// can change without a root mutation. Cached scans always expire.
 pub const PAGE_SCAN_STATE_JS: &str = r#"(function() {
     const state = (() => {
         if (window.__anboScanState) return window.__anboScanState;
-        const created = { id: Math.random().toString(36).slice(2), mutations: 0 };
+        const created = { id: Math.random().toString(36).slice(2), mutations: 0, usedAt: performance.now() };
         try {
             const observer = new MutationObserver(records => {
                 created.mutations += records.length;
@@ -398,12 +395,25 @@ pub const PAGE_SCAN_STATE_JS: &str = r#"(function() {
                 characterData: true,
             });
             created.observer = observer;
+            const expire = () => {
+                if (window.__anboScanState !== created) return;
+                const remaining = 2000 - (performance.now() - created.usedAt);
+                if (remaining > 0) {
+                    created.timer = setTimeout(expire, remaining);
+                    return;
+                }
+                observer.disconnect();
+                delete window.__anboScanState;
+            };
+            created.timer = setTimeout(expire, 2000);
         } catch (error) {
+            if (created.observer) created.observer.disconnect();
             created.mutations = -1;
         }
         window.__anboScanState = created;
         return created;
     })();
+    state.usedAt = performance.now();
     let animating = true;
     try {
         animating = typeof document.getAnimations === 'function'
@@ -423,28 +433,19 @@ pub struct PageScanState {
 }
 
 impl PageScanState {
-    /// Whether a fresh reading proves nothing could have changed since this one.
-    ///
-    /// A different id is a new document, a negative count is a page Anbo cannot
-    /// watch, and a running animation can repaint without mutating anything.
-    pub fn still_matches(&self, current: &PageScanState) -> bool {
-        self.mutations >= 0
-            && !current.animating
-            && current.id == self.id
-            && current.mutations == self.mutations
+    pub fn same_revision(&self, current: &PageScanState) -> bool {
+        self.mutations >= 0 && current.id == self.id && current.mutations == self.mutations
     }
 
-    /// Whether a *confirmed absence* an earlier scan proved still holds.
-    ///
-    /// Unlike [`Self::still_matches`], this ignores animation. Once a full
-    /// scan has found no element at all -- not even a hidden one -- only a DOM
-    /// mutation can bring a match into being, and the observer catches every
-    /// mutation. A running animation can reveal or hide an element that
-    /// already exists, but it cannot create one, so it has no bearing on an
-    /// absence. Same document, same mutation count, and a count Anbo could
-    /// actually read.
-    pub fn absence_stable(&self, current: &PageScanState) -> bool {
-        self.mutations >= 0 && current.id == self.id && current.mutations == self.mutations
+    pub fn can_reuse(
+        &self,
+        current: &PageScanState,
+        age: Duration,
+        confirmed_absence: bool,
+    ) -> bool {
+        age < MAX_CACHED_SCAN_AGE
+            && self.same_revision(current)
+            && (confirmed_absence || (!self.animating && !current.animating))
     }
 }
 
@@ -745,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rescan_is_skipped_only_when_nothing_could_have_changed() {
+    fn scan_reuse_requires_an_observed_revision_within_its_age_limit() {
         let state = |id: &str, mutations: i64, animating: bool| PageScanState {
             id: id.to_string(),
             mutations,
@@ -755,23 +756,23 @@ mod tests {
 
         // The same document, the same mutation count, nothing animating: the
         // walk would read exactly what the last one read.
-        assert!(scanned.still_matches(&state("abc", 42, false)));
+        assert!(scanned.can_reuse(&state("abc", 42, false), Duration::ZERO, false));
 
         // Anything that moved, a reload that reset the counter, or an
         // animation that can repaint without mutating, all earn a fresh scan.
-        assert!(!scanned.still_matches(&state("abc", 43, false)));
-        assert!(!scanned.still_matches(&state("xyz", 42, false)));
-        assert!(!scanned.still_matches(&state("abc", 42, true)));
+        assert!(!scanned.can_reuse(&state("abc", 43, false), Duration::ZERO, false));
+        assert!(!scanned.can_reuse(&state("xyz", 42, false), Duration::ZERO, false));
+        assert!(!scanned.can_reuse(&state("abc", 42, true), Duration::ZERO, false));
 
         // A page whose observer could not be installed reports -1 and is never
         // called quiet, in either direction.
         let unwatchable = state("abc", -1, false);
-        assert!(!unwatchable.still_matches(&state("abc", -1, false)));
-        assert!(!scanned.still_matches(&unwatchable));
+        assert!(!unwatchable.can_reuse(&unwatchable, Duration::ZERO, true));
+        assert!(!scanned.can_reuse(&unwatchable, Duration::ZERO, true));
     }
 
     #[test]
-    fn a_proven_absence_holds_through_animation_but_not_through_a_mutation() {
+    fn unobserved_changes_force_a_rescan_even_for_a_cached_absence() {
         let state = |id: &str, mutations: i64, animating: bool| PageScanState {
             id: id.to_string(),
             mutations,
@@ -779,19 +780,21 @@ mod tests {
         };
         let scanned = state("abc", 42, false);
 
-        // The element was not there; nothing was added since. A canvas or a
-        // spinner repainting cannot create a match, so absence still holds
-        // even while the page animates -- this is the whole point.
-        assert!(scanned.absence_stable(&state("abc", 42, false)));
-        assert!(scanned.absence_stable(&state("abc", 42, true)));
+        for absent in [false, true] {
+            assert!(scanned.can_reuse(&scanned, Duration::from_millis(749), absent));
+            assert!(!scanned.can_reuse(&scanned, Duration::from_millis(750), absent));
+            assert!(!scanned.can_reuse(&scanned, Duration::from_secs(2), absent));
+        }
+        assert!(scanned.can_reuse(&state("abc", 42, true), Duration::ZERO, true));
+        assert!(!scanned.can_reuse(&state("abc", 42, true), Duration::from_millis(750), true));
 
         // A mutation, or a fresh document, could have introduced the element:
         // the absence is no longer proven.
-        assert!(!scanned.absence_stable(&state("abc", 43, false)));
-        assert!(!scanned.absence_stable(&state("xyz", 42, false)));
+        assert!(!scanned.same_revision(&state("abc", 43, false)));
+        assert!(!scanned.same_revision(&state("xyz", 42, false)));
 
         // An uninstallable observer (-1) is never trusted to prove absence.
-        assert!(!state("abc", -1, false).absence_stable(&state("abc", -1, false)));
+        assert!(!state("abc", -1, false).same_revision(&state("abc", -1, false)));
     }
 
     #[test]
@@ -858,16 +861,24 @@ mod tests {
         assert!(script.contains("candidates, nearest, visualPoint"));
         // Landmarks carry names too, but nothing to act on; only controls are offered.
         assert!(script.contains("if (!CONTROL_ROLES.has(role)) continue;"));
-        assert!(!script.contains("refRegistry.remember(ref, el);
-                    candidates"));
+        assert!(!script.contains(
+            "refRegistry.remember(ref, el);
+                    candidates"
+        ));
     }
 
     #[test]
     fn an_over_specific_css_selector_relaxes_toward_what_the_page_has() {
         // Every measured canvas miss was answered by the agent with the bare
         // tag on its next call; the ladder offers that in the same reply.
-        assert_eq!(css_relaxations("table.chart-markup-table.pane canvas"), vec!["canvas"]);
-        assert_eq!(css_relaxations("#scene canvas, canvas.widget-scene-canvas"), vec!["canvas"]);
+        assert_eq!(
+            css_relaxations("table.chart-markup-table.pane canvas"),
+            vec!["canvas"]
+        );
+        assert_eq!(
+            css_relaxations("#scene canvas, canvas.widget-scene-canvas"),
+            vec!["canvas"]
+        );
         assert_eq!(
             css_relaxations("div[data-component-type=\"s-search-result\"] h2 a"),
             vec!["div[data-component-type] h2 a", "h2 a"]
@@ -877,7 +888,9 @@ mod tests {
             vec!["input", "input[name]"]
         );
         assert_eq!(
-            css_relaxations("table.chart-markup-table td.chart-markup-table .chart-gui-wrapper canvas"),
+            css_relaxations(
+                "table.chart-markup-table td.chart-markup-table .chart-gui-wrapper canvas"
+            ),
             vec![
                 "td.chart-markup-table .chart-gui-wrapper canvas",
                 ".chart-gui-wrapper canvas",
@@ -893,7 +906,10 @@ mod tests {
             css_relaxations("div.s-main-slot > div[data-asin]:not([data-asin=\"\"]) h2 a")[0],
             "div.s-main-slot div[data-asin]:not([data-asin]) h2 a"
         );
-        assert_eq!(css_relaxations("a[title=\"x, y\"] img"), vec!["a[title] img", "img"]);
+        assert_eq!(
+            css_relaxations("a[title=\"x, y\"] img"),
+            vec!["a[title] img", "img"]
+        );
     }
 
     #[test]
@@ -911,7 +927,8 @@ mod tests {
             },
         );
         assert!(css.contains("const relaxations = [\"canvas\"];"), "{css}");
-        assert!(css.contains("const nearest = (by === 'css' && !matches.length) ? nearestCss() : null;"));
+        assert!(css
+            .contains("const nearest = (by === 'css' && !matches.length) ? nearestCss() : null;"));
         let role = build_find_js(
             3,
             "g3-e",
@@ -924,6 +941,9 @@ mod tests {
                 limit: 10,
             },
         );
-        assert!(role.contains("const relaxations = [];"), "a role lookup ships no ladder");
+        assert!(
+            role.contains("const relaxations = [];"),
+            "a role lookup ships no ladder"
+        );
     }
 }

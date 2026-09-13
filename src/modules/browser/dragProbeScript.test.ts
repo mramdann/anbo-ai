@@ -29,6 +29,7 @@ function fixture() {
   class Element {
     disabled = false;
     hidden = false;
+    resolved = true;
     generation = "gen-1";
     constructor(
       public top: number,
@@ -68,8 +69,8 @@ function fixture() {
   ) =>
     JSON.parse(
       vm.runInNewContext(`(() => {${source}})()`, {
-        source: from,
-        destination: to,
+        source: from.resolved ? from : null,
+        destination: to.resolved ? to : null,
         generation: "gen-1",
         scroll,
         sourcePosition,
@@ -104,11 +105,20 @@ describe("shipped drag endpoint probe", () => {
     expect(f.run(false)).toEqual(result);
     expect(f.scrolls).toHaveLength(2);
   });
-  it("rejects stale refs before any scrolling", () => {
+  it.each(["from", "to"] as const)(
+    "rejects an unresolved %s before scrolling",
+    (endpoint) => {
+      const f = fixture();
+      f[endpoint].resolved = false;
+      expect(f.run().error).toBe("stale_ref");
+      expect(f.scrolls).toHaveLength(0);
+    },
+  );
+  it("does not reject a resolved node just because its DOM generation label changed", () => {
     const f = fixture();
     f.from.generation = "gen-0";
-    expect(f.run().error).toBe("stale_ref");
-    expect(f.scrolls).toHaveLength(0);
+    expect(f.run().error).toBeUndefined();
+    expect(f.run(false).points).toHaveLength(4);
   });
   it("rejects endpoints that cannot share a viewport instead of pressing elsewhere", () => {
     const f = fixture();

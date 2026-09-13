@@ -157,6 +157,7 @@ function fixture(nodes: Element[]) {
       .join(refRegistryScript);
     return JSON.parse(vm.runInContext(script, context)) as {
       elements: {
+        text?: string;
         label: string;
         ref_id: string;
         value: string | null;

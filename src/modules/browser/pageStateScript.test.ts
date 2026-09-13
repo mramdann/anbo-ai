@@ -206,6 +206,36 @@ describe("shipped compound page predicate", () => {
     expect(matches({ url: "*q=one*one" })).toBe(false);
     expect(matches({ url: "https://example.test/results?q=one" })).toBe(true);
   });
+  it("only enables prefix title matching explicitly and keeps stars literal", () => {
+    const current = "\uFEFF report\n42 ";
+    expect(matches({ title: "Report" }, undefined, current)).toBe(false);
+    expect(matches({ title: "Report*" }, undefined, current)).toBe(false);
+    expect(
+      matches({ title: "Report*", titleMatch: "exact" }, undefined, "Report*"),
+    ).toBe(true);
+    const expected = { title: " Report ", titleMatch: "prefix" };
+    expect(matches(expected, undefined, current)).toBe(true);
+    expect(matches(expected, undefined, "REPORT 43")).toBe(true);
+    expect(matches(expected, undefined, "Old Report 43")).toBe(false);
+    expect(matches(expected, undefined, "Other 43")).toBe(false);
+    expect(matches({ title: "\uFEFF ", titleMatch: "prefix" })).toBe(false);
+    expect(
+      matches(
+        { title: "Report*", titleMatch: "prefix" },
+        undefined,
+        "Report 43",
+      ),
+    ).toBe(false);
+    expect(matches({ ...expected, url: "*absent*" }, undefined, current)).toBe(
+      false,
+    );
+    expect(
+      matches({ ...expected, text: "missing state" }, undefined, current),
+    ).toBe(false);
+    expect(
+      matches({ ...expected, text: "Result ready" }, undefined, current),
+    ).toBe(true);
+  });
   it("matches text and title case-insensitively and past the snapshot cap", () => {
     // Measured on TradingView: "Symbol Search" never matched "Symbol search",
     // and a dialog appended after 16k characters of page text was invisible

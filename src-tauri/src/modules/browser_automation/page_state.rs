@@ -11,12 +11,20 @@ pub enum TitleSource {
     Native,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TitleMatch {
+    Exact,
+    Prefix,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PageExpectation {
     pub url: Option<String>,
     pub title: Option<String>,
     pub title_source: Option<TitleSource>,
+    pub title_match: Option<TitleMatch>,
     pub text: Option<String>,
     #[serde(default = "default_timeout")]
     pub timeout: u64,
@@ -43,7 +51,18 @@ impl PageExpectation {
         if expectation.url.is_none() && expectation.title.is_none() && expectation.text.is_none() {
             return Err(error());
         }
-        if expectation.title_source.is_some() && expectation.title.is_none() {
+        if (expectation.title_source.is_some() || expectation.title_match.is_some())
+            && expectation.title.is_none()
+        {
+            return Err(error());
+        }
+        if expectation.title_match == Some(TitleMatch::Prefix)
+            && expectation.title.as_ref().is_some_and(|title| {
+                title
+                    .trim_matches(|ch: char| ch.is_whitespace() || ch == '\u{feff}')
+                    .is_empty()
+            })
+        {
             return Err(error());
         }
         for (value, limit) in [
@@ -68,7 +87,7 @@ impl PageExpectation {
     }
 
     pub fn script(&self) -> String {
-        let expected = json!({"url": self.url, "title": self.title, "text": self.text, "titleSource": self.title_source});
+        let expected = json!({"url": self.url, "title": self.title, "text": self.text, "titleSource": self.title_source, "titleMatch": self.title_match});
         format!(
             r#"(() => {{
             {READABLE_TEXT_JS}
@@ -87,8 +106,14 @@ impl PageExpectation {
                 return parts.length > 1 || value === pattern;
             }};
             if (!document.body || document.readyState === 'loading') return false;
+            const titleMatches = () => {{
+                if (!expected.title || expected.titleSource === 'native') return true;
+                const actual = normalizeLoose(document.title);
+                const wanted = normalizeLoose(expected.title);
+                return expected.titleMatch === 'prefix' ? wanted.length > 0 && actual.startsWith(wanted) : actual === wanted;
+            }};
             return (!expected.url || glob(location.href, expected.url)) &&
-                (!expected.title || expected.titleSource === 'native' || normalizeLoose(document.title) === normalizeLoose(expected.title)) &&
+                titleMatches() &&
                 (!expected.text || pageTextIncludes(expected.text));
         }})()"#
         )
@@ -110,9 +135,15 @@ impl PageExpectation {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        self.title
-            .as_ref()
-            .is_some_and(|expected| normalize(title) == normalize(expected))
+        self.title.as_ref().is_some_and(|expected| {
+            let actual = normalize(title);
+            let wanted = normalize(expected);
+            if self.title_match == Some(TitleMatch::Prefix) {
+                !wanted.is_empty() && actual.to_lowercase().starts_with(&wanted.to_lowercase())
+            } else {
+                actual == wanted
+            }
+        })
     }
 }
 
@@ -169,6 +200,10 @@ mod tests {
             json!({"title":"ok", "typo":true}),
             json!({"title":"ok", "titleSource":"unknown"}),
             json!({"text":"ok", "titleSource":"native"}),
+            json!({"text":"ok", "titleMatch":"exact"}),
+            json!({"title":"ok", "titleMatch":"glob"}),
+            json!({"title":"ok", "titleMatch":true}),
+            json!({"title":"\u{feff}\n ", "titleMatch":"prefix"}),
             json!({"text":"x".repeat(2049)}),
         ] {
             assert!(PageExpectation::parse(Some(&invalid)).is_err());
@@ -219,5 +254,31 @@ mod tests {
             .unwrap();
         assert!(!default.uses_native_title());
         assert!(default.needs_document());
+    }
+
+    #[test]
+    fn title_prefix_is_explicit_and_does_not_change_literal_exact_matching() {
+        let parse = |value| PageExpectation::parse(Some(&value)).unwrap().unwrap();
+        let exact = parse(json!({"title":"Report", "titleSource":"native"}));
+        assert_eq!(exact.title_match, None);
+        assert!(exact.matches_native_title(" Report "));
+        assert!(!exact.matches_native_title("Report 42"));
+        assert!(!exact.matches_native_title("report"));
+        let literal =
+            parse(json!({"title":"Report*", "titleSource":"native", "titleMatch":"exact"}));
+        assert!(literal.matches_native_title("Report*"));
+        assert!(!literal.matches_native_title("Report 42"));
+
+        let prefix =
+            parse(json!({"title":" Report ", "titleSource":"native", "titleMatch":"prefix"}));
+        assert!(!prefix.needs_document());
+        for title in ["Report", "\u{feff}report\n42", "REPORT 43", "Report 44"] {
+            assert!(prefix.matches_native_title(title), "{title:?}");
+        }
+        assert!(!prefix.matches_native_title("Old Report 42"));
+        assert!(!prefix.matches_native_title("Other 42"));
+        let star = parse(json!({"title":"Report*", "titleSource":"native", "titleMatch":"prefix"}));
+        assert!(!star.matches_native_title("Report 42"));
+        assert!(star.matches_native_title("Report* 42"));
     }
 }
