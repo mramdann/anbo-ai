@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.0](https://github.com/mramdann/anbo-ai/compare/v0.30.0...v0.31.0) (2026-09-15)
+
+
+### Features
+
+* **browser:** group screenshots into task folders and sample actionability in-page ([23e790f](https://github.com/mramdann/anbo-ai/commit/23e790f53416d255a73f61087be537aea220c588))
+
 ## [0.30.0](https://github.com/mramdann/anbo-ai/compare/v0.29.0...v0.30.0) (2026-09-13)
 
 
