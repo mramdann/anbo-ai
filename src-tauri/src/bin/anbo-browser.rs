@@ -178,7 +178,7 @@ fn print_usage() {
     eprintln!("  press --tab <id> --key <key>          Press keyboard key");
     eprintln!("  scroll --tab <id> [--x 0] [--y 600]   Scroll page");
     eprintln!("  wait --tab <id> --text \"msg\" [--timeout 10000]");
-    eprintln!("  screenshot --tab <id>                 Capture screenshot to disk artifact");
+    eprintln!("  screenshot --tab <id> [--context <task>] [--label <step>] [--workspace <root>]");
     eprintln!("  mcp --stdio                           Run Model Context Protocol stdio server");
 }
 
@@ -194,6 +194,8 @@ fn parse_cli_args(subcommand: &str, args: &[String]) -> Result<(String, Value), 
     let mut timeout = 10000u64;
     let mut max_chars = None;
     let mut workspace = None;
+    let mut context = None;
+    let mut label = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -264,6 +266,19 @@ fn parse_cli_args(subcommand: &str, args: &[String]) -> Result<(String, Value), 
                 workspace = Some(args.get(i).ok_or("missing value for --workspace")?.clone());
             }
             "--json" => {}
+            "--context" | "--label" if subcommand == "screenshot" => {
+                let option = args[i].clone();
+                i += 1;
+                let value = args
+                    .get(i)
+                    .ok_or_else(|| format!("missing value for {option}"))?
+                    .clone();
+                if option == "--context" {
+                    context = Some(value);
+                } else {
+                    label = Some(value);
+                }
+            }
             other => return Err(format!("unknown option '{other}'")),
         }
         i += 1;
@@ -323,10 +338,19 @@ fn parse_cli_args(subcommand: &str, args: &[String]) -> Result<(String, Value), 
             "wait".to_string(),
             json!({ "tabId": tab_id.ok_or("missing --tab")?, "text": text.ok_or("missing --text")?, "timeout": timeout }),
         )),
-        "screenshot" => Ok((
-            "screenshot".to_string(),
-            json!({ "tabId": tab_id.ok_or("missing --tab")? }),
-        )),
+        "screenshot" => {
+            let mut params = json!({ "tabId": tab_id.ok_or("missing --tab")? });
+            for (key, value) in [
+                ("workspace", workspace),
+                ("context", context),
+                ("label", label),
+            ] {
+                if let Some(value) = value {
+                    params[key] = json!(value);
+                }
+            }
+            Ok(("screenshot".into(), params))
+        }
         other => Err(format!("unknown command '{other}'")),
     }
 }
@@ -558,6 +582,30 @@ async fn run_mcp_stdio() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screenshot_cli_forwards_context_without_null_workspace() {
+        let (_, minimal) = parse_cli_args("screenshot", &["--tab".into(), "1".into()]).unwrap();
+        assert_eq!(minimal, json!({"tabId":1}));
+        let args: Vec<String> = [
+            "--tab",
+            "1",
+            "--context",
+            "youtube playback",
+            "--label",
+            "after pause",
+            "--workspace",
+            "D:/work",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let (_, params) = parse_cli_args("screenshot", &args).unwrap();
+        assert_eq!(
+            params,
+            json!({"tabId":1,"context":"youtube playback","label":"after pause","workspace":"D:/work"})
+        );
+    }
 
     #[test]
     fn test_parse_cli_args_tab_list_aliases() {

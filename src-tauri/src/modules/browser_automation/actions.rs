@@ -12,7 +12,6 @@ use tauri::Listener;
 use tauri::Webview;
 
 use super::accessible_name::ACCESSIBLE_NAME_JS;
-use crate::modules::app_data::local_data_root;
 use crate::modules::browser::embed::{
     active_loading, active_local_root, active_navigation_generation, active_pending_url,
     set_active_loading, set_active_pending_url, BROWSER_POPUP_REQUEST_EVENT,
@@ -135,48 +134,6 @@ struct BrowserCloseResponse {
     space_id: Option<String>,
     workspace: Option<String>,
     error: Option<String>,
-}
-
-fn artifacts_dir() -> Result<PathBuf, String> {
-    let root = local_data_root()?;
-    let dir = root.join("browser").join("artifacts");
-    fs::create_dir_all(&dir).map_err(|e| format!("failed to create artifacts dir: {e}"))?;
-    cleanup_artifacts(&dir);
-    Ok(dir)
-}
-
-fn cleanup_artifacts(dir: &PathBuf) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    let mut files = Vec::new();
-    let now = SystemTime::now();
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            if let Ok(meta) = fs::metadata(&path) {
-                let modified = meta.modified().unwrap_or(UNIX_EPOCH);
-                let age_secs = now
-                    .duration_since(modified)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                if age_secs > 7 * 86400 {
-                    let _ = fs::remove_file(&path);
-                } else {
-                    files.push((path, modified));
-                }
-            }
-        }
-    }
-
-    if files.len() > 100 {
-        files.sort_by_key(|(_, m)| *m);
-        let remove_count = files.len() - 100;
-        for (path, _) in files.into_iter().take(remove_count) {
-            let _ = fs::remove_file(path);
-        }
-    }
 }
 
 pub async fn handle_action(
@@ -1783,17 +1740,15 @@ async fn handle_action_inner(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
 
-            let workspace = params.get("workspace").and_then(|v| v.as_str());
-            let dir = if let Some(ws) = workspace {
-                let ws_path = PathBuf::from(ws);
-                let out_dir = ws_path.join(".anbo").join("artifacts");
-                fs::create_dir_all(&out_dir)
-                    .map_err(|e| (error_codes::INTERNAL.to_string(), e.to_string()))?;
-                out_dir
-            } else {
-                artifacts_dir().map_err(|e| (error_codes::INTERNAL.to_string(), e))?
-            };
-
+            let options = super::artifacts::Options::parse(&params)
+                .map_err(|e| (error_codes::INVALID_REQUEST.to_string(), e))?;
+            let actual = active_local_root(tab_id).ok_or_else(|| {
+                (
+                    error_codes::INVALID_REQUEST.to_string(),
+                    "screenshot requires the tab's local workspace".into(),
+                )
+            })?;
+            let requested = options.workspace.clone();
             let ts = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_millis())
@@ -1808,26 +1763,50 @@ async fn handle_action_inner(
             } else {
                 encoding.format
             };
-            let file_path = dir.join(format!("screenshot_{tab_id}_{ts}.{extension}"));
+            let control = super::activity::current_control_id().ok_or_else(|| {
+                (
+                    error_codes::INVALID_REQUEST.to_string(),
+                    "screenshot requires an active browser control session".into(),
+                )
+            })?;
+            let root = tauri::async_runtime::spawn_blocking(move || {
+                super::artifacts::prepare(&actual, requested.as_deref())
+            })
+            .await
+            .map_err(|e| (error_codes::INTERNAL.to_string(), e.to_string()))?
+            .map_err(|e| (error_codes::INVALID_REQUEST.to_string(), e))?;
+            let source_url = read_url(&webview, Duration::from_millis(250))
+                .await
+                .unwrap_or_default();
+            let (fallback, origin) = super::artifacts::source(&source_url);
             let _design_layer = super::design::hide_for_capture(&webview).await;
             let response = capture_screenshot(&webview, encoding)
                 .await
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
             let bytes = decode_screenshot_response(&response)
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
-            fs::write(&file_path, &bytes).map_err(|e| {
-                (
-                    error_codes::INTERNAL.to_string(),
-                    format!("failed to write screenshot: {e}"),
-                )
-            })?;
-            let mut result = json!({
-                "tabId": tab_id,
-                "path": file_path.to_string_lossy(),
-                "size": bytes.len(),
-                "format": encoding.format,
-                "quality": encoding.quality
-            });
+            let capture = super::artifacts::Capture {
+                root,
+                control,
+                options,
+                fallback,
+                origin,
+                timestamp: ts.min(u128::from(u64::MAX)) as u64,
+                tab_id,
+                actor: serde_json::to_value(caller).unwrap_or(Value::Null),
+                extension,
+                format: encoding.format,
+            };
+            let (mut result, bytes) = tauri::async_runtime::spawn_blocking(move || {
+                super::artifacts::save(capture, &bytes).map(|result| (result, bytes))
+            })
+            .await
+            .map_err(|e| (error_codes::INTERNAL.to_string(), e.to_string()))?
+            .map_err(|e| (error_codes::INTERNAL.to_string(), e))?;
+            result["tabId"] = json!(tab_id);
+            result["size"] = json!(bytes.len());
+            result["format"] = json!(encoding.format);
+            result["quality"] = json!(encoding.quality);
             // The agent asked to see the page; handing back only a path made
             // it spend another call reading the file. Measured: three extra
             // reads in one TradingView task. The image rides along in the
@@ -3735,7 +3714,7 @@ fn extract_fraction_position(
     ))
 }
 
-fn actionable_probe_script(ref_id: &str, scroll: bool, position: Option<(f64, f64)>) -> String {
+fn actionable_probe_script(ref_id: &str, scroll: &str, position: Option<(f64, f64)>) -> String {
     let action_rect = include_str!("actionRect.js");
     let position = position
         .map(|(x, y)| json!({"x": x, "y": y}))
@@ -3769,6 +3748,24 @@ fn actionable_probe_script(ref_id: &str, scroll: bool, position: Option<(f64, f6
                 draggable: el.draggable === true
             }});"#
         ),
+    )
+}
+
+fn actionability_wait_script(
+    ref_id: &str,
+    scroll: bool,
+    position: Option<(f64, f64)>,
+    requirement: ActionabilityRequirement,
+) -> String {
+    let sampler = include_str!("actionabilityWait.js");
+    let probe = actionable_probe_script(ref_id, "scroll", position);
+    let requirement = match requirement {
+        ActionabilityRequirement::Focus => "focus",
+        ActionabilityRequirement::Editable => "editable",
+        _ => "pointer",
+    };
+    format!(
+        "(() => {{ {sampler}\nreturn waitForActionableSample((scroll) => JSON.parse({probe}), '{requirement}', {scroll}); }})()"
     )
 }
 
@@ -3867,12 +3864,15 @@ async fn wait_for_actionable_ref(
         }
         _ => None,
     };
-    let initial_script = actionable_probe_script(ref_id, true, position);
-    let settled_script = actionable_probe_script(ref_id, false, position);
+    let initial_script = actionability_wait_script(ref_id, true, position, requirement);
+    let settled_script = actionability_wait_script(ref_id, false, position, requirement);
     let mut script = &initial_script;
-    let mut previous_rect: Option<(f64, f64, f64, f64)> = None;
+    let frame_id = target
+        .filter(|target| !target.is_main)
+        .map(|target| target.frame_id.as_str());
     loop {
-        let response = execute_ref_script(webview, target, script)
+        let probe_started = tokio::time::Instant::now();
+        let response = ref_context::execute_awaited(webview, frame_id, script)
             .await
             .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
         script = &settled_script;
@@ -3900,13 +3900,7 @@ async fn wait_for_actionable_ref(
                 .and_then(Value::as_f64)
                 .unwrap_or_default(),
         );
-        let stable = previous_rect.is_some_and(|previous| {
-            (previous.0 - rect.0).abs() <= 0.5
-                && (previous.1 - rect.1).abs() <= 0.5
-                && (previous.2 - rect.2).abs() <= 0.5
-                && (previous.3 - rect.3).abs() <= 0.5
-        });
-        previous_rect = Some(rect);
+        let stable = parsed.get("stable").and_then(Value::as_bool) == Some(true);
         let requirement_met = match requirement {
             ActionabilityRequirement::Click
             | ActionabilityRequirement::ClickAt(_)
@@ -3975,7 +3969,7 @@ async fn wait_for_actionable_ref(
                 format!("element ref '{ref_id}' did not become actionable: {last_reason}"),
             ));
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep_until((probe_started + Duration::from_millis(100)).min(deadline)).await;
     }
 }
 
@@ -6326,14 +6320,31 @@ mod tests {
     #[test]
     fn hover_probe_checks_requested_position_during_initial_and_settled_sampling() {
         for scroll in [true, false] {
-            let script = actionable_probe_script("g1-e1", scroll, Some((0.6, 0.5)));
+            let script = actionable_probe_script("g1-e1", &scroll.to_string(), Some((0.6, 0.5)));
             assert!(script.contains(&format!(
                 "prepareActionPoint(el, {scroll}, {{\"x\":0.6,\"y\":0.5}})"
             )));
             assert!(script.contains("receivesActionPointer(el, point)"));
         }
-        assert!(actionable_probe_script("g1-e1", false, None)
+        assert!(actionable_probe_script("g1-e1", "false", None)
             .contains("prepareActionPoint(el, false, null)"));
+    }
+
+    #[test]
+    fn actionability_sampler_preserves_per_action_requirements_and_scroll_policy() {
+        for (requirement, expected) in [
+            (ActionabilityRequirement::Click, "pointer"),
+            (ActionabilityRequirement::Hover(None), "pointer"),
+            (ActionabilityRequirement::Focus, "focus"),
+            (ActionabilityRequirement::Editable, "editable"),
+        ] {
+            for scroll in [true, false] {
+                let script = actionability_wait_script("g1-e1", scroll, None, requirement);
+                assert!(script.contains("prepareActionPoint(el, scroll, null)"));
+                assert!(script.contains(&format!("'{expected}', {scroll})")));
+                assert!(script.contains("refRegistry.resolve(refId)"));
+            }
+        }
     }
 
     #[test]

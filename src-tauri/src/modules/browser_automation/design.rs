@@ -706,7 +706,7 @@ fn slug_for(url: &str) -> String {
 }
 
 /// `YYYYMMDD-HHMMSS` in UTC from a unix timestamp, without a date crate.
-fn stamp(secs: u64) -> String {
+pub(super) fn stamp(secs: u64) -> String {
     let days = secs / 86_400;
     let rem = secs % 86_400;
     let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60);

@@ -157,6 +157,10 @@ struct Context {
 }
 tokio::task_local! { static CURRENT: Context; }
 
+pub(super) fn current_control_id() -> Option<u64> {
+    CURRENT.try_with(|context| context.event.control_id).ok()
+}
+
 pub async fn track<F>(
     app: &AppHandle,
     method: &str,
@@ -298,6 +302,8 @@ fn release_control(control_id: u64, caller: &Caller) -> bool {
         .is_some_and(|(owner, _)| owner == caller)
     {
         controls.remove(&control_id);
+        drop(guard);
+        super::artifacts::end_control(control_id);
         return true;
     }
     false
@@ -508,7 +514,10 @@ fn accepts(previous: &Activity, next: &Activity) -> bool {
         return false;
     }
     if next.phase == "queued"
-        && !matches!(previous.phase, "done" | "error" | "idle" | "queued" | "ended")
+        && !matches!(
+            previous.phase,
+            "done" | "error" | "idle" | "queued" | "ended"
+        )
     {
         return false;
     }
@@ -892,9 +901,7 @@ pub fn start_sweep(app: AppHandle) {
                     .map(|message| (*message).to_string())
                     .or_else(|| panic.downcast_ref::<String>().cloned())
                     .unwrap_or_else(|| "unknown".to_string());
-                log::error!(
-                    "[browser_automation] sweep pass panicked and was contained: {detail}"
-                );
+                log::error!("[browser_automation] sweep pass panicked and was contained: {detail}");
             }
         }
     });
@@ -993,7 +1000,11 @@ fn orphaned_surfaces() -> Vec<Activity> {
                 return None;
             }
             let (control_id, caller) = (event.control_id, event.actor.clone());
-            surface.finish(control_id, &caller, SEQUENCE.fetch_add(1, Ordering::Relaxed))
+            surface.finish(
+                control_id,
+                &caller,
+                SEQUENCE.fetch_add(1, Ordering::Relaxed),
+            )
         })
         .collect()
 }
@@ -1050,6 +1061,7 @@ pub fn remove(tab_id: i64) {
 }
 
 pub fn clear() {
+    super::artifacts::clear();
     if let Ok(mut guard) = TABS.lock() {
         *guard = None;
     }
@@ -1614,7 +1626,11 @@ mod tests {
         assert_eq!(finished[0].tab_id, 812);
         assert_eq!(finished[0].phase, "ended");
         assert!(orphaned_surfaces().is_empty(), "finishing is not repeated");
-        assert_eq!(session_current(21), Some(811), "the live session is untouched");
+        assert_eq!(
+            session_current(21),
+            Some(811),
+            "the live session is untouched"
+        );
         if let Ok(mut guard) = TABS.lock() {
             if let Some(tabs) = guard.as_mut() {
                 tabs.remove(&811);

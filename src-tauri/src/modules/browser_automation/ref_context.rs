@@ -82,11 +82,20 @@ pub async fn evaluate_context(
     context_id: i64,
     expression: &str,
 ) -> Result<String, String> {
+    evaluate_context_with_promise(webview, context_id, expression, false).await
+}
+
+async fn evaluate_context_with_promise(
+    webview: &Webview,
+    context_id: i64,
+    expression: &str,
+    await_promise: bool,
+) -> Result<String, String> {
     let raw = call_devtools_protocol_method(
         webview,
         "Runtime.evaluate",
         &json!({"expression": expression, "contextId": context_id, "returnByValue": true,
-            "awaitPromise": false, "userGesture": true})
+            "awaitPromise": await_promise, "userGesture": true})
         .to_string(),
         Duration::from_secs(5),
     )
@@ -108,6 +117,22 @@ pub async fn execute_main(webview: &Webview, expression: &str) -> Result<String,
     let context_id = main_context(webview).await?;
     let result = evaluate_context(webview, context_id, expression).await;
     if result.is_err() {
+        remove(tab_id(webview)?);
+    }
+    result
+}
+
+pub async fn execute_awaited(
+    webview: &Webview,
+    frame_id: Option<&str>,
+    expression: &str,
+) -> Result<String, String> {
+    let context_id = match frame_id {
+        Some(frame_id) => frame_context(webview, frame_id).await?,
+        None => main_context(webview).await?,
+    };
+    let result = evaluate_context_with_promise(webview, context_id, expression, true).await;
+    if result.is_err() && frame_id.is_none() {
         remove(tab_id(webview)?);
     }
     result

@@ -69,10 +69,10 @@ const LAST_CALL_TOOLS: [&str; 8] = [
 ];
 
 fn tab_id_prop() -> Value {
-    json!({ "type": "integer", "description": "tabId from browser_open/browser_tabs." })
+    json!({ "type": "integer", "description": "Browser tab ID." })
 }
 fn ref_prop() -> Value {
-    json!({ "type": "string", "description": "Live ref from this tab's last 8 scans, e.g. g3-e12. Reuse until stale_ref, then find again." })
+    json!({ "type": "string", "description": "Live tab ref (last 8 scans); rediscover on stale_ref." })
 }
 
 fn fraction_point_prop(description: &str) -> Value {
@@ -154,7 +154,7 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_scroll", "description": "Scroll the page by x/y pixels.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "x": { "type": "number" }, "y": { "type": "number" } }, "required": ["tabId"] } },
         { "name": "browser_wait", "description": "Wait for text, URL, document load state, or a ref state. networkIdle observes native page-target HTTP requests until completion or failure plus 500ms of quiet; it is not a guarantee of application readiness. Use explicit text or waitFor for streaming pages. Backward-compatible text-only calls remain supported.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "condition": { "type": "string", "enum": ["text", "url", "load", "ref"] }, "text": { "type": "string" }, "url": { "type": "string", "description": "Exact URL or a glob containing * wildcards." }, "ref": refr.clone(), "state": { "type": "string", "enum": ["attached", "detached", "visible", "hidden", "enabled", "disabled", "checked", "unchecked"] }, "loadState": { "type": "string", "enum": ["interactive", "complete", "networkIdle"], "default": "complete" }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "description": "Timeout in milliseconds (default 10000). Values above 50000 are accepted but run to 50000, so the tool always reports what it saw instead of losing the answer to the transport timeout." } }, "required": ["tabId"] } },
         { "name": "browser_dialog", "description": "Click a ref and handle its alert, confirm, or prompt. Returns clickDispatched and dialogOpened separately. If no dialog opens, ok is false but the click already happened; do not blindly retry it.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "dialogAction": { "type": "string", "enum": ["accept", "dismiss"] }, "promptText": { "type": "string", "maxLength": 4096 } }, "required": ["tabId", "ref", "dialogAction"] } },
-        { "name": "browser_screenshot", "description": "Capture the viewport (not the full page) to a file under <workspace>/.anbo/artifacts and, unless inline is false, also return the image in the reply so no separate read is needed. Automation cursor effects are excluded.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "format": { "type": "string", "enum": ["png", "jpeg", "webp"], "default": "png", "description": "PNG keeps every pixel; jpeg or webp cost a fraction of it when the capture is only being read for layout." }, "quality": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Encoder quality for jpeg and webp." }, "inline": { "type": "boolean", "default": true, "description": "Return the image in the reply as well as writing the file. Captures above 600 KB are only written to disk." }, "workspace": { "type": "string", "description": "Optional workspace root; screenshot lands under <workspace>/.anbo/artifacts." } }, "required": ["tabId"] } },
+        { "name": "browser_screenshot", "description": "Capture viewport to the tab workspace .anbo/artifacts/browser/<task-folder>. Reuse context for related shots; label names this image. Returns path and manifestPath, plus inline image up to 600 KB. Cursor effects excluded. Existing files are kept.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "context": { "type": "string", "minLength": 1, "maxLength": 120, "description": "Task name, reused within this control session; default site host." }, "label": { "type": "string", "minLength": 1, "maxLength": 120, "description": "Image purpose, e.g. after-pause; default viewport." }, "format": { "type": "string", "enum": ["png", "jpeg", "webp"], "default": "png" }, "quality": { "type": "integer", "minimum": 1, "maximum": 100 }, "inline": { "type": "boolean", "default": true }, "workspace": { "type": "string", "description": "Optional verification of the tab workspace, never a different destination." } }, "required": ["tabId"] } },
         { "name": "browser_upload", "description": "Attach one or more workspace files to an <input type=file> ref without opening a native file chooser. Hidden file inputs and refs in open Shadow DOM or child frames are supported. This selects files only; use a separate click/press to submit the form.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "workspace": file_workspace.clone(), "paths": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "type": "string", "minLength": 1 }, "description": "Absolute paths inside the workspace, or paths relative to the workspace root." } }, "required": ["tabId", "ref", "workspace", "paths"] } },
         { "name": "browser_download", "description": "Arm a workspace-scoped native download and click a ref. Returns a downloadId once the download starts; completed files land under <workspace>/.anbo/downloads. Use browser_download_wait for large files.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "workspace": file_workspace.clone(), "fileName": { "type": "string", "minLength": 1, "maxLength": 255, "description": "Optional safe destination file name. Existing files are never overwritten." }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 10000, "description": "How long to wait for the page to start the download." } }, "required": ["tabId", "ref", "workspace"] } },
         { "name": "browser_download_status", "description": "Read the current state and verified destination of a workspace-scoped browser download.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "downloadId": { "type": "string", "minLength": 1, "maxLength": 128 }, "workspace": file_workspace.clone() }, "required": ["downloadId", "workspace"] } },
@@ -359,6 +359,31 @@ pub fn tool_name_to_method(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workflow_tools_are_not_advertised_or_routed() {
+        let definitions = tool_definitions();
+        let tools = definitions.as_array().unwrap();
+        for name in ["browser_workflow", "browser_workflow_control"] {
+            assert!(tools.iter().all(|tool| tool["name"] != name));
+            assert_eq!(tool_name_to_method(name), None);
+            assert!(!include_str!("../skills/anbo.md").contains(name));
+            for tool in tools {
+                assert!(!tool["description"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains(name));
+            }
+        }
+        for (name, method) in [
+            ("browser_fill_form", "fill_form"),
+            ("browser_click", "click"),
+            ("browser_screenshot", "screenshot"),
+        ] {
+            assert!(tools.iter().any(|tool| tool["name"] == name));
+            assert_eq!(tool_name_to_method(name), Some(method));
+        }
+    }
 
     #[test]
     fn tools_have_capability_prefixes_and_unique_names() {

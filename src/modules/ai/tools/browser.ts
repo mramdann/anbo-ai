@@ -385,9 +385,24 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_screenshot: tool({
       description:
-        "Save a viewport screenshot artifact, excluding automation cursor effects. Not full-page.",
-      inputSchema: z.object({}),
-      execute: async () => {
+        "Save the viewport in a task folder, excluding cursor effects. Reuse context during one task; label describes this image. No full-page capture.",
+      inputSchema: z.object({
+        context: z
+          .string()
+          .trim()
+          .min(1)
+          .max(120)
+          .optional()
+          .describe("Task name; reuse for related captures."),
+        label: z
+          .string()
+          .trim()
+          .min(1)
+          .max(120)
+          .optional()
+          .describe("What this screenshot shows."),
+      }),
+      execute: async (params) => {
         try {
           const tabId = activeBrowserTabId(ctx);
           const workspace = ctx.getWorkspaceRoot() ?? ctx.getCwd();
@@ -395,7 +410,8 @@ export function buildBrowserTools(ctx: ToolContext) {
             requestJson: JSON.stringify({
               action: "screenshot",
               tabId,
-              workspace,
+              workspace: workspace ?? undefined,
+              ...params,
             }),
           });
           return { status: "ok", result: res };

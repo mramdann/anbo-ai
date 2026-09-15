@@ -60,11 +60,9 @@ instead of resubmitting. `browser_wait` also takes `locator` + `state`
 **Reading pages well.** Use names in the page's own language; after a failed
 lookup, `browser_find` by text or a snapshot shows the real label. Bound your
 retries and report a blocker rather than searching for the same absent label
-again. Prefer role plus accessible name or label using the page's visible
-wording. Use CSS/testId only when observed, not guessed internal attributes.
-Reuse a valid ref; a known unique target can go straight into an action or
-read's `locator`. If several elements match, inspect them with find and pick
-the intended ref; do not bypass ambiguity by blindly taking the first.
+again. Prefer observed role/name or label; use CSS/testId only when observed,
+never guessed. Use a valid ref or unique locator directly. If several elements
+match, inspect them with find and pick the intended ref, never blindly the first.
 A `confirmed absence`
 reports the latest complete scan after settling, not a prediction that a late
 render cannot add the target. It also lists controls by role and name:
@@ -81,12 +79,32 @@ a search box may pick a highlighted suggestion instead of submitting the typed
 text, so verify the URL and results afterwards. `browser_press` accepts the
 input `ref` plus `expectedValue` to refuse typing into a replaced field.
 
-**Where files land.** Screenshots and downloads go under `.anbo/` in the
-workspace that asked for them: `.anbo/artifacts/` and `.anbo/downloads/`.
-Uploads accept paths inside the selected workspace only. Never use another
-workspace's files, cookies or sessions as test data.
+**Files.** Screenshots: `.anbo/artifacts/browser/<task-folder>/` in the tab's
+workspace. Reuse `context` per task; `label` names each image. Use the returned
+`path`. Downloads: `.anbo/downloads/`. Uploads must stay in your workspace.
+Never use another workspace's files, cookies or sessions as test data.
 
 ## Browser details
+
+### Screenshot artifacts
+
+For example, `browser_screenshot {tabId, context:"youtube-playback", label:"after-pause", format:"jpeg"}`
+groups related captures in a readable task folder. Keep the context identical
+throughout the task, and choose a short label for each state being verified.
+Folders use `<UTC-date>_<task>_<run-id>` and contain numbered images and
+`manifest.jsonl`. Optional `workspace` verifies the tab root, never redirects output.
+Use a new context for a different task. Folder identity is scoped to the active
+browser control session and workspace; a new session, app restart, ten minutes
+without a capture, or bounded cache eviction starts a new run folder. Parallel
+agents do not share runs. Calls without context group by host, not inferred intent.
+Captures always write a file, even when returned inline. `inline:false` only
+omits the reply image. Existing files are neither moved nor deleted. Grouping
+does not reduce disk usage. Metadata stores source origin only, never URL
+credentials, path, query or fragment; avoid putting secrets in context/label.
+Read `metadataRecorded` and any warning: if the image saved but its manifest
+failed, keep the returned path instead of automatically taking another shot.
+
+### Form filling
 
 `browser_fill_form {tabId, fields: [{locator, text}, {locator, checked: true},
 {ref, option}]}` runs type, check or select per field in order. It stops at the

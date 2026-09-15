@@ -300,7 +300,8 @@ fn tool_result(mut value: Value) -> Value {
     let image = value
         .as_object_mut()
         .and_then(|object| object.remove("inlineImage"));
-    let mut content = vec![json!({ "type": "text", "text": serde_json::to_string(&value).unwrap_or_default() })];
+    let mut content =
+        vec![json!({ "type": "text", "text": serde_json::to_string(&value).unwrap_or_default() })];
     if let Some(image) = image {
         if let (Some(data), Some(mime)) = (
             image.get("data").and_then(Value::as_str),

@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 const arg = name => { const i = process.argv.indexOf('--' + name); return i < 0 ? undefined : process.argv[i + 1]; };
 const endpoint = new URL(arg('mcp-url')), workspace = arg('workspace'), output = arg('output');
 if (!workspace || !output || existsSync(output) || endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1' || endpoint.pathname !== '/mcp') throw Error('Pass --mcp-url loopback, --workspace and a fresh --output');
-const calls = [], checks = [], requests = [], owned = new Set(), controls = new Map();
+const calls = [], checks = [], requests = [], owned = new Set();
 let sequence = 0, session, origin, before, after, benchmark;
 async function rpc(method, params) {
   const r = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(session ? { 'Mcp-Session-Id': session } : {}) }, body: JSON.stringify({ jsonrpc: '2.0', id: ++sequence, method, params }), signal: AbortSignal.timeout(35000) });
@@ -20,8 +20,6 @@ async function call(name, args = {}) {
     const text = envelope.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
     try { result = JSON.parse(text); } catch { result = { message: text }; }
     if (envelope.isError) error = result;
-    const tabId = args.tabId ?? result?.tabId;
-    if (tabId && result?.controlId) controls.set(tabId, result.controlId);
   } catch (cause) { error = String(cause); }
   const record = { name, args, wallMs: performance.now() - start, result, error }; calls.push(record); return record;
 }
@@ -68,8 +66,10 @@ async function state(tabId) {
   return JSON.parse((await ok('browser_get_text', { tabId, ref: result.matches[0].ref, maxLength: 2000 })).text);
 }
 async function close(tabId) {
-  if (controls.has(tabId)) await ok('browser_end_session', { tabId, controlId: controls.get(tabId) });
-  await ok('browser_close', { tabId, workspace }); owned.delete(tabId);
+  if (!owned.has(tabId)) throw Error('Refusing to close an unowned tab');
+  const page = await ok('browser_get_url', { tabId });
+  if (!page.url.startsWith(origin + '/')) throw Error('Owned tab changed origin; cleanup refused');
+  await ok('browser_close', { tabId, workspace, endSession: true }); owned.delete(tabId);
 }
 async function uiUrl(tabId, expected) {
   let tab; const deadline = Date.now() + 2500;

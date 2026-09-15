@@ -54,6 +54,15 @@ async function run(
 }
 
 describe("AI browser tools", () => {
+  it("omits workflow tools while keeping standard browser operations", () => {
+    const browser = buildBrowserTools(makeContext(42));
+    expect(browser).not.toHaveProperty("browser_workflow");
+    expect(browser).not.toHaveProperty("browser_workflow_control");
+    expect(browser.browser_type.execute).toBeTypeOf("function");
+    expect(browser.browser_click.execute).toBeTypeOf("function");
+    expect(browser.browser_screenshot.execute).toBeTypeOf("function");
+  });
+
   it("forwards a locator directly without inventing a ref or replaying input", async () => {
     const locator = {
       by: "role",
@@ -385,10 +394,23 @@ describe("AI browser tools", () => {
         requestJson: JSON.stringify({
           action: "screenshot",
           tabId: 42,
-          workspace: null,
         }),
       },
     );
+  });
+
+  it("forwards screenshot task context and image label in one call", async () => {
+    await run("browser_screenshot", {
+      context: "youtube playback",
+      label: "after pause",
+    });
+    expect(invokeMock).toHaveBeenCalledOnce();
+    expect(JSON.parse(invokeMock.mock.calls[0][1].requestJson)).toEqual({
+      action: "screenshot",
+      tabId: 42,
+      context: "youtube playback",
+      label: "after pause",
+    });
   });
 
   it("handles history navigation on the active preview", async () => {

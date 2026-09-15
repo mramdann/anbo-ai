@@ -2,6 +2,7 @@ mod accessible_name;
 pub mod actions;
 pub mod activity;
 pub mod agent_actions;
+mod artifacts;
 pub mod caller;
 pub mod cdp;
 pub mod design;
@@ -81,8 +82,7 @@ pub async fn browser_set_agent_callsigns(
         .into_iter()
         .filter_map(|(pty, name)| {
             let name = name.trim();
-            (!name.is_empty() && name.chars().count() <= MAX_NAME)
-                .then(|| (pty, name.to_string()))
+            (!name.is_empty() && name.chars().count() <= MAX_NAME).then(|| (pty, name.to_string()))
         })
         .collect();
     caller::set_agent_callsigns(bounded);
