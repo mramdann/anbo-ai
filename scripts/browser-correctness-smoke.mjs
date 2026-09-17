@@ -55,8 +55,7 @@ async function open(path) {const result=await ok('browser_open',{workspace,url:o
 async function find(tabId,selector) {return (await ok('browser_find',{tabId,by:'css',value:selector,limit:1,timeout:3000})).matches[0];}
 async function close(tabId) {
   const current=await ok('browser_get_url',{tabId});if(!current.url.startsWith(origin+'/'))throw Error('Owned tab changed origin; refusing cleanup');
-  if(controls.has(tabId))await ok('browser_end_session',{tabId,controlId:controls.get(tabId)});
-  await ok('browser_close',{tabId,workspace});owned.delete(tabId);
+  await ok('browser_close',{tabId,workspace,endSession:true});owned.delete(tabId);
 }
 try {
   await rpc('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'anbo-correctness-smoke',version:'1'}});

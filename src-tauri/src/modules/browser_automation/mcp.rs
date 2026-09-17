@@ -36,8 +36,9 @@ pub const SERVER_INSTRUCTIONS: &str = concat!(
     "scrolled or clicked, and cannot be handed back to them. ",
     "The usual shape of a browser task: browser_open with your own workspace ",
     "root, reuse a live ref or act/read directly with a known unique locator. ",
-    "Prefer role plus name or label from the page's visible wording; do not ",
-    "guess CSS attributes. Use browser_find for discovery or disambiguation, ",
+    "Use observed names, labels and placeholders in the page's language, not ",
+    "guessed translations or CSS attributes. If unknown, use browser_find ",
+    "without a guessed name filter for discovery or disambiguation, ",
     "not before every action; browser_snapshot is for unfamiliar page structure. ",
     "Use waitFor to describe the result you expect (each navigation-shaped ",
     "action reply carries page.url and page.title, so no separate URL read), a ",
@@ -60,7 +61,7 @@ pub const BROWSER_SESSION_INSTRUCTIONS: &str = "Browser work runs in a session t
 const LAST_CALL_TOOLS: [&str; 8] = [
     "browser_click",
     "browser_press",
-    "browser_key",
+    "browser_page_info",
     "browser_wait",
     "browser_get_text",
     "browser_get_property",
@@ -133,7 +134,6 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_open", "description": "Open a page in the user's real browser: a visible tab in this app, not a private fetch. Use it whenever a task needs a web page opened, read, or interacted with. Pass your own workspace root or space id; UI focus is never a fallback. The first tab in an empty active workspace is shown, later tabs stay in the background. The reply carries the tabId and the controlId of your session.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["url", "workspace"] } },
         { "name": "browser_close", "description": "Close a native browser tab in an explicitly selected Anbo workspace. Pass endSession: true when this is the last tab of your task, so closing it and ending your session is one call instead of two.", "annotations": { "destructiveHint": true, "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." }, "endSession": { "type": "boolean", "default": false, "description": "Also end your control session after the tab closes; the reply then carries sessionEnded: true." } }, "required": ["tabId", "workspace"] } },
         { "name": "browser_tabs", "description": "List active native browser tabs with foreground, workspace, space, loading, pendingUrl, automation-target, automation-activity, and durationMs metadata. While loading, url remains the last committed URL and pendingUrl identifies the target when known.", "inputSchema": { "type": "object", "properties": {} } },
-        { "name": "browser_get_url", "description": "Get the last committed URL, loading state and pendingUrl of a browser tab without waiting for page JavaScript. While loading, pendingUrl is the requested target when known; it is not proof of a committed navigation.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_navigate", "description": "Start navigating a browser tab to an http(s) URL and return immediately. Use browser_wait or browser_tabs to observe completion; browser_stop can interrupt the active load.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "url": { "type": "string" } }, "required": ["tabId", "url"] } },
         { "name": "browser_emulate", "description": "Emulate a device viewport on a browser tab so the page lays out as it would on that device. Pass width 0 to clear the emulation. Sets the device pixel ratio and, for mobile, touch support. The emulation survives navigation until cleared.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "width": { "type": "integer", "minimum": 0, "maximum": 10000, "description": "CSS pixels wide. 0 clears the emulation." }, "height": { "type": "integer", "minimum": 0, "maximum": 10000 }, "scale": { "type": "number", "minimum": 0.1, "maximum": 4, "default": 1, "description": "Device pixel ratio." }, "mobile": { "type": "boolean", "default": false, "description": "Report a mobile device and enable touch." }, "fit": { "type": "number", "minimum": 0.05, "maximum": 1, "default": 1, "description": "Shrink the painted result so a viewport wider than the pane is shown whole instead of cropped." } }, "required": ["tabId", "width", "height"] } },
         { "name": "browser_reload", "description": "Start reloading a browser tab and return immediately. Use browser_wait or browser_tabs to observe completion.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
@@ -143,14 +143,12 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_snapshot", "description": "Token-bounded accessibility snapshot: viewport text first, then interactive elements with refs; 8000 characters by default, 16000 at most, paged with offset and nextOffset. Reuse live refs through the next 8 scans; a new find or snapshot alone does not invalidate them.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "offset": { "type": "integer", "minimum": 0, "description": "Skip this many items; the reply carries nextOffset while more of the page is waiting." }, "maxChars": { "type": "integer", "minimum": 2000, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
         { "name": "browser_find", "description": "Discover or disambiguate elements and return refs across Shadow DOM and child frames. Prefer role + name or label using visible wording; do not guess CSS attributes. Known unique targets can go directly into an action/read's locator without find. Implicit roles include link, button, textbox, searchbox, combobox, heading and dialog. hiddenMatches counts non-rendered matches. A settled complete miss can return early with observed controls and nearest simpler CSS; these are discovery hints, not automatic fallback targets. Inspect candidates before choosing a ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "by": { "type": "string", "enum": ["role", "text", "label", "placeholder", "testId", "title", "alt", "css"] }, "value": { "type": "string", "minLength": 1, "maxLength": 4096 }, "name": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Computed accessible-name filter for role: visible text, referenced/associated label, aria-label, alt or title. Not a CSS name attribute." }, "exact": { "type": "boolean", "default": false }, "includeHidden": { "type": "boolean", "default": false }, "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 5000 } }, "required": ["tabId", "by", "value"] } },
         { "name": "browser_click", "description": "Click an element by ref after bounded visibility, stability, enabled, and hit-target checks.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
-        { "name": "browser_double_click", "description": "Double-click an actionable element by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_focus", "description": "Focus a visible enabled element by ref without activating the user's workspace.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_check", "description": "Set a checkbox or radio ref to the requested checked state and verify the result.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "checked": { "type": "boolean", "default": true } }, "required": ["tabId", "ref"] } },
         { "name": "browser_drag", "description": "Native mouse drag from one ref to another, or inside one element by passing the same ref twice with sourcePosition and targetPosition (fractions of the element, e.g. {x:0.7,y:0.5} to {x:0.4,y:0.5} pans a chart left). Both points must be visible; nothing is retried automatically.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "sourceRef": refr.clone(), "targetRef": refr.clone(), "sourcePosition": fraction_point_prop("Where the press lands inside sourceRef, as fractions strictly between 0 and 1 (0.5 is the center), not pixels."), "targetPosition": fraction_point_prop("Where the release lands inside targetRef, as fractions strictly between 0 and 1, not pixels.") }, "required": ["tabId", "sourceRef", "targetRef"] } },
         { "name": "browser_type", "description": "Fill a known input directly using its ref or semantic locator; find only to discover or disambiguate. Sets value and emits input/change once, not per-key events. Returns the ref and immediate valueVerified; submit separately with press and waitFor.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "text": { "type": "string" }, "append": { "type": "boolean", "description": "Append to existing value instead of replacing it." } }, "required": ["tabId", "ref", "text"] } },
         { "name": "browser_fill_form", "description": "Fill several fields in one call, in order. Each field names its target by ref or a unique locator and carries exactly one of text (typed and verified like browser_type, replacing the value), checked (checkbox or radio) or option (select value or label). Stops at the first field that fails and says which fields were done; never submits.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "fields": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "type": "object", "additionalProperties": false, "properties": { "ref": refr.clone(), "text": { "type": "string" }, "checked": { "type": "boolean" }, "option": { "type": "string" } } } } }, "required": ["tabId", "fields"] } },
         { "name": "browser_press", "description": "Press a keyboard key through the browser input pipeline (e.g. Enter, Tab). Key dispatch holds the tab lock, but Enter observation does not, so stop and navigation remain responsive. submissionObserved and navigationObserved report only effects seen within the bounded observation window; false does not mean dispatch failed.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "key": { "type": "string" }, "observationTimeout": { "type": "integer", "minimum": 0, "maximum": 10000, "default": 3000, "description": "Milliseconds to observe submit or navigation after Enter without holding the tab lock. Ignored for other keys." } }, "required": ["tabId", "key"] } },
-        { "name": "browser_key", "description": "Dispatch a keyboard press, key-down, or key-up. Alt, Control, Meta, and Shift modifiers are per-call: pass them on each key event. Holding a modifier across tools or modifying mouse clicks is not supported.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "key": { "type": "string", "minLength": 1, "maxLength": 64 }, "keyAction": { "type": "string", "enum": ["press", "down", "up"], "default": "press" }, "modifiers": { "type": "array", "maxItems": 4, "uniqueItems": true, "items": { "type": "string", "enum": ["Alt", "Control", "Meta", "Shift"] } } }, "required": ["tabId", "key"] } },
         { "name": "browser_scroll", "description": "Scroll the page by x/y pixels.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "x": { "type": "number" }, "y": { "type": "number" } }, "required": ["tabId"] } },
         { "name": "browser_wait", "description": "Wait for text, URL, document load state, or a ref state. networkIdle observes native page-target HTTP requests until completion or failure plus 500ms of quiet; it is not a guarantee of application readiness. Use explicit text or waitFor for streaming pages. Backward-compatible text-only calls remain supported.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "condition": { "type": "string", "enum": ["text", "url", "load", "ref"] }, "text": { "type": "string" }, "url": { "type": "string", "description": "Exact URL or a glob containing * wildcards." }, "ref": refr.clone(), "state": { "type": "string", "enum": ["attached", "detached", "visible", "hidden", "enabled", "disabled", "checked", "unchecked"] }, "loadState": { "type": "string", "enum": ["interactive", "complete", "networkIdle"], "default": "complete" }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "description": "Timeout in milliseconds (default 10000). Values above 50000 are accepted but run to 50000, so the tool always reports what it saw instead of losing the answer to the transport timeout." } }, "required": ["tabId"] } },
         { "name": "browser_dialog", "description": "Click a ref and handle its alert, confirm, or prompt. Returns clickDispatched and dialogOpened separately. If no dialog opens, ok is false but the click already happened; do not blindly retry it.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "dialogAction": { "type": "string", "enum": ["accept", "dismiss"] }, "promptText": { "type": "string", "maxLength": 4096 } }, "required": ["tabId", "ref", "dialogAction"] } },
@@ -164,7 +162,7 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_scroll_to_element", "description": "Scroll an element into view by ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_get_text", "description": "Read a known target directly by ref or locator; omit both for body text. Returns DOM text or accessible name, visible and source. Hidden labels may be outdated: reveal controls before treating their text as live state.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "maxLength": { "type": "integer", "minimum": 1, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
         { "name": "browser_get_property", "description": "Read up to 8 live properties by ref or locator in one call, e.g. paused/currentTime or value/checked. Only the listed DOM properties are allowed, never caller-supplied JavaScript. Reuse the returned ref for a later state check.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "properties": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": { "type": "string", "enum": super::actions::ELEMENT_PROPERTIES } } }, "required": ["tabId", "ref", "properties"] } },
-        { "name": "browser_page_info", "description": "Get native title and URL without waiting for page JavaScript. titleSource document opts into a bounded DOM-title read. When waiting for this title, pass the returned titleSource to waitFor; native and DOM titles can differ after SPA back/forward.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "titleSource": {"type":"string", "enum":["native","document"], "default":"native"} }, "required": ["tabId"] } },
+        { "name": "browser_page_info", "description": "Get native title, committed URL, loading and pendingUrl without page JavaScript. pendingUrl is not a committed navigation. titleSource document opts into a bounded DOM-title read. When waiting for this title, pass the returned titleSource to waitFor; native and DOM titles can differ after SPA back/forward.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "titleSource": {"type":"string", "enum":["native","document"], "default":"native"} }, "required": ["tabId"] } },
         { "name": "browser_console_logs", "description": "Get up to 50 bounded recent console messages, uncaught runtime errors, and unhandled promise rejections from the main document and accessible child frames.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "level": { "description": "Keep only these console levels, as one name or a list.", "anyOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" }, "maxItems": 8 } ] }, "maxCharsPerMessage": { "type": "integer", "minimum": 40, "maximum": 4000, "description": "Clip each message; one advert frame can otherwise spend the whole budget on a single tracking URL." }, "since": { "type": "integer", "minimum": 0, "description": "Only entries at or after this timestamp." } }, "required": ["tabId"] } },
         { "name": "agent_spawn", "description": "Spawn one configured built-in or custom CLI agent in an explicitly selected open Anbo workspace. Displays its first tab only in an empty active workspace; later spawns stay in the background and inactive workspaces never activate. The stored command cannot be supplied or overridden by the caller.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agent": { "type": "string", "minLength": 1, "maxLength": 71, "description": "Built-in launcher id or label, or the display name or custom:<id> of an agent registered in Anbo Settings." }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 15000, "description": "How long to wait for live agent detection before returning pending: true." } }, "required": ["workspace", "agent"] } },
         { "name": "agent_list", "description": "List live non-private terminal agents in an explicitly selected Anbo workspace. Each carries the name it goes by, such as Alnilam, alongside its cli and id. Use the name when addressing it. Does not activate the workspace or move UI focus.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
@@ -200,9 +198,12 @@ pub fn tool_definitions() -> Value {
         if name == "browser_press" {
             tool["inputSchema"]["properties"]["ref"] = ref_prop();
             tool["inputSchema"]["properties"]["expectedValue"] = json!({"type":"string", "maxLength":65536, "description":"Requires ref. Verify the input's current value before the key is sent; a mismatch sends nothing. Values are not echoed in errors."});
-            tool["description"] = json!("Press a keyboard key through native input. For forms pass the input ref and expectedValue to guard against a replaced or reset input, plus waitFor to verify the result; waitFor replaces Enter's default observation window. Never blindly resubmit after a postcondition timeout.");
+            tool["inputSchema"]["properties"]["keyAction"] = json!({"type":"string","enum":["press","down","up"],"default":"press","description":"waitFor/Enter observation require press."});
+            tool["inputSchema"]["properties"]["modifiers"] = json!({"type":"array","maxItems":4,"uniqueItems":true,"items":{"type":"string","enum":["Alt","Control","Meta","Shift"]},"description":"Per call, not held across tools or mouse clicks."});
+            tool["description"] = json!("Native keyboard press, down or up with optional modifiers. For forms use ref/locator and expectedValue to guard the input, plus waitFor to verify the result; waitFor replaces Enter's default observation window. Never blindly resubmit after a timeout.");
         } else if name == "browser_click" {
-            tool["description"] = json!("Click a ref after visibility, stability, enabled and hit-target checks. Optional waitFor verifies the resulting page state; a timed-out wait never repeats the click.");
+            tool["inputSchema"]["properties"]["clickCount"] = json!({"type":"integer","enum":[1,2],"default":1,"description":"2 for a double-click; each press rechecks the target."});
+            tool["description"] = json!("Click a ref after visibility, stability, enabled and hit-target checks. clickCount 2 double-clicks. Optional waitFor verifies the resulting page state; a timed-out wait never repeats input.");
         } else if name == "browser_wait" {
             tool["description"] = json!("Wait for text, URL, load state, or a ref state; or pass waitFor alone for a stable url, title and visible-text combination (put timeout inside it). A load event alone does not prove SPA readiness.");
         }
@@ -230,7 +231,7 @@ pub fn tool_definitions() -> Value {
                 .collect();
             tool["inputSchema"]["properties"]["locator"] = json!({
                 "type":"object", "properties":props, "required":["by","value"], "additionalProperties":false,
-                "description": if waiting { "Locator (hidden included); unique unless minCount. Top-level timeout." } else { "Known unique target, no find needed. Prefer role+name/label; CSS only when observed. Ambiguous targets send no input." }
+                "description": if waiting { "Locator (hidden included); unique unless minCount. Top-level timeout." } else { "Observed unique target, no find needed. Never guess names, labels or CSS; find if unknown. Ambiguous targets send no input." }
             });
             if waiting {
                 tool["inputSchema"]["properties"]["condition"]["enum"]
@@ -361,6 +362,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn consolidated_browser_catalog_keeps_legacy_dispatch_aliases() {
+        let definitions = tool_definitions();
+        let tools = definitions.as_array().unwrap();
+        assert_eq!(
+            tools
+                .iter()
+                .filter(|tool| tool["name"].as_str().unwrap().starts_with("browser_"))
+                .count(),
+            33
+        );
+        for (alias, method) in [
+            ("browser_double_click", "double_click"),
+            ("browser_key", "key"),
+            ("browser_get_url", "get_url"),
+        ] {
+            assert!(tools.iter().all(|tool| tool["name"] != alias));
+            assert_eq!(tool_name_to_method(alias), Some(method));
+        }
+        let find = |name| tools.iter().find(|tool| tool["name"] == name).unwrap();
+        assert_eq!(
+            find("browser_click")["inputSchema"]["properties"]["clickCount"]["enum"],
+            json!([1, 2])
+        );
+        assert_eq!(
+            find("browser_press")["inputSchema"]["properties"]["keyAction"]["enum"],
+            json!(["press", "down", "up"])
+        );
+        for field in ["ref", "locator", "expectedValue", "waitFor", "modifiers"] {
+            assert!(find("browser_press")["inputSchema"]["properties"]
+                .get(field)
+                .is_some());
+        }
+        assert_eq!(
+            find("browser_page_info")["inputSchema"]["properties"]["titleSource"]["default"],
+            "native"
+        );
+    }
+
+    #[test]
     fn workflow_tools_are_not_advertised_or_routed() {
         let definitions = tool_definitions();
         let tools = definitions.as_array().unwrap();
@@ -388,7 +428,7 @@ mod tests {
     #[test]
     fn tools_have_capability_prefixes_and_unique_names() {
         let tools = tool_definitions().as_array().unwrap().clone();
-        assert_eq!(tools.len(), 52);
+        assert_eq!(tools.len(), 49);
         let mut names = std::collections::HashSet::new();
         for t in &tools {
             let n = t.get("name").and_then(|v| v.as_str()).unwrap();
@@ -538,7 +578,8 @@ mod tests {
     #[test]
     fn locator_guidance_skips_redundant_discovery_without_weakening_targets() {
         assert!(SERVER_INSTRUCTIONS.contains("known unique locator"));
-        assert!(SERVER_INSTRUCTIONS.contains("do not guess CSS attributes"));
+        assert!(SERVER_INSTRUCTIONS.contains("page's language"));
+        assert!(SERVER_INSTRUCTIONS.contains("without a guessed name filter"));
         let tools = tool_definitions();
         for tool in tools.as_array().unwrap() {
             let Some(locator) = tool["inputSchema"]["properties"].get("locator") else {
@@ -548,8 +589,8 @@ mod tests {
                 continue;
             }
             let description = locator["description"].as_str().unwrap();
-            assert!(description.contains("Known unique target, no find needed"));
-            assert!(description.contains("CSS only when observed"));
+            assert!(description.contains("Observed unique target, no find needed"));
+            assert!(description.contains("Never guess names, labels or CSS"));
             assert!(description.contains("Ambiguous targets send no input"));
             assert_eq!(locator["additionalProperties"], false);
             assert_eq!(locator["required"], json!(["by", "value"]));
@@ -786,12 +827,12 @@ mod tests {
         let tools = tool_definitions();
         for (name, method) in [
             ("browser_find", "find"),
-            ("browser_double_click", "double_click"),
+            ("browser_click", "click"),
             ("browser_focus", "focus"),
             ("browser_check", "check"),
             ("browser_drag", "drag"),
             ("browser_fill_form", "fill_form"),
-            ("browser_key", "key"),
+            ("browser_press", "press_key"),
             ("browser_dialog", "dialog"),
         ] {
             assert!(tools

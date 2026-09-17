@@ -64,6 +64,24 @@ pub fn get_current_generation(tab_id: i64) -> u64 {
     map.get(&tab_id).copied().unwrap_or(0)
 }
 
+pub fn invalidate_document(tab_id: i64) {
+    {
+        let mut guard = generations().lock().unwrap();
+        let entry = guard
+            .get_or_insert_with(HashMap::new)
+            .entry(tab_id)
+            .or_default();
+        // Also retire the next generation an in-flight scan may have claimed.
+        *entry = entry.saturating_add(REF_GENERATIONS_KEPT + 2);
+    }
+    if let Ok(mut guard) = REF_FRAME_TARGETS.lock() {
+        if let Some(map) = guard.as_mut() {
+            map.remove(&tab_id);
+        }
+    }
+    super::ref_context::remove(tab_id);
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotElement {
     #[serde(rename = "type")]

@@ -165,7 +165,8 @@ describe("browser turn cleanup", () => {
     observer.receive({ ...event(4, "running", 2, 10, 4), controlId: 4 }, 50);
     observer.receive({ ...event(5, "done", 2, 10, 4), controlId: 4 }, 100);
     observer.poll(read, 2000);
-    expect(read).not.toHaveBeenCalled();
+    expect(read).toHaveBeenCalledExactlyOnceWith(1);
+    read.mockClear();
     observer.receive(event(6, "done", 1, 10, 5), 0);
     observer.receive(event(7, "ended", 1, 10, 5), 100);
     observer.poll(read, 2000);
@@ -174,5 +175,29 @@ describe("browser turn cleanup", () => {
     observer.stop(1);
     observer.poll(read, 2000);
     expect(read).not.toHaveBeenCalled();
+  });
+
+  it("observes both agents sharing a tab and ends only the finished agent", () => {
+    const observer = new BrowserTurnObserver();
+    observer.start(1, 1, "antigravity");
+    observer.start(2, 2, "antigravity");
+    observer.receive(event(1), 0);
+    observer.receive(
+      { ...event(2, "running", 2, 10, 2), controlId: 2, indicatorOnly: true },
+      0,
+    );
+    const read = (leaf: number) => (leaf === 1 ? background : working);
+    observer.poll(read, 200);
+    observer.poll(read, 800);
+    expect(observer.poll(read, 1200)).toEqual([
+      { ptyId: 1, tabId: 10, controlId: 1, sequence: 1 },
+    ]);
+    observer.receive(event(3, "ended"), 1400);
+    observer.receive({ ...event(4, "done", 2, 10, 2), controlId: 2 }, 2000);
+    observer.poll(() => background, 2200);
+    observer.poll(() => background, 2800);
+    expect(observer.poll(() => background, 3200)).toEqual([
+      { ptyId: 2, tabId: 10, controlId: 2, sequence: 4 },
+    ]);
   });
 });

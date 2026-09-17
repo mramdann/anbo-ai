@@ -10,6 +10,9 @@ use tauri::{AppHandle, Emitter, Manager, Webview};
 #[path = "activity_icon.rs"]
 mod icon;
 
+#[path = "activity_members.rs"]
+mod members;
+
 static SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static TABS: Mutex<Option<HashMap<i64, Surface>>> = Mutex::new(None);
 /// Open control sessions, keyed by the id handed back to the caller.
@@ -94,16 +97,22 @@ struct Surface {
     icon_brand: Option<&'static str>,
     in_flight: usize,
     latest_request: u64,
+    members: members::Members,
 }
 
 impl Surface {
     fn finish_observed(&mut self, target: &TurnEnd, next: u64) -> Option<Activity> {
-        let (event, _) = self.last.as_ref()?;
+        let event = self
+            .members
+            .get(target.control_id)
+            .or_else(|| self.last.as_ref().map(|(event, _)| event))?;
         if control_idle(event.control_id).is_none_or(|idle| idle < OBSERVED_MIN_AGE) {
             return None;
         }
         if self.in_flight != 0
-            || self.latest_request != event.request_id
+            || (self.members.get(target.control_id).is_none()
+                && self.latest_request != event.request_id)
+            || event.control_id != target.control_id
             || event.actor.pty_id != Some(target.pty_id)
             || event.sequence != target.sequence
             || !matches!(event.phase, "done" | "error" | "idle")
@@ -124,14 +133,16 @@ impl Surface {
         }
     }
     fn finish(&mut self, control_id: u64, caller: &Caller, sequence: u64) -> Option<Activity> {
-        let (event, _) = self.last.as_mut()?;
-        if event.phase == "ended" || event.control_id != control_id || &event.actor != caller {
-            return None;
+        let member = self.members.finish(control_id, caller, sequence);
+        if let Some((event, _)) = self.last.as_mut() {
+            if event.phase != "ended" && event.control_id == control_id && &event.actor == caller {
+                event.phase = "ended";
+                event.point = None;
+                event.sequence = sequence;
+                return Some(event.clone());
+            }
         }
-        event.phase = "ended";
-        event.point = None;
-        event.sequence = sequence;
-        Some(event.clone())
+        member
     }
 
     fn needs_icon(&mut self, brand: &'static str, install: bool) -> bool {
@@ -329,7 +340,7 @@ fn controls_where(owned: impl Fn(&Caller) -> bool) -> Vec<(u64, Caller)> {
 
 /// The tab this session is in right now: the one it touched most recently.
 ///
-/// Derived rather than stored, so it can never disagree with what was painted.
+/// Membership survives another caller taking over the single pointer surface.
 fn session_current(control_id: u64) -> Option<i64> {
     TABS.lock()
         .ok()?
@@ -337,10 +348,17 @@ fn session_current(control_id: u64) -> Option<i64> {
         .iter()
         .filter_map(|(id, surface)| {
             surface
-                .last
-                .as_ref()
-                .filter(|(event, _)| event.control_id == control_id && event.phase != "ended")
-                .map(|(event, _)| (*id, event.sequence))
+                .members
+                .get(control_id)
+                .or_else(|| {
+                    surface
+                        .last
+                        .as_ref()
+                        .map(|(event, _)| event)
+                        .filter(|event| event.control_id == control_id)
+                })
+                .filter(|event| event.phase != "ended")
+                .map(|event| (*id, (event.request_id, event.sequence)))
         })
         .max_by_key(|(_, sequence)| *sequence)
         .map(|(id, _)| id)
@@ -440,6 +458,10 @@ fn complete_request(tab_id: i64) {
 }
 
 fn notify_frontend(app: &AppHandle, event: &Activity) {
+    notify_activity(app, event, false);
+}
+
+fn notify_activity(app: &AppHandle, event: &Activity, indicator_only: bool) {
     #[derive(Clone, Serialize)]
     #[serde(rename_all = "camelCase")]
     struct FrontendActivity<'a> {
@@ -447,6 +469,7 @@ fn notify_frontend(app: &AppHandle, event: &Activity) {
         activity: &'a Activity,
         #[serde(skip_serializing_if = "Option::is_none")]
         pty_id: Option<u32>,
+        indicator_only: bool,
     }
     // The PTY association is main-webview-only, not part of MCP responses or
     // the page overlay. Display branding remains separate from ownership.
@@ -456,6 +479,7 @@ fn notify_frontend(app: &AppHandle, event: &Activity) {
         FrontendActivity {
             activity: event,
             pty_id: event.actor.pty_id,
+            indicator_only,
         },
     );
 }
@@ -550,31 +574,37 @@ fn emit(context: &Context, phase: &'static str, point: Option<Point>) {
     else {
         return;
     };
-    let (accepted, notify) = if let Ok(mut guard) = TABS.lock() {
+    let (accepted, notify, member_changed, evicted) = if let Ok(mut guard) = TABS.lock() {
         let Some(surface) = guard.as_mut().and_then(|tabs| tabs.get_mut(&event.tab_id)) else {
             return;
         };
+        let (member_changed, evicted) = surface.members.record(&event);
         if surface
             .last
             .as_ref()
             .is_some_and(|(previous, _)| !accepts(previous, &event))
         {
-            (false, false)
+            (false, false, member_changed, evicted)
         } else {
             surface.retain_point(&mut event);
             let notify = surface.last.as_ref().is_none_or(|(previous, _)| {
                 previous.request_id != event.request_id || previous.phase != event.phase
             });
             surface.last = Some((event.clone(), Instant::now()));
-            (true, notify)
+            (true, notify, member_changed, evicted)
         }
     } else {
-        (false, false)
+        (false, false, false, None)
     };
+    if let Some(mut retired) = evicted {
+        retired.phase = "ended";
+        retired.sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        notify_activity(&context.app, &retired, true);
+    }
+    if notify || member_changed {
+        notify_activity(&context.app, &event, !accepted);
+    }
     if accepted {
-        if notify {
-            notify_frontend(&context.app, &event);
-        }
         render(&webview, event.tab_id, &event);
         if event.phase != "ended" {
             blur_others(&context.app, event.control_id, event.tab_id);
@@ -943,11 +973,29 @@ fn sweep(app: &AppHandle) {
                 "[browser_automation] session {control_id} idle, tab {} parked",
                 event.tab_id
             );
-            notify_frontend(app, &event);
+            let painted = TABS
+                .lock()
+                .ok()
+                .and_then(|guard| {
+                    Some(
+                        guard
+                            .as_ref()?
+                            .get(&event.tab_id)?
+                            .last
+                            .as_ref()?
+                            .0
+                            .control_id
+                            == control_id,
+                    )
+                })
+                .unwrap_or(false);
+            notify_activity(app, &event, !painted);
             if let Some(webview) =
                 app.get_webview(&crate::modules::browser::embed::embed_label(event.tab_id))
             {
-                render(&webview, event.tab_id, &event);
+                if painted {
+                    render(&webview, event.tab_id, &event);
+                }
             }
         }
     }
@@ -968,7 +1016,10 @@ fn park_session(control_id: u64) -> Option<Activity> {
     if surface.in_flight != 0 {
         return None;
     }
-    let (last, _) = surface.last.as_ref()?;
+    let last = surface
+        .members
+        .get(control_id)
+        .or_else(|| surface.last.as_ref().map(|(event, _)| event))?;
     if !matches!(last.phase, "done" | "error") {
         return None;
     }
@@ -976,7 +1027,14 @@ fn park_session(control_id: u64) -> Option<Activity> {
     event.phase = "idle";
     event.point = None;
     event.sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    surface.last = Some((event.clone(), Instant::now()));
+    surface.members.record(&event);
+    if surface
+        .last
+        .as_ref()
+        .is_some_and(|(last, _)| last.control_id == control_id)
+    {
+        surface.last = Some((event.clone(), Instant::now()));
+    }
     Some(event)
 }
 
@@ -994,17 +1052,28 @@ fn orphaned_surfaces() -> Vec<Activity> {
         return Vec::new();
     };
     tabs.values_mut()
-        .filter_map(|surface| {
-            let (event, _) = surface.last.as_ref()?;
-            if event.phase == "ended" || live.contains(&event.control_id) {
-                return None;
+        .flat_map(|surface| {
+            let mut missing: HashMap<u64, Caller> = surface
+                .members
+                .values()
+                .filter(|event| event.phase != "ended" && !live.contains(&event.control_id))
+                .map(|event| (event.control_id, event.actor.clone()))
+                .collect();
+            if let Some((event, _)) = surface.last.as_ref() {
+                if event.phase != "ended" && !live.contains(&event.control_id) {
+                    missing.insert(event.control_id, event.actor.clone());
+                }
             }
-            let (control_id, caller) = (event.control_id, event.actor.clone());
-            surface.finish(
-                control_id,
-                &caller,
-                SEQUENCE.fetch_add(1, Ordering::Relaxed),
-            )
+            missing
+                .into_iter()
+                .filter_map(|(control_id, caller)| {
+                    surface.finish(
+                        control_id,
+                        &caller,
+                        SEQUENCE.fetch_add(1, Ordering::Relaxed),
+                    )
+                })
+                .collect::<Vec<_>>()
         })
         .collect()
 }
@@ -1086,6 +1155,142 @@ fn reset_controls() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn members_keep_queued_and_completed_callers_apart_from_the_pointer() {
+        let first = event(1, "running", 1);
+        let mut second = event(2, "queued", 2);
+        second.control_id = 2;
+        let mut surface = Surface::default();
+        assert!(surface.members.record(&first).0);
+        surface.last = Some((first.clone(), Instant::now()));
+        assert!(!accepts(&first, &second));
+        assert!(surface.members.record(&second).0);
+        assert_eq!(surface.members.values().count(), 2);
+        assert_eq!(surface.last.as_ref().unwrap().0.control_id, 1);
+        second.phase = "running";
+        second.sequence = 3;
+        surface.members.record(&second);
+        surface.last = Some((second.clone(), Instant::now()));
+        let ended = surface.finish(1, &first.actor, 4).unwrap();
+        assert_eq!(ended.control_id, 1);
+        assert_eq!(surface.last.as_ref().unwrap().0.control_id, 2);
+        assert_eq!(surface.last.as_ref().unwrap().0.phase, "running");
+        let mut late = first.clone();
+        late.phase = "done";
+        late.sequence = 5;
+        assert!(!surface.members.record(&late).0);
+    }
+
+    #[test]
+    fn member_notifications_do_not_follow_every_pointer_coordinate() {
+        let mut members = members::Members::default();
+        let mut moving = event(1, "move", 2);
+        assert!(members.record(&moving).0);
+        for sequence in 3..100 {
+            moving.sequence = sequence;
+            moving.point = Some(Point {
+                x: sequence as f64,
+                y: 5.0,
+                width: None,
+                height: None,
+            });
+            assert!(!members.record(&moving).0);
+        }
+        assert_eq!(members.get(1).unwrap().sequence, 2);
+        assert!(members.get(1).unwrap().point.is_none());
+    }
+
+    #[test]
+    fn members_are_bounded_and_return_evictions_for_indicator_cleanup() {
+        let mut members = members::Members::default();
+        for id in 1..=1000 {
+            let mut current = event(id, "done", id);
+            current.control_id = id;
+            let (accepted, evicted) = members.record(&current);
+            assert!(accepted);
+            assert_eq!(evicted.is_some(), id > MAX_CONTROLS as u64);
+            assert!(members.values().count() <= MAX_CONTROLS);
+        }
+        assert!(members.get(1000).is_some());
+    }
+
+    #[test]
+    fn observed_completion_can_finish_a_member_behind_another_actor() {
+        let _serial = CONTROL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_controls();
+        let mut first = event(1, "done", 3);
+        first.actor =
+            Caller::from_client_info(&serde_json::json!({"name":"claude"})).with_pty(Some(7));
+        let mut second = event(2, "done", 4);
+        second.actor =
+            Caller::from_client_info(&serde_json::json!({"name":"claude"})).with_pty(Some(8));
+        seed_control(1, &first.actor, Duration::from_secs(60));
+        let mut surface = Surface::default();
+        surface.members.record(&first);
+        surface.members.record(&second);
+        surface.last = Some((second, Instant::now()));
+        surface.latest_request = 2;
+        let target = TurnEnd {
+            pty_id: 7,
+            tab_id: 1,
+            control_id: 1,
+            sequence: 3,
+        };
+        let ended = surface.finish_observed(&target, 5).unwrap();
+        assert_eq!(ended.control_id, 1);
+        assert_eq!(surface.last.as_ref().unwrap().0.control_id, 2);
+        assert_eq!(surface.members.get(2).unwrap().phase, "done");
+        reset_controls();
+    }
+
+    #[test]
+    fn parking_and_orphan_cleanup_include_members_behind_another_actor() {
+        let _serial = CONTROL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_controls();
+        let mut first = event(1, "done", SEQUENCE.fetch_add(1, Ordering::Relaxed));
+        first.tab_id = 9001;
+        first.actor =
+            Caller::from_client_info(&serde_json::json!({"name":"claude"})).with_pty(Some(7));
+        let mut second = event(2, "done", SEQUENCE.fetch_add(1, Ordering::Relaxed));
+        second.tab_id = 9001;
+        second.actor =
+            Caller::from_client_info(&serde_json::json!({"name":"claude"})).with_pty(Some(8));
+        seed_control(1, &first.actor, Duration::from_secs(100));
+        seed_control(2, &second.actor, Duration::from_secs(5));
+        let mut surface = Surface::default();
+        surface.members.record(&first);
+        surface.members.record(&second);
+        surface.last = Some((second.clone(), Instant::now()));
+        TABS.lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .insert(9001, surface);
+        assert_eq!(park_session(1).unwrap().phase, "idle");
+        assert!(park_session(1).is_none());
+        assert_eq!(
+            TABS.lock().unwrap().as_ref().unwrap()[&9001]
+                .last
+                .as_ref()
+                .unwrap()
+                .0
+                .control_id,
+            2
+        );
+        assert!(release_control(1, &first.actor));
+        let ended = orphaned_surfaces();
+        assert!(ended
+            .iter()
+            .any(|event| event.tab_id == 9001 && event.control_id == 1));
+        assert!(!ended
+            .iter()
+            .any(|event| event.tab_id == 9001 && event.control_id == 2));
+        TABS.lock().unwrap().as_mut().unwrap().remove(&9001);
+        reset_controls();
+    }
     #[test]
     fn invalid_tabs_cannot_fill_the_visual_registry() {
         let mut tabs = HashMap::new();

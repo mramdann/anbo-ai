@@ -20,7 +20,7 @@ type Control = { state: AutomationState; ptyId: number | null };
 export class BrowserTurnObserver {
   private readonly observer = new AgentScreenObserver(classifyAgentTurn);
   private readonly leaves = new Map<number, number>();
-  private readonly controls = new Map<number, Control>();
+  private readonly controls = new Map<string, Control>();
 
   start(leafId: number, ptyId: number, agent: string): void {
     if (this.leaves.get(ptyId) === leafId) return;
@@ -46,8 +46,8 @@ export class BrowserTurnObserver {
   }
 
   retainTabs(tabIds: ReadonlySet<number>): void {
-    for (const tabId of this.controls.keys()) {
-      if (!tabIds.has(tabId)) this.controls.delete(tabId);
+    for (const [key, control] of this.controls) {
+      if (!tabIds.has(control.state.tabId)) this.controls.delete(key);
     }
   }
 
@@ -60,7 +60,8 @@ export class BrowserTurnObserver {
   receive(payload: unknown, now = Date.now()): number | null {
     const state = parseAutomationState(payload);
     if (!state) return null;
-    const previous = this.controls.get(state.tabId);
+    const key = `${state.tabId}:${state.controlId ?? "legacy"}`;
+    const previous = this.controls.get(key);
     if (!acceptsAutomationState(previous?.state ?? null, state)) return null;
     const rawPty = (payload as { ptyId?: unknown }).ptyId;
     const ptyId =
@@ -68,11 +69,11 @@ export class BrowserTurnObserver {
         ? rawPty
         : null;
     if (state.phase === "ended" || ptyId === null || !this.leaves.has(ptyId)) {
-      this.controls.delete(state.tabId);
+      this.controls.delete(key);
       return null;
     }
-    if (!previous && this.controls.size >= 256) return null;
-    this.controls.set(state.tabId, { state, ptyId });
+    if (!previous && this.controls.size >= 256 * 64) return null;
+    this.controls.set(key, { state, ptyId });
     const leaf = ptyId === null ? undefined : this.leaves.get(ptyId);
     if (
       leaf !== undefined &&

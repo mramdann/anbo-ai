@@ -64,9 +64,9 @@ describe("native pointer pre-press guard", () => {
       actions.indexOf("async fn dom_click_ref("),
       actions.indexOf("async fn wait_for_checked_state("),
     );
-    expect(frameClick).toContain("Emulation.setFocusEmulationEnabled");
+    expect(frameClick).toContain("ref_context::ensure_focus(webview)");
     expect(
-      frameClick.indexOf("Emulation.setFocusEmulationEnabled"),
+      frameClick.indexOf("ref_context::ensure_focus(webview)"),
     ).toBeLessThan(frameClick.indexOf("el.focus("));
     expect(frameClick.indexOf("refRegistry.resolve(refId)")).toBeLessThan(
       frameClick.indexOf("el.click()"),

@@ -15,12 +15,19 @@ if (endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1" || endpoi
 }
 const calls = [], checks = [], requests = [], held = new Set(), owned = new Set();
 let sequence = 0, origin, before, after;
+let session;
+async function initialize() {
+  const response = await fetch(endpoint, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({jsonrpc: "2.0", id: ++sequence, method: "initialize", params: {protocolVersion: "2025-06-18", capabilities: {}, clientInfo: {name: "anbo-regression-smoke", version: "1"}}}), signal: AbortSignal.timeout(10000)});
+  const payload = await response.json();
+  session = response.headers.get("Mcp-Session-Id");
+  if (!response.ok || payload.error || !session) throw Error("MCP initialization failed");
+}
 async function call(name, args) {
   const started = performance.now();
   let result, error;
   try {
     const response = await fetch(endpoint, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Mcp-Session-Id": session, "Content-Type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: ++sequence, method: "tools/call", params: { name, arguments: args } }),
       signal: AbortSignal.timeout(25_000),
     });
@@ -65,6 +72,7 @@ async function closeOwned(tabId) {
   await ok("browser_close", { tabId, workspace }); owned.delete(tabId);
 }
 try {
+  await initialize();
   before = await ok("browser_tabs", {});
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   origin = `http://127.0.0.1:${server.address().port}`;
@@ -76,7 +84,7 @@ try {
       const requestDeadline = Date.now() + 5000;
       while (!held.size && Date.now() < requestDeadline) await delay(20);
       check(`request reached fixture ${round}`, held.size > 0);
-      const read = await call("browser_get_url", { tabId });
+      const read = await call("browser_page_info", { tabId });
       check(`URL readable before response headers ${round}`, !read.error && read.wallMs < 1500, { sample: read });
       check(`get_url exposes pending navigation ${round}`, read.result?.loading === true && read.result?.pendingUrl === `${origin}/held/${round}`, { sample: read });
       const loading = await ok("browser_tabs", {});
@@ -89,10 +97,10 @@ try {
       const nextUrl = `${origin}/next/${round}?text=hello%20world&quoted=%22test%22#section`;
       await ok("browser_navigate", { tabId, url: nextUrl });
       await ok("browser_wait", { tabId, condition: "url", url: nextUrl, timeout: 5000 });
-      const current = await ok("browser_get_url", { tabId });
+      const current = await ok("browser_page_info", { tabId });
       check(`explicit navigation and exact URL ${round}`, current.url === nextUrl, { current: current.url });
       await ok("browser_wait", { tabId, condition: "load", loadState: "complete", timeout: 5000 });
-      const settled = await ok("browser_get_url", { tabId });
+      const settled = await ok("browser_page_info", { tabId });
       check(`get_url clears pending navigation ${round}`, settled.loading === false && settled.pendingUrl === null, { settled });
       const interruptedUrl = `${origin}/held/interrupted/${round}`;
       await ok("browser_navigate", { tabId, url: interruptedUrl });
@@ -103,7 +111,7 @@ try {
       await ok("browser_wait", { tabId, condition: "load", loadState: "complete", timeout: 5000 });
       for (const response of [...held]) send(response);
       await delay(300);
-      const finalUrl = await ok("browser_get_url", { tabId });
+      const finalUrl = await ok("browser_page_info", { tabId });
       check(`new target survives a cancelled navigation ${round}`, finalUrl.url === nextUrl, { current: finalUrl.url });
     } catch (cause) {
       check(`scenario completed ${round}`, false, { error: String(cause) });
@@ -121,6 +129,7 @@ try {
     try { await closeOwned(tabId); } catch {}
   }
   try { after = await ok("browser_tabs", {}); } catch {}
+  if (session) await fetch(endpoint, {method: "DELETE", headers: {"Mcp-Session-Id": session}, signal: AbortSignal.timeout(5000)}).catch(() => {});
   check("original tabs and focus preserved", before && after && before.activeSpaceId === after.activeSpaceId && before.activeTabId === after.activeTabId && before.tabs.every(tab => after.tabs.some(item => item.tabId === tab.tabId)));
   check("owned tabs closed", owned.size === 0);
   server.closeAllConnections(); server.close();

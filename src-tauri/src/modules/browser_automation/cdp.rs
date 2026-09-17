@@ -1,5 +1,38 @@
 use tauri::Webview;
 
+#[cfg(test)]
+mod queue_tests {
+    use super::queued_call_is_live;
+    use std::{
+        sync::Mutex,
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    fn expired_cancelled_or_completed_calls_never_dispatch_from_the_ui_queue() {
+        let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
+        let sender = Mutex::new(Some(sender));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        assert!(queued_call_is_live(&sender, deadline));
+        assert!(!queued_call_is_live(&sender, Instant::now()));
+        drop(receiver);
+        assert!(!queued_call_is_live(&sender, deadline));
+        sender.lock().unwrap().take();
+        assert!(!queued_call_is_live(&sender, deadline));
+    }
+}
+
+#[cfg(any(windows, test))]
+fn queued_call_is_live<T>(
+    sender: &std::sync::Mutex<Option<tokio::sync::oneshot::Sender<T>>>,
+    deadline: std::time::Instant,
+) -> bool {
+    std::time::Instant::now() < deadline
+        && sender
+            .lock()
+            .is_ok_and(|guard| guard.as_ref().is_some_and(|tx| !tx.is_closed()))
+}
+
 #[cfg(windows)]
 pub async fn read_page_info(
     webview: &Webview,
@@ -100,9 +133,13 @@ pub async fn call_devtools_protocol_method(
         .chain(std::iter::once(0))
         .collect();
     let platform_sender = sender.clone();
+    let deadline = std::time::Instant::now() + timeout;
 
     webview
         .with_webview(move |platform| {
+            if !queued_call_is_live(&platform_sender, deadline) {
+                return;
+            }
             let call = (|| -> Result<(), String> {
                 let controller = platform.controller();
                 let core =
@@ -311,9 +348,13 @@ pub async fn execute_script_with_timeout(
     let script_utf16: Vec<u16> = script.encode_utf16().chain(std::iter::once(0)).collect();
 
     let platform_sender = sender.clone();
+    let deadline = std::time::Instant::now() + timeout;
 
     webview
         .with_webview(move |platform| {
+            if !queued_call_is_live(&platform_sender, deadline) {
+                return;
+            }
             let run = (|| -> Result<(), String> {
                 let controller = platform.controller();
                 let core =

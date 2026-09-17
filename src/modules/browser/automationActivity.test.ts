@@ -7,6 +7,7 @@ import {
   getBrowserAutomationActivity,
   getBrowserAutomationActor,
   getBrowserAutomationState,
+  getBrowserAutomationParticipants,
   isBrowserAutomationFocused,
   markBrowserAutomationActivity,
   receiveBrowserAutomationActivity,
@@ -19,6 +20,41 @@ vi.mock("@tauri-apps/api/event", () => ({
 const CODEX = { brand: "codex", label: "Codex" };
 
 describe("browser automation activity", () => {
+  it("records indicator-only events without stealing the native cursor actor", () => {
+    const common = {
+      tabId: 7,
+      method: "click",
+      actor: { brand: "claude", ptyId: 1 },
+    };
+    receiveBrowserAutomationActivity({
+      ...common,
+      controlId: 1,
+      requestId: 1,
+      sequence: 1,
+      phase: "running",
+    });
+    receiveBrowserAutomationActivity({
+      ...common,
+      actor: { brand: "claude", ptyId: 2 },
+      controlId: 2,
+      requestId: 2,
+      sequence: 2,
+      phase: "queued",
+      indicatorOnly: true,
+    });
+    expect(getBrowserAutomationParticipants(7)).toHaveLength(2);
+    expect(getBrowserAutomationActor(7)?.ptyId).toBe(1);
+    receiveBrowserAutomationActivity({
+      ...common,
+      controlId: 1,
+      requestId: 1,
+      sequence: 3,
+      phase: "ended",
+    });
+    expect(getBrowserAutomationParticipants(7).map((s) => s.controlId)).toEqual(
+      [2],
+    );
+  });
   it("retains a session through thinking gaps and ignores late work after an explicit end", () => {
     vi.useFakeTimers();
     const event = {

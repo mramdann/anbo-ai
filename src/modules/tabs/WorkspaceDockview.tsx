@@ -53,6 +53,7 @@ import {
   useBrowserAutomationState,
 } from "@/modules/browser/automationActivity";
 import { automationLabel } from "@/modules/browser/automationState";
+import { BrowserAutomationIndicators } from "@/modules/browser/BrowserAutomationIndicators";
 import { setNativeBrowserDragActive } from "@/modules/browser/nativeVisibility";
 import {
   createContext,
@@ -417,7 +418,7 @@ function BrowserAutomationTabIndicator({ tabId }: { tabId: number }) {
   // question; the callsign is resolved here, against the agents this window
   // knows, and the brand stays behind the icon.
   const callsign = useAgentCallsign(identity?.ptyId);
-  if (!action || !focused) return null;
+  if (!action || !focused || activity?.controlId) return null;
   const name = callsign ?? identity?.label;
   const title = activity
     ? `${name ?? activity.actor.label}: ${automationLabel(activity)}`
@@ -508,7 +509,10 @@ function WorkspaceDockviewTab(
           </span>
         )}
         {tab.kind === "browser" ? (
-          <BrowserAutomationTabIndicator tabId={tab.id} />
+          <>
+            <BrowserAutomationIndicators tabId={tab.id} />
+            <BrowserAutomationTabIndicator tabId={tab.id} />
+          </>
         ) : null}
         {tab.kind === "editor" && tab.dirty ? (
           <span

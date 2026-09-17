@@ -22,7 +22,12 @@ const ready = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-function harness(samples = [ready()], requirement = "pointer", scroll = true) {
+function harness(
+  samples = [ready()],
+  requirement = "pointer",
+  scroll = true,
+  valueAction?: () => unknown,
+) {
   let id = 0;
   let index = 0;
   const frames = new Map<number, () => void>();
@@ -33,11 +38,12 @@ function harness(samples = [ready()], requirement = "pointer", scroll = true) {
     return id;
   });
   const promise = vm.runInNewContext(
-    `${source}; waitForActionableSample(probe, requirement, scroll)`,
+    `${source}; waitForActionableSample(probe, requirement, scroll, valueAction)`,
     {
       probe,
       requirement,
       scroll,
+      valueAction,
       requestAnimationFrame: (callback: () => void) => {
         frames.set(++id, callback);
         return id;
@@ -64,6 +70,92 @@ function harness(samples = [ready()], requirement = "pointer", scroll = true) {
 }
 
 describe("bounded actionability frame sampling", () => {
+  it.each(["editable", "select"])(
+    "%s can perform one guarded value action in the ready sample",
+    async (requirement) => {
+      const action = vi.fn(() => ({ ok: true, valueVerified: true }));
+      const h = harness([ready()], requirement, true, action);
+      expect(await h.result).toMatchObject({
+        ok: true,
+        valueActionResult: { ok: true, valueVerified: true },
+      });
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(h.probe).toHaveBeenCalledTimes(1);
+      expect(h.frames.size + h.timers.size).toBe(0);
+    },
+  );
+  it.each(["editable", "select"])(
+    "%s never dispatches a value action for an unready sample",
+    async (requirement) => {
+      for (const bad of [
+        { ok: false, error: "stale_ref" },
+        { visible: false },
+        { enabled: false, editable: false },
+        { x: Number.NaN },
+        ...(requirement === "editable"
+          ? [{ editable: false }, { receives: false }]
+          : []),
+      ]) {
+        const action = vi.fn();
+        const h = harness([ready(bad)], requirement, true, action);
+        expect(await h.result).not.toHaveProperty("valueActionResult");
+        expect(action).not.toHaveBeenCalled();
+      }
+    },
+  );
+  it("retains failed value verification without replaying input", async () => {
+    const action = vi.fn(() => ({ ok: false, error: "input_mismatch" }));
+    const h = harness([ready()], "editable", true, action);
+    expect(await h.result).toMatchObject({
+      valueActionResult: { ok: false, error: "input_mismatch" },
+    });
+    h.frame();
+    h.timer();
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(h.probe).toHaveBeenCalledTimes(1);
+  });
+  it("never retries a throwing value action", async () => {
+    const action = vi.fn(() => {
+      throw Error("document changed");
+    });
+    const h = harness([ready()], "select", true, action);
+    await expect(h.result).rejects.toThrow("document changed");
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(h.frames.size + h.timers.size).toBe(0);
+  });
+  it("does not dispatch the value callback for pointer actions", async () => {
+    const action = vi.fn();
+    const h = harness([ready()], "pointer", true, action);
+    h.frame();
+    h.frame();
+    expect(await h.result).toMatchObject({ stable: true });
+    expect(action).not.toHaveBeenCalled();
+  });
+  it.each(["editable", "select"])(
+    "%s validates once without a geometry wait",
+    async (requirement) => {
+      const h = harness([ready(), ready({ x: 80 })], requirement);
+      expect(await h.result).toMatchObject({ ok: true, stable: false });
+      expect(h.probe).toHaveBeenCalledTimes(1);
+      expect(h.frames.size + h.timers.size).toBe(0);
+    },
+  );
+
+  it.each(["editable", "select"])(
+    "%s retains stale and hidden guards",
+    async (requirement) => {
+      for (const bad of [
+        { ok: false, error: "stale_ref" },
+        { visible: false },
+        { enabled: false, editable: false },
+      ]) {
+        const h = harness([ready(bad)], requirement);
+        expect(await h.result).toMatchObject({ ...bad, stable: false });
+        expect(h.probe).toHaveBeenCalledTimes(1);
+        expect(h.frames.size + h.timers.size).toBe(0);
+      }
+    },
+  );
   it("requires two frame samples and cancels its fallback on success", async () => {
     const h = harness();
     expect(h.probe).toHaveBeenCalledTimes(1);

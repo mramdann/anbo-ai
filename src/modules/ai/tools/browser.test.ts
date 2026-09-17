@@ -8,8 +8,8 @@ const invokeMock = vi.hoisted(() =>
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 
-import { buildBrowserTools } from "./browser";
 import type { z } from "zod";
+import { buildBrowserTools } from "./browser";
 
 const toolOptions: ToolExecutionOptions = {
   toolCallId: "tool-call",
@@ -77,6 +77,17 @@ describe("AI browser tools", () => {
       tabId: 42,
       locator,
     });
+  });
+
+  it("describes observed targets without making discovery mandatory", () => {
+    const click = buildBrowserTools(makeContext(42)).browser_click
+      .inputSchema as z.ZodObject;
+    const description = click.shape.locator.unwrap().description;
+    expect(description).toContain("Observed unique target, no find needed");
+    expect(description).toContain("Never guess names, labels or CSS");
+    expect(description).toContain(
+      "Ambiguous or incomplete scans never dispatch input",
+    );
   });
 
   it("requires one target for an action while retaining optional text/keyboard targets", () => {
@@ -265,7 +276,7 @@ describe("AI browser tools", () => {
       sourceRef: "g4-e3",
       targetRef: "g4-e4",
     });
-    await run("browser_keyboard", {
+    await run("browser_press_key", {
       key: "a",
       keyAction: "press",
       modifiers: ["Control"],
@@ -282,7 +293,7 @@ describe("AI browser tools", () => {
         targetRef: "g4-e4",
       },
       {
-        action: "key",
+        action: "press_key",
         tabId: 42,
         key: "a",
         keyAction: "press",

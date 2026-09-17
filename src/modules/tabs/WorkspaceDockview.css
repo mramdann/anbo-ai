@@ -358,6 +358,19 @@
   }
 }
 
+.anbo-browser-automation-participants {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+
+.anbo-browser-automation-count {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  padding-right: 4px;
+}
+
 .anbo-browser-automation-indicator {
   position: relative;
   isolation: isolate;

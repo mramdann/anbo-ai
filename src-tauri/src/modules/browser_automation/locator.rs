@@ -451,6 +451,7 @@ impl PageScanState {
 
 pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>) -> String {
     let limit = query.limit.clamp(1, MAX_LOCATOR_MATCHES);
+    let cache = include_str!("locatorCache.js");
     format!(
         r#"(function() {{
             const generation = "gen-{generation}";
@@ -493,9 +494,11 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                 const bucket = nameWords.some(word => lower.includes(word)) ? nameNear : nameAny;
                 if (bucket.length < 5 && !bucket.includes(seen)) bucket.push(seen);
             }};
+            const roleTags = new Set(['A','BUTTON','TEXTAREA','SELECT','OPTION','IMG','INPUT','H1','H2','H3','H4','H5','H6','DIALOG','UL','OL','LI','TABLE','TR','TH','TD','NAV','MAIN','ARTICLE','FORM','PROGRESS','HR','HEADER','FOOTER']);
             const implicitRole = el => {{
                 const explicit = normalize(el.getAttribute('role')).split(' ')[0];
                 if (explicit) return explicit;
+                if (el.namespaceURI === 'http://www.w3.org/1999/xhtml' && !roleTags.has(el.tagName)) return '';
                 const tag = el.tagName.toLowerCase();
                 if (tag === 'a' && el.hasAttribute('href')) return 'link';
                 if (tag === 'button') return 'button';
@@ -541,6 +544,10 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
             const roleMatches = role => compare(role) || (role === 'searchbox' && compare('textbox'));
             {ACCESSIBLE_NAME_JS}
             {VISIBILITY_JS}
+            {cache}
+            const readName = memoizeElement(accessibleName);
+            const readVisible = memoizeElement(isRenderedElement);
+            const readText = memoizeElement(el => el.innerText || el.textContent);
             const isMatch = el => {{
                 if (by === 'css') {{
                     try {{ return el.matches(wanted); }} catch (_) {{ throw new Error('invalid_selector'); }}
@@ -549,16 +556,16 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                     const role = implicitRole(el);
                     if (!role || !roleMatches(role)) return false;
                     if (!wantedName) return true;
-                    const actual = accessibleName(el);
+                    const actual = readName(el);
                     if (compareValue(actual, expectedName)) return true;
                     rememberMiss(actual);
                     return false;
                 }}
                 if (by === 'text') {{
-                    if (!compare(el.innerText || el.textContent)) return false;
+                    if (!compare(readText(el))) return false;
                     if (implicitRole(el)) return true;
                     return !Array.from(el.children || []).some(child =>
-                        compare(child.innerText || child.textContent)
+                        compare(readText(child))
                     );
                 }}
                 if (by === 'label') {{
@@ -578,11 +585,8 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
             // tightest match of each nest.
             const hits = [];
             const collectLimit = by === 'text' ? Math.min(limit * 5, 50) : limit;
-            // What the page offers when the lookup finds nothing. The walk only
-            // pockets the first two hundred controls by tag; the costly part --
-            // rendering, role, name -- runs after it, and only on a miss, so a
-            // hit pays nothing. Never registered as refs: a failed lookup must
-            // not spend the caller's ref generation.
+            // Stop collecting suggestions after a hit. Names and visibility
+            // are read only on a miss, without a second DOM walk.
             const candidatePool = [];
             const pocketCandidate = el => {{
                 if (candidatePool.length >= 200) return;
@@ -598,10 +602,10 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                 const picked = [];
                 for (const el of candidatePool) {{
                     if (picked.length >= 12) break;
-                    if (!isRenderedElement(el)) continue;
+                    if (!readVisible(el)) continue;
                     const role = implicitRole(el);
                     if (!CONTROL_ROLES.has(role)) continue;
-                    const name = normalize(accessibleName(el)).slice(0, 60);
+                    const name = normalize(readName(el)).slice(0, 60);
                     if (!name) continue;
                     const r = el.getBoundingClientRect();
                     const inViewport = r.width > 0 && r.height > 0 && r.left < innerWidth && r.top < innerHeight && r.right > 0 && r.bottom > 0;
@@ -621,9 +625,9 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                     const examples = [];
                     for (let i = 0; i < list.length && i < 50; i++) {{
                         const el = list[i];
-                        if (!isRenderedElement(el)) continue;
+                        if (!readVisible(el)) continue;
                         visible += 1;
-                        if (examples.length < 3) examples.push({{tag: el.tagName.toLowerCase(), role: implicitRole(el) || '', name: normalize(accessibleName(el)).slice(0, 40)}});
+                        if (examples.length < 3) examples.push({{tag: el.tagName.toLowerCase(), role: implicitRole(el) || '', name: normalize(readName(el)).slice(0, 40)}});
                     }}
                     return {{selector: sel, count: list.length, visible, examples}};
                 }}
@@ -638,9 +642,9 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                     const el = elements[index];
                     if (el.tagName === 'ANBO-AUTOMATION-VISUAL' || el.tagName === 'ANBO-DESIGN-LAYER') continue;
                     scanned += 1;
-                    pocketCandidate(el);
+                    if (!hits.length) pocketCandidate(el);
                     const matched = isMatch(el);
-                    const isVisible = matched && isRenderedElement(el);
+                    const isVisible = matched && readVisible(el);
                     if (matched && !includeHidden && !isVisible) hidden += 1;
                     if (matched && (includeHidden || isVisible)) {{
                         hits.push(el);
@@ -650,7 +654,7 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
             }};
 
             const describe = el => {{
-                        const isVisible = isRenderedElement(el);
+                        const isVisible = readVisible(el);
                         const ref = refPrefix + (matches.length + 1);
                         refRegistry.remember(ref, el);
                         const type = el.tagName === 'INPUT' ? String(el.type || '').toLowerCase() : '';
@@ -669,8 +673,8 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                             ref,
                             tag: el.tagName.toLowerCase(),
                             role: implicitRole(el),
-                            name: accessibleName(el).slice(0, 300),
-                            text: normalize(el.innerText || el.textContent).slice(0, 500),
+                            name: readName(el).slice(0, 300),
+                            text: normalize(readText(el)).slice(0, 500),
                             value: password ? '[REDACTED]' : (el.value == null ? null : String(el.value).slice(0, 500)),
                             visible: isVisible,
                             enabled,

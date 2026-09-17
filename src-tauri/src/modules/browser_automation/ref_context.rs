@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Webview;
@@ -10,8 +11,75 @@ use crate::modules::browser::embed::active_navigation_generation;
 pub const REF_REGISTRY_JS: &str = include_str!("refRegistry.js");
 const CONTEXT_TIMEOUT: Duration = Duration::from_secs(2);
 static ROOT_CONTEXTS: Mutex<Option<HashMap<i64, (u64, i64)>>> = Mutex::new(None);
+static PREPARED: Mutex<Option<HashMap<i64, PreparedDocument>>> = Mutex::new(None);
+
+#[derive(Default)]
+struct PreparedDocument {
+    navigation: u64,
+    refs: HashSet<i64>,
+    focus: bool,
+}
+
+fn with_prepared<T>(
+    tab: i64,
+    navigation: u64,
+    f: impl FnOnce(&mut PreparedDocument) -> T,
+) -> Option<T> {
+    let mut guard = PREPARED.lock().ok()?;
+    let entries = guard.get_or_insert_with(HashMap::new);
+    if entries.len() >= 256 && !entries.contains_key(&tab) {
+        return None;
+    }
+    let entry = entries.entry(tab).or_default();
+    if entry.navigation != navigation {
+        *entry = PreparedDocument {
+            navigation,
+            ..Default::default()
+        };
+    }
+    Some(f(entry))
+}
+
+fn ref_expression(expression: &str, installed: bool) -> Cow<'_, str> {
+    if !expression.contains(REF_REGISTRY_JS) {
+        return Cow::Borrowed(expression);
+    }
+    let compact = expression.replace(
+        REF_REGISTRY_JS,
+        "const refRegistry = globalThis.__anboBrowserRefs;",
+    );
+    Cow::Owned(if installed {
+        compact
+    } else {
+        format!("(() => {{ {REF_REGISTRY_JS}\nreturn {compact}; }})()")
+    })
+}
+
+pub async fn ensure_focus(webview: &Webview) -> Result<(), String> {
+    let tab = tab_id(webview)?;
+    let navigation = active_navigation_generation(tab).ok_or("browser tab closed")?;
+    if with_prepared(tab, navigation, |entry| entry.focus) == Some(true) {
+        return Ok(());
+    }
+    call_devtools_protocol_method(
+        webview,
+        "Emulation.setFocusEmulationEnabled",
+        r#"{"enabled":true}"#,
+        CONTEXT_TIMEOUT,
+    )
+    .await?;
+    if active_navigation_generation(tab) == Some(navigation) {
+        with_prepared(tab, navigation, |entry| entry.focus = true);
+    }
+    Ok(())
+}
 
 pub fn remove(tab_id: i64) {
+    if let Ok(mut guard) = PREPARED.lock() {
+        if let Some(entries) = guard.as_mut() {
+            entries.remove(&tab_id);
+        }
+    }
     if let Ok(mut guard) = ROOT_CONTEXTS.lock() {
         if let Some(contexts) = guard.as_mut() {
             contexts.remove(&tab_id);
@@ -20,6 +88,9 @@ pub fn remove(tab_id: i64) {
 }
 
 pub fn clear() {
+    if let Ok(mut guard) = PREPARED.lock() {
+        *guard = None;
+    }
     if let Ok(mut guard) = ROOT_CONTEXTS.lock() {
         *guard = None;
     }
@@ -91,10 +162,16 @@ async fn evaluate_context_with_promise(
     expression: &str,
     await_promise: bool,
 ) -> Result<String, String> {
+    let tab = tab_id(webview)?;
+    let navigation = active_navigation_generation(tab).ok_or("browser tab closed")?;
+    let uses_refs = expression.contains(REF_REGISTRY_JS);
+    let installed = uses_refs
+        && with_prepared(tab, navigation, |entry| entry.refs.contains(&context_id)) == Some(true);
+    let expression = ref_expression(expression, installed);
     let raw = call_devtools_protocol_method(
         webview,
         "Runtime.evaluate",
-        &json!({"expression": expression, "contextId": context_id, "returnByValue": true,
+        &json!({"expression": expression.as_ref(), "contextId": context_id, "returnByValue": true,
             "awaitPromise": await_promise, "userGesture": true})
         .to_string(),
         Duration::from_secs(5),
@@ -102,7 +179,17 @@ async fn evaluate_context_with_promise(
     .await?;
     let payload: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
     if payload.get("exceptionDetails").is_some() {
+        with_prepared(tab, navigation, |entry| {
+            entry.refs.remove(&context_id);
+        });
         return Err("browser ref script failed".into());
+    }
+    if uses_refs && active_navigation_generation(tab) == Some(navigation) {
+        with_prepared(tab, navigation, |entry| {
+            if entry.refs.len() < 32 {
+                entry.refs.insert(context_id);
+            }
+        });
     }
     if let Some(value) = payload["result"].get("value") {
         return Ok(value.to_string());
@@ -141,6 +228,43 @@ pub async fn execute_awaited(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn helper_source_is_sent_once_without_replaying_the_expression() {
+        let expression =
+            format!("(() => {{ {REF_REGISTRY_JS} return refRegistry.resolve('g1-e1'); }})()");
+        let cold = ref_expression(&expression, false);
+        let warm = ref_expression(&expression, true);
+        assert_eq!(cold.matches(REF_REGISTRY_JS).count(), 1);
+        assert!(!warm.contains(REF_REGISTRY_JS));
+        assert!(warm.len() < 150);
+        assert_eq!(warm.matches("resolve('g1-e1')").count(), 1);
+        assert!(matches!(ref_expression("42", false), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn prepared_state_is_scoped_to_document_and_bounded() {
+        let tab = -920002;
+        with_prepared(tab, 1, |entry| {
+            entry.focus = true;
+            entry.refs.insert(10);
+        });
+        assert_eq!(
+            with_prepared(tab, 1, |entry| entry.focus && entry.refs.contains(&10)),
+            Some(true)
+        );
+        assert_eq!(
+            with_prepared(tab, 2, |entry| !entry.focus && entry.refs.is_empty()),
+            Some(true)
+        );
+        remove(tab);
+        assert!(!PREPARED
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .contains_key(&tab));
+    }
 
     #[test]
     fn closed_tabs_remove_only_their_context() {

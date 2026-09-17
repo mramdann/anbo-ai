@@ -1,4 +1,9 @@
 import { AgentIcon } from "@/modules/agents/lib/agentIcon";
+import {
+  type AgentResumePhase,
+  tabResumePhase,
+  useAgentResumeStatus,
+} from "@/modules/agents/store/agentResumeStatus";
 import { googleFaviconUrlForPage } from "@/modules/browser/browserInput";
 import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
 import {
@@ -17,7 +22,7 @@ import {
   Message02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Tab } from "./lib/useTabs";
 
 function useTabAgentStatus(tab: Tab) {
@@ -44,6 +49,25 @@ export function TabIcon({
   size?: TabIconSize;
 }) {
   const agentStatus = useTabAgentStatus(tab);
+  const resumeStatusMap = useAgentResumeStatus((state) => state.status);
+  const tabLeafIds = useMemo(
+    () =>
+      tab.kind === "terminal" && !tab.private
+        ? Array.from(leafIds(tab.paneTree))
+        : [],
+    [tab],
+  );
+  const agentActive = agentStatus.state !== null;
+  // A running agent owns the badge; the resume phase only shows before the
+  // agent proves it is up, so a healthy resume never keeps a spinner and a
+  // running-but-idle agent never flashes one.
+  const resumePhase = agentActive
+    ? null
+    : tabResumePhase(resumeStatusMap, tabLeafIds);
+  useEffect(() => {
+    if (!agentActive) return;
+    for (const id of tabLeafIds) useAgentResumeStatus.getState().clear(id);
+  }, [agentActive, tabLeafIds]);
   const pixels = size === "sm" ? 12 : 14;
   const iconClass = size === "sm" ? "size-3" : "size-3.5";
   if (tab.kind === "editor" || tab.kind === "markdown") {
@@ -103,6 +127,7 @@ export function TabIcon({
       <AgentTabIcon
         agent={tab.agent.icon}
         state={agentStatus.state}
+        resumePhase={resumePhase}
         pixels={pixels}
       />
     );
@@ -162,10 +187,12 @@ function PreviewIcon({
 function AgentTabIcon({
   agent,
   state,
+  resumePhase,
   pixels,
 }: {
   agent: string;
   state: "working" | "attention" | "finished" | null;
+  resumePhase?: AgentResumePhase | null;
   pixels: number;
 }) {
   const badgeClass =
@@ -176,14 +203,27 @@ function AgentTabIcon({
         : state === "finished"
           ? "bg-emerald-500"
           : null;
+  const ariaLabel =
+    resumePhase === "resuming"
+      ? "Agent resuming"
+      : resumePhase === "failed"
+        ? "Agent resume failed"
+        : state
+          ? `Agent ${state}`
+          : "Agent";
   return (
     <span
       className="relative inline-flex shrink-0"
       role="img"
-      aria-label={state ? `Agent ${state}` : "Agent"}
+      aria-label={ariaLabel}
+      title={ariaLabel}
     >
       <AgentIcon agent={agent} size={pixels} tone="brand" />
-      {badgeClass ? (
+      {resumePhase === "resuming" ? (
+        <span className="absolute -right-1 -bottom-1 size-2 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent ring-1 ring-background" />
+      ) : resumePhase === "failed" ? (
+        <span className="absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full bg-destructive ring-1 ring-background" />
+      ) : badgeClass ? (
         <span
           className={`absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full ring-1 ring-background ${badgeClass}`}
         />

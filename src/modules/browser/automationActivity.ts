@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useSyncExternalStore } from "react";
+import { AutomationPresence } from "./automationPresence";
 import {
   type AutomationState,
   acceptsAutomationState,
@@ -24,11 +25,7 @@ type ActivityTracker = {
   // request, and without somewhere to keep the caller it fell back to the
   // generic robot until a tracked call arrived.
   actors: Map<number, AutomationActor>;
-  // The tab each agent is currently driving, keyed by brand. An agent can hold
-  // several tabs at once, but it only ever works one of them at a time, so only
-  // that one carries the indicator -- and the indicator moves when the agent
-  // moves. Keyed by arrival rather than by comparing sequences, because the open
-  // marking has no sequence of its own to compare.
+  // Provisional open events use the PTY or legacy branding until controlId arrives.
   focus: Map<string, number>;
   listeners: Set<() => void>;
   timers: Map<number, ReturnType<typeof setTimeout>>;
@@ -37,9 +34,13 @@ type ActivityTracker = {
 
 type ActivityGlobal = typeof globalThis & {
   __anboBrowserAutomationActivity?: ActivityTracker;
+  __anboBrowserAutomationPresence?: AutomationPresence;
 };
 
 const activityGlobal = globalThis as ActivityGlobal;
+const presence =
+  activityGlobal.__anboBrowserAutomationPresence ?? new AutomationPresence();
+activityGlobal.__anboBrowserAutomationPresence = presence;
 const tracker = activityGlobal.__anboBrowserAutomationActivity ?? {
   activities: new Map<number, string>(),
   details: new Map<number, AutomationState>(),
@@ -91,7 +92,13 @@ export function markBrowserAutomationActivity(
   const identity = actor ?? tracker.actors.get(tabId);
   if (identity) {
     tracker.actors.set(tabId, identity);
-    tracker.focus.set(identity.brand, tabId);
+    tracker.focus.set(focusKey(tabId, identity), tabId);
+    if (tracker.details.get(tabId)?.controlId) {
+      tracker.focus.set(
+        identity.ptyId ? `pty:${identity.ptyId}` : identity.brand,
+        tabId,
+      );
+    }
   }
   const previous = tracker.timers.get(tabId);
   if (previous) clearTimeout(previous);
@@ -113,6 +120,7 @@ export function markBrowserAutomationActivity(
 }
 
 export function clearBrowserAutomationActivity(tabId: number): void {
+  presence.clear(tabId);
   const timer = tracker.timers.get(tabId);
   if (timer) clearTimeout(timer);
   tracker.timers.delete(tabId);
@@ -135,7 +143,7 @@ export function getBrowserAutomationState(
 export function isBrowserAutomationFocused(tabId: number): boolean {
   const actor = tracker.actors.get(tabId);
   if (!actor) return false;
-  const focused = tracker.focus.get(actor.brand);
+  const focused = tracker.focus.get(focusKey(tabId, actor));
   return focused === undefined || focused === tabId;
 }
 
@@ -148,6 +156,8 @@ export function getBrowserAutomationActor(
 export function receiveBrowserAutomationActivity(payload: unknown): void {
   const detail = parseAutomationState(payload);
   if (detail) {
+    presence.receive(detail);
+    if ((payload as { indicatorOnly?: unknown }).indicatorOnly === true) return;
     if (
       !acceptsAutomationState(getBrowserAutomationState(detail.tabId), detail)
     )
@@ -180,6 +190,32 @@ export function receiveBrowserAutomationActivity(payload: unknown): void {
     tracker.details.delete(activity.tabId);
     markBrowserAutomationActivity(activity.tabId, activity.method, undefined);
   }
+}
+
+function focusKey(tabId: number, actor: AutomationActor): string {
+  const controlId = tracker.details.get(tabId)?.controlId;
+  return controlId
+    ? `control:${controlId}`
+    : actor.ptyId
+      ? `pty:${actor.ptyId}`
+      : actor.brand;
+}
+
+export function getBrowserAutomationParticipants(
+  tabId: number,
+): readonly AutomationState[] {
+  return presence.get(tabId);
+}
+
+export function useBrowserAutomationParticipants(
+  tabId: number,
+): readonly AutomationState[] {
+  useEffect(ensureBrowserAutomationActivityListener, []);
+  return useSyncExternalStore(
+    (listener) => presence.subscribe(tabId, listener),
+    () => presence.get(tabId),
+    () => presence.get(tabId),
+  );
 }
 
 export function ensureBrowserAutomationActivityListener(): void {

@@ -57,8 +57,8 @@ postcondition never repeats the action, so inspect the page before retrying
 instead of resubmitting. `browser_wait` also takes `locator` + `state`
 (including `absent`) with a top-level `timeout`.
 
-**Reading pages well.** Use names in the page's own language; after a failed
-lookup, `browser_find` by text or a snapshot shows the real label. Bound your
+**Reading pages well.** Use names in the page's language, not guessed translations.
+Failed locators offer observed-name hints, not proof of uniqueness. Bound your
 retries and report a blocker rather than searching for the same absent label
 again. Prefer observed role/name or label; use CSS/testId only when observed,
 never guessed. Use a valid ref or unique locator directly. If several elements
@@ -74,7 +74,7 @@ call can use it rather than guess.
 explanation for a page that looks right and does nothing.
 
 **Typing.** `browser_type` sets the value once (input and change events); a
-site that reacts per keystroke needs `browser_key` or `browser_press`. Enter in
+site that reacts per keystroke needs `browser_press`. Enter in
 a search box may pick a highlighted suggestion instead of submitting the typed
 text, so verify the URL and results afterwards. `browser_press` accepts the
 input `ref` plus `expectedValue` to refuse typing into a replaced field.
@@ -150,11 +150,15 @@ moves, hides, disables or gets covered after pointer movement returns
 `input_not_ready` before mouse-down; a double-click can stop after its first
 click and reports how many clicks were dispatched. Failure never means no input
 reached the page.
+Use `browser_click` with `clickCount: 2` for a double-click.
+Fill and select verify the final value without waiting for a stationary box;
+visibility, enabled/editable and identity checks still apply. A mismatch after
+dispatch is not permission to repeat the input.
 
 Page titles: `browser_page_info` defaults to fast native metadata
 (`titleSource: native`); `titleSource: document` reads the DOM title. Snapshot
 titles are document titles. When waiting for a title you just read, pass the
-same source. `browser_get_url` returns `loading` and `pendingUrl`; while
+same source. `browser_page_info` also returns `loading` and `pendingUrl`; while
 loading, `url` is the last committed address.
 
 `browser_get_text` reports `source` and `visible`; a hidden accessible label is
@@ -173,8 +177,10 @@ exclude remote-control effects and do not replace postcondition checks.
 with both positions to pan inside one element straight from a missed find.
 Both points must be visible; nothing is retried automatically. `browser_emulate` lays a page out
 as another device would; `width: 0` clears it, it survives navigation, and it
-never resizes the application window. `browser_key` modifiers are per call:
-pass the whole combination on every key event. `browser_dialog` clicks a ref
+never resizes the application window. `browser_press` modifiers are per call:
+pass the whole combination on every key event. `keyAction` is `press` by default,
+or `down`/`up`; only `press` supports postconditions and Enter observation.
+`browser_dialog` clicks a ref
 and answers the alert, confirm or prompt it raises, reporting `clickDispatched`
 and `dialogOpened` separately. `browser_download` arms exactly one download and
 clicks a ref; a `timedOut` result from `browser_download_wait` is normal for a

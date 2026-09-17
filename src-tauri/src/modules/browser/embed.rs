@@ -573,6 +573,7 @@ async fn spawn_browser_child(
                     crate::modules::browser_automation::design::navigation(&webview);
                     event_loading.store(true, Ordering::Release);
                     event_navigation_generation.fetch_add(1, Ordering::AcqRel);
+                    crate::modules::browser_automation::snapshot::invalidate_document(tab_id);
                     if let Ok(mut pending_url) = event_pending_url.lock() {
                         *pending_url = Some(payload.url().to_string());
                     }

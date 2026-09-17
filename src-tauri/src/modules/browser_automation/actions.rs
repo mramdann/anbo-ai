@@ -43,6 +43,7 @@ use crate::modules::browser_automation::snapshot::{
 };
 use crate::modules::browser_automation::timings::ActionTimings;
 use crate::modules::browser_automation::visibility::VISIBILITY_JS;
+const VALUE_ACTION_JS: &str = include_str!("valueAction.js");
 
 /// Per-poll timeout for `execute_script` inside readiness/wait loops. Short on
 /// purpose: while a tab is navigating, WebView2 drops the script callback, and a
@@ -776,9 +777,10 @@ async fn handle_action_inner(
             }
         }
 
-        "click" => {
+        "click" | "double_click" => {
             let tab_id = extract_tab_id(&params)?;
             let ref_id = extract_ref(&params)?;
+            let click_count = extract_click_count(&params, method == "double_click")?;
             let expectation = PageExpectation::parse(params.get("waitFor"))?;
             let tab_lock = get_tab_lock(tab_id);
             let (webview, dispatch) = {
@@ -790,15 +792,8 @@ async fn handle_action_inner(
                 timings
                     .measure("ready", wait_for_ready(&webview, 3000))
                     .await;
-                let target = get_ref_frame_target(tab_id, &ref_id);
-                let popup_url = timings
-                    .measure(
-                        "popupLookup",
-                        popup_url_for_ref(&webview, target.as_ref(), &ref_id),
-                    )
-                    .await
-                    .unwrap_or(None);
-                let dispatch = click_ref_profiled(&webview, tab_id, &ref_id, timings).await?;
+                let (dispatch, popup_url) =
+                    click_ref_profiled(&webview, tab_id, &ref_id, click_count, timings).await?;
                 if let Some(url) = popup_url {
                     let _ = app.emit(
                         BROWSER_POPUP_REQUEST_EVENT,
@@ -813,44 +808,14 @@ async fn handle_action_inner(
                 "ok": true,
                 "dispatch": dispatch
             });
+            if click_count == 2 {
+                result["clickCount"] = json!(2);
+            }
             if let Some(expectation) = expectation {
                 result["postcondition"] = timings.measure("postcondition", wait_for_page_state(&webview, tab_id, &expectation)).await
                     .map_err(|(code, message)| (code, format!("click was dispatched, but {message}; inspect the page before retrying the click")))?;
             }
             Ok(result)
-        }
-
-        "double_click" => {
-            let tab_id = extract_tab_id(&params)?;
-            let ref_id = extract_ref(&params)?;
-            let tab_lock = get_tab_lock(tab_id);
-            let _lock = tab_lock.lock().await;
-            let webview = get_embed_webview(app, tab_id)
-                .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
-            let generation = get_current_generation(tab_id);
-            ensure_current_ref(&ref_id, generation)?;
-            let target = get_ref_frame_target(tab_id, &ref_id);
-            let actionable = wait_for_actionable_ref(
-                &webview,
-                target.as_ref(),
-                &ref_id,
-                ActionabilityRequirement::Click,
-            )
-            .await?;
-            let dispatch = if target.as_ref().is_some_and(|target| !target.is_main) {
-                dom_click_ref(&webview, target.as_ref(), &ref_id, 2).await?;
-                "dom-frame"
-            } else {
-                dispatch_mouse_click(&webview, &actionable, &ref_id, 2).await?;
-                "devtools"
-            };
-            Ok(json!({
-                "tabId": tab_id,
-                "ref": ref_id,
-                "ok": true,
-                "dispatch": dispatch,
-                "clickCount": 2
-            }))
         }
 
         "focus" => {
@@ -1124,61 +1089,35 @@ async fn handle_action_inner(
             let cur_gen = get_current_generation(tab_id);
             ensure_current_ref(&ref_id, cur_gen)?;
             let target = get_ref_frame_target(tab_id, &ref_id);
-            wait_for_actionable_ref(
-                &webview,
-                target.as_ref(),
-                &ref_id,
-                ActionabilityRequirement::Editable,
-            )
-            .await?;
-
             let js = deep_ref_expression(
                 &ref_id,
                 &format!(
                     r#"
-                    if (!el) {{
-                        return JSON.stringify({{ ok: false, error: "stale_ref" }});
-                    }}
-                    el.focus();
-                    const text = {};
-                    const currentValue = el.isContentEditable
-                        ? (el.textContent || '')
-                        : (el.value || '');
-                    const nextValue = {} ? currentValue + text : text;
-                    const prototype = el instanceof HTMLTextAreaElement
-                        ? HTMLTextAreaElement.prototype
-                        : el instanceof HTMLInputElement
-                          ? HTMLInputElement.prototype
-                          : null;
-                    const setter = prototype
-                        ? Object.getOwnPropertyDescriptor(prototype, 'value')?.set
-                        : null;
-                    if (setter) setter.call(el, nextValue);
-                    else if (el.isContentEditable) el.textContent = nextValue;
-                    else el.value = nextValue;
-                    el.dispatchEvent(new InputEvent('input', {{
-                        bubbles: true,
-                        data: text,
-                        inputType: 'insertText'
-                    }}));
-                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    const actual = el.isContentEditable ? (el.textContent || '') : el.value;
-                    return JSON.stringify({{ ok: el.isConnected && actual === nextValue, error: 'input_mismatch' }});"#,
+                    {VISIBILITY_JS}
+                    {VALUE_ACTION_JS}
+                    return JSON.stringify(fillValue(el, refRegistry, refId, {}, {}));"#,
                     serde_json::to_string(text).unwrap(),
                     append
                 ),
             );
 
-            let res = execute_ref_script(&webview, target.as_ref(), &js)
-                .await
-                .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
-
-            let unquoted: String = serde_json::from_str(&res).unwrap_or(res);
-            let parsed: Value = serde_json::from_str(&unquoted).unwrap_or_default();
-
+            let parsed = wait_for_value_action(
+                &webview,
+                target.as_ref(),
+                &ref_id,
+                ActionabilityRequirement::Editable,
+                &js,
+            )
+            .await?;
             if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
                 Ok(json!({ "tabId": tab_id, "ref": ref_id, "ok": true, "valueVerified": true }))
             } else {
+                if parsed["error"] == "input_not_ready" {
+                    return Err((
+                        error_codes::INPUT_NOT_READY.to_string(),
+                        "input changed before filling; no value was written".into(),
+                    ));
+                }
                 if parsed.get("error").and_then(Value::as_str) == Some("input_mismatch") {
                     return Err((error_codes::INPUT_MISMATCH.to_string(), "input did not retain the requested value; inspect the field before submitting".to_string()));
                 }
@@ -1269,7 +1208,20 @@ async fn handle_action_inner(
                 )
             })?;
             ensure_bounded(key, MAX_KEY_BYTES, "key")?;
+            let action = extract_key_action(&params)?;
+            let modifiers = extract_key_modifiers(&params)?;
             let expectation = PageExpectation::parse(params.get("waitFor"))?;
+            if action != "press"
+                && (expectation.is_some()
+                    || params
+                        .get("observationTimeout")
+                        .is_some_and(|value| value.as_u64() != Some(0)))
+            {
+                return Err((
+                    error_codes::INVALID_REQUEST.into(),
+                    "waitFor and Enter observation require keyAction press".into(),
+                ));
+            }
             let input_ref = if params.get("ref").is_some() {
                 Some(extract_ref(&params)?)
             } else {
@@ -1299,8 +1251,11 @@ async fn handle_action_inner(
                 .and_then(as_count)
                 .unwrap_or(SUBMISSION_OBSERVATION_MS)
                 .min(10_000);
-            let should_observe =
-                key == "Enter" && observation_timeout_ms > 0 && expectation.is_none();
+            let should_observe = action == "press"
+                && modifiers == 0
+                && key == "Enter"
+                && observation_timeout_ms > 0
+                && expectation.is_none();
 
             let tab_lock = get_tab_lock(tab_id);
             let (webview, before_url, before_navigation_generation, observation_id) = {
@@ -1333,9 +1288,7 @@ async fn handle_action_inner(
                 let dispatched = async {
                     // Focus emulation can run page focus handlers. Prepare it before
                     // checking the target, immediately ahead of native key dispatch.
-                    timings.measure("focusEmulation", call_devtools_with_retry(
-                        &webview, "Emulation.setFocusEmulationEnabled", r#"{"enabled":true}"#, 2,
-                    )).await.map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+                    timings.measure("focusEmulation", ref_context::ensure_focus(&webview)).await.map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
                     if let Some(ref_id) = input_ref.as_deref() {
                         let generation = get_current_generation(tab_id);
                         ensure_current_ref(ref_id, generation)?;
@@ -1354,7 +1307,7 @@ async fn handle_action_inner(
                             return Err((code.to_string(), "key was not dispatched: the input changed or could not be focused; inspect it before retrying".to_string()));
                         }
                     }
-                    dispatch_key(&webview, key, timings).await.map_err(|error| (error_codes::CDP_FAILED.to_string(), error))
+                    dispatch_key(&webview, key, action, modifiers, timings).await.map_err(|error| (error_codes::CDP_FAILED.to_string(), error))
                 }.await;
                 if let Err(error) = dispatched {
                     if should_observe {
@@ -1390,6 +1343,8 @@ async fn handle_action_inner(
             let mut result = json!({
                 "tabId": tab_id,
                 "key": key,
+                "action": action,
+                "modifiers": modifier_names(modifiers),
                 "ok": true,
                 "dispatch": "devtools",
             });
@@ -1946,47 +1901,31 @@ async fn handle_action_inner(
             let cur_gen = get_current_generation(tab_id);
             ensure_current_ref(&ref_id, cur_gen)?;
             let target = get_ref_frame_target(tab_id, &ref_id);
-            wait_for_actionable_ref(
-                &webview,
-                target.as_ref(),
-                &ref_id,
-                ActionabilityRequirement::Focus,
-            )
-            .await?;
             let value_json = serde_json::to_string(value).unwrap();
             let js = deep_ref_expression(
                 &ref_id,
                 &format!(
                     r#"
-                    if (!el) {{
-                        return JSON.stringify({{ ok: false, error: "stale_ref" }});
-                    }}
-                    if (el.tagName !== 'SELECT') return JSON.stringify({{ ok: false, error: "not_a_select" }});
-                    const want = {value_json};
-                    let matched = null;
-                    for (const opt of el.options) {{
-                        const label = (opt.textContent || '').trim();
-                        if (opt.value === want || label === want) {{ matched = opt; break; }}
-                    }}
-                    if (!matched) return JSON.stringify({{ ok: false, error: "option_not_found", want: want }});
-                    el.focus();
-                    el.value = matched.value;
-                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    return JSON.stringify({{ ok: true, value: matched.value, label: (matched.textContent || '').trim() }});"#
+                    {VISIBILITY_JS}
+                    {VALUE_ACTION_JS}
+                    return JSON.stringify(selectValue(el, refRegistry, refId, {value_json}));"#
                 ),
             );
-            let res = execute_ref_script(&webview, target.as_ref(), &js)
-                .await
-                .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
-            let unquoted: String = serde_json::from_str(&res).unwrap_or(res);
-            let parsed: Value = serde_json::from_str(&unquoted).unwrap_or_default();
+            let parsed = wait_for_value_action(
+                &webview,
+                target.as_ref(),
+                &ref_id,
+                ActionabilityRequirement::Select,
+                &js,
+            )
+            .await?;
             if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
                 Ok(json!({
                     "tabId": tab_id,
                     "ref": ref_id,
                     "value": parsed.get("value").cloned().unwrap_or(Value::Null),
                     "label": parsed.get("label").cloned().unwrap_or(Value::Null),
+                    "valueVerified": true,
                     "ok": true
                 }))
             } else {
@@ -1994,6 +1933,19 @@ async fn handle_action_inner(
                     .get("error")
                     .and_then(|v| v.as_str())
                     .unwrap_or("stale_ref");
+                if err == "input_not_ready" {
+                    return Err((
+                        error_codes::INPUT_NOT_READY.to_string(),
+                        "select or option changed before selection; no value was written".into(),
+                    ));
+                }
+                if err == "input_mismatch" {
+                    return Err((
+                        error_codes::INPUT_MISMATCH.to_string(),
+                        "select did not retain the requested option; inspect it before retrying"
+                            .into(),
+                    ));
+                }
                 if err == "stale_ref" {
                     Err((
                         error_codes::STALE_REF.to_string(),
@@ -2342,7 +2294,7 @@ async fn handle_action_inner(
                 native_title
             };
             Ok(
-                json!({ "tabId": tab_id, "title": title, "titleSource": title_source, "url": url, "urlSource": "native" }),
+                json!({ "tabId": tab_id, "title": title, "titleSource": title_source, "url": url, "urlSource": "native", "loading": active_loading(tab_id), "pendingUrl": active_pending_url(tab_id) }),
             )
         }
 
@@ -2913,35 +2865,12 @@ async fn evaluate_in_frame(
     expression: &str,
 ) -> Result<String, String> {
     let context_id = create_frame_execution_context(webview, frame_id).await?;
-    let params = json!({
-        "expression": expression,
-        "contextId": context_id,
-        "returnByValue": true,
-        "awaitPromise": false,
-        "userGesture": true
-    })
-    .to_string();
-    let raw =
-        call_devtools_protocol_method(webview, "Runtime.evaluate", &params, Duration::from_secs(5))
-            .await?;
-    let payload: Value = serde_json::from_str(&raw)
-        .map_err(|error| format!("invalid Runtime.evaluate response: {error}"))?;
-    if let Some(details) = payload.get("exceptionDetails") {
-        return Err(format!("frame script failed: {details}"));
-    }
-    let result = payload
-        .get("result")
-        .ok_or_else(|| "Runtime.evaluate response omitted result".to_string())?;
-    if let Some(value) = result.get("value") {
-        return match value {
-            Value::String(text) => Ok(text.clone()),
-            other => Ok(other.to_string()),
-        };
-    }
-    if result.get("subtype").and_then(Value::as_str) == Some("null") {
-        return Ok("null".to_string());
-    }
-    Err("Runtime.evaluate result could not be returned by value".to_string())
+    let raw = ref_context::evaluate_context(webview, context_id, expression).await?;
+    Ok(decode_frame_evaluation(raw))
+}
+
+fn decode_frame_evaluation(raw: String) -> String {
+    serde_json::from_str::<String>(&raw).unwrap_or(raw)
 }
 
 fn parse_snapshot_payload(raw: String) -> Result<SnapshotPayload, String> {
@@ -3057,44 +2986,85 @@ fn find_timeout(
     last_empty_scan: Option<&CollectedLocatorMatches>,
     quiet_waits: usize,
 ) -> (String, String) {
+    let diagnostics = locator_timeout_diagnostics(
+        locator,
+        empty_scans,
+        scan_error,
+        last_empty_scan,
+        quiet_waits,
+    );
+    (
+        error_codes::TIMEOUT.to_string(),
+        format!(
+            "timed out finding {} '{}' after {timeout_ms}ms: {diagnostics}",
+            locator.by, locator.value,
+        ),
+    )
+}
+
+fn locator_timeout_diagnostics(
+    locator: &LocatorRequest,
+    completed_scans: usize,
+    scan_error: Option<&str>,
+    last_scan: Option<&CollectedLocatorMatches>,
+    quiet_waits: usize,
+) -> String {
     // What the caller needs is not how many scans ran, but whether this is a
     // verdict they can act on. A page scanned end to end with nothing matching
     // is a real absence; a truncated scan is not; and a locator that matched
     // elements nobody can see is neither -- it is a visibility filter the
     // caller can lift.
-    let hidden = last_empty_scan.map_or(0, |scan| scan.hidden);
-    let detail = if empty_scans == 0 {
+    let hidden = last_scan.map_or(0, |scan| scan.hidden);
+    let detail = if completed_scans == 0 {
         "no scan completed".to_string()
     } else if scan_error.is_some() {
         // The last look was cut off by the deadline. Whatever the earlier ones
         // saw, this is not a page that was read to the end, and saying both in
         // one sentence left the caller unable to tell which half to believe.
         format!(
-            "the last scan was cut short by the deadline after {empty_scans} completed scans; no conclusion about the element is available"
+            "the last scan was cut short by the deadline after {completed_scans} completed scans; no conclusion about the element is available"
         )
     } else if let Some(scan) =
-        last_empty_scan.filter(|scan| scan.node_limit_reached || scan.skipped_frames > 0)
+        last_scan.filter(|scan| scan.node_limit_reached || scan.skipped_frames > 0)
     {
         format!(
-            "page coverage incomplete after {empty_scans} scans ({} nodes scanned{}); the element may exist in the unscanned part, so this is not a confirmed absence",
+            "page coverage incomplete after {completed_scans} scans ({} nodes scanned{}); the element may exist in the unscanned part, so this is not a confirmed absence",
             scan.scanned,
             if scan.skipped_frames > 0 { format!(", {} frames skipped", scan.skipped_frames) } else { String::new() },
         )
+    } else if let Some(scan) = last_scan.filter(|scan| !scan.matches.is_empty()) {
+        format!(
+            "{} element(s) matched in the last completed scan, but the requested state was not satisfied ({} rendered); this is not an absent target",
+            scan.matches.len(),
+            scan.matches.iter().filter(|item| item.visible).count(),
+        )
     } else if hidden > 0 {
         format!(
-            "{hidden} element(s) matched but are not rendered, so they were filtered out; retry with includeHidden=true to address them"
+            "{hidden} element(s) matched but are not rendered, so they were filtered out; includeHidden=true permits inspection, not input to a hidden control. Input still requires a rendered target"
         )
-    } else if let Some(names) = last_empty_scan
+    } else if let Some(names) = last_scan
         .filter(|scan| !scan.name_misses.is_empty())
-        .map(|scan| scan.name_misses.join("\", \""))
+        .map(|scan| {
+            scan.name_misses
+                .iter()
+                .take(5)
+                .map(|name| json!(name.chars().take(80).collect::<String>()).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
     {
+        let comparison = if locator.exact {
+            "equaled"
+        } else {
+            "contained"
+        };
         format!(
-            "the role matched but no accessible name contained the requested one; names seen here: \"{names}\""
+            "the role matched but no accessible name {comparison} the requested one; names seen here: {names}; check the page's language and use its observed name, not a guessed translation. These are hints (up to 80 characters each), not verified unique targets"
         )
     } else {
         format!(
-            "page fully scanned {empty_scans} time(s) ({} nodes); confirmed absence in the last completed scan, not a guarantee about later changes",
-            last_empty_scan.map_or(0, |scan| scan.scanned),
+            "page fully scanned {completed_scans} time(s) ({} nodes); confirmed absence in the last completed scan, not a guarantee about later changes",
+            last_scan.map_or(0, |scan| scan.scanned),
         )
     };
     let quiet = if quiet_waits > 0 {
@@ -3106,37 +3076,40 @@ fn find_timeout(
     // already walked past the page's controls; naming a few of them, as role
     // locators, saves the snapshot an agent otherwise spends a turn on before
     // acting. Measured: Maps 3 of 3 sessions and Amazon 3 of 6 paid that turn.
-    let seen = last_empty_scan
+    let seen = last_scan
         .filter(|scan| {
             scan_error.is_none()
-                && hidden == 0
-                && scan.name_misses.is_empty()
+                && completed_scans > 0
+                && !scan.node_limit_reached
+                && scan.skipped_frames == 0
+                && scan.matches.is_empty()
+                && (hidden > 0 || scan.name_misses.is_empty())
                 && !scan.candidates.is_empty()
         })
         .map(|scan| {
             let list = scan
                 .candidates
                 .iter()
-                .take(8)
+                .take(if hidden > 0 { 4 } else { 8 })
                 .map(|candidate| {
                     format!(
-                        "{} \"{}\"",
+                        "{} {}",
                         candidate.role,
-                        candidate.name.chars().take(40).collect::<String>()
+                        json!(candidate.name.chars().take(60).collect::<String>())
                     )
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
             format!(
-                "; interactive elements seen: {list} (each usable as locator {{by: \"role\", value: <role>, name: <name>}})"
+                "; interactive elements seen: {list}; observed alternatives, not equivalent or verified unique targets. Inspect before choosing a locator"
             )
         })
         .unwrap_or_default();
     // An over-specific css selector that misses is usually one rung above a
     // selector the page does have. Measured: every canvas miss on Maps and
     // TradingView was followed by find(css:canvas). Say so in this reply.
-    let nearest = last_empty_scan
-        .filter(|_| scan_error.is_none() && hidden == 0)
+    let nearest = last_scan
+        .filter(|scan| scan_error.is_none() && hidden == 0 && scan.matches.is_empty())
         .and_then(|scan| scan.nearest.as_ref())
         .map(|near| {
             let examples = near
@@ -3162,16 +3135,30 @@ fn find_timeout(
             )
         })
         .unwrap_or_default();
+    format!(
+        "{detail}{quiet}{nearest}{seen}{}{}",
+        scan_error
+            .map(|error| format!("; latest scan: {error}"))
+            .unwrap_or_default(),
+        last_scan.map(|scan| format!("; last completed coverage: scanned={}, nodeLimitReached={}, includedFrames={}, skippedFrames={}", scan.scanned, scan.node_limit_reached, scan.included_frames, scan.skipped_frames)).unwrap_or_default()
+    )
+}
+
+fn target_locator_timeout(
+    locator: &LocatorRequest,
+    state: Option<&str>,
+    timeout_ms: u64,
+    completed_scans: usize,
+    scan_error: Option<&str>,
+    last_scan: Option<&CollectedLocatorMatches>,
+) -> (String, String) {
+    let diagnostics =
+        locator_timeout_diagnostics(locator, completed_scans, scan_error, last_scan, 0);
     (
-        error_codes::TIMEOUT.to_string(),
+        error_codes::TIMEOUT.into(),
         format!(
-            "timed out finding {} '{}' after {timeout_ms}ms: {detail}{quiet}{nearest}{seen}{}{}",
-            locator.by,
-            locator.value,
-            scan_error
-                .map(|error| format!("; latest scan: {error}"))
-                .unwrap_or_default(),
-            last_empty_scan.map(|scan| format!("; last completed coverage: scanned={}, nodeLimitReached={}, includedFrames={}, skippedFrames={}", scan.scanned, scan.node_limit_reached, scan.included_frames, scan.skipped_frames)).unwrap_or_default()
+            "locator {} timed out after {timeout_ms}ms for {} '{}': {diagnostics}; no input dispatched",
+            state.unwrap_or("lookup"), locator.by, locator.value,
         ),
     )
 }
@@ -3304,13 +3291,21 @@ async fn resolve_target_locator(
     let webview =
         get_embed_webview(app, tab_id).map_err(|e| (error_codes::TAB_NOT_FOUND.into(), e))?;
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
-    let mut last_coverage = String::from("no completed scan");
+    let mut last_scan = None;
+    let mut completed_scans = 0;
     let mut scanned_state: Option<PageScanState> = None;
     let mut scanned_at = tokio::time::Instant::now();
     let mut wait_backoff_ms = LOCATOR_RETRY_MS;
     loop {
         if tokio::time::Instant::now() >= deadline {
-            return Err((error_codes::TIMEOUT.into(), format!("locator {} timed out after {timeout_ms}ms; {last_coverage}; no input dispatched", state.unwrap_or("lookup"))));
+            return Err(target_locator_timeout(
+                &locator,
+                state,
+                timeout_ms,
+                completed_scans,
+                None,
+                last_scan.as_ref(),
+            ));
         }
         let current_state = page_scan_state(&webview).await;
         if let Some(previous) = &scanned_state {
@@ -3337,12 +3332,22 @@ async fn resolve_target_locator(
             |generation| collect_locator_matches(&webview, tab_id, generation, &locator),
             |result| !result.matches.is_empty(),
         )
-        .await?;
+        .await
+        .map_err(|error| {
+            if error.0 == error_codes::TIMEOUT {
+                target_locator_timeout(
+                    &locator,
+                    state,
+                    timeout_ms,
+                    completed_scans,
+                    Some(&error.1),
+                    last_scan.as_ref(),
+                )
+            } else {
+                error
+            }
+        })?;
         let complete = !result.node_limit_reached && result.skipped_frames == 0;
-        last_coverage = format!(
-            "scanned={}, nodeLimitReached={}, skippedFrames={}",
-            result.scanned, result.node_limit_reached, result.skipped_frames
-        );
         let first = result.matches.first();
         let matched = if let (Some(state), Some(wanted)) = (state, min_count) {
             let visible = result.matches.iter().filter(|item| item.visible).count();
@@ -3375,6 +3380,8 @@ async fn resolve_target_locator(
                 "skippedFrames":result.skipped_frames, "nodeLimitReached":result.node_limit_reached,
             }));
         }
+        completed_scans += 1;
+        last_scan = Some(result);
         wait_backoff_ms = (wait_backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
         tokio::time::sleep_until(locator_retry_at(
             tokio::time::Instant::now(),
@@ -3676,6 +3683,7 @@ enum ActionabilityRequirement {
     Hover(Option<(f64, f64)>),
     Focus,
     Editable,
+    Select,
 }
 
 struct ActionableElement {
@@ -3685,6 +3693,51 @@ struct ActionableElement {
     input_type: String,
     checked: Option<bool>,
     draggable: bool,
+    popup_url: Option<String>,
+    value_result: Option<Value>,
+}
+
+fn actionability_failure_reason(
+    parsed: &Value,
+    requirement: ActionabilityRequirement,
+) -> &'static str {
+    let flag = |key| parsed.get(key).and_then(Value::as_bool) == Some(true);
+    if !flag("visible") {
+        "not visible"
+    } else if !flag("enabled") {
+        "disabled"
+    } else if matches!(requirement, ActionabilityRequirement::Editable) && !flag("editable") {
+        "not editable"
+    } else if matches!(
+        requirement,
+        ActionabilityRequirement::Click
+            | ActionabilityRequirement::ClickAt(_)
+            | ActionabilityRequirement::Hover(_)
+            | ActionabilityRequirement::Editable
+    ) && !flag("receives")
+    {
+        if !flag("inViewport") {
+            "outside the viewport after scrolling"
+        } else {
+            "covered by another element"
+        }
+    } else {
+        "not stable"
+    }
+}
+
+fn actionability_timeout_message(
+    ref_id: &str,
+    parsed: &Value,
+    requirement: ActionabilityRequirement,
+) -> String {
+    let reason = actionability_failure_reason(parsed, requirement);
+    let hint = if matches!(requirement, ActionabilityRequirement::ClickAt(_)) {
+        "; requested drag position was not ready; no mouse button was pressed. Inspect the current bounds and visible page before retrying; do not repeat unchanged blocked positions"
+    } else {
+        ""
+    };
+    format!("element ref '{ref_id}' did not become actionable: {reason}{hint}")
 }
 
 fn extract_hover_position(params: &Value) -> Result<Option<(f64, f64)>, (String, String)> {
@@ -3735,12 +3788,15 @@ fn actionable_probe_script(ref_id: &str, scroll: &str, position: Option<(f64, f6
                 el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable
             );
             const receives = visible && receivesActionPointer(el, point);
+            const link = el.closest ? el.closest('a[href]') : null;
+            const popupUrl = link && String(link.target || '').toLowerCase() === '_blank' ? String(link.href || '') : null;
             return JSON.stringify({{
                 ok: true,
                 visible,
                 enabled,
                 editable,
                 receives,
+                popupUrl,
                 ...point,
                 tag: el.tagName.toLowerCase(),
                 inputType: el instanceof HTMLInputElement ? String(el.type || '').toLowerCase() : '',
@@ -3757,15 +3813,29 @@ fn actionability_wait_script(
     position: Option<(f64, f64)>,
     requirement: ActionabilityRequirement,
 ) -> String {
+    actionable_attempt_script(ref_id, scroll, position, requirement, None)
+}
+
+fn actionable_attempt_script(
+    ref_id: &str,
+    scroll: bool,
+    position: Option<(f64, f64)>,
+    requirement: ActionabilityRequirement,
+    value_script: Option<&str>,
+) -> String {
     let sampler = include_str!("actionabilityWait.js");
     let probe = actionable_probe_script(ref_id, "scroll", position);
     let requirement = match requirement {
         ActionabilityRequirement::Focus => "focus",
         ActionabilityRequirement::Editable => "editable",
+        ActionabilityRequirement::Select => "select",
         _ => "pointer",
     };
+    let value_action = value_script
+        .map(|script| format!(", () => JSON.parse({script})"))
+        .unwrap_or_default();
     format!(
-        "(() => {{ {sampler}\nreturn waitForActionableSample((scroll) => JSON.parse({probe}), '{requirement}', {scroll}); }})()"
+        "(() => {{ {sampler}\nreturn waitForActionableSample((scroll) => JSON.parse({probe}), '{requirement}', {scroll}{value_action}); }})()"
     )
 }
 
@@ -3857,6 +3927,33 @@ async fn wait_for_actionable_ref(
     ref_id: &str,
     requirement: ActionabilityRequirement,
 ) -> Result<ActionableElement, (String, String)> {
+    wait_for_actionable_attempt(webview, target, ref_id, requirement, None).await
+}
+
+async fn wait_for_value_action(
+    webview: &Webview,
+    target: Option<&RefFrameTarget>,
+    ref_id: &str,
+    requirement: ActionabilityRequirement,
+    script: &str,
+) -> Result<Value, (String, String)> {
+    let result =
+        wait_for_actionable_attempt(webview, target, ref_id, requirement, Some(script)).await?;
+    result.value_result.ok_or_else(|| {
+        (
+            error_codes::CDP_FAILED.to_string(),
+            "value action result unavailable; input is not retried".into(),
+        )
+    })
+}
+
+async fn wait_for_actionable_attempt(
+    webview: &Webview,
+    target: Option<&RefFrameTarget>,
+    ref_id: &str,
+    requirement: ActionabilityRequirement,
+    value_script: Option<&str>,
+) -> Result<ActionableElement, (String, String)> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let position = match requirement {
         ActionabilityRequirement::Hover(position) | ActionabilityRequirement::ClickAt(position) => {
@@ -3864,8 +3961,14 @@ async fn wait_for_actionable_ref(
         }
         _ => None,
     };
-    let initial_script = actionability_wait_script(ref_id, true, position, requirement);
-    let settled_script = actionability_wait_script(ref_id, false, position, requirement);
+    let build = |scroll| match value_script {
+        Some(value_script) => {
+            actionable_attempt_script(ref_id, scroll, position, requirement, Some(value_script))
+        }
+        None => actionability_wait_script(ref_id, scroll, position, requirement),
+    };
+    let initial_script = build(true);
+    let settled_script = build(false);
     let mut script = &initial_script;
     let frame_id = target
         .filter(|target| !target.is_main)
@@ -3905,10 +4008,14 @@ async fn wait_for_actionable_ref(
             ActionabilityRequirement::Click
             | ActionabilityRequirement::ClickAt(_)
             | ActionabilityRequirement::Hover(_) => enabled && receives,
-            ActionabilityRequirement::Focus => enabled,
+            ActionabilityRequirement::Focus | ActionabilityRequirement::Select => enabled,
             ActionabilityRequirement::Editable => editable && receives,
         };
-        if visible && stable && requirement_met {
+        let needs_stability = !matches!(
+            requirement,
+            ActionabilityRequirement::Editable | ActionabilityRequirement::Select
+        );
+        if visible && (stable || !needs_stability) && requirement_met {
             if target.is_none_or(|target| target.is_main) {
                 super::activity::target(
                     parsed
@@ -3926,6 +4033,7 @@ async fn wait_for_actionable_ref(
                 super::activity::stage("frame");
             }
             return Ok(ActionableElement {
+                value_result: parsed.get("valueActionResult").cloned(),
                 x: rect.0,
                 y: rect.1,
                 tag: parsed
@@ -3940,33 +4048,20 @@ async fn wait_for_actionable_ref(
                     .to_string(),
                 checked: parsed.get("checked").and_then(Value::as_bool),
                 draggable: parsed.get("draggable").and_then(Value::as_bool) == Some(true),
+                popup_url: parsed["popupUrl"]
+                    .as_str()
+                    .filter(|url| {
+                        url::Url::parse(url)
+                            .ok()
+                            .is_some_and(|url| matches!(url.scheme(), "http" | "https"))
+                    })
+                    .map(str::to_owned),
             });
         }
-        let last_reason = if !visible {
-            "not visible"
-        } else if !enabled {
-            "disabled"
-        } else if matches!(requirement, ActionabilityRequirement::Editable) && !editable {
-            "not editable"
-        } else if matches!(
-            requirement,
-            ActionabilityRequirement::Click
-                | ActionabilityRequirement::Hover(_)
-                | ActionabilityRequirement::Editable
-        ) && !receives
-        {
-            if parsed.get("inViewport").and_then(Value::as_bool) != Some(true) {
-                "outside the viewport after scrolling"
-            } else {
-                "covered by another element"
-            }
-        } else {
-            "not stable"
-        };
         if tokio::time::Instant::now() >= deadline {
             return Err((
                 error_codes::TIMEOUT.to_string(),
-                format!("element ref '{ref_id}' did not become actionable: {last_reason}"),
+                actionability_timeout_message(ref_id, &parsed, requirement),
             ));
         }
         tokio::time::sleep_until((probe_started + Duration::from_millis(100)).min(deadline)).await;
@@ -3980,14 +4075,9 @@ async fn dom_click_ref(
     count: u8,
 ) -> Result<(), (String, String)> {
     super::activity::stage("frame");
-    call_devtools_with_retry(
-        webview,
-        "Emulation.setFocusEmulationEnabled",
-        r#"{"enabled":true}"#,
-        2,
-    )
-    .await
-    .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+    ref_context::ensure_focus(webview)
+        .await
+        .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
     let script = deep_ref_expression(
         ref_id,
         &format!(
@@ -4155,28 +4245,6 @@ async fn execute_dialog_script(
     }
 }
 
-async fn popup_url_for_ref(
-    webview: &Webview,
-    target: Option<&RefFrameTarget>,
-    ref_id: &str,
-) -> Result<Option<String>, String> {
-    let script = deep_ref_expression(
-        ref_id,
-        r#"
-            if (!el) return null;
-            const link = el.closest ? el.closest('a[href]') : null;
-            if (!link || String(link.target || '').toLowerCase() !== '_blank') return null;
-            return String(link.href || '');"#,
-    );
-    let response = execute_ref_script(webview, target, &script).await?;
-    let popup_url = serde_json::from_str::<Option<String>>(&response).unwrap_or(None);
-    Ok(popup_url.filter(|url| {
-        url::Url::parse(url)
-            .ok()
-            .is_some_and(|url| matches!(url.scheme(), "http" | "https"))
-    }))
-}
-
 async fn take_dialog_capture(
     webview: &Webview,
     target: Option<&RefFrameTarget>,
@@ -4257,15 +4325,18 @@ async fn click_ref(
     tab_id: i64,
     ref_id: &str,
 ) -> Result<&'static str, (String, String)> {
-    click_ref_profiled(webview, tab_id, ref_id, &mut ActionTimings::default()).await
+    click_ref_profiled(webview, tab_id, ref_id, 1, &mut ActionTimings::default())
+        .await
+        .map(|(dispatch, _)| dispatch)
 }
 
 async fn click_ref_profiled(
     webview: &Webview,
     tab_id: i64,
     ref_id: &str,
+    count: u8,
     timings: &mut ActionTimings,
-) -> Result<&'static str, (String, String)> {
+) -> Result<(&'static str, Option<String>), (String, String)> {
     let current_generation = get_current_generation(tab_id);
     ensure_current_ref(ref_id, current_generation)?;
     let target = get_ref_frame_target(tab_id, ref_id);
@@ -4285,13 +4356,29 @@ async fn click_ref_profiled(
         timings
             .measure(
                 "frameClick",
-                dom_click_ref(webview, target.as_ref(), ref_id, 1),
+                dom_click_ref(webview, target.as_ref(), ref_id, count),
             )
             .await?;
-        return Ok("dom-frame");
+        return Ok(("dom-frame", actionable.popup_url));
     }
-    dispatch_mouse_click_profiled(webview, &actionable, ref_id, 1, timings).await?;
-    Ok("devtools")
+    dispatch_mouse_click_profiled(webview, &actionable, ref_id, count, timings).await?;
+    Ok(("devtools", actionable.popup_url))
+}
+
+fn extract_click_count(params: &Value, double: bool) -> Result<u8, (String, String)> {
+    match params.get("clickCount") {
+        None => Ok(if double { 2 } else { 1 }),
+        Some(value) => value
+            .as_u64()
+            .filter(|n| matches!(n, 1 | 2) && (!double || *n == 2))
+            .map(|n| n as u8)
+            .ok_or_else(|| {
+                (
+                    error_codes::INVALID_REQUEST.into(),
+                    "clickCount must be 1 or 2 (2 for the double-click alias)".into(),
+                )
+            }),
+    }
 }
 
 fn build_wait_for_text_js(text: &str) -> String {
@@ -4964,15 +5051,7 @@ async fn dispatch_mouse_move_profiled(
 ) -> Result<(), String> {
     super::activity::pointer("move", x, y);
     timings
-        .measure(
-            "focusEmulation",
-            call_devtools_with_retry(
-                webview,
-                "Emulation.setFocusEmulationEnabled",
-                r#"{"enabled":true}"#,
-                2,
-            ),
-        )
+        .measure("focusEmulation", ref_context::ensure_focus(webview))
         .await?;
     let moved = mouse_event_params("mouseMoved", x, y, false, 0).to_string();
     timings
@@ -4992,13 +5071,7 @@ async fn dispatch_mouse_drag(
     positions: DragPositions,
 ) -> Result<(), String> {
     let [source_x, source_y, target_x, target_y] = pair;
-    call_devtools_with_retry(
-        webview,
-        "Emulation.setFocusEmulationEnabled",
-        r#"{"enabled":true}"#,
-        2,
-    )
-    .await?;
+    ref_context::ensure_focus(webview).await?;
     let start = mouse_event_params("mouseMoved", source_x, source_y, false, 0).to_string();
     call_devtools_with_retry(webview, "Input.dispatchMouseEvent", &start, 2).await?;
     let current = read_drag_pair(webview, source_ref, target_ref, false, positions).await?;
@@ -5067,33 +5140,39 @@ async fn call_devtools_with_retry(
 async fn dispatch_key(
     webview: &Webview,
     key: &str,
+    action: &str,
+    modifiers: u8,
     timings: &mut ActionTimings,
 ) -> Result<(), String> {
     // The caller prepares focus and optionally verifies the input first.
-    let down = key_event_params("keyDown", key, 0).to_string();
-    timings
-        .measure(
-            "keyDown",
-            call_devtools_protocol_method(
-                webview,
-                "Input.dispatchKeyEvent",
-                &down,
-                SCRIPT_POLL_TIMEOUT,
-            ),
-        )
-        .await?;
-    let up = key_event_params("keyUp", key, 0).to_string();
-    timings
-        .measure(
-            "keyUp",
-            call_devtools_protocol_method(
-                webview,
-                "Input.dispatchKeyEvent",
-                &up,
-                SCRIPT_POLL_TIMEOUT,
-            ),
-        )
-        .await?;
+    if matches!(action, "press" | "down") {
+        let down = key_event_params("keyDown", key, modifiers).to_string();
+        timings
+            .measure(
+                "keyDown",
+                call_devtools_protocol_method(
+                    webview,
+                    "Input.dispatchKeyEvent",
+                    &down,
+                    SCRIPT_POLL_TIMEOUT,
+                ),
+            )
+            .await?;
+    }
+    if matches!(action, "press" | "up") {
+        let up = key_event_params("keyUp", key, modifiers).to_string();
+        timings
+            .measure(
+                "keyUp",
+                call_devtools_protocol_method(
+                    webview,
+                    "Input.dispatchKeyEvent",
+                    &up,
+                    SCRIPT_POLL_TIMEOUT,
+                ),
+            )
+            .await?;
+    }
     Ok(())
 }
 
@@ -5103,13 +5182,7 @@ async fn dispatch_key_action(
     action: &str,
     modifiers: u8,
 ) -> Result<(), String> {
-    call_devtools_with_retry(
-        webview,
-        "Emulation.setFocusEmulationEnabled",
-        r#"{"enabled":true}"#,
-        2,
-    )
-    .await?;
+    ref_context::ensure_focus(webview).await?;
     if matches!(action, "press" | "down") {
         let down = key_event_params("keyDown", key, modifiers).to_string();
         call_devtools_protocol_method(
@@ -5166,6 +5239,21 @@ fn extract_key_modifiers(params: &Value) -> Result<u8, (String, String)> {
         };
     }
     Ok(mask)
+}
+
+fn extract_key_action(params: &Value) -> Result<&str, (String, String)> {
+    match params.get("keyAction") {
+        None => Ok("press"),
+        Some(value) => value
+            .as_str()
+            .filter(|action| matches!(*action, "press" | "down" | "up"))
+            .ok_or_else(|| {
+                (
+                    error_codes::INVALID_REQUEST.into(),
+                    "keyAction must be press, down, or up".into(),
+                )
+            }),
+    }
 }
 
 fn modifier_names(mask: u8) -> Vec<&'static str> {
@@ -5550,20 +5638,11 @@ fn ensure_bounded(value: &str, max_bytes: usize, field: &str) -> Result<(), (Str
 async fn wait_for_ready(webview: &Webview, timeout_ms: u64) {
     let start = SystemTime::now();
     loop {
-        let ready =
-            execute_script_with_timeout(webview, "document.readyState", SCRIPT_POLL_TIMEOUT)
-                .await
-                .unwrap_or_default()
-                .trim_matches('"')
-                .to_string();
-        if ready == "interactive" || ready == "complete" {
-            let has_body =
-                execute_script_with_timeout(webview, "!!document.body", SCRIPT_POLL_TIMEOUT)
-                    .await
-                    .unwrap_or_default();
-            if has_body.trim() == "true" {
-                return;
-            }
+        let ready = execute_script_with_timeout(webview,
+            "(document.readyState === 'interactive' || document.readyState === 'complete') && !!document.body",
+            SCRIPT_POLL_TIMEOUT).await.unwrap_or_default();
+        if ready.trim() == "true" {
+            return;
         }
         let elapsed = start.elapsed().map(|d| d.as_millis() as u64).unwrap_or(0);
         if elapsed >= timeout_ms {
@@ -5723,6 +5802,77 @@ fn ensure_current_ref(ref_id: &str, current_generation: u64) -> Result<(), (Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn navigation_retires_retained_refs_and_an_in_flight_scan() {
+        let tab = -930002;
+        super::super::snapshot::commit_generation(tab, 3);
+        let pending = super::super::snapshot::peek_next_generation(tab);
+        super::super::snapshot::record_ref_frame_targets(
+            tab,
+            HashMap::from([(
+                "g3-f1-e1".to_string(),
+                RefFrameTarget {
+                    frame_id: "old-frame".into(),
+                    is_main: false,
+                },
+            )]),
+        );
+        super::super::snapshot::invalidate_document(tab);
+        super::super::snapshot::commit_generation(tab, pending);
+        let current = get_current_generation(tab);
+        assert!(ensure_current_ref("g3-f1-e1", current).is_err());
+        assert!(ensure_current_ref(&format!("g{pending}-e1"), current).is_err());
+        assert!(get_ref_frame_target(tab, "g3-f1-e1").is_none());
+        let fresh = get_next_generation(tab);
+        assert!(ensure_current_ref(&format!("g{fresh}-f1-e1"), fresh).is_ok());
+        super::super::snapshot::remove_generation(tab);
+    }
+
+    #[test]
+    fn frame_evaluation_decodes_exactly_one_string_layer() {
+        for value in [
+            json!("https://example.test/"),
+            json!({"ok": true}),
+            json!(42),
+            Value::Null,
+        ] {
+            let encoded = value.to_string();
+            let expected = value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| encoded.clone());
+            assert_eq!(decode_frame_evaluation(encoded), expected);
+        }
+        assert_eq!(
+            decode_frame_evaluation(json!(r#"{"ok":true}"#).to_string()),
+            r#"{"ok":true}"#
+        );
+        assert_eq!(decode_frame_evaluation("undefined".into()), "undefined");
+    }
+
+    #[test]
+    fn merged_input_options_reject_invalid_values_before_dispatch() {
+        assert_eq!(extract_click_count(&json!({}), false).unwrap(), 1);
+        assert_eq!(extract_click_count(&json!({}), true).unwrap(), 2);
+        assert_eq!(
+            extract_click_count(&json!({"clickCount":2}), false).unwrap(),
+            2
+        );
+        for value in [json!(0), json!(3), json!(1.5), json!("2"), Value::Null] {
+            assert!(extract_click_count(&json!({"clickCount":value}), false).is_err());
+        }
+        assert!(extract_click_count(&json!({"clickCount":1}), true).is_err());
+        for action in ["press", "down", "up"] {
+            assert_eq!(
+                extract_key_action(&json!({"keyAction":action})).unwrap(),
+                action
+            );
+        }
+        for value in [json!("hold"), json!(2), Value::Null] {
+            assert!(extract_key_action(&json!({"keyAction":value})).is_err());
+        }
+    }
 
     #[test]
     fn a_ref_stays_usable_for_the_kept_scans_and_expires_after() {
@@ -6100,6 +6250,132 @@ mod tests {
         );
     }
 
+    fn diagnostic_scan(names: Vec<String>) -> CollectedLocatorMatches {
+        CollectedLocatorMatches {
+            matches: vec![],
+            scanned: 643,
+            truncated: false,
+            node_limit_reached: false,
+            included_frames: 1,
+            skipped_frames: 0,
+            hidden: 0,
+            name_misses: names,
+            candidates: vec![],
+            nearest: None,
+        }
+    }
+
+    #[test]
+    fn direct_locator_timeout_shares_find_diagnosis_without_changing_matching() {
+        for exact in [false, true] {
+            let locator = extract_locator(&json!({
+                "by": "role", "value": "combobox", "name": "Search Google Maps", "exact": exact
+            }))
+            .unwrap();
+            let scan = diagnostic_scan(vec!["Telusuri Google Maps".into()]);
+            let action = target_locator_timeout(&locator, None, 15_000, 3, None, Some(&scan));
+            let find = find_timeout(&locator, 15_000, 3, None, Some(&scan), 0);
+            let diagnostics = locator_timeout_diagnostics(&locator, 3, None, Some(&scan), 0);
+            assert!(action.1.contains(&diagnostics));
+            assert!(find.1.contains(&diagnostics));
+            assert_eq!(action.0, error_codes::TIMEOUT);
+            assert!(action.1.contains("locator lookup timed out after 15000ms"));
+            assert!(action.1.contains("Telusuri Google Maps"));
+            assert!(action.1.contains("not a guessed translation"));
+            assert!(action.1.contains("not verified unique targets"));
+            assert!(action.1.ends_with("no input dispatched"));
+            assert!(action
+                .1
+                .contains(if exact { "equaled" } else { "contained" }));
+            assert!(!action.1.contains("confirmed absence"));
+        }
+    }
+
+    #[test]
+    fn locator_timeout_does_not_present_an_old_name_after_an_interrupted_scan() {
+        let locator =
+            extract_locator(&json!({"by":"role", "value":"combobox", "name":"Search"})).unwrap();
+        let scan = diagnostic_scan(vec!["Old name".into()]);
+        for previous in [None, Some(&scan)] {
+            let count = usize::from(previous.is_some());
+            let error =
+                target_locator_timeout(&locator, None, 100, count, Some("scan deadline"), previous);
+            assert!(error.1.contains(if count == 0 {
+                "no scan completed"
+            } else {
+                "cut short by the deadline"
+            }));
+            assert!(error.1.contains("scan deadline"));
+            assert!(!error.1.contains("Old name"));
+            assert!(!error.1.contains("confirmed absence"));
+            assert!(error.1.ends_with("no input dispatched"));
+        }
+    }
+
+    #[test]
+    fn locator_timeout_name_hints_are_bounded_and_escaped() {
+        let locator =
+            extract_locator(&json!({"by":"role", "value":"combobox", "name":"Search"})).unwrap();
+        let scan = diagnostic_scan(vec![
+            "Search \"quoted\"\nlabel".into(),
+            "界".repeat(2000),
+            "Third".into(),
+            "Fourth".into(),
+            "Fifth".into(),
+            "Sixth must be omitted".into(),
+        ]);
+        let error = target_locator_timeout(&locator, None, 100, 1, None, Some(&scan));
+        assert!(error.1.contains("Search \\\"quoted\\\"\\nlabel"));
+        assert!(!error.1.contains('\n'));
+        assert!(error.1.contains(&"界".repeat(80)));
+        assert!(!error.1.contains(&"界".repeat(81)));
+        assert!(!error.1.contains("Sixth must be omitted"));
+        assert!(error.1.len() < 1200);
+    }
+
+    #[test]
+    fn locator_timeout_prioritizes_coverage_and_visibility_over_near_names() {
+        let locator =
+            extract_locator(&json!({"by":"role", "value":"button", "name":"Search"})).unwrap();
+        for (hidden, capped, skipped) in [(2, false, 0), (0, true, 0), (0, false, 1)] {
+            let scan = CollectedLocatorMatches {
+                hidden,
+                node_limit_reached: capped,
+                skipped_frames: skipped,
+                ..diagnostic_scan(vec!["Near name".into()])
+            };
+            let error = target_locator_timeout(&locator, None, 900, 2, None, Some(&scan));
+            assert!(error.1.contains(if hidden > 0 {
+                "not rendered"
+            } else {
+                "coverage incomplete"
+            }));
+            assert!(!error.1.contains("names seen here"));
+            assert!(error.1.ends_with("no input dispatched"));
+        }
+    }
+
+    #[test]
+    fn locator_wait_timeout_reports_existing_matches_without_values_or_false_absence() {
+        let locator = extract_locator(&json!({"by":"css", "value":"input"})).unwrap();
+        let item: LocatorMatch = serde_json::from_value(json!({
+            "ref":"g1-e1", "tag":"input", "role":"textbox", "name":"Name", "text":"",
+            "value":"private-value", "visible":true, "enabled":true, "checked":null
+        }))
+        .unwrap();
+        let scan = CollectedLocatorMatches {
+            matches: vec![item],
+            ..diagnostic_scan(vec!["Other".into()])
+        };
+        let error = target_locator_timeout(&locator, Some("unchecked"), 500, 1, None, Some(&scan));
+        assert!(error.1.contains("locator unchecked timed out"));
+        assert!(error.1.contains("1 element(s) matched"));
+        assert!(error.1.contains("requested state was not satisfied"));
+        assert!(!error.1.contains("confirmed absence"));
+        assert!(!error.1.contains("names seen here"));
+        assert!(!error.1.contains("private-value"));
+    }
+
     #[test]
     fn only_a_whole_page_with_nothing_on_it_counts_as_a_proven_absence() {
         // A fully-read, empty scan; each case tweaks one field from it.
@@ -6240,6 +6516,76 @@ mod tests {
     }
 
     #[test]
+    fn drag_actionability_distinguishes_blocked_points_from_unstable_geometry() {
+        let requirement = ActionabilityRequirement::ClickAt(Some((0.6, 0.5)));
+        let mut sample = json!({
+            "visible": true, "enabled": true, "editable": true,
+            "receives": false, "inViewport": true, "stable": false
+        });
+        assert_eq!(
+            actionability_failure_reason(&sample, requirement),
+            "covered by another element"
+        );
+        sample["inViewport"] = json!(false);
+        assert_eq!(
+            actionability_failure_reason(&sample, requirement),
+            "outside the viewport after scrolling"
+        );
+        sample["receives"] = json!(true);
+        sample["inViewport"] = json!(true);
+        assert_eq!(
+            actionability_failure_reason(&sample, requirement),
+            "not stable"
+        );
+        sample["enabled"] = json!(false);
+        assert_eq!(
+            actionability_failure_reason(&sample, requirement),
+            "disabled"
+        );
+        sample["visible"] = json!(false);
+        assert_eq!(
+            actionability_failure_reason(&sample, requirement),
+            "not visible"
+        );
+    }
+
+    #[test]
+    fn drag_timeout_explains_no_dispatch_without_changing_other_actions() {
+        let sample =
+            json!({"visible": true, "enabled": true, "receives": false, "inViewport": true});
+        let drag = actionability_timeout_message(
+            "g1-e1",
+            &sample,
+            ActionabilityRequirement::ClickAt(None),
+        );
+        assert!(drag.contains("covered by another element"));
+        assert!(drag.contains("no mouse button was pressed"));
+        assert!(drag.contains("do not repeat unchanged blocked positions"));
+        for requirement in [
+            ActionabilityRequirement::Click,
+            ActionabilityRequirement::Hover(None),
+        ] {
+            assert_eq!(
+                actionability_timeout_message("g1-e1", &sample, requirement),
+                "element ref 'g1-e1' did not become actionable: covered by another element"
+            );
+        }
+        assert_eq!(
+            actionability_failure_reason(&sample, ActionabilityRequirement::Editable),
+            "not editable"
+        );
+        for requirement in [
+            ActionabilityRequirement::Focus,
+            ActionabilityRequirement::Select,
+        ] {
+            assert_eq!(
+                actionability_failure_reason(&sample, requirement),
+                "not stable"
+            );
+        }
+    }
+
+    #[test]
     fn screenshot_response_decodes_png_bytes() {
         let response = r#"{"data":"iVBORw0KGgo="}"#;
         assert_eq!(
@@ -6337,12 +6683,38 @@ mod tests {
             (ActionabilityRequirement::Hover(None), "pointer"),
             (ActionabilityRequirement::Focus, "focus"),
             (ActionabilityRequirement::Editable, "editable"),
+            (ActionabilityRequirement::Select, "select"),
         ] {
             for scroll in [true, false] {
                 let script = actionability_wait_script("g1-e1", scroll, None, requirement);
                 assert!(script.contains("prepareActionPoint(el, scroll, null)"));
                 assert!(script.contains(&format!("'{expected}', {scroll})")));
                 assert!(script.contains("refRegistry.resolve(refId)"));
+            }
+        }
+    }
+
+    #[test]
+    fn value_attempt_defers_one_guarded_mutation_until_readiness() {
+        let value_script = deep_ref_expression("g1-e1", "return JSON.stringify({ok: true});");
+        for (requirement, expected) in [
+            (ActionabilityRequirement::Editable, "editable"),
+            (ActionabilityRequirement::Select, "select"),
+        ] {
+            for scroll in [true, false] {
+                let script = actionable_attempt_script(
+                    "g1-e1",
+                    scroll,
+                    None,
+                    requirement,
+                    Some(&value_script),
+                );
+                let callback = format!(", () => JSON.parse({value_script})");
+                assert_eq!(script.matches(&callback).count(), 1);
+                assert!(script.contains(&format!("'{expected}', {scroll}{callback})")));
+                assert!(script.contains("prepareActionPoint(el, scroll, null)"));
+                let readiness_only = actionability_wait_script("g1-e1", scroll, None, requirement);
+                assert!(!readiness_only.contains(&callback));
             }
         }
     }
@@ -6455,16 +6827,19 @@ mod tests {
             "{}",
             absent.1
         );
-        assert!(absent.1.contains("usable as locator"), "{}", absent.1);
+        assert!(
+            absent.1.contains("not equivalent or verified unique"),
+            "{}",
+            absent.1
+        );
 
-        // A hidden match or a near-name miss already carries its own advice;
-        // stacking the list on top would bury it.
         let hidden = find_timeout(&locator, 1_900, 2, None, Some(&with(2, vec![])), 3);
         assert!(
-            !hidden.1.contains("interactive elements seen"),
+            hidden.1.contains("interactive elements seen"),
             "{}",
             hidden.1
         );
+        assert!(hidden.1.contains("inspection, not input"));
         let near = find_timeout(&locator, 1_900, 2, None, Some(&with(0, vec!["Search"])), 3);
         assert!(!near.1.contains("interactive elements seen"), "{}", near.1);
         // A scan cut off by the deadline proves nothing, so it offers nothing.
@@ -6477,6 +6852,20 @@ mod tests {
             0,
         );
         assert!(!cut.1.contains("interactive elements seen"), "{}", cut.1);
+        for skipped in [false, true] {
+            let mut scan = with(2, vec![]);
+            scan.node_limit_reached = !skipped;
+            scan.skipped_frames = usize::from(skipped);
+            let incomplete = find_timeout(&locator, 1_900, 2, None, Some(&scan), 0);
+            assert!(!incomplete.1.contains("interactive elements seen"));
+        }
+        let mut scan = with(2, vec![]);
+        scan.candidates = (0..8)
+            .map(|_| candidate("button", "BTCUSDT\"\ncontrol"))
+            .collect();
+        let escaped = find_timeout(&locator, 1_900, 2, None, Some(&scan), 0).1;
+        assert_eq!(escaped.matches("BTCUSDT").count(), 4);
+        assert!(escaped.contains("BTCUSDT\\\"\\ncontrol"));
     }
 
     #[test]

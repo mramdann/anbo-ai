@@ -18,6 +18,13 @@ const calls = [];
 const checks = [];
 const owned = new Set();
 let sequence = 0;
+let session;
+async function initialize() {
+  const response = await fetch(endpoint, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({jsonrpc: "2.0", id: ++sequence, method: "initialize", params: {protocolVersion: "2025-06-18", capabilities: {}, clientInfo: {name: "anbo-regression-smoke", version: "1"}}}), signal: AbortSignal.timeout(10000)});
+  const payload = await response.json();
+  session = response.headers.get("Mcp-Session-Id");
+  if (!response.ok || payload.error || !session) throw Error("MCP initialization failed");
+}
 async function call(name, args) {
   const started = performance.now();
   let result;
@@ -25,7 +32,7 @@ async function call(name, args) {
   try {
     const response = await fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: { "Mcp-Session-Id": session, "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: ++sequence, method: "tools/call", params: { name, arguments: args } }),
       signal: AbortSignal.timeout(45_000),
     });
@@ -75,6 +82,7 @@ const server = http.createServer((_request, response) => {
 let failure;
 let before;
 try {
+  await initialize();
   before = await ok("browser_tabs", {});
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
@@ -99,7 +107,7 @@ try {
   const started = performance.now();
   const pressed = await invoke("browser_press", { ref, expectedValue: "verified query", key: "Enter", diagnostics: true, waitFor: { url: `${origin}/results`, title: "Ready", text: "final-result", stableFor: 250, timeout: 5000 } });
   check("guarded Enter waits through transient matching SPA state", pressed.postcondition?.matched && performance.now() - started >= 700 && (await content()).includes("keys:1"), { result: pressed });
-  check("explicit postcondition replaces default submit observation", pressed.observationWindowMs === 0 && !pressed.timings.some(item => item.phase === "submitObservation"));
+  check("explicit postcondition replaces default submit observation", pressed.postcondition?.matched === true && !Object.hasOwn(pressed, "observationWindowMs") && !pressed.timings.some(item => item.phase === "submitObservation" || item.phase === "observerInstall"));
   const keyPhases = pressed.timings.map(item => item.phase);
   check("input guard runs after focus preparation and before native key-down", keyPhases.indexOf("focusEmulation") < keyPhases.indexOf("inputGuard") && keyPhases.indexOf("inputGuard") < keyPhases.indexOf("keyDown") && keyPhases.includes("keyUp"));
   const pending = call("browser_wait", { tabId, waitFor: { title: "Never", timeout: 1200 }, diagnostics: true });
@@ -142,6 +150,7 @@ finally {
   await new Promise(resolve => server.close(resolve));
 }
 const after = await call("browser_tabs", {});
+if (session) await fetch(endpoint, {method: "DELETE", headers: {"Mcp-Session-Id": session}, signal: AbortSignal.timeout(5000)}).catch(() => {});
 const report = { timestamp: new Date().toISOString(), endpoint: String(endpoint), workspace, before, after: after.result, failure, unclosedTabs: [...owned], checks, calls };
 const path = resolve(output);
 await mkdir(dirname(path), { recursive: true });

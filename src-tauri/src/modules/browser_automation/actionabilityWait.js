@@ -1,4 +1,4 @@
-function waitForActionableSample(probe, requirement, scroll) {
+function waitForActionableSample(probe, requirement, scroll, valueAction) {
   return new Promise((resolve, reject) => {
     let frame = null;
     let timer = null;
@@ -8,7 +8,7 @@ function waitForActionableSample(probe, requirement, scroll) {
     const keys = ['x', 'y', 'width', 'height'];
     const ready = value => value?.ok === true && value.visible === true &&
       keys.every(key => Number.isFinite(value[key])) &&
-      (requirement === 'focus' ? value.enabled === true :
+      (requirement === 'focus' || requirement === 'select' ? value.enabled === true :
         requirement === 'editable' ? value.editable === true && value.receives === true :
           value.enabled === true && value.receives === true);
     const stable = (a, b) => keys.every(key => Math.abs(a[key] - b[key]) <= 0.5);
@@ -51,6 +51,11 @@ function waitForActionableSample(probe, requirement, scroll) {
     try {
       first = sample(scroll);
       if (!first) return;
+      if (requirement === 'editable' || requirement === 'select') {
+        if (valueAction) first = { ...first, valueActionResult: valueAction() };
+        finish(first, false);
+        return;
+      }
       // Suspended frames retain the original bounded 100 ms stability check.
       timer = setTimeout(() => {
         if (finished) return;

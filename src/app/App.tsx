@@ -45,6 +45,7 @@ import {
 import { agentIdFor } from "@/modules/agents/lib/agentIdentity";
 import { admitAgentResume } from "@/modules/agents/lib/resumeAdmission";
 import { AgentSessionDiscoveryQueue } from "@/modules/agents/lib/sessionDiscoveryQueue";
+import { useAgentResumeStatus } from "@/modules/agents/store/agentResumeStatus";
 import { useAgentStore } from "@/modules/agents/store/agentStore";
 import {
   AgentRunBridge,
@@ -1032,6 +1033,7 @@ export default function App() {
   const handleAgentExited = useCallback(
     (leafId: number) => {
       resumedAgentLeavesRef.current.delete(leafId);
+      useAgentResumeStatus.getState().clear(leafId);
       agentDiscoveryQueueRef.current.cancel(leafId);
       agentDiscoveryGenerationRef.current.set(
         leafId,
@@ -1053,7 +1055,14 @@ export default function App() {
       const agentLeaves = collectAgentResumeLeaves(tab.paneTree);
       if (!agentLeaves.some(({ resume }) => resume.resumeOnStart)) continue;
       if (tab.cold) {
-        warmTab(tab.id);
+        // Lazy resume on reopen: only the workspace the user is looking at
+        // brings its agents back. Background workspaces stay cold until opened,
+        // so a full restore no longer floods the Windows resource guard (which
+        // is what left some workspaces — especially the active one — as a bare
+        // shell). Warming happens once the user opens that workspace; a warmed
+        // agent then keeps running across workspace switches (tabs never
+        // re-cold, and background PTYs are retained).
+        if (activeSpaceId && tab.spaceId === activeSpaceId) warmTab(tab.id);
         continue;
       }
       const space = spaceEnvironments.find(
@@ -1118,6 +1127,7 @@ export default function App() {
           }
         }
         resumedAgentLeavesRef.current.add(leaf.id);
+        useAgentResumeStatus.getState().setStatus(leaf.id, "resuming");
         const delay = resumeDelay;
         resumeDelay += 4_000;
         void (async () => {
@@ -1156,6 +1166,7 @@ export default function App() {
           });
           if (admission.kind === "abandoned") {
             toast.dismiss(pauseToast);
+            useAgentResumeStatus.getState().clear(leaf.id);
             return;
           }
           if (admission.kind === "refused") {
@@ -1167,6 +1178,7 @@ export default function App() {
               id: pauseToast,
               description: `${admission.error} Start ${leaf.resume.agent} again from that terminal once memory is free.`,
             });
+            useAgentResumeStatus.getState().setStatus(leaf.id, "failed");
             return;
           }
           if (admission.attempts > 1) toast.dismiss(pauseToast);
@@ -1180,6 +1192,7 @@ export default function App() {
             : baseResumeCommand;
           if (!(await writeToReadySession(leaf.id, `${resumeCommand}\r`))) {
             resumedAgentLeavesRef.current.delete(leaf.id);
+            useAgentResumeStatus.getState().clear(leaf.id);
             console.error(
               `[anbo] agent terminal ${leaf.id} closed before resume`,
             );
@@ -1187,7 +1200,7 @@ export default function App() {
         })();
       }
     }
-  }, [agentMcpEnabled, spaceEnvironments, tabs, warmTab]);
+  }, [activeSpaceId, agentMcpEnabled, spaceEnvironments, tabs, warmTab]);
 
   useEffect(() => {
     const queue = agentDiscoveryQueueRef.current;

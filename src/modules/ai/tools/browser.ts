@@ -1,7 +1,7 @@
+import type { ToolContext } from "@/modules/ai/tools/context";
 import { invoke } from "@tauri-apps/api/core";
 import { tool } from "ai";
 import { z } from "zod";
-import type { ToolContext } from "./context";
 
 const targetLocator = z
   .object({
@@ -23,7 +23,7 @@ const targetLocator = z
   })
   .strict()
   .describe(
-    "Unique target alternative to ref. Bounded lookup; ambiguous or incomplete scans never dispatch input. timeout bounds lookup only.",
+    "Observed unique target, no find needed. Never guess names, labels or CSS; find if unknown. Ambiguous or incomplete scans never dispatch input. timeout bounds lookup only.",
   );
 
 function withLocator<T extends z.ZodRawShape>(
@@ -193,20 +193,15 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_click: tool({
       description:
-        "Click a current ref. waitFor verifies SPA state; navigation/stop remain available. Timeout does not undo input: inspect before retrying.",
+        "Click a current ref, or double-click with clickCount 2. waitFor verifies SPA state; navigation/stop remain available. Timeout does not undo input: inspect before retrying.",
       inputSchema: withLocator(
         z.object({
+          clickCount: z.union([z.literal(1), z.literal(2)]).optional(),
           waitFor: pageExpectation.optional(),
           diagnostics: z.boolean().optional(),
         }),
       ),
       execute: (params) => runAction("click", params),
-    }),
-
-    browser_double_click: tool({
-      description: "Double-click an actionable element using a current ref.",
-      inputSchema: withLocator(z.object({})),
-      execute: (params) => runAction("double_click", params),
     }),
 
     browser_focus: tool({
@@ -268,12 +263,17 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_press_key: tool({
       description:
-        "Press a key. For forms, ref + expectedValue guard against resets/replacements. waitFor checks SPA state instead of Enter's observation window. Inspect before resubmitting after timeout.",
+        "Native key press/down/up with per-call modifiers. For forms, ref + expectedValue guard against resets/replacements. waitFor checks SPA state for press only. Inspect before resubmitting after timeout.",
       inputSchema: withLocator(
         z.object({
           key: z
             .string()
             .describe("Key name: Enter, Escape, ArrowDown, Tab, Space, etc."),
+          keyAction: z.enum(["press", "down", "up"]).optional(),
+          modifiers: z
+            .array(z.enum(["Alt", "Control", "Meta", "Shift"]))
+            .max(4)
+            .optional(),
           expectedValue: z.string().max(65536).optional(),
           waitFor: pageExpectation.optional(),
           diagnostics: z.boolean().optional(),
@@ -282,27 +282,14 @@ export function buildBrowserTools(ctx: ToolContext) {
             .int()
             .min(0)
             .max(10_000)
-            .default(3_000)
-            .describe("Enter-only submit/navigation observation in ms."),
+            .optional()
+            .describe(
+              "Unmodified Enter press only; default 3000 ms. Use 0 to skip.",
+            ),
         }),
         true,
       ),
       execute: (params) => runAction("press_key", params),
-    }),
-
-    browser_keyboard: tool({
-      description:
-        "Keyboard press/down/up. Supply modifiers per event; they cannot persist across tools or modify mouse clicks.",
-      inputSchema: z.object({
-        key: z.string(),
-        keyAction: z.enum(["press", "down", "up"]).default("press"),
-        modifiers: z
-          .array(z.enum(["Alt", "Control", "Meta", "Shift"]))
-          .max(4)
-          .default([]),
-      }),
-      execute: ({ key, keyAction, modifiers }) =>
-        runAction("key", { key, keyAction, modifiers }),
     }),
 
     browser_wait: tool({

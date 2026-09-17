@@ -89,8 +89,7 @@ async function mutate(tabId, id, shadow = false) {
 }
 async function close(tabId) {
   const current = await ok('browser_get_url', { tabId }); if (!current.url.startsWith(origin + '/')) throw Error('Owned tab changed origin; refusing cleanup');
-  if (controls.has(tabId)) await ok('browser_end_session', { tabId, controlId: controls.get(tabId) });
-  await ok('browser_close', { tabId, workspace }); owned.delete(tabId);
+  await ok('browser_close', { tabId, workspace, endSession: true }); owned.delete(tabId);
 }
 function stats(samples) { const sorted = [...samples].sort((a, b) => a - b); return { n: sorted.length, p50: sorted[Math.ceil(sorted.length * .5) - 1], p95: sorted[Math.ceil(sorted.length * .95) - 1] }; }
 try {
