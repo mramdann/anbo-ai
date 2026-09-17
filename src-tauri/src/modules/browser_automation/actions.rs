@@ -249,14 +249,36 @@ pub async fn handle_action_as(
                 // them: on the OpenCode/Antigravity series the calls after a
                 // search submit or a product click went to snapshot, find and
                 // get_text purely to learn what these hints carry.
-                let navigated = value.get("navigationObserved").and_then(Value::as_bool)
+                let id = tab_id.unwrap_or_default();
+                let mut navigated = value.get("navigationObserved").and_then(Value::as_bool)
                     == Some(true)
                     || tab_id
                         .and_then(active_navigation_generation)
                         .zip(before_navigation)
                         .is_some_and(|(after, before)| after != before);
+                if !navigated
+                    && (active_pending_url(id).is_some() || active_loading(id) == Some(true))
+                {
+                    // The commit can lag the action. Only wait while a
+                    // navigation is actually in flight -- an ordinary click
+                    // that stays on the page pays nothing.
+                    let deadline = tokio::time::Instant::now() + Duration::from_millis(1_500);
+                    while tokio::time::Instant::now() < deadline {
+                        if active_navigation_generation(id)
+                            .zip(before_navigation)
+                            .is_some_and(|(after, before)| after != before)
+                        {
+                            navigated = true;
+                            break;
+                        }
+                        if active_pending_url(id).is_none() && active_loading(id) != Some(true) {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                }
                 if navigated {
-                    if let Some(hints) = navigation_hints(&webview, tab_id.unwrap_or_default()).await {
+                    if let Some(hints) = navigation_hints(&webview, id).await {
                         value["page"]["hints"] = hints;
                     }
                 }
@@ -5450,6 +5472,7 @@ async fn observe_submission(
     let mut observation = SubmissionObservation::default();
     let marker = serde_json::to_string(&observation_id.to_string()).unwrap();
     let observed_script = format!("window.__anboSubmitObservations?.[{marker}]?.submitted===true");
+    let mut submit_since: Option<tokio::time::Instant> = None;
     while tokio::time::Instant::now() < deadline {
         if active_navigation_generation(tab_id)
             .is_some_and(|generation| generation != before_navigation_generation)
@@ -5462,6 +5485,7 @@ async fn observe_submission(
             .is_ok_and(|url| !before_url.is_empty() && url.as_str() != before_url)
         {
             observation.navigation = true;
+            break;
         }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if execute_script_with_timeout(
@@ -5474,8 +5498,15 @@ async fn observe_submission(
         {
             observation.submit_event = true;
         }
-        if observation.submit_event || observation.navigation {
-            break;
+        if observation.submit_event {
+            // A submit almost always navigates; the commit only lags the
+            // event. Breaking on the event alone read the old document, and
+            // every measured agent then waited by hand before reading
+            // anything. Give the commit a moment before trusting the event.
+            let since = *submit_since.get_or_insert(tokio::time::Instant::now());
+            if tokio::time::Instant::now() - since >= Duration::from_millis(1_200) {
+                break;
+            }
         }
         if tokio::time::Instant::now() >= deadline {
             break;
