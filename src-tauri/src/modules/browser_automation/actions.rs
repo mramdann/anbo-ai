@@ -222,6 +222,7 @@ pub async fn handle_action_as(
         && !method.starts_with("agent_")
         && !method.starts_with("terminal_")
         && !method.starts_with("skills_");
+    let before_navigation = tab_id.and_then(active_navigation_generation);
     let result = super::activity::track(
         app,
         method,
@@ -242,6 +243,23 @@ pub async fn handle_action_as(
         if LANDING_METHODS.contains(&method) {
             if let Some(webview) = tab_id.and_then(|id| get_embed_webview(app, id).ok()) {
                 value["page"] = landing(&webview, tab_id.unwrap_or_default()).await;
+                // A navigation during the action put the agent somewhere new.
+                // The heading and the few visible controls it is about to look
+                // for ride along, so a snapshot is not the only way to learn
+                // them: on the OpenCode/Antigravity series the calls after a
+                // search submit or a product click went to snapshot, find and
+                // get_text purely to learn what these hints carry.
+                let navigated = value.get("navigationObserved").and_then(Value::as_bool)
+                    == Some(true)
+                    || tab_id
+                        .and_then(active_navigation_generation)
+                        .zip(before_navigation)
+                        .is_some_and(|(after, before)| after != before);
+                if navigated {
+                    if let Some(hints) = navigation_hints(&webview).await {
+                        value["page"]["hints"] = hints;
+                    }
+                }
             }
         }
         // A successful last call releases the session: cursor and badge go,
@@ -322,6 +340,60 @@ async fn landing(webview: &Webview, tab_id: i64) -> Value {
         page["title"] = json!(title.chars().take(160).collect::<String>());
     }
     page
+}
+
+/// The visible things a freshly landed-on page offers: its main heading and
+/// up to three interactive controls outside the page chrome, names cut at 60
+/// characters. One bounded evaluation; a document still loading answers
+/// nothing and the caller simply gets no hints.
+const NAVIGATION_HINTS_JS: &str = r#"(() => {
+    if (document.readyState === 'loading' || !document.body) return null;
+    const chromeOf = (el) => el.closest('nav,header,aside,footer,[role=banner],[role=navigation]');
+    const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const heading = clean(document.querySelector('h1')?.textContent).slice(0, 80);
+    const controls = [];
+    const seen = new Set();
+    for (const el of document.querySelectorAll('a[href],button,input,select,textarea,[role]')) {
+        if (controls.length >= 3) break;
+        if (el.tagName.startsWith('ANBO-') || chromeOf(el)) continue;
+        const tag = el.tagName;
+        const role = el.getAttribute('role')
+            || (tag === 'A' ? 'link' : tag === 'BUTTON' ? 'button'
+            : tag === 'INPUT' ? String(el.type || 'text').toLowerCase()
+            : tag === 'SELECT' ? 'combobox' : tag === 'TEXTAREA' ? 'textbox' : '');
+        if (!role || role === 'presentation' || role === 'none') continue;
+        const name = clean(el.getAttribute('aria-label') || el.textContent || el.getAttribute('value') || el.placeholder).slice(0, 60);
+        if (!name) continue;
+        const rect = el.getBoundingClientRect();
+        if (!(rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight)) continue;
+        const key = role + '|' + name.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        controls.push({ role, name });
+    }
+    return JSON.stringify({ heading: heading || null, controls });
+})()"#;
+
+/// Hints for the page an action just navigated to, or None when the document
+/// is still loading or the page cannot answer in time.
+async fn navigation_hints(webview: &Webview) -> Option<Value> {
+    let raw = execute_script_with_timeout(webview, NAVIGATION_HINTS_JS, Duration::from_millis(500))
+        .await
+        .ok()?;
+    let raw = raw.trim();
+    if raw.is_empty() || raw == "null" || raw == "undefined" {
+        return None;
+    }
+    let value: Value = serde_json::from_str(raw).ok()?;
+    let value: Value = match value {
+        Value::String(inner) => serde_json::from_str(&inner).ok()?,
+        other => other,
+    };
+    let has_any = value.get("heading").is_some_and(|heading| !heading.is_null())
+        || value
+            .get("controls")
+            .is_some_and(|controls| controls.as_array().is_some_and(|list| !list.is_empty()));
+    has_any.then_some(value)
 }
 
 /// A count or size parameter: an integer, or a finite non-negative float
@@ -1339,6 +1411,27 @@ async fn handle_action_inner(
             } else {
                 SubmissionObservation::default()
             };
+            // A submit that navigated is only half done. The reply used to
+            // come back with loading=true, and every measured agent then added
+            // a browser_wait before reading anything -- two turns per search
+            // on the non-Claude series. Settle the document here, bounded, so
+            // the page block (and its navigation hints) lands ready.
+            if should_observe && observation.navigation && expectation.is_none() {
+                let deadline = tokio::time::Instant::now() + Duration::from_millis(4_000);
+                while tokio::time::Instant::now() < deadline {
+                    let ready = execute_script_with_timeout(
+                        &webview,
+                        "document.readyState",
+                        Duration::from_millis(300),
+                    )
+                    .await
+                    .unwrap_or_default();
+                    if ready.trim_matches('"') == "complete" {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
 
             let mut result = json!({
                 "tabId": tab_id,
@@ -6737,6 +6830,21 @@ mod tests {
         }))
         .unwrap_err();
         assert_eq!(error.0, error_codes::INVALID_REQUEST);
+    }
+
+    #[test]
+    fn navigation_hints_script_is_bounded_and_skips_page_chrome() {
+        // The hints ride every navigated action's reply, so the script must
+        // stay cheap: three controls at most, 60-character names, page chrome
+        // and Anbo's own layers skipped, and no format! placeholders that
+        // would need double braces.
+        assert!(NAVIGATION_HINTS_JS.contains("controls.length >= 3"));
+        assert!(NAVIGATION_HINTS_JS.contains("el.tagName.startsWith('ANBO-')"));
+        assert!(NAVIGATION_HINTS_JS.contains("closest('nav,header,aside,footer"));
+        assert!(NAVIGATION_HINTS_JS.contains(".slice(0, 60)"));
+        assert!(NAVIGATION_HINTS_JS.contains("document.readyState === 'loading'"));
+        assert!(!NAVIGATION_HINTS_JS.contains("{{"));
+        assert!(!NAVIGATION_HINTS_JS.contains("}}"));
     }
 
     #[test]
