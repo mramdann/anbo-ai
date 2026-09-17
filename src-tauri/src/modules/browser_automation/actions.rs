@@ -256,7 +256,7 @@ pub async fn handle_action_as(
                         .zip(before_navigation)
                         .is_some_and(|(after, before)| after != before);
                 if navigated {
-                    if let Some(hints) = navigation_hints(&webview).await {
+                    if let Some(hints) = navigation_hints(&webview, tab_id.unwrap_or_default()).await {
                         value["page"]["hints"] = hints;
                     }
                 }
@@ -342,18 +342,25 @@ async fn landing(webview: &Webview, tab_id: i64) -> Value {
     page
 }
 
-/// The visible things a freshly landed-on page offers: its main heading and
-/// up to three interactive controls outside the page chrome, names cut at 60
-/// characters. One bounded evaluation; a document still loading answers
-/// nothing and the caller simply gets no hints.
-const NAVIGATION_HINTS_JS: &str = r#"(() => {
+/// The visible things a freshly landed-on page offers: its main heading (h1,
+/// falling back to the page's own og:title) and up to three interactive
+/// controls outside the page chrome, each carrying a live ref so the agent
+/// can act on what it just landed on without a snapshot first. Names cut at
+/// 60 characters; a document still loading answers nothing.
+fn build_navigation_hints_js(generation: u64, ref_prefix: &str) -> String {
+    format!(
+        r#"(() => {{
+    {REF_REGISTRY_JS}
+    refRegistry.begin({generation});
+    const refPrefix = {ref_prefix};
     if (document.readyState === 'loading' || !document.body) return null;
     const chromeOf = (el) => el.closest('nav,header,aside,footer,[role=banner],[role=navigation]');
     const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-    const heading = clean(document.querySelector('h1')?.textContent).slice(0, 80);
+    const heading = clean(document.querySelector('h1')?.textContent)
+        || clean(document.querySelector('meta[property="og:title"]')?.content);
     const controls = [];
     const seen = new Set();
-    for (const el of document.querySelectorAll('a[href],button,input,select,textarea,[role]')) {
+    for (const el of document.querySelectorAll('a[href],button,input,select,textarea,[role]')) {{
         if (controls.length >= 3) break;
         if (el.tagName.startsWith('ANBO-') || chromeOf(el)) continue;
         const tag = el.tagName;
@@ -369,31 +376,60 @@ const NAVIGATION_HINTS_JS: &str = r#"(() => {
         const key = role + '|' + name.toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
-        controls.push({ role, name });
-    }
-    return JSON.stringify({ heading: heading || null, controls });
-})()"#;
+        controls.push({{ ref: refPrefix + (controls.length + 1), role, name }});
+    }}
+    return JSON.stringify({{ heading: heading.slice(0, 80) || null, controls }});
+}})()"#,
+        generation = generation,
+        ref_prefix = serde_json::to_string(ref_prefix).unwrap(),
+    )
+}
 
 /// Hints for the page an action just navigated to, or None when the document
-/// is still loading or the page cannot answer in time.
-async fn navigation_hints(webview: &Webview) -> Option<Value> {
-    let raw = execute_script_with_timeout(webview, NAVIGATION_HINTS_JS, Duration::from_millis(500))
-        .await
-        .ok()?;
-    let raw = raw.trim();
-    if raw.is_empty() || raw == "null" || raw == "undefined" {
-        return None;
-    }
-    let value: Value = serde_json::from_str(raw).ok()?;
-    let value: Value = match value {
-        Value::String(inner) => serde_json::from_str(&inner).ok()?,
-        other => other,
+/// is still loading or the page cannot answer in time. Runs through the same
+/// fresh-ref protocol as find and snapshot: the tab lock is held, the
+/// generation is published only when a ref was actually registered, and an
+/// empty answer retires nothing the caller is holding.
+async fn navigation_hints(webview: &Webview, tab_id: i64) -> Option<Value> {
+    let scan = |generation: u64| async move {
+        let script = build_navigation_hints_js(generation, &format!("g{generation}-e"));
+        let raw = execute_script_with_timeout(webview, &script, Duration::from_millis(500))
+            .await
+            .ok();
+        let parsed = raw
+            .as_deref()
+            .map(str::trim)
+            .filter(|raw| !raw.is_empty() && *raw != "null" && *raw != "undefined")
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            .map(|value| match value {
+                Value::String(inner) => {
+                    serde_json::from_str::<Value>(&inner).unwrap_or(Value::Null)
+                }
+                other => other,
+            })
+            .filter(|value| {
+                value
+                    .get("controls")
+                    .and_then(|controls| controls.as_array())
+                    .is_some_and(|list| !list.is_empty())
+            });
+        Ok::<Option<Value>, (String, String)>(parsed)
     };
-    let has_any = value.get("heading").is_some_and(|heading| !heading.is_null())
-        || value
-            .get("controls")
-            .is_some_and(|controls| controls.as_array().is_some_and(|list| !list.is_empty()));
-    has_any.then_some(value)
+    let (_, hints) = super::ref_scan::scan_with_fresh_refs(
+        tab_id,
+        tokio::time::Instant::now() + Duration::from_millis(1_500),
+        scan,
+        |hints: &Option<Value>| {
+            hints
+                .as_ref()
+                .and_then(|value| value.get("controls"))
+                .and_then(|controls| controls.as_array())
+                .is_some_and(|list| !list.is_empty())
+        },
+    )
+    .await
+    .ok()?;
+    hints
 }
 
 /// A count or size parameter: an integer, or a finite non-negative float
@@ -6833,18 +6869,26 @@ mod tests {
     }
 
     #[test]
-    fn navigation_hints_script_is_bounded_and_skips_page_chrome() {
+    fn navigation_hints_script_is_bounded_registers_refs_and_skips_page_chrome() {
         // The hints ride every navigated action's reply, so the script must
         // stay cheap: three controls at most, 60-character names, page chrome
-        // and Anbo's own layers skipped, and no format! placeholders that
-        // would need double braces.
-        assert!(NAVIGATION_HINTS_JS.contains("controls.length >= 3"));
-        assert!(NAVIGATION_HINTS_JS.contains("el.tagName.startsWith('ANBO-')"));
-        assert!(NAVIGATION_HINTS_JS.contains("closest('nav,header,aside,footer"));
-        assert!(NAVIGATION_HINTS_JS.contains(".slice(0, 60)"));
-        assert!(NAVIGATION_HINTS_JS.contains("document.readyState === 'loading'"));
-        assert!(!NAVIGATION_HINTS_JS.contains("{{"));
-        assert!(!NAVIGATION_HINTS_JS.contains("}}"));
+        // and Anbo's own layers skipped. v2 registers each control as a live
+        // ref under the scan's generation so the agent can act on it without
+        // a snapshot, and the heading falls back to og:title for pages whose
+        // title is not an h1.
+        let script = build_navigation_hints_js(7, "g7-e");
+        assert!(script.contains("refRegistry.begin(7);"));
+        assert!(script.contains(r#"const refPrefix = "g7-e";"#));
+        assert!(script.contains("controls.push({ ref: refPrefix + (controls.length + 1), role, name });"));
+        assert!(script.contains("controls.length >= 3"));
+        assert!(script.contains("el.tagName.startsWith('ANBO-')"));
+        assert!(script.contains("closest('nav,header,aside,footer"));
+        assert!(script.contains(".slice(0, 60)"));
+        assert!(script.contains("document.readyState === 'loading'"));
+        assert!(script.contains(r#"meta[property="og:title"]"#));
+        // The built script must carry no unexpanded format placeholders.
+        assert!(!script.contains("{{"));
+        assert!(!script.contains("}}"));
     }
 
     #[test]
