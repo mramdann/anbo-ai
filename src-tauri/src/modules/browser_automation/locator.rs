@@ -542,6 +542,17 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
             }};
             // A search field is a textbox to most callers; let either name reach it.
             const roleMatches = role => compare(role) || (role === 'searchbox' && compare('textbox'));
+            // ...but a modern search box is usually a combobox (autocomplete) or a
+            // plain textbox, not role=searchbox -- Google Maps, MDN and Bing all use
+            // combobox. Let a searchbox lookup reach any editable text entry so the
+            // common case is found in one call instead of burning the full timeout.
+            // Kept to genuine text entry so a <select> (also role=combobox) never matches.
+            const isTextEntry = el => {{
+                const t = el.tagName;
+                if (t === 'TEXTAREA') return true;
+                if (t === 'INPUT') {{ const ty = String(el.type || 'text').toLowerCase(); return !['checkbox','radio','button','submit','reset','image','range','hidden','color','file'].includes(ty); }}
+                return el.isContentEditable === true;
+            }};
             {ACCESSIBLE_NAME_JS}
             {VISIBILITY_JS}
             {cache}
@@ -554,7 +565,9 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                 }}
                 if (by === 'role') {{
                     const role = implicitRole(el);
-                    if (!role || !roleMatches(role)) return false;
+                    // Short-circuits on expectedValue first: zero cost for any non-searchbox lookup.
+                    const searchReachesEntry = expectedValue === 'searchbox' && (role === 'textbox' || role === 'combobox') && isTextEntry(el);
+                    if (!role || (!roleMatches(role) && !searchReachesEntry)) return false;
                     if (!wantedName) return true;
                     const actual = readName(el);
                     if (compareValue(actual, expectedName)) return true;
@@ -827,7 +840,11 @@ mod tests {
         assert!(script.contains(r#"const wantedName = "Save changes";"#));
         assert!(script.contains("compareValue(actual, expectedName)"));
         assert!(script.contains("const expectedName = normalize(wantedName).toLocaleLowerCase()"));
-        assert!(script.contains("if (!role || !roleMatches(role)) return false;"));
+        assert!(script.contains("if (!role || (!roleMatches(role) && !searchReachesEntry)) return false;"));
+        // A searchbox lookup also reaches editable comboboxes/textboxes (Maps/MDN/Bing
+        // search boxes are comboboxes), scoped to real text entry so a <select> never matches.
+        assert!(script.contains("expectedValue === 'searchbox' && (role === 'textbox' || role === 'combobox') && isTextEntry(el)"));
+        assert!(script.contains("const isTextEntry = el =>"));
         // A search field answers to textbox as well, and the structural roles
         // agents ask for by habit exist: both were measured as css fallbacks.
         assert!(script.contains("role === 'searchbox' && compare('textbox')"));
