@@ -2312,6 +2312,12 @@ async fn handle_action_inner(
                 .and_then(as_count)
                 .unwrap_or(8000)
                 .clamp(1, MAX_TEXT_OUTPUT_CHARS);
+            // Climb N ancestors from the target before reading, so one call
+            // returns the block (row, list, card, section) a found leaf sits in
+            // instead of just the leaf -- browser_find hands back flat leaves
+            // with no neighbourhood, so reading a multi-fact block otherwise
+            // costs a probe per fact. Capped, and only meaningful with a target.
+            let ancestors = params.get("ancestors").and_then(as_count).unwrap_or(0).min(10);
             let tab_lock = get_tab_lock(tab_id);
             let _lock = tab_lock.lock().await;
             let webview = get_embed_webview(app, tab_id)
@@ -2329,9 +2335,12 @@ async fn handle_action_inner(
                     {VISIBILITY_JS}
                     {READABLE_TEXT_JS}
                     {ACCESSIBLE_NAME_JS}
-                    const readable = readableText(el);
+                    let target = el;
+                    let climb = climbCount;
+                    while (climb-- > 0 && target.parentElement) target = target.parentElement;
+                    const readable = readableText(target);
                     const domText = readable.text;
-                    const accessibleText = domText ? '' : accessibleName(el);
+                    const accessibleText = domText ? '' : accessibleName(target);
                     const text = domText || accessibleText.trim();
                     const source = domText ? 'domText' : (text ? 'accessibleName' : 'empty');
                     // A control that hides itself seconds later reads one way now
@@ -2345,7 +2354,7 @@ async fn handle_action_inner(
                     let truncated = readable.sourceTruncated;
                     let out = text;
                     if (text.length > max) {{ out = clipReadableText(text, max); truncated = true; }}
-                    return JSON.stringify({{ ok: true, text: out, source: source, sourceNote: sourceNote, visible: isRenderedElement(el), truncated: truncated, totalLength: text.length, totalLengthIsLowerBound: readable.sourceTruncated }});"#
+                    return JSON.stringify({{ ok: true, text: out, source: source, sourceNote: sourceNote, visible: isRenderedElement(target), truncated: truncated, totalLength: text.length, totalLengthIsLowerBound: readable.sourceTruncated }});"#
             );
             let js = if let Some(ref_id) = ref_id.as_deref() {
                 deep_ref_expression(
@@ -2355,11 +2364,12 @@ async fn handle_action_inner(
                         if (!el) {{
                             return JSON.stringify({{ ok: false, error: "stale_ref", reason: refRegistry.reason(refId) }});
                         }}
+                        const climbCount = {ancestors};
                         {text_body}"#
                     ),
                 )
             } else {
-                format!("(function() {{ const el = document.body; {text_body} }})()")
+                format!("(function() {{ const el = document.body; const climbCount = 0; {text_body} }})()")
             };
             let res = execute_ref_script(&webview, target.as_ref(), &js)
                 .await
@@ -2367,8 +2377,10 @@ async fn handle_action_inner(
             let unquoted: String = serde_json::from_str(&res).unwrap_or(res);
             let parsed: Value = serde_json::from_str(&unquoted).unwrap_or_default();
             if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                let reported_ancestors = if ref_id.is_some() { ancestors } else { 0 };
                 Ok(json!({
                     "tabId": tab_id,
+                    "ancestors": reported_ancestors,
                     "ref": ref_id,
                     "text": parsed.get("text").cloned().unwrap_or(Value::Null),
                     "source": parsed.get("source").cloned().unwrap_or(Value::Null),

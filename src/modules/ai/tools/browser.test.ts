@@ -506,6 +506,7 @@ describe("AI browser tools", () => {
           tabId: 42,
           ref: "e5",
           maxLength: 8000,
+          ancestors: 0,
         }),
       },
     );
@@ -521,6 +522,24 @@ describe("AI browser tools", () => {
           action: "get_text",
           tabId: 42,
           maxLength: 8000,
+          ancestors: 0,
+        }),
+      },
+    );
+  });
+
+  it("reads the enclosing block by climbing ancestors from the target", async () => {
+    await run("browser_get_text", { ref: "e5", ancestors: 2 });
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "browser_automation_handle_action",
+      {
+        requestJson: JSON.stringify({
+          action: "get_text",
+          tabId: 42,
+          ref: "e5",
+          maxLength: 8000,
+          ancestors: 2,
         }),
       },
     );

@@ -484,11 +484,25 @@ export function buildBrowserTools(ctx: ToolContext) {
             .number()
             .default(8000)
             .describe("Maximum characters to return (default: 8000)."),
+          ancestors: z
+            .number()
+            .int()
+            .min(0)
+            .max(10)
+            .default(0)
+            .describe(
+              "Climb N ancestors from the target before reading, so one call returns the surrounding block (row, list, card, section) instead of just the leaf. Target an element inside the block (a value or item), not a distant heading. Needs ref or locator.",
+            ),
         }),
         true,
       ),
-      execute: ({ ref, locator, maxLength }) =>
-        runAction("get_text", { ref, locator, maxLength: maxLength ?? 8000 }),
+      execute: ({ ref, locator, maxLength, ancestors }) =>
+        runAction("get_text", {
+          ref,
+          locator,
+          maxLength: maxLength ?? 8000,
+          ancestors: ancestors ?? 0,
+        }),
     }),
 
     browser_get_page_info: tool({
