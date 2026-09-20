@@ -103,6 +103,28 @@ describe("bounded actionability frame sampling", () => {
       }
     },
   );
+  it("dispatches an editable value action for an already-focused off-viewport target", async () => {
+    const action = vi.fn(() => ({ ok: true, valueVerified: true }));
+    const h = harness(
+      [ready({ receives: false, active: true })],
+      "editable",
+      true,
+      action,
+    );
+    expect(await h.result).toMatchObject({
+      ok: true,
+      valueActionResult: { ok: true, valueVerified: true },
+    });
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(h.probe).toHaveBeenCalledTimes(1);
+    expect(h.frames.size + h.timers.size).toBe(0);
+  });
+  it("does not let the focused bypass leak into pointer actions", async () => {
+    const h = harness([ready({ receives: false, active: true })], "pointer");
+    expect(await h.result).toMatchObject({ stable: false });
+    expect(h.probe).toHaveBeenCalledTimes(1);
+    expect(h.frames.size + h.timers.size).toBe(0);
+  });
   it("retains failed value verification without replaying input", async () => {
     const action = vi.fn(() => ({ ok: false, error: "input_mismatch" }));
     const h = harness([ready()], "editable", true, action);

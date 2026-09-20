@@ -86,11 +86,11 @@ function harness(select = false) {
     detach: () => {
       live = null;
     },
-    run: (text = "b", append = false) =>
+    run: (text = "b", append = false, verify = true) =>
       vm.runInContext(
         select
           ? `selectValue(el, refRegistry, 'g1-e1', ${JSON.stringify(text)})`
-          : `fillValue(el, refRegistry, 'g1-e1', ${JSON.stringify(text)}, ${append})`,
+          : `fillValue(el, refRegistry, 'g1-e1', ${JSON.stringify(text)}, ${append}, ${verify})`,
         context,
       ),
   };
@@ -140,6 +140,45 @@ describe("guarded value actions", () => {
       expect(h.events).toEqual(["input", "change"]);
     },
   );
+
+  it("marks a verified mismatch as dispatched with the retained flag", () => {
+    const h = harness();
+    h.el.handler = () => {
+      h.el.value = "a";
+    };
+    expect(h.run("b")).toMatchObject({
+      ok: false,
+      error: "input_mismatch",
+      dispatched: true,
+      valueRetained: false,
+    });
+    expect(h.events).toEqual(["input", "change"]);
+  });
+
+  it("accepts a value the field clears after dispatch when verifyValue is false", () => {
+    const h = harness();
+    h.el.handler = () => {
+      h.el.value = "";
+    };
+    expect(h.run("hello", false, false)).toMatchObject({
+      ok: true,
+      dispatched: true,
+      valueRetained: false,
+    });
+    expect(h.el.value).toBe("");
+    expect(h.events).toEqual(["input", "change"]);
+  });
+
+  it("still fails a ref detached during dispatch even when verifyValue is false", () => {
+    const h = harness();
+    h.el.handler = h.detach;
+    expect(h.run("b", false, false)).toMatchObject({
+      ok: false,
+      error: "stale_ref",
+      dispatched: true,
+    });
+    expect(h.events).toEqual(["input", "change"]);
+  });
 
   it("selects by label and verifies the selected option", () => {
     const h = harness(true);

@@ -7,7 +7,7 @@ function valueActionGuard(el, refRegistry, refId, editable) {
   return null;
 }
 
-function fillValue(el, refRegistry, refId, text, append) {
+function fillValue(el, refRegistry, refId, text, append, verify = true) {
   let error = valueActionGuard(el, refRegistry, refId, true);
   if (error) return { ok: false, error };
   el.focus();
@@ -24,7 +24,12 @@ function fillValue(el, refRegistry, refId, text, append) {
   el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
   el.dispatchEvent(new Event('change', { bubbles: true }));
   const actual = el.isContentEditable ? (el.textContent || '') : el.value;
-  return { ok: el.isConnected && refRegistry.resolve(refId) === el && actual === next, error: 'input_mismatch' };
+  const valueRetained = actual === next;
+  // The element leaving the tree (or being swapped) after dispatch is a stale ref, not a value mismatch.
+  if (!el.isConnected || refRegistry.resolve(refId) !== el) return { ok: false, error: 'stale_ref', dispatched: true, valueRetained };
+  // Canvas/terminal/remote-desktop inputs capture keystrokes then clear the field; verify:false accepts that.
+  if (verify && !valueRetained) return { ok: false, error: 'input_mismatch', dispatched: true, valueRetained: false };
+  return { ok: true, dispatched: true, valueRetained };
 }
 
 function selectValue(el, refRegistry, refId, want) {

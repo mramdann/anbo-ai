@@ -776,6 +776,15 @@ async fn handle_action_inner(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
             let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+            // How long a matched-but-hidden element must stay hidden before find gives up on it
+            // rendering. Scaled to the caller's patience, floored at the settle, capped at 3s so a
+            // hostile-but-passing page (e.g. TradingView: live data keeps it "loading" forever) is
+            // not held for the full timeout when the only matches are genuinely not-rendered.
+            let hidden_settle = Duration::from_millis(
+                (timeout_ms / 2)
+                    .min(3_000)
+                    .max(ABSENCE_SETTLE.as_millis() as u64),
+            );
 
             let mut empty_scans = 0;
             let mut last_empty_scan = None;
@@ -785,6 +794,10 @@ async fn handle_action_inner(
             let mut backoff_ms = LOCATOR_RETRY_MS;
             // Early absence requires another complete scan after settling.
             let mut absent_since: Option<tokio::time::Instant> = None;
+            // The hidden-only settle clock. Revision-independent on purpose: a page that mutates
+            // constantly (live charts) would otherwise never let a genuinely not-rendered match
+            // settle. Resets only when the hidden-only condition itself breaks.
+            let mut hidden_since: Option<tokio::time::Instant> = None;
             loop {
                 let now = tokio::time::Instant::now();
                 if now >= deadline {
@@ -891,6 +904,36 @@ async fn handle_action_inner(
                     absent_since.get_or_insert(completed);
                 } else {
                     absent_since = None;
+                }
+                // A matched-but-hidden element already exists in the DOM, so unlike a complete
+                // absence a still-"loading" page (live-data streams that never idle) will not
+                // summon it — the loading gate is intentionally omitted here. Once the hidden-only
+                // state has held for the settle, fail fast with the includeHidden hint. The
+                // scan-completeness guards inside hidden_only_miss still protect against a visible
+                // match hiding in an unread part of the page.
+                if hidden_only_miss(&result)
+                    && scanned_state
+                        .as_ref()
+                        .is_some_and(|state| state.mutations >= 0)
+                {
+                    if hidden_since.is_some_and(|since| {
+                        completed.saturating_duration_since(since) >= hidden_settle
+                    }) {
+                        let elapsed = timeout_ms.saturating_sub(
+                            deadline.saturating_duration_since(completed).as_millis() as u64,
+                        );
+                        return Err(find_timeout(
+                            &locator,
+                            elapsed,
+                            empty_scans,
+                            None,
+                            Some(&result),
+                            quiet_waits,
+                        ));
+                    }
+                    hidden_since.get_or_insert(completed);
+                } else {
+                    hidden_since = None;
                 }
                 last_empty_scan = Some(result);
                 // A page that has already disappointed twice rarely answers on
@@ -1211,6 +1254,21 @@ async fn handle_action_inner(
                 .get("append")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            // Canvas/terminal/remote-desktop inputs capture keystrokes then clear the field; verifyValue:false
+            // accepts a dispatched-but-not-retained value instead of reporting it as input_mismatch.
+            let verify_value = params
+                .get("verifyValue")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            // `force` (alias skipActionability) skips the viewport/hit-test gate for canvas,
+            // terminal, or remote-desktop inputs whose real field is intentionally off-viewport
+            // or covered. fillValue's own guard still requires a rendered, enabled, editable
+            // element, so this skips actionability — not safety.
+            let force = params
+                .get("force")
+                .and_then(|v| v.as_bool())
+                .or_else(|| params.get("skipActionability").and_then(|v| v.as_bool()))
+                .unwrap_or(false);
 
             let tab_lock = get_tab_lock(tab_id);
             let _lock = tab_lock.lock().await;
@@ -1225,22 +1283,41 @@ async fn handle_action_inner(
                     r#"
                     {VISIBILITY_JS}
                     {VALUE_ACTION_JS}
-                    return JSON.stringify(fillValue(el, refRegistry, refId, {}, {}));"#,
+                    return JSON.stringify(fillValue(el, refRegistry, refId, {}, {}, {}));"#,
                     serde_json::to_string(text).unwrap(),
-                    append
+                    append,
+                    verify_value
                 ),
             );
 
-            let parsed = wait_for_value_action(
-                &webview,
-                target.as_ref(),
-                &ref_id,
-                ActionabilityRequirement::Editable,
-                &js,
-            )
-            .await?;
+            let parsed = if force {
+                // Run the value action directly, skipping the actionability wait. Same result
+                // shape as wait_for_value_action; fillValue still guards rendered/enabled/editable.
+                let frame_id = target
+                    .as_ref()
+                    .filter(|target| !target.is_main)
+                    .map(|target| target.frame_id.as_str());
+                let response = ref_context::execute_awaited(&webview, frame_id, &js)
+                    .await
+                    .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+                let decoded: String = serde_json::from_str(&response).unwrap_or(response);
+                serde_json::from_str(&decoded).unwrap_or_default()
+            } else {
+                wait_for_value_action(
+                    &webview,
+                    target.as_ref(),
+                    &ref_id,
+                    ActionabilityRequirement::Editable,
+                    &js,
+                )
+                .await?
+            };
             if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-                Ok(json!({ "tabId": tab_id, "ref": ref_id, "ok": true, "valueVerified": true }))
+                // valueVerified stays true unless the field was dispatched but did not keep the value
+                // (only possible with verifyValue:false); the caller then knows to confirm by screenshot.
+                let value_verified =
+                    parsed.get("valueRetained").and_then(Value::as_bool) != Some(false);
+                Ok(json!({ "tabId": tab_id, "ref": ref_id, "ok": true, "valueVerified": value_verified, "dispatched": true }))
             } else {
                 if parsed["error"] == "input_not_ready" {
                     return Err((
@@ -1249,7 +1326,7 @@ async fn handle_action_inner(
                     ));
                 }
                 if parsed.get("error").and_then(Value::as_str) == Some("input_mismatch") {
-                    return Err((error_codes::INPUT_MISMATCH.to_string(), "input did not retain the requested value; inspect the field before submitting".to_string()));
+                    return Err((error_codes::INPUT_MISMATCH.to_string(), "input was dispatched (input/change fired) but the field did not retain the value; for a canvas, terminal, or otherwise managed input retry with verifyValue:false and confirm via screenshot".to_string()));
                 }
                 Err((
                     error_codes::STALE_REF.to_string(),
@@ -3129,6 +3206,19 @@ fn absence_conclusive(scan: &CollectedLocatorMatches) -> bool {
         && scan.skipped_frames == 0
 }
 
+/// A miss whose only match(es) exist but are hidden (not rendered), with the rest of the page
+/// fully read (no truncation, node limit or skipped frames — those could hide a visible match).
+/// The elements are already in the DOM, so waiting rarely renders them; once the hidden-only
+/// state has held for the settle, find can fail fast with the includeHidden hint instead of
+/// burning the whole timeout. The agent recovers via includeHidden or a different target either way.
+fn hidden_only_miss(scan: &CollectedLocatorMatches) -> bool {
+    scan.matches.is_empty()
+        && scan.hidden > 0
+        && !scan.truncated
+        && !scan.node_limit_reached
+        && scan.skipped_frames == 0
+}
+
 fn find_timeout(
     locator: &LocatorRequest,
     timeout_ms: u64,
@@ -3939,6 +4029,11 @@ fn actionable_probe_script(ref_id: &str, scroll: &str, position: Option<(f64, f6
                 el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable
             );
             const receives = visible && receivesActionPointer(el, point);
+            let active = false;
+            for (let node = document.activeElement, depth = 0; node && depth < 257; depth++) {{
+                if (node === el) {{ active = true; break; }}
+                node = node.shadowRoot ? node.shadowRoot.activeElement : null;
+            }}
             const link = el.closest ? el.closest('a[href]') : null;
             const popupUrl = link && String(link.target || '').toLowerCase() === '_blank' ? String(link.href || '') : null;
             return JSON.stringify({{
@@ -3947,6 +4042,7 @@ fn actionable_probe_script(ref_id: &str, scroll: &str, position: Option<(f64, f6
                 enabled,
                 editable,
                 receives,
+                active,
                 popupUrl,
                 ...point,
                 tag: el.tagName.toLowerCase(),
@@ -4142,6 +4238,9 @@ async fn wait_for_actionable_attempt(
         let enabled = parsed.get("enabled").and_then(Value::as_bool) == Some(true);
         let editable = parsed.get("editable").and_then(Value::as_bool) == Some(true);
         let receives = parsed.get("receives").and_then(Value::as_bool) == Some(true);
+        // An already-focused editable element accepts typing even when it cannot be scrolled
+        // into the viewport (canvas/terminal/remote-desktop hidden textareas); relax receives for it.
+        let active = parsed.get("active").and_then(Value::as_bool) == Some(true);
         let rect = (
             parsed.get("x").and_then(Value::as_f64).unwrap_or_default(),
             parsed.get("y").and_then(Value::as_f64).unwrap_or_default(),
@@ -4160,7 +4259,7 @@ async fn wait_for_actionable_attempt(
             | ActionabilityRequirement::ClickAt(_)
             | ActionabilityRequirement::Hover(_) => enabled && receives,
             ActionabilityRequirement::Focus | ActionabilityRequirement::Select => enabled,
-            ActionabilityRequirement::Editable => editable && receives,
+            ActionabilityRequirement::Editable => editable && (receives || active),
         };
         let needs_stability = !matches!(
             requirement,
@@ -6571,6 +6670,29 @@ mod tests {
             ..empty()
         }));
         assert!(!absence_conclusive(&CollectedLocatorMatches {
+            skipped_frames: 1,
+            ..empty()
+        }));
+
+        // A matched-but-hidden element already exists, so a stable hidden-only miss may fail fast —
+        // but only when the rest of the page was fully read (else a visible match may be unseen).
+        assert!(hidden_only_miss(&CollectedLocatorMatches {
+            hidden: 2,
+            ..empty()
+        }));
+        assert!(!hidden_only_miss(&empty())); // nothing hidden: a plain absence, not this path
+        assert!(!hidden_only_miss(&CollectedLocatorMatches {
+            hidden: 1,
+            truncated: true,
+            ..empty()
+        }));
+        assert!(!hidden_only_miss(&CollectedLocatorMatches {
+            hidden: 1,
+            node_limit_reached: true,
+            ..empty()
+        }));
+        assert!(!hidden_only_miss(&CollectedLocatorMatches {
+            hidden: 1,
             skipped_frames: 1,
             ..empty()
         }));

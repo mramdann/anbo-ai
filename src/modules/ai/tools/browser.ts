@@ -241,6 +241,18 @@ export function buildBrowserTools(ctx: ToolContext) {
             .boolean()
             .default(false)
             .describe("Append instead of replacing existing text."),
+          verifyValue: z
+            .boolean()
+            .default(true)
+            .describe(
+              "Verify the field kept the typed value; set false for canvas/terminal/remote-desktop inputs that clear it after capturing keystrokes.",
+            ),
+          force: z
+            .boolean()
+            .default(false)
+            .describe(
+              "Skip the viewport/actionability gate for off-viewport or covered inputs (canvas/terminal/remote-desktop); the field must still be rendered, enabled and editable.",
+            ),
         }),
       ),
       execute: (params) => runAction("type", params),

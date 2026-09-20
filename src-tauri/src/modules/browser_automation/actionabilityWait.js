@@ -9,7 +9,7 @@ function waitForActionableSample(probe, requirement, scroll, valueAction) {
     const ready = value => value?.ok === true && value.visible === true &&
       keys.every(key => Number.isFinite(value[key])) &&
       (requirement === 'focus' || requirement === 'select' ? value.enabled === true :
-        requirement === 'editable' ? value.editable === true && value.receives === true :
+        requirement === 'editable' ? value.editable === true && (value.receives === true || value.active === true) :
           value.enabled === true && value.receives === true);
     const stable = (a, b) => keys.every(key => Math.abs(a[key] - b[key]) <= 0.5);
     const cleanup = () => {
