@@ -33,7 +33,8 @@ snapshots, so find A, find B, drag A onto B just works. `stale_ref` means the
 element is gone or the ref is older than that: find it again. Single-target
 actions and reads take either `ref` or `locator`. Navigation-shaped replies carry `page`
 (`url`, `title`, `loading`), so you never need a separate URL read after a
-click or a key. Read results with `browser_get_text` (a ref, or the body) or
+click or a key. Read results with `browser_get_text` (a ref, or the body;
+`ancestors: N` reads the whole enclosing block in one call) or
 `browser_get_property` for live state such as `paused`, `currentTime`,
 `value`, `checked`, `scrollTop` (a closed list of plain DOM properties, one
 call, no page JavaScript). When the task is done, put `endSession: true` on
