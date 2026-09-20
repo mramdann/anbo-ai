@@ -2398,7 +2398,7 @@ async fn handle_action_inner(
                 Err((
                     error_codes::STALE_REF.to_string(),
                     format!(
-                        "get_text failed: {err} (reason: {})",
+                        "get_text failed: {err} (reason: {}). Re-find the element, or pass a locator instead of ref so get_text resolves it fresh each call.",
                         ref_failure_reason(&parsed)
                     ),
                 ))
