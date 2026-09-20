@@ -41,5 +41,6 @@ export {
   normalizePersistedAgentResume,
   type PersistedAgentResume,
   shouldPinAgentSession,
+  shouldWarmAgentTabOnReopen,
 } from "./lib/resume";
 export { nextAttentionTarget } from "./store/agentStore";

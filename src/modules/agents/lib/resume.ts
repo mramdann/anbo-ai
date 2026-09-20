@@ -319,3 +319,28 @@ export function collectAgentResumeLeaves(tree: PaneNode): AgentResumeLeaf[] {
   }
   return tree.children.flatMap(collectAgentResumeLeaves);
 }
+
+/**
+ * Lazy resume-on-reopen rule. On reopen every restored terminal tab comes back
+ * cold; only the tab in the workspace the user is currently viewing should be
+ * warmed (warming is what brings its agents back). Background workspaces stay
+ * cold until the user opens them, so a full restore no longer floods the Windows
+ * resource guard — the behaviour that used to leave some workspaces, especially
+ * the one active on reopen, as a bare shell. True only for a cold agent terminal
+ * tab whose workspace is the active one.
+ */
+export function shouldWarmAgentTabOnReopen(
+  tab: {
+    kind: string;
+    cold?: boolean;
+    spaceId?: string | null;
+    paneTree: PaneNode;
+  },
+  activeSpaceId: string | null | undefined,
+): boolean {
+  if (tab.kind !== "terminal" || !tab.cold) return false;
+  if (!activeSpaceId || tab.spaceId !== activeSpaceId) return false;
+  return collectAgentResumeLeaves(tab.paneTree).some(
+    ({ resume }) => resume.resumeOnStart,
+  );
+}

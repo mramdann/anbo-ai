@@ -1,3 +1,4 @@
+import type { PaneNode } from "@/modules/terminal/lib/panes";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AGENT_LAUNCHERS } from "./launcher";
 import {
@@ -11,6 +12,7 @@ import {
   isUnverifiedAgentResume,
   normalizePersistedAgentResume,
   shouldPinAgentSession,
+  shouldWarmAgentTabOnReopen,
 } from "./resume";
 
 afterEach(() => {
@@ -445,5 +447,84 @@ describe("kimi resume", () => {
       "kimi",
     );
     expect(shouldPinAgentSession("kimi")).toBe(true);
+  });
+});
+
+describe("shouldWarmAgentTabOnReopen (lazy resume on reopen)", () => {
+  const agentPane = (id: number, resumeOnStart = true): PaneNode => ({
+    kind: "leaf",
+    id,
+    agentResume: { agent: "claude", command: "claude", resumeOnStart },
+  });
+  const reopenedTab = (
+    over: Partial<{
+      kind: string;
+      cold: boolean;
+      spaceId: string | null;
+      paneTree: PaneNode;
+    }> = {},
+  ) => ({
+    kind: "terminal",
+    cold: true,
+    spaceId: "space-A",
+    paneTree: agentPane(1),
+    ...over,
+  });
+
+  it("warms a cold agent tab that belongs to the active workspace", () => {
+    expect(shouldWarmAgentTabOnReopen(reopenedTab(), "space-A")).toBe(true);
+  });
+
+  it("keeps a cold agent tab in a background workspace cold", () => {
+    expect(
+      shouldWarmAgentTabOnReopen(reopenedTab({ spaceId: "space-B" }), "space-A"),
+    ).toBe(false);
+  });
+
+  it("warms nothing until a workspace is active", () => {
+    expect(shouldWarmAgentTabOnReopen(reopenedTab(), null)).toBe(false);
+    expect(shouldWarmAgentTabOnReopen(reopenedTab(), undefined)).toBe(false);
+  });
+
+  it("never re-warms an already-warm tab", () => {
+    expect(
+      shouldWarmAgentTabOnReopen(reopenedTab({ cold: false }), "space-A"),
+    ).toBe(false);
+  });
+
+  it("ignores non-terminal tabs sharing the active workspace", () => {
+    expect(
+      shouldWarmAgentTabOnReopen(reopenedTab({ kind: "editor" }), "space-A"),
+    ).toBe(false);
+  });
+
+  it("ignores a terminal whose agent is not resume-on-start", () => {
+    expect(
+      shouldWarmAgentTabOnReopen(
+        reopenedTab({ paneTree: agentPane(1, false) }),
+        "space-A",
+      ),
+    ).toBe(false);
+  });
+
+  it("ignores a plain terminal with no agent to resume", () => {
+    expect(
+      shouldWarmAgentTabOnReopen(
+        reopenedTab({ paneTree: { kind: "leaf", id: 1 } }),
+        "space-A",
+      ),
+    ).toBe(false);
+  });
+
+  it("warms a split tab when any pane hosts a resume-on-start agent", () => {
+    const split: PaneNode = {
+      kind: "split",
+      id: 0,
+      dir: "row",
+      children: [{ kind: "leaf", id: 1 }, agentPane(2)],
+    };
+    expect(
+      shouldWarmAgentTabOnReopen(reopenedTab({ paneTree: split }), "space-A"),
+    ).toBe(true);
   });
 });

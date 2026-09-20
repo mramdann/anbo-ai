@@ -32,6 +32,7 @@ import {
   MAX_PARALLEL_OPENCODE_AGENTS,
   nextAttentionTarget,
   pollCodexSession,
+  shouldWarmAgentTabOnReopen,
   validateAgentLaunchCommand,
   withAgentMcpRuntime,
 } from "@/modules/agents";
@@ -1055,14 +1056,14 @@ export default function App() {
       const agentLeaves = collectAgentResumeLeaves(tab.paneTree);
       if (!agentLeaves.some(({ resume }) => resume.resumeOnStart)) continue;
       if (tab.cold) {
-        // Lazy resume on reopen: only the workspace the user is looking at
-        // brings its agents back. Background workspaces stay cold until opened,
-        // so a full restore no longer floods the Windows resource guard (which
-        // is what left some workspaces — especially the active one — as a bare
-        // shell). Warming happens once the user opens that workspace; a warmed
-        // agent then keeps running across workspace switches (tabs never
-        // re-cold, and background PTYs are retained).
-        if (activeSpaceId && tab.spaceId === activeSpaceId) warmTab(tab.id);
+        // Lazy resume on reopen (see shouldWarmAgentTabOnReopen): only the
+        // workspace the user is looking at brings its agents back; background
+        // workspaces stay cold until opened, so a full restore no longer floods
+        // the Windows resource guard (which is what left some workspaces —
+        // especially the active one — as a bare shell). Warming happens once the
+        // user opens that workspace; a warmed agent then keeps running across
+        // workspace switches (tabs never re-cold, background PTYs are retained).
+        if (shouldWarmAgentTabOnReopen(tab, activeSpaceId)) warmTab(tab.id);
         continue;
       }
       const space = spaceEnvironments.find(
