@@ -32,14 +32,17 @@ use crate::modules::browser_automation::protocol::error_codes;
 use crate::modules::browser_automation::readable_text::READABLE_TEXT_JS;
 use crate::modules::browser_automation::ref_context::{self, REF_REGISTRY_JS};
 use crate::modules::browser_automation::ref_scan::scan_with_fresh_refs;
+use crate::modules::browser_automation::reveal::{
+    build_reveal_js, parse_reveal, reveal_budget, DEFAULT_REVEAL_MS,
+};
 use crate::modules::browser_automation::registry::{
     get_active_tabs, get_embed_webview, get_tab_lock, remove_tab_lock,
 };
 use crate::modules::browser_automation::snapshot::{
-    build_frame_snapshot_js, build_snapshot_js, format_snapshot, get_current_generation,
-    get_next_generation, get_ref_frame_target, prioritize_snapshot_elements,
-    record_ref_frame_targets, RefFrameTarget, SnapshotPayload, DEFAULT_SNAPSHOT_MAX_CHARS,
-    REF_GENERATIONS_KEPT,
+    build_frame_snapshot_js, build_snapshot_js, commit_generation, format_snapshot,
+    get_current_generation, get_next_generation, get_ref_frame_target, peek_next_generation,
+    prioritize_snapshot_elements, record_ref_frame_targets, RefFrameTarget, SnapshotPayload,
+    DEFAULT_SNAPSHOT_MAX_CHARS, REF_GENERATIONS_KEPT,
 };
 use crate::modules::browser_automation::timings::ActionTimings;
 use crate::modules::browser_automation::visibility::VISIBILITY_JS;
@@ -956,7 +959,13 @@ async fn handle_action_inner(
             let click_count = extract_click_count(&params, method == "double_click")?;
             let expectation = PageExpectation::parse(params.get("waitFor"))?;
             let tab_lock = get_tab_lock(tab_id);
-            let (webview, dispatch) = {
+            // A menu, date picker or dialog the click opened is read inside the
+            // call that opened it, under the same lock, instead of in the
+            // caller's next turn. With nothing declared and nothing newly
+            // visible the wait ends after a couple of frames, so an ordinary
+            // click keeps paying almost nothing for it.
+            let budget = reveal_budget(&params, DEFAULT_REVEAL_MS);
+            let (webview, dispatch, revealed) = {
                 let _lock = timings.measure("queue", tab_lock.lock()).await;
                 let webview = get_embed_webview(app, tab_id)
                     .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
@@ -965,6 +974,7 @@ async fn handle_action_inner(
                 timings
                     .measure("ready", wait_for_ready(&webview, 3000))
                     .await;
+                let target = get_ref_frame_target(tab_id, &ref_id);
                 let (dispatch, popup_url) =
                     click_ref_profiled(&webview, tab_id, &ref_id, click_count, timings).await?;
                 if let Some(url) = popup_url {
@@ -973,7 +983,13 @@ async fn handle_action_inner(
                         json!({ "sourceTabId": tab_id, "url": url }),
                     );
                 }
-                (webview, dispatch)
+                let revealed = timings
+                    .measure(
+                        "reveal",
+                        run_reveal(&webview, tab_id, target.as_ref(), &ref_id, budget, None, true),
+                    )
+                    .await;
+                (webview, dispatch, revealed)
             };
             let mut result = json!({
                 "tabId": tab_id,
@@ -983,6 +999,14 @@ async fn handle_action_inner(
             });
             if click_count == 2 {
                 result["clickCount"] = json!(2);
+            }
+            if let Some(revealed) = revealed
+                .filter(|revealed| {
+                    revealed["count"].as_u64().unwrap_or(0) > 0
+                        || revealed.get("observed").is_some()
+                })
+            {
+                merge_reveal(&mut result, revealed);
             }
             if let Some(expectation) = expectation {
                 result["postcondition"] = timings.measure("postcondition", wait_for_page_state(&webview, tab_id, &expectation)).await
@@ -1317,7 +1341,49 @@ async fn handle_action_inner(
                 // (only possible with verifyValue:false); the caller then knows to confirm by screenshot.
                 let value_verified =
                     parsed.get("valueRetained").and_then(Value::as_bool) != Some(false);
-                Ok(json!({ "tabId": tab_id, "ref": ref_id, "ok": true, "valueVerified": value_verified, "dispatched": true }))
+                let mut result = json!({ "tabId": tab_id, "ref": ref_id, "ok": true, "valueVerified": value_verified, "dispatched": true });
+                // A field the page opens a list under is worth a bounded wait:
+                // the suggestions arrive in this reply instead of costing the
+                // caller a round trip to discover that they arrived at all.
+                let budget = reveal_budget(&params, DEFAULT_REVEAL_MS);
+                if budget > 0 && parsed.get("popup").and_then(Value::as_bool) == Some(true) {
+                    let before = parsed.get("before");
+                    let mut revealed =
+                        run_reveal(&webview, tab_id, target.as_ref(), &ref_id, budget, before, false)
+                            .await;
+                    // Nothing opened, and this is a field things open under.
+                    // Some autocompletes only listen for real keystrokes
+                    // (Wikipedia's is one), so the value goes in once more
+                    // through the input pipeline before the caller is told the
+                    // page stayed shut.
+                    let opened =
+                        |value: &Option<Value>| matches!(value, Some(value) if value["count"].as_u64().unwrap_or(0) > 0);
+                    if value_verified
+                        && !opened(&revealed)
+                        && native_retype(&webview, text).await.is_ok()
+                    {
+                        if let Some(retried) = run_reveal(
+                            &webview,
+                            tab_id,
+                            target.as_ref(),
+                            &ref_id,
+                            budget,
+                            before,
+                            false,
+                        )
+                        .await
+                        {
+                            if retried["count"].as_u64().unwrap_or(0) > 0 {
+                                result["nativeRetype"] = json!(true);
+                                revealed = Some(retried);
+                            }
+                        }
+                    }
+                    if let Some(revealed) = revealed {
+                        merge_reveal(&mut result, revealed);
+                    }
+                }
+                Ok(result)
             } else {
                 if parsed["error"] == "input_not_ready" {
                     return Err((
@@ -2745,6 +2811,134 @@ fn deep_ref_expression(ref_id: &str, body: &str) -> String {
     )
 }
 
+/// Read the surface an action just opened, inside the call that opened it.
+///
+/// Refs for whatever it finds are registered on the spot, and the scan
+/// generation is published only when something was registered: a reveal that
+/// saw nothing has replaced nothing, so the refs the caller already holds stay
+/// live. A failure here never fails the action, which has already happened.
+async fn run_reveal(
+    webview: &Webview,
+    tab_id: i64,
+    target: Option<&RefFrameTarget>,
+    ref_id: &str,
+    budget_ms: u64,
+    before: Option<&Value>,
+    declared_only: bool,
+) -> Option<Value> {
+    if budget_ms == 0 {
+        return None;
+    }
+    let generation = peek_next_generation(tab_id);
+    let script = build_reveal_js(ref_id, generation, budget_ms, before, declared_only);
+    let frame_id = target
+        .filter(|target| !target.is_main)
+        .map(|target| target.frame_id.as_str());
+    // A click that navigates destroys the context this promise lives in, and a
+    // promise in a dead context never settles. The budget is what the caller
+    // agreed to wait; nothing here may outlast it by more than a breath.
+    let response = tokio::time::timeout(
+        Duration::from_millis(budget_ms + REVEAL_GRACE_MS),
+        ref_context::execute_awaited(webview, frame_id, &script),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let reveal = parse_reveal(&response)?;
+    if reveal.registered > 0 {
+        commit_generation(tab_id, generation);
+        if let Some(frame) = target.filter(|target| !target.is_main) {
+            record_ref_frame_targets(
+                tab_id,
+                reveal
+                    .refs
+                    .iter()
+                    .map(|ref_id| (ref_id.clone(), frame.clone()))
+                    .collect(),
+            );
+        }
+    }
+    Some(reveal.value)
+}
+
+/// Split the reveal into what opened and what changed. The surface goes under
+/// `revealed`; page effects sit at the top level because they describe the
+/// action rather than the surface. A surface that never opened is left out
+/// entirely: `count: 0` spends the caller's tokens to say nothing.
+fn merge_reveal(result: &mut Value, mut revealed: Value) {
+    if let Some(observed) = revealed
+        .as_object_mut()
+        .and_then(|surface| surface.remove("observed"))
+    {
+        result["observed"] = observed;
+    }
+    if revealed["count"].as_u64().unwrap_or(0) > 0 {
+        result["revealed"] = revealed;
+    }
+}
+
+/// The longest value retyped key by key. Past this the browser's bulk insert is
+/// used instead; a field that long is not an autocomplete query.
+const MAX_NATIVE_RETYPE_CHARS: usize = 64;
+
+/// How far past its own budget a reveal may run before it is abandoned. Covers
+/// the round trip to the page and back, not another wait.
+const REVEAL_GRACE_MS: u64 = 300;
+
+/// Replace the focused field's value through the browser's own input pipeline.
+///
+/// The ordinary path sets `value` and fires one `input` event, which is faster
+/// and exact. Some autocompletes only open for real key events, so a field that
+/// took the value but opened nothing gets one attempt with keystrokes rather
+/// than leaving the caller to discover the silence in another turn.
+async fn native_retype(webview: &Webview, text: &str) -> Result<(), String> {
+    let modifiers = if cfg!(target_os = "macos") { 4 } else { 2 };
+    for event in ["keyDown", "keyUp"] {
+        let mut params = json!({
+            "type": event, "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65,
+            "nativeVirtualKeyCode": 65, "modifiers": modifiers
+        });
+        if event == "keyDown" {
+            params["commands"] = json!(["selectAll"]);
+        }
+        call_devtools_protocol_method(
+            webview,
+            "Input.dispatchKeyEvent",
+            &params.to_string(),
+            SCRIPT_POLL_TIMEOUT,
+        )
+        .await?;
+    }
+    if text.chars().count() > MAX_NATIVE_RETYPE_CHARS {
+        return call_devtools_protocol_method(
+            webview,
+            "Input.insertText",
+            &json!({ "text": text }).to_string(),
+            SCRIPT_POLL_TIMEOUT,
+        )
+        .await
+        .map(|_| ());
+    }
+    for character in text.chars() {
+        let as_text = character.to_string();
+        // Only keyDown carries text: that is the event that produces the
+        // character, and a keyUp with text is not a keystroke any page expects.
+        for params in [
+            json!({ "type": "keyDown", "key": as_text, "text": as_text }),
+            json!({ "type": "keyUp", "key": as_text }),
+        ] {
+            call_devtools_protocol_method(
+                webview,
+                "Input.dispatchKeyEvent",
+                &params.to_string(),
+                SCRIPT_POLL_TIMEOUT,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 fn ref_failure_reason(value: &Value) -> &str {
     match value.get("reason").and_then(Value::as_str) {
         Some(
@@ -3127,6 +3321,7 @@ struct LocatorRequest {
     exact: bool,
     include_hidden: bool,
     limit: usize,
+    ancestors: u32,
 }
 
 struct CollectedLocatorMatches {
@@ -3477,6 +3672,14 @@ fn extract_locator(params: &Value) -> Result<LocatorRequest, (String, String)> {
             .and_then(|value| usize::try_from(value).ok())
             .unwrap_or(10)
             .clamp(1, MAX_LOCATOR_MATCHES),
+        // A match is a leaf. Reading the row, card or section it sits in used
+        // to cost one call per fact in it.
+        ancestors: params
+            .get("ancestors")
+            .and_then(as_count)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(0)
+            .min(10),
     })
 }
 
@@ -3664,6 +3867,7 @@ async fn collect_locator_matches(
         exact: locator.exact,
         include_hidden: locator.include_hidden,
         limit: locator.limit,
+        ancestors: locator.ancestors,
     };
     let root_script = build_find_js(generation, &format!("g{generation}-e"), &query);
     let root_raw = ref_context::execute_main(webview, &root_script)
@@ -6039,6 +6243,22 @@ fn parse_ref_generation(ref_id: &str) -> Result<u64, ()> {
     Ok(generation)
 }
 
+#[cfg(test)]
+mod reveal_ref_tests {
+    use super::*;
+    use crate::modules::browser_automation::reveal::reveal_ref_prefix;
+
+    #[test]
+    fn a_revealed_ref_is_a_ref_the_caller_can_use() {
+        // The point of handing back the surface is that its items can be acted
+        // on. Naming them with a private letter made every one of them
+        // unusable: the parser refused the ref before anything else ran.
+        let ref_id = format!("{}1", reveal_ref_prefix(13));
+        assert_eq!(parse_ref_generation(&ref_id), Ok(13));
+        assert!(ensure_current_ref(&ref_id, 13).is_ok());
+    }
+}
+
 fn invalid_ref_error() -> (String, String) {
     (
         error_codes::INVALID_REQUEST.to_string(),
@@ -6383,6 +6603,8 @@ mod tests {
                 width: 80.0,
                 height: 20.0,
             }),
+            block: None,
+            block_ref: None,
         };
         let error = (
             error_codes::AMBIGUOUS_TARGET.to_string(),

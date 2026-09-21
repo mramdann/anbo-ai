@@ -19,6 +19,7 @@ pub mod protocol;
 mod readable_text;
 mod ref_context;
 mod ref_scan;
+mod reveal;
 pub mod registry;
 pub mod server;
 pub mod snapshot;

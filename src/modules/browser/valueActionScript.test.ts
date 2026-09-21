@@ -47,8 +47,10 @@ function harness(select = false) {
         for (const option of this.options)
           option.selected = option.value === value;
     }
-    getAttribute(_name: string) {
-      return null;
+    attributes: Record<string, string> = {};
+    type = "text";
+    getAttribute(name: string) {
+      return this.attributes[name] ?? null;
     }
     matches(_selector: string) {
       return this.inheritedDisabled;
@@ -78,6 +80,10 @@ function harness(select = false) {
     InputEvent,
     Event: InputEvent,
     isRenderedElement: (node: Input) => node.visible,
+    // The page the value action runs in: fillValue records where the caller
+    // acted so the reply can say what the action changed.
+    location: { href: "https://example.test/search" },
+    document: { title: "Example" },
   });
   vm.runInContext(source, context);
   return {
@@ -227,5 +233,37 @@ describe("guarded value actions", () => {
     h.el.handler = h.detach;
     expect(h.run().ok).toBe(false);
     expect(h.events).toEqual(["input", "change"]);
+  });
+
+  it("marks only the fields the page opens something under", () => {
+    // An ordinary text box must not buy every caller a wait it cannot use.
+    const plain = harness();
+    expect(plain.run("hello").popup).toBe(false);
+
+    const declared = harness();
+    declared.el.attributes["aria-controls"] = "suggestions";
+    expect(declared.run("Zur").popup).toBe(true);
+
+    const combobox = harness();
+    combobox.el.attributes.role = "combobox";
+    expect(combobox.run("Zur").popup).toBe(true);
+
+    // Wikipedia's box declares nothing and still opens a list, so the search
+    // roles have to count as well.
+    const search = harness();
+    search.el.type = "search";
+    expect(search.run("Zur").popup).toBe(true);
+
+    const list = harness();
+    list.el.attributes.list = "cities";
+    expect(list.run("Zur").popup).toBe(true);
+  });
+
+  it("records where the caller acted before the value changed", () => {
+    const filled = harness().run("hello");
+    expect(filled.before).toEqual({
+      url: "https://example.test/search",
+      title: "Example",
+    });
   });
 });

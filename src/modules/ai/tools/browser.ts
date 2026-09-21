@@ -44,6 +44,16 @@ function withLocator<T extends z.ZodRawShape>(
     }, "Use one ref or locator");
 }
 
+const revealBudget = z
+  .number()
+  .int()
+  .min(0)
+  .max(2000)
+  .optional()
+  .describe(
+    "Milliseconds to wait for a menu, listbox or dialog this action opens; its items come back in revealed with refs. 0 skips the wait.",
+  );
+
 const pageExpectation = z
   .object({
     url: z
@@ -177,9 +187,27 @@ export function buildBrowserTools(ctx: ToolContext) {
         exact: z.boolean().default(false),
         includeHidden: z.boolean().default(false),
         limit: z.number().int().min(1).max(20).default(10),
+        ancestors: z
+          .number()
+          .int()
+          .min(0)
+          .max(10)
+          .default(0)
+          .describe(
+            "Climb N ancestors from each match and return that block's text with it, so a row or card is read in the find itself. Matches sharing a block point at it with blockRef.",
+          ),
         timeout: z.number().int().min(100).max(60000).default(5000),
       }),
-      execute: ({ by, value, name, exact, includeHidden, limit, timeout }) =>
+      execute: ({
+        by,
+        value,
+        name,
+        exact,
+        includeHidden,
+        limit,
+        ancestors,
+        timeout,
+      }) =>
         runAction("find", {
           by,
           value,
@@ -187,17 +215,19 @@ export function buildBrowserTools(ctx: ToolContext) {
           exact,
           includeHidden,
           limit,
+          ancestors,
           timeout,
         }),
     }),
 
     browser_click: tool({
       description:
-        "Click a current ref, or double-click with clickCount 2. waitFor verifies SPA state; navigation/stop remain available. Timeout does not undo input: inspect before retrying.",
+        "Click a current ref, or double-click with clickCount 2. A menu, date picker or dialog the click opens comes back in revealed with refs. waitFor verifies SPA state; navigation/stop remain available. Timeout does not undo input: inspect before retrying.",
       inputSchema: withLocator(
         z.object({
           clickCount: z.union([z.literal(1), z.literal(2)]).optional(),
           waitFor: pageExpectation.optional(),
+          reveal: revealBudget,
           diagnostics: z.boolean().optional(),
         }),
       ),
@@ -233,10 +263,11 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_type: tool({
       description:
-        "Type into a current ref and verify its value. Before Enter, pass ref and expectedValue to browser_press_key to detect subsequent resets/replacements.",
+        "Type into a current ref and verify its value. An autocomplete or combobox field also returns its suggestions in revealed with refs. Before Enter, pass ref and expectedValue to browser_press_key to detect subsequent resets/replacements.",
       inputSchema: withLocator(
         z.object({
           text: z.string().describe("Text content to type into the field."),
+          reveal: revealBudget,
           append: z
             .boolean()
             .default(false)

@@ -16,6 +16,9 @@ pub struct LocatorQuery<'a> {
     pub exact: bool,
     pub include_hidden: bool,
     pub limit: usize,
+    /// Climb this many ancestors from each match and carry that block's text
+    /// back with it. A match is a leaf; the facts around it are the block.
+    pub ancestors: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -39,6 +42,13 @@ pub struct LocatorMatch {
     pub in_viewport: bool,
     #[serde(default)]
     pub bounds: Option<LocatorBounds>,
+    /// The enclosing block's text, when `ancestors` asked for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block: Option<String>,
+    /// The earlier match whose `block` this one shares, so one row's text is
+    /// never paid for once per cell in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -451,6 +461,7 @@ impl PageScanState {
 
 pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>) -> String {
     let limit = query.limit.clamp(1, MAX_LOCATOR_MATCHES);
+    let ancestors = query.ancestors.min(10);
     let cache = include_str!("locatorCache.js");
     format!(
         r#"(function() {{
@@ -464,6 +475,9 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
             const exact = {exact};
             const includeHidden = {include_hidden};
             const limit = {limit};
+            const climbCount = {ancestors};
+            const blockLimit = 1000;
+            const blockRefs = new Map();
             const relaxations = {relaxations};
             const maxScanned = 50000;
             const matches = [];
@@ -697,6 +711,19 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                             bounds: {{x:r.x,y:r.y,width:r.width,height:r.height}},
                             checked: ['checkbox','radio'].includes(type) ? (el.indeterminate ? null : el.checked) : (el.getAttribute('aria-checked') === 'true' ? true : el.getAttribute('aria-checked') === 'false' ? false : null)
                         }});
+                        // Siblings of one row climb to the same block. Emitting
+                        // that text once per match would spend the reply on the
+                        // same paragraph ten times over.
+                        if (climbCount > 0) {{
+                            let block = el;
+                            for (let step = 0; step < climbCount && block.parentElement; step++) block = block.parentElement;
+                            const seen = blockRefs.get(block);
+                            if (seen) matches[matches.length - 1].blockRef = seen;
+                            else {{
+                                blockRefs.set(block, ref);
+                                matches[matches.length - 1].block = normalize(readText(block)).slice(0, blockLimit);
+                            }}
+                        }}
             }};
 
             try {{
@@ -730,6 +757,7 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
         exact = query.exact,
         include_hidden = query.include_hidden,
         limit = limit,
+        ancestors = ancestors,
         relaxations = serde_json::to_string(&if query.by == "css" {
             css_relaxations(query.value)
         } else {
@@ -744,6 +772,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_find_without_ancestors_does_no_block_work() {
+        let script = build_find_js(
+            1,
+            "g1-e",
+            &LocatorQuery {
+                by: "role",
+                value: "link",
+                name: None,
+                exact: false,
+                include_hidden: false,
+                limit: 10,
+                ancestors: 0,
+            },
+        );
+        assert!(script.contains("const climbCount = 0;"));
+        assert!(script.contains("if (climbCount > 0)"));
+    }
+
+    #[test]
+    fn ancestors_climb_is_bounded_and_shared_between_siblings() {
+        let script = build_find_js(
+            4,
+            "g4-e",
+            &LocatorQuery {
+                by: "text",
+                value: "Python",
+                name: None,
+                exact: false,
+                include_hidden: false,
+                limit: 10,
+                // Ten is the ceiling; a caller asking for more gets ten.
+                ancestors: 99,
+            },
+        );
+        assert!(script.contains("const climbCount = 10;"));
+        // Two cells of one row climb to the same block: the text is carried
+        // once and the second match points at the first.
+        assert!(script.contains("blockRefs.get(block)"));
+        assert!(script.contains("matches[matches.length - 1].blockRef = seen;"));
+        assert!(script.contains("blockRefs.set(block, ref);"));
+    }
+
+    #[test]
     fn locator_script_keeps_queries_as_json_data() {
         let script = build_find_js(
             4,
@@ -755,6 +826,7 @@ mod tests {
                 exact: true,
                 include_hidden: false,
                 limit: 100,
+                ancestors: 0,
             },
         );
         assert!(script.contains(r#"const wanted = "a\"b";"#));
@@ -835,6 +907,7 @@ mod tests {
                 exact: false,
                 include_hidden: false,
                 limit: 10,
+                ancestors: 0,
             },
         );
         assert!(script.contains(r#"const wantedName = "Save changes";"#));
@@ -873,6 +946,7 @@ mod tests {
                 exact: false,
                 include_hidden: false,
                 limit: 10,
+                ancestors: 0,
             },
         );
         // Pocketed by tag on every element the walk visits, resolved (render,
@@ -945,6 +1019,7 @@ mod tests {
                 exact: false,
                 include_hidden: false,
                 limit: 10,
+                ancestors: 0,
             },
         );
         assert!(css.contains("const relaxations = [\"canvas\"];"), "{css}");
@@ -960,6 +1035,7 @@ mod tests {
                 exact: false,
                 include_hidden: false,
                 limit: 10,
+                ancestors: 0,
             },
         );
         assert!(

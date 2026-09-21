@@ -7,9 +7,29 @@ function valueActionGuard(el, refRegistry, refId, editable) {
   return null;
 }
 
+// Whether this field is one the page opens something under. Waiting on an
+// ordinary text box would be paid for by every caller and repay none of them.
+// A declared relationship is the strongest signal, but most real search boxes
+// declare nothing and still open a list, so the search roles count too.
+function opensASurface(el) {
+  const attribute = name => {
+    const value = el.getAttribute && el.getAttribute(name);
+    return !!(value && value.length);
+  };
+  if (attribute('aria-controls') || attribute('aria-owns') || attribute('aria-haspopup')) return true;
+  if (el.getAttribute && el.getAttribute('aria-expanded') !== null) return true;
+  if (attribute('list')) return true;
+  const role = (el.getAttribute && el.getAttribute('role')) || '';
+  if (role === 'combobox' || role === 'searchbox') return true;
+  return el instanceof HTMLInputElement && String(el.type || '').toLowerCase() === 'search';
+}
+
 function fillValue(el, refRegistry, refId, text, append, verify = true) {
   let error = valueActionGuard(el, refRegistry, refId, true);
   if (error) return { ok: false, error };
+  // Read before the mutation: what the page looked like when the caller acted.
+  const before = { url: String(location.href).slice(0, 2000), title: String(document.title || '').slice(0, 500) };
+  const popup = opensASurface(el);
   el.focus();
   error = valueActionGuard(el, refRegistry, refId, true);
   if (error) return { ok: false, error };
@@ -29,7 +49,7 @@ function fillValue(el, refRegistry, refId, text, append, verify = true) {
   if (!el.isConnected || refRegistry.resolve(refId) !== el) return { ok: false, error: 'stale_ref', dispatched: true, valueRetained };
   // Canvas/terminal/remote-desktop inputs capture keystrokes then clear the field; verify:false accepts that.
   if (verify && !valueRetained) return { ok: false, error: 'input_mismatch', dispatched: true, valueRetained: false };
-  return { ok: true, dispatched: true, valueRetained };
+  return { ok: true, dispatched: true, valueRetained, popup, before };
 }
 
 function selectValue(el, refRegistry, refId, want) {

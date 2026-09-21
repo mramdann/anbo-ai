@@ -96,6 +96,14 @@ pub struct SnapshotElement {
     pub text: Option<String>,
     #[serde(default)]
     pub in_viewport: bool,
+    /// The element says it opens something: a menu, listbox or dialog. Knowing
+    /// that a field is a door saves guessing whether to click it or type in it.
+    #[serde(default)]
+    pub opens: bool,
+    /// Whether that surface is open already, so a caller does not spend a click
+    /// re-opening what is in front of it.
+    #[serde(default)]
+    pub expanded: Option<bool>,
 }
 
 pub fn remove_generation(tab_id: i64) {
@@ -329,6 +337,10 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
 
                     const label = accessibleName(el).substring(0, 100);
 
+                    const haspopup = el.getAttribute('aria-haspopup');
+                    const controls = el.getAttribute('aria-controls') || el.getAttribute('aria-owns');
+                    const expandedAttr = el.getAttribute('aria-expanded');
+
                     add({{
                         type: 'element',
                         ref_id: ref,
@@ -338,7 +350,9 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                         value: val,
                         checked: typeof el.checked === 'boolean' ? el.checked : null,
                         disabled: el.disabled || false,
-                        in_viewport: inViewport
+                        in_viewport: inViewport,
+                        opens: !!(haspopup && haspopup !== 'false') || !!controls || expandedAttr !== null,
+                        expanded: expandedAttr === null ? null : expandedAttr === 'true'
                     }});
                     processShadow(el, depth, nowHidden);
                     return;
@@ -449,6 +463,11 @@ fn format_item(item: &SnapshotElement) -> Option<String> {
     if let Some(true) = item.disabled {
         extra.push_str(" [disabled]");
     }
+    if item.expanded == Some(true) {
+        extra.push_str(" [expanded]");
+    } else if item.opens {
+        extra.push_str(" [opens]");
+    }
     Some(format!("[{ref_id}] <{role}> {label}{extra}"))
 }
 
@@ -557,6 +576,8 @@ mod tests {
                     disabled: None,
                     text: Some("Welcome to Test Page".to_string()),
                     in_viewport: true,
+                    opens: false,
+                    expanded: None,
                 },
                 SnapshotElement {
                     element_type: "element".to_string(),
@@ -569,6 +590,8 @@ mod tests {
                     disabled: Some(false),
                     text: None,
                     in_viewport: true,
+                    opens: false,
+                    expanded: None,
                 },
             ],
             source_truncated: false,
@@ -607,6 +630,8 @@ mod tests {
                 disabled: Some(false),
                 text: None,
                 in_viewport: true,
+                opens: false,
+                expanded: None,
             }],
             source_truncated: false,
         };
@@ -692,6 +717,8 @@ mod tests {
                     disabled: Some(false),
                     text: None,
                     in_viewport: false,
+                    opens: false,
+                    expanded: None,
                 })
                 .collect(),
             source_truncated: false,
@@ -702,6 +729,51 @@ mod tests {
         assert_eq!(formatted.max_chars, MAX_SNAPSHOT_MAX_CHARS);
         assert!(formatted.text.chars().count() <= MAX_SNAPSHOT_MAX_CHARS);
         assert!(formatted.text.contains("[truncated: showing"));
+    }
+
+    #[test]
+    fn a_control_that_opens_something_says_so_in_one_word() {
+        let element = |opens: bool, expanded: Option<bool>| SnapshotElement {
+            element_type: "element".to_string(),
+            ref_id: Some("g1-e1".to_string()),
+            tag: Some("button".to_string()),
+            role: Some("button".to_string()),
+            label: Some("Departure".to_string()),
+            value: None,
+            checked: None,
+            disabled: None,
+            text: None,
+            in_viewport: true,
+            opens,
+            expanded,
+        };
+        // A caller cannot tell a date field from a plain text box without this,
+        // and guessing wrong costs a whole call.
+        assert_eq!(
+            format_item(&element(true, None)).unwrap(),
+            "[g1-e1] <button> Departure [opens]"
+        );
+        assert_eq!(
+            format_item(&element(true, Some(false))).unwrap(),
+            "[g1-e1] <button> Departure [opens]"
+        );
+        // Already open: clicking it again would close what is being read.
+        assert_eq!(
+            format_item(&element(true, Some(true))).unwrap(),
+            "[g1-e1] <button> Departure [expanded]"
+        );
+        assert_eq!(
+            format_item(&element(false, None)).unwrap(),
+            "[g1-e1] <button> Departure"
+        );
+    }
+
+    #[test]
+    fn the_snapshot_reads_the_popup_relationship_off_the_page() {
+        let script = build_snapshot_js(3);
+        assert!(script.contains("el.getAttribute('aria-haspopup')"));
+        assert!(script.contains("el.getAttribute('aria-controls') || el.getAttribute('aria-owns')"));
+        assert!(script.contains("expanded: expandedAttr === null ? null : expandedAttr === 'true'"));
     }
 
     #[test]
@@ -740,6 +812,8 @@ mod tests {
                 disabled: None,
                 text: None,
                 in_viewport: index >= 2,
+                opens: false,
+                expanded: None,
             })
             .collect::<Vec<_>>();
         assert!(prioritize_snapshot_elements(&mut elements, 3));
