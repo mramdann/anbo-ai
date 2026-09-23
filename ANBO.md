@@ -403,6 +403,8 @@ Browser startup reservations are owned by native child records and released on r
 
 Browser verification notes (2026-09-22): native hover records a temporary trusted event witness at the guarded point during its existing stability probe. Verification distinguishes successful delivery followed by DOM removal/movement from an intercepted or unobserved move. Listeners are removed on verification/error, expire after five seconds if abandoned, and do not add normal-path IPC or replay hover input. `get_text` checks readiness in the same script as the read; only an unready document uses the existing bounded readiness wait. Composed text and ref identity checks are unchanged.
 
+Latency reports must identify the MCP client transport. Local Node v24.19.0 / Undici 7.29.0 fetch imposes an idle-socket timer delay before sending a reused connection request; it is not Rust/browser execution time. `scripts/browser-latency-benchmark.mjs --transport node-http` is an explicit control, while the default remains fetch for historical comparability. Never compare different transports as a backend optimization. No application dependency or global runtime was changed for this investigation.
+
 ## Further reading
 
 Long-form contributor guides live under `docs/`. These guides elaborate on `ANBO.md`; if anything conflicts, `ANBO.md` wins.
