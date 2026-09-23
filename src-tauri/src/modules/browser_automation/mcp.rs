@@ -41,7 +41,7 @@ pub const SERVER_INSTRUCTIONS: &str = concat!(
     "the page up again. ",
     "To search, browser_type with submit:true and waitFor types and presses Enter in one call. ",
     "Use waitFor to describe the result you expect (each navigation-shaped ",
-    "action reply carries page.url and page.title, so no separate URL read), a ",
+    "action reply carries page.url and page.title, and a new page adds page.hints: its heading and result links with refs, and page.media while its player plays, so no separate URL read or find), a ",
     "read of that result with browser_get_text or browser_find (both take ",
     "ancestors:'row' for a table/ARIA row, or ancestors:N for explicit levels) or ",
     "browser_get_property (live ",

@@ -227,6 +227,23 @@ pub async fn handle_action_as(
         && !method.starts_with("terminal_")
         && !method.starts_with("skills_");
     let before_navigation = tab_id.and_then(active_navigation_generation);
+    // A single-page app moves to a new URL without a native navigation:
+    // YouTube and Maps after a search, YouTube after a result click. Their
+    // replies came back without hints, so the next call went to a find.
+    let lands = LANDING_METHODS.contains(&method) || submits_type(method, &params);
+    let search = submits_type(method, &params)
+        .then(|| params.get("text").and_then(Value::as_str).map(str::to_string))
+        .flatten();
+    let before_url = match tab_id.filter(|_| lands) {
+        Some(id) => match get_embed_webview(app, id) {
+            Ok(webview) => super::cdp::read_page_info(&webview, Duration::from_millis(150))
+                .await
+                .ok()
+                .map(|(_, url)| url),
+            Err(_) => None,
+        },
+        None => None,
+    };
     let result = super::activity::track(
         app,
         method,
@@ -244,7 +261,9 @@ pub async fn handle_action_as(
         // An action that can move the page says where it landed. Without this
         // the agent asked browser_get_url after almost every one: 19 times in
         // 15 tasks, 14 of them right before closing the tab, each a full turn.
-        if LANDING_METHODS.contains(&method) {
+        let submitted_type = matches!(method, "type" | "type_text")
+            && value.get("submitted").and_then(Value::as_bool) == Some(true);
+        if LANDING_METHODS.contains(&method) || submitted_type {
             if let Some(webview) = tab_id.and_then(|id| get_embed_webview(app, id).ok()) {
                 value["page"] = landing(&webview, tab_id.unwrap_or_default()).await;
                 // A navigation during the action put the agent somewhere new.
@@ -254,12 +273,17 @@ pub async fn handle_action_as(
                 // search submit or a product click went to snapshot, find and
                 // get_text purely to learn what these hints carry.
                 let id = tab_id.unwrap_or_default();
-                let mut navigated = value.get("navigationObserved").and_then(Value::as_bool)
+                let native = value.get("navigationObserved").and_then(Value::as_bool)
                     == Some(true)
                     || tab_id
                         .and_then(active_navigation_generation)
                         .zip(before_navigation)
                         .is_some_and(|(after, before)| after != before);
+                let routed = before_url
+                    .as_deref()
+                    .zip(value["page"]["url"].as_str())
+                    .is_some_and(|(before, after)| url_moved(before, after));
+                let mut navigated = native || routed;
                 if !navigated
                     && (active_pending_url(id).is_some() || active_loading(id) == Some(true))
                 {
@@ -281,9 +305,32 @@ pub async fn handle_action_as(
                         tokio::time::sleep(Duration::from_millis(50)).await;
                     }
                 }
-                if navigated {
-                    if let Some(hints) = navigation_hints(&webview, id).await {
+                // A submitted search always looks: Maps can answer before its
+                // URL moves, and the look waits for results naming the query.
+                if navigated || search.is_some() {
+                    let hints = if routed && !native && search.is_none() {
+                        routed_landing_hints(&webview, id).await
+                    } else {
+                        navigation_hints(&webview, id, search.as_deref()).await
+                    };
+                    // The wait may have let the page retitle itself or move on.
+                    if search.is_some() || (routed && !native) {
+                        value["page"] = landing(&webview, id).await;
+                    }
+                    if let Some(hints) = hints {
                         value["page"]["hints"] = hints;
+                    }
+                }
+                // Landing on a player that is already playing says so: the next
+                // call on YouTube was a get_property to learn it before pressing
+                // k. A paused or not yet started player is left out, because it
+                // may be about to autoplay and "paused" would be a guess.
+                if navigated && value.get("media").is_none() && active_loading(id) != Some(true) {
+                    if let Some(media) = page_media_state(&webview)
+                        .await
+                        .filter(|media| media["paused"] == json!(false))
+                    {
+                        value["page"]["media"] = media;
                     }
                 }
             }
@@ -336,6 +383,18 @@ pub(crate) const ELEMENT_PROPERTIES: [&str; 25] = [
     "tagName",
 ];
 
+/// Whether browser_type was asked to press Enter after filling.
+fn submits_type(method: &str, params: &Value) -> bool {
+    matches!(method, "type" | "type_text") && params.get("submit").and_then(Value::as_bool) == Some(true)
+}
+
+/// A committed URL that changed other than by its fragment: a single-page
+/// route change counts, an in-page anchor jump does not.
+fn url_moved(before: &str, after: &str) -> bool {
+    let page = |url: &str| url.split('#').next().unwrap_or(url).to_string();
+    !before.is_empty() && !after.is_empty() && page(before) != page(after)
+}
+
 /// Actions after which the agent wants to know where the tab is.
 const LANDING_METHODS: [&str; 12] = [
     "click",
@@ -371,22 +430,93 @@ async fn landing(webview: &Webview, tab_id: i64) -> Value {
     page
 }
 
-/// The visible things a freshly landed-on page offers: its main heading (h1,
-/// falling back to the page's own og:title) and up to three interactive
-/// controls outside the page chrome, each carrying a live ref so the agent
-/// can act on what it just landed on without a snapshot first. Names cut at
-/// 60 characters; a document still loading answers nothing.
-fn build_navigation_hints_js(generation: u64, ref_prefix: &str) -> String {
+/// The visible things a freshly landed-on page offers: its main heading (the
+/// first line of the first h1 a reader can see, falling back to og:title), up
+/// to five result titles (links in or around an h2-h4 within two screens) and
+/// up to three interactive controls outside the page chrome, each carrying a
+/// live ref so the agent can act on what it just landed on without a find or a
+/// snapshot first. After a search, results must name one of the query's words:
+/// a single-page app shows its old page for a moment, and YouTube's home feed
+/// was read as the answer to "lofi hip hop radio". With `HintsGate::Results`
+/// the script answers nothing, and registers nothing, until such a result or a
+/// heading naming the query is on the page; with `HintsGate::Heading`, until a
+/// visible h1 is. A document still loading answers nothing.
+fn build_navigation_hints_js(
+    generation: u64,
+    ref_prefix: &str,
+    query_words: &[String],
+    gate: HintsGate,
+) -> String {
     format!(
         r#"(() => {{
     {REF_REGISTRY_JS}
     refRegistry.begin({generation});
     const refPrefix = {ref_prefix};
+    const queryWords = {query_words};
+    const gate = {gate};
     if (document.readyState === 'loading' || !document.body) return null;
+    const namesQuery = (text) => {{
+        const lower = text.toLocaleLowerCase();
+        return queryWords.some((word) => lower.includes(word));
+    }};
     const chromeOf = (el) => el.closest('nav,header,aside,footer,[role=banner],[role=navigation]');
     const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-    const heading = clean(document.querySelector('h1')?.textContent)
-        || clean(document.querySelector('meta[property="og:title"]')?.content);
+    // Amazon keeps a screen-reader-only h1 ahead of the product title and puts
+    // its whole results toolbar inside another; the title is the first line of
+    // the first h1 anyone can see.
+    const shown = (el) => {{
+        const rect = el.getBoundingClientRect();
+        return rect.width > 2 && rect.height > 2
+            && (!el.checkVisibility || el.checkVisibility({{ opacityProperty: true, visibilityProperty: true }}));
+    }};
+    let heading = '';
+    for (const h1 of document.querySelectorAll('h1')) {{
+        if (!shown(h1)) continue;
+        heading = clean(String(h1.innerText || '').split('\n').find((line) => line.trim()) || '');
+        if (heading) break;
+    }}
+    const fromH1 = !!heading;
+    const siteName = clean(document.querySelector('meta[property="og:title"]')?.content);
+    if (gate === 'heading' && !heading && siteName && clean(document.title) === siteName) return null;
+    // A route change's own title is fresher than the og:title of the first load.
+    if (!heading) heading = gate === 'heading' ? clean(document.title) || siteName : siteName;
+    // A search landing is read for its result titles: YouTube, Amazon, Google
+    // and Bing all put them in links inside or around an h2-h4. Without them
+    // the agent guessed a results selector, missed, and looked again.
+    const found = [];
+    const hrefs = new Set();
+    let links = 0;
+    for (const el of document.querySelectorAll('a[href]')) {{
+        if (found.length >= 5 || ++links > 3000) break;
+        if (!(el.closest('h2,h3,h4') || el.querySelector('h2,h3,h4')) || chromeOf(el)) continue;
+        // Laid out is not visible: YouTube keeps the page it is leaving in the
+        // layout, faded, while the next one renders.
+        if (!shown(el)) continue;
+        const rect = el.getBoundingClientRect();
+        if (!(rect.bottom > 0 && rect.top < innerHeight * 2)) continue;
+        // YouTube's home feed stays on screen while the results render, and a
+        // profile that keeps searching lofi is recommended lofi: its titles name
+        // the query too. Only titles drawn since the search count as results; a
+        // recycled title element pointing somewhere new is a new result.
+        if (queryWords.length && globalThis.__anboBeforeSubmit?.get(el) === el.href) continue;
+        const name = clean(el.getAttribute('aria-label') || el.innerText || el.textContent).slice(0, 100);
+        if (!name || hrefs.has(el.href) || (queryWords.length && !namesQuery(name))) continue;
+        hrefs.add(el.href);
+        found.push({{ el, name }});
+    }}
+    // A search that lands on one place names the place, not the query (Maps:
+    // "Monas Jakarta" is "Monumen Nasional"), so an h1 drawn since the submit
+    // answers too; the caller waits for it to hold still.
+    const beforeHeading = globalThis.__anboBeforeSubmitHeading;
+    const newHeading = queryWords.length > 0 && fromH1 && typeof beforeHeading === 'string' && heading !== beforeHeading;
+    if (gate === 'results' && !found.length && !(heading && namesQuery(heading)) && !newHeading) return null;
+    let registered = 0;
+    const remember = (el) => {{
+        const ref = refPrefix + (++registered);
+        refRegistry.remember(ref, el);
+        return ref;
+    }};
+    const results = found.map(({{ el, name }}) => ({{ ref: remember(el), name }}));
     const controls = [];
     const seen = new Set();
     for (const el of document.querySelectorAll('a[href],button,input,select,textarea,[role]')) {{
@@ -405,26 +535,221 @@ fn build_navigation_hints_js(generation: u64, ref_prefix: &str) -> String {
         const key = role + '|' + name.toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
-        controls.push({{ ref: refPrefix + (controls.length + 1), role, name }});
+        controls.push({{ ref: remember(el), role, name }});
     }}
-    return JSON.stringify({{ heading: heading.slice(0, 80) || null, controls }});
+    if (!heading && !results.length && !controls.length) return null;
+    return JSON.stringify({{ heading: heading.slice(0, 120) || null, results, controls }});
 }})()"#,
         generation = generation,
         ref_prefix = serde_json::to_string(ref_prefix).unwrap(),
+        query_words = serde_json::to_string(query_words).unwrap(),
+        gate = serde_json::to_string(gate.as_str()).unwrap(),
     )
 }
 
-/// Hints for the page an action just navigated to, or None when the document
-/// is still loading or the page cannot answer in time. Runs through the same
-/// fresh-ref protocol as find and snapshot: the tab lock is held, the
-/// generation is published only when a ref was actually registered, and an
-/// empty answer retires nothing the caller is holding.
-async fn navigation_hints(webview: &Webview, tab_id: i64) -> Option<Value> {
+/// What a look at a landed page must see before it answers and registers refs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HintsGate {
+    Any,
+    /// A result title or heading naming the search.
+    Results,
+    /// A visible h1: the view a route change moved to has been drawn.
+    Heading,
+}
+
+impl HintsGate {
+    fn as_str(self) -> &'static str {
+        match self {
+            HintsGate::Any => "any",
+            HintsGate::Results => "results",
+            HintsGate::Heading => "heading",
+        }
+    }
+}
+
+/// The result-title links a page shows before a search, kept in the automation
+/// world so the landing hints can skip them. Bounded like the hints scan; a new
+/// document starts without it.
+const PRE_SUBMIT_TITLES_JS: &str = r#"(() => {
+    const titles = new WeakMap();
+    let links = 0;
+    for (const el of document.querySelectorAll('a[href]')) {
+        if (++links > 3000) break;
+        if (el.closest('h2,h3,h4') || el.querySelector('h2,h3,h4')) titles.set(el, el.href);
+    }
+    globalThis.__anboBeforeSubmit = titles;
+    // Read exactly as the hints read their heading, so an unchanged h1 is
+    // never mistaken for a new one.
+    let heading = '';
+    for (const h1 of document.querySelectorAll('h1')) {
+        const rect = h1.getBoundingClientRect();
+        if (!(rect.width > 2 && rect.height > 2)
+            || (h1.checkVisibility && !h1.checkVisibility({ opacityProperty: true, visibilityProperty: true }))) continue;
+        heading = String(h1.innerText || '').split('\n').find((line) => line.trim()) || '';
+        heading = heading.replace(/\s+/g, ' ').trim();
+        if (heading) break;
+    }
+    globalThis.__anboBeforeSubmitHeading = heading;
+    return 'ok';
+})()"#;
+
+/// The words of a search a result title must name: lowercase, two characters
+/// or more, at most eight. "usb c hub" gives usb and hub.
+fn query_words(text: &str) -> Vec<String> {
+    let mut words: Vec<String> = Vec::new();
+    for word in text
+        .split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|word| word.chars().count() >= 2)
+    {
+        if words.len() < 8 && !words.contains(&word) {
+            words.push(word);
+        }
+    }
+    words
+}
+
+/// Whether a hints answer registered any ref, and so spent its generation.
+fn hints_registered_refs(hints: &Value) -> bool {
+    ["results", "controls"].iter().any(|key| {
+        hints
+            .get(*key)
+            .and_then(Value::as_array)
+            .is_some_and(|list| !list.is_empty())
+    })
+}
+
+/// How long a landing may take to draw what its hints read. Every wait ends
+/// as soon as the page is ready, so this is only spent on a slow page: with
+/// eight agents on four cores, YouTube and Maps drew their headings after the
+/// 1.2 to 1.5 seconds these waits used to allow, and each miss cost the agent
+/// a turn (about 4.5 seconds) to read what the reply could have carried.
+const LANDING_PATIENCE: Duration = Duration::from_millis(3_000);
+
+/// Hints for the page an action just landed on. After a search the page is
+/// looked at every 250 ms to show a result or heading that names the query,
+/// or an h1 drawn since the submit; the looks before the last register
+/// nothing. Results, and a new heading that does not name the query, are
+/// handed back only once two looks in a row saw the same, with the same tab
+/// title and URL, and with the refs of the later look: YouTube hides the results it has just drawn and draws them
+/// again, and a ref from the first drawing was "not visible" by the agent's
+/// click in one session in five. Any other landing is looked at every 150 ms
+/// until it shows something.
+async fn navigation_hints(webview: &Webview, tab_id: i64, query: Option<&str>) -> Option<Value> {
+    let words = query.map(query_words).unwrap_or_default();
+    if words.is_empty() {
+        // A navigation answers the moment it commits, and a busy machine may
+        // still be parsing the page: four agents at once left Amazon's product
+        // reply without a heading. A page with nothing to show yet is looked
+        // at again every 150 ms.
+        let deadline = tokio::time::Instant::now() + LANDING_PATIENCE;
+        loop {
+            let hints = navigation_hints_once(webview, tab_id, &words, HintsGate::Any).await;
+            let last = tokio::time::Instant::now() + Duration::from_millis(150) >= deadline;
+            if hints.is_some() || last {
+                return hints;
+            }
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+    }
+    let deadline = tokio::time::Instant::now() + LANDING_PATIENCE;
+    let mut previous: Option<(Vec<String>, String, (String, String))> = None;
+    loop {
+        let last = tokio::time::Instant::now() + Duration::from_millis(250) >= deadline;
+        let gate = if last { HintsGate::Any } else { HintsGate::Results };
+        match navigation_hints_once(webview, tab_id, &words, gate).await {
+            Some(hints) => {
+                let titles = result_titles(&hints);
+                let heading = hints
+                    .get("heading")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_lowercase();
+                // A heading naming the query answers at once; results, or a
+                // new heading that does not name it, must hold still, and so
+                // must the tab's title and URL: Maps drew "Monumen Nasional"
+                // while its title still said "Monas Jakarta" and its URL was
+                // still the search, and every agent then spent a find checking
+                // which page it was on.
+                let named = titles.is_empty() && words.iter().any(|word| heading.contains(word));
+                let page = super::cdp::read_page_info(webview, Duration::from_millis(150))
+                    .await
+                    .unwrap_or_default();
+                let seen = (titles, heading, page);
+                if last || named || previous.as_ref() == Some(&seen) {
+                    return Some(hints);
+                }
+                previous = Some(seen);
+            }
+            None if last => return None,
+            None => previous = None,
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Hints after a route change inside the same document. The reply can come
+/// before the new view is drawn: YouTube's watch page answered with no h1 and
+/// the title "YouTube", the site name its og:title has carried since the first
+/// load, and the agent spent a find on the video title. While the page shows
+/// only that site name, it is looked at again every 150 ms; the looks before
+/// the answer register nothing. A page with an h1, or a title of its own,
+/// answers at once.
+async fn routed_landing_hints(webview: &Webview, tab_id: i64) -> Option<Value> {
+    let deadline = tokio::time::Instant::now() + LANDING_PATIENCE;
+    loop {
+        if tokio::time::Instant::now() + Duration::from_millis(150) >= deadline {
+            return navigation_hints_once(webview, tab_id, &[], HintsGate::Any).await;
+        }
+        if let Some(hints) =
+            navigation_hints_once(webview, tab_id, &[], HintsGate::Heading).await
+        {
+            return Some(hints);
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+}
+
+/// The result titles a hints answer carries, in order, to tell a list that
+/// held still from one the page is still redrawing.
+fn result_titles(hints: &Value) -> Vec<String> {
+    hints
+        .get("results")
+        .and_then(Value::as_array)
+        .map(|results| {
+            results
+                .iter()
+                .filter_map(|result| result.get("name").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// One look at a landed page, or None when the document is still loading or
+/// cannot answer in time. Runs through the same fresh-ref protocol as find and
+/// snapshot: the generation is published only when a ref was actually
+/// registered, and an empty answer retires nothing the caller is holding.
+async fn navigation_hints_once(
+    webview: &Webview,
+    tab_id: i64,
+    words: &[String],
+    gate: HintsGate,
+) -> Option<Value> {
     let scan = |generation: u64| async move {
-        let script = build_navigation_hints_js(generation, &format!("g{generation}-e"));
-        let raw = execute_script_with_timeout(webview, &script, Duration::from_millis(500))
-            .await
-            .ok();
+        let script = build_navigation_hints_js(
+            generation,
+            &format!("g{generation}-e"),
+            words,
+            gate,
+        );
+        let raw = tokio::time::timeout(
+            Duration::from_millis(500),
+            ref_context::execute_main(webview, &script),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok);
         let parsed = raw
             .as_deref()
             .map(str::trim)
@@ -436,25 +761,14 @@ async fn navigation_hints(webview: &Webview, tab_id: i64) -> Option<Value> {
                 }
                 other => other,
             })
-            .filter(|value| {
-                value
-                    .get("controls")
-                    .and_then(|controls| controls.as_array())
-                    .is_some_and(|list| !list.is_empty())
-            });
+            .filter(Value::is_object);
         Ok::<Option<Value>, (String, String)>(parsed)
     };
     let (_, hints) = super::ref_scan::scan_with_fresh_refs(
         tab_id,
         tokio::time::Instant::now() + Duration::from_millis(1_500),
         scan,
-        |hints: &Option<Value>| {
-            hints
-                .as_ref()
-                .and_then(|value| value.get("controls"))
-                .and_then(|controls| controls.as_array())
-                .is_some_and(|list| !list.is_empty())
-        },
+        |hints: &Option<Value>| hints.as_ref().is_some_and(hints_registered_refs),
     )
     .await
     .ok()?;
@@ -1529,6 +1843,14 @@ async fn handle_action_inner(
                     return Ok(result);
                 }
                 if submit {
+                    // Remember the result titles on screen before the search, so
+                    // the landing's hints can tell new results from the page the
+                    // search replaces. Best effort: a slow page just goes without.
+                    let _ = tokio::time::timeout(
+                        Duration::from_millis(300),
+                        ref_context::execute_main(&webview, PRE_SUBMIT_TITLES_JS),
+                    )
+                    .await;
                     // browser_press takes the same tab lock.
                     drop(_lock);
                     let mut press = json!({ "tabId": tab_id, "ref": ref_id, "key": "Enter" });
@@ -7850,6 +8172,82 @@ mod tests {
     }
 
     #[test]
+    fn a_result_list_is_compared_by_its_titles_in_order() {
+        let hints = json!({ "results": [
+            { "ref": "g7-e1", "name": "lofi hip hop radio" },
+            { "ref": "g7-e2", "name": "lofi beats" }
+        ] });
+        assert_eq!(result_titles(&hints), vec!["lofi hip hop radio", "lofi beats"]);
+        // Fresh refs for the same titles are the same list.
+        let redrawn = json!({ "results": [
+            { "ref": "g8-e1", "name": "lofi hip hop radio" },
+            { "ref": "g8-e2", "name": "lofi beats" }
+        ] });
+        assert_eq!(result_titles(&hints), result_titles(&redrawn));
+        assert!(result_titles(&json!({ "heading": "Monumen Nasional", "results": [] })).is_empty());
+        assert!(result_titles(&json!({ "heading": "Monumen Nasional" })).is_empty());
+    }
+
+    #[test]
+    fn a_search_names_its_words_and_hints_wait_for_a_result_naming_one() {
+        assert_eq!(query_words("usb c hub"), vec!["usb", "hub"]);
+        assert_eq!(query_words("Lofi  hip-hop radio lofi"), vec!["lofi", "hip", "hop", "radio"]);
+        assert_eq!(query_words("Monas Jakarta"), vec!["monas", "jakarta"]);
+        assert!(query_words("a b").is_empty());
+        assert_eq!(query_words(&"word ".repeat(20)).len(), 1);
+        let script = build_navigation_hints_js(7, "g7-e", &query_words("usb c hub"), HintsGate::Results);
+        assert!(script.contains(r#"const queryWords = ["usb","hub"];"#));
+        assert!(script.contains(r#"const gate = "results";"#));
+        // Titles on screen before the search are never its results.
+        assert!(script.contains("if (queryWords.length && globalThis.__anboBeforeSubmit?.get(el) === el.href) continue;"));
+        assert!(PRE_SUBMIT_TITLES_JS.contains("globalThis.__anboBeforeSubmit = titles;"));
+        assert!(PRE_SUBMIT_TITLES_JS.contains("++links > 3000"));
+        // A place page answers with an h1 drawn since the submit.
+        assert!(PRE_SUBMIT_TITLES_JS.contains("globalThis.__anboBeforeSubmitHeading = heading;"));
+        assert!(script.contains("&& !newHeading) return null;"));
+        // Nothing is registered before the answer is kept.
+        let require = script.find("if (gate === 'results' && !found.length").unwrap();
+        let remember = script.find("refRegistry.remember(ref, el);").unwrap();
+        assert!(require < remember);
+    }
+
+    #[test]
+    fn a_route_change_waits_for_its_h1_before_registering_refs() {
+        let script = build_navigation_hints_js(7, "g7-e", &[], HintsGate::Heading);
+        assert!(script.contains(r#"const gate = "heading";"#));
+        // The og:title a single-page app kept from its first page does not count.
+        let wait = script
+            .find("if (gate === 'heading' && !heading && siteName && clean(document.title) === siteName) return null;")
+            .unwrap();
+        let fallback = script.find("if (!heading) heading = ").unwrap();
+        let remember = script.find("refRegistry.remember(ref, el);").unwrap();
+        assert!(wait < fallback && wait < remember);
+        assert!(build_navigation_hints_js(7, "g7-e", &[], HintsGate::Any)
+            .contains(r#"const gate = "any";"#));
+    }
+
+    #[test]
+    fn a_route_change_counts_as_landing_but_an_anchor_jump_does_not() {
+        assert!(url_moved(
+            "https://www.youtube.com/",
+            "https://www.youtube.com/results?search_query=lofi"
+        ));
+        assert!(url_moved(
+            "https://www.google.com/maps",
+            "https://www.google.com/maps/search/Monas+Jakarta/@-6.29,106.92,12z"
+        ));
+        assert!(!url_moved(
+            "https://en.wikipedia.org/wiki/Web_browser",
+            "https://en.wikipedia.org/wiki/Web_browser#History"
+        ));
+        assert!(!url_moved("", "https://example.test/"));
+        assert!(!url_moved("https://example.test/", ""));
+        assert!(submits_type("type", &json!({ "submit": true })));
+        assert!(!submits_type("type", &json!({ "submit": false })));
+        assert!(!submits_type("click", &json!({ "submit": true })));
+    }
+
+    #[test]
     fn type_submit_accepts_a_wait_with_or_without_submit_but_refuses_a_malformed_one() {
         assert_eq!(type_submit(&json!({})).unwrap(), (false, None));
         let waited = json!({ "url": "*results*" });
@@ -8330,10 +8728,21 @@ mod tests {
         // ref under the scan's generation so the agent can act on it without
         // a snapshot, and the heading falls back to og:title for pages whose
         // title is not an h1.
-        let script = build_navigation_hints_js(7, "g7-e");
+        let script = build_navigation_hints_js(7, "g7-e", &[], HintsGate::Any);
         assert!(script.contains("refRegistry.begin(7);"));
         assert!(script.contains(r#"const refPrefix = "g7-e";"#));
-        assert!(script.contains("controls.push({ ref: refPrefix + (controls.length + 1), role, name });"));
+        assert!(script.contains("const ref = refPrefix + (++registered);"));
+        assert!(script.contains("refRegistry.remember(ref, el);"));
+        assert!(script.contains("controls.push({ ref: remember(el), role, name });"));
+        // Result titles: bounded, in or around an h2-h4, within two screens.
+        assert!(script.contains("found.length >= 5 || ++links > 3000"));
+        assert!(script.contains("el.closest('h2,h3,h4') || el.querySelector('h2,h3,h4')"));
+        assert!(script.contains("rect.top < innerHeight * 2"));
+        // A result title must be visible, not only laid out.
+        assert!(script.contains("if (!shown(el)) continue;"));
+        // The heading is the first line of the first h1 a reader can see.
+        assert!(script.contains("checkVisibility"));
+        assert!(script.contains(".slice(0, 120)"));
         assert!(script.contains("controls.length >= 3"));
         assert!(script.contains("el.tagName.startsWith('ANBO-')"));
         assert!(script.contains("closest('nav,header,aside,footer"));
