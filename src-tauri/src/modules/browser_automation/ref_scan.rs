@@ -2,7 +2,8 @@ use std::future::Future;
 
 use super::protocol::error_codes;
 use super::registry::get_tab_lock;
-use super::snapshot::{commit_generation, peek_next_generation};
+use super::snapshot::{commit_generation, get_current_generation, peek_next_generation};
+use crate::modules::browser::embed::active_navigation_generation;
 
 /// Run one scan under the tab lock, publishing its generation only if it used
 /// it.
@@ -25,12 +26,21 @@ where
     let lock = get_tab_lock(tab_id);
     tokio::time::timeout_at(deadline, async {
         let _guard = lock.lock().await;
+        let navigation = active_navigation_generation(tab_id);
         let generation = peek_next_generation(tab_id);
-        scan(generation).await.map(|result| {
+        scan(generation).await.and_then(|result| {
+            if active_navigation_generation(tab_id) != navigation
+                || get_current_generation(tab_id) >= generation
+            {
+                return Err((
+                    error_codes::STALE_REF.into(),
+                    "document changed during reference scan; rediscover the target".into(),
+                ));
+            }
             if earns_generation(&result) {
                 commit_generation(tab_id, generation);
             }
-            (generation, result)
+            Ok((generation, result))
         })
     })
     .await
@@ -49,6 +59,24 @@ mod tests {
         commit_generation, get_current_generation, remove_generation,
     };
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn navigation_during_a_scan_never_publishes_old_document_refs() {
+        let tab = -810_007;
+        let result = scan_with_fresh_refs(
+            tab,
+            tokio::time::Instant::now() + Duration::from_secs(1),
+            |generation| async move {
+                super::super::snapshot::invalidate_document(tab);
+                Ok(generation)
+            },
+            |_| true,
+        )
+        .await;
+        assert_eq!(result.unwrap_err().0, error_codes::STALE_REF);
+        assert!(get_current_generation(tab) > 1);
+        remove_generation(tab);
+    }
 
     #[tokio::test]
     async fn queued_scans_do_not_invalidate_the_current_generation() {
@@ -144,12 +172,14 @@ mod tests {
     async fn a_stalled_scan_expires_and_releases_the_tab_lock() {
         let tab_id = -810_004;
         let deadline = tokio::time::Instant::now() + Duration::from_millis(5);
-        let error =
-            scan_with_fresh_refs::<(), _, _, _>(tab_id, deadline, |_| std::future::pending(), |_| {
-                true
-            })
-            .await
-            .unwrap_err();
+        let error = scan_with_fresh_refs::<(), _, _, _>(
+            tab_id,
+            deadline,
+            |_| std::future::pending(),
+            |_| true,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(error.0, error_codes::TIMEOUT);
         let lock = get_tab_lock(tab_id);
         assert!(lock.try_lock().is_ok());

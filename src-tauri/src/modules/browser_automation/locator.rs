@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use super::accessible_name::ACCESSIBLE_NAME_JS;
+use super::context_block::{Ancestors, CONTEXT_BLOCK_JS};
 use super::ref_context::REF_REGISTRY_JS;
 use super::visibility::VISIBILITY_JS;
 
@@ -18,7 +19,7 @@ pub struct LocatorQuery<'a> {
     pub limit: usize,
     /// Climb this many ancestors from each match and carry that block's text
     /// back with it. A match is a leaf; the facts around it are the block.
-    pub ancestors: u32,
+    pub ancestors: Ancestors,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -114,11 +115,11 @@ pub struct NearestExample {
 
 /// Simpler selectors an over-specific css lookup could have meant, most
 /// specific first, at most twelve. Built here, pure and tested; the page only
-/// evaluates them, and only after a miss. Measured: every canvas miss (Maps
+/// evaluates them, and only after a miss. Measured on canvas misses (Maps
 /// `#scene canvas, canvas.widget-scene-canvas`, TradingView
-/// `table.chart-markup-table.pane canvas`) was answered by the agent with
-/// the bare tag on its next call. Nothing generic enough to match the whole
-/// page is offered.
+/// `table.chart-markup-table.pane canvas`): the agent's next call used what
+/// the reply offered, so the rung closest to its intent comes first and the
+/// bare tag last. Nothing generic enough to match the whole page is offered.
 pub fn css_relaxations(selector: &str) -> Vec<String> {
     const TOO_GENERIC: &[&str] = &[
         "*", "div", "span", "p", "li", "ul", "ol", "a", "section", "article", "header", "footer",
@@ -153,6 +154,13 @@ pub fn css_relaxations(selector: &str) -> Vec<String> {
         if valueless != compounds {
             offer(&mut out, original, valueless.join(" "));
         }
+        // A tag written in front of a class or id is the part most often
+        // wrong, so it goes first: TradingView's `.chart-markup-table.pane` is
+        // not a table, and the bare `canvas` offered instead matched eleven.
+        let tagless: Vec<String> = valueless.iter().map(|c| drop_qualified_tag(c)).collect();
+        if tagless != valueless {
+            offer(&mut out, original, tagless.join(" "));
+        }
         for start in 1..compounds.len() {
             offer(&mut out, original, compounds[start..].join(" "));
         }
@@ -166,6 +174,18 @@ pub fn css_relaxations(selector: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// The compound without its tag when a class or id still pins it down.
+fn drop_qualified_tag(compound: &str) -> String {
+    let (tag, qualifiers) = split_compound(compound);
+    let pinned = qualifiers
+        .iter()
+        .any(|qualifier| qualifier.starts_with('.') || qualifier.starts_with('#'));
+    if tag.is_empty() || tag == "*" || !pinned {
+        return compound.to_string();
+    }
+    qualifiers.concat()
 }
 
 /// Split on a separator at bracket and paren depth zero, outside quotes.
@@ -461,7 +481,12 @@ impl PageScanState {
 
 pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>) -> String {
     let limit = query.limit.clamp(1, MAX_LOCATOR_MATCHES);
-    let ancestors = query.ancestors.min(10);
+    let ancestors = query.ancestors.value();
+    let context_block = if query.ancestors == Ancestors::Levels(0) {
+        ""
+    } else {
+        CONTEXT_BLOCK_JS
+    };
     let cache = include_str!("locatorCache.js");
     format!(
         r#"(function() {{
@@ -476,6 +501,7 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
             const includeHidden = {include_hidden};
             const limit = {limit};
             const climbCount = {ancestors};
+            {context_block}
             const blockLimit = 1000;
             const blockRefs = new Map();
             const relaxations = {relaxations};
@@ -573,7 +599,18 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
             const readName = memoizeElement(accessibleName);
             const readVisible = memoizeElement(isRenderedElement);
             const readText = memoizeElement(el => el.innerText || el.textContent);
+            // name narrows any strategy by accessible name. Rejecting it outside
+            // role cost the caller a whole turn to learn a rule, then a second
+            // lookup that asked for the same element.
             const isMatch = el => {{
+                if (!matchesBy(el)) return false;
+                if (by === 'role' || !wantedName) return true;
+                const actual = readName(el);
+                if (compareValue(actual, expectedName)) return true;
+                rememberMiss(actual);
+                return false;
+            }};
+            const matchesBy = el => {{
                 if (by === 'css') {{
                     try {{ return el.matches(wanted); }} catch (_) {{ throw new Error('invalid_selector'); }}
                 }}
@@ -714,9 +751,9 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                         // Siblings of one row climb to the same block. Emitting
                         // that text once per match would spend the reply on the
                         // same paragraph ten times over.
-                        if (climbCount > 0) {{
-                            let block = el;
-                            for (let step = 0; step < climbCount && block.parentElement; step++) block = block.parentElement;
+                        if (climbCount !== 0) {{
+                            const block = contextBlock(el, climbCount);
+                            if (!block) return;
                             const seen = blockRefs.get(block);
                             if (seen) matches[matches.length - 1].blockRef = seen;
                             else {{
@@ -728,6 +765,27 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
 
             try {{
                 visit(document);
+                // Icon buttons are named by their tooltip: TradingView's symbol
+                // button reads "BTCUSDT" and its title says "Symbol search", and
+                // agents asked for it by role name and by text alike. Only when no
+                // visible element answered the lookup itself does a visible element
+                // with a role answer to its title, so a real match is never widened
+                // into an ambiguity. The page's titled elements are read directly:
+                // the controls a scan pockets stop at 200, which a busy chart passes.
+                const byTitle = !hits.length && !includeHidden &&
+                    ((by === 'role' && wantedName) || by === 'text');
+                if (byTitle) {{
+                    let titled = 0;
+                    for (const el of document.querySelectorAll('[title]')) {{
+                        if (hits.length >= collectLimit || ++titled > 1000) break;
+                        const title = el.getAttribute('title');
+                        const said = by === 'role' ? compareValue(title, expectedName) : compare(title);
+                        if (!said) continue;
+                        const role = implicitRole(el);
+                        if (!role || (by === 'role' && !roleMatches(role)) || !readVisible(el)) continue;
+                        hits.push(el);
+                    }}
+                }}
                 let chosen = hits;
                 if (by === 'text' && hits.length > 1) {{
                     chosen = hits.filter(el => !hits.some(other =>
@@ -783,11 +841,12 @@ mod tests {
                 exact: false,
                 include_hidden: false,
                 limit: 10,
-                ancestors: 0,
+                ancestors: Ancestors::Levels(0),
             },
         );
         assert!(script.contains("const climbCount = 0;"));
-        assert!(script.contains("if (climbCount > 0)"));
+        assert!(script.contains("if (climbCount !== 0)"));
+        assert!(!script.contains("function contextBlock("));
     }
 
     #[test]
@@ -803,7 +862,7 @@ mod tests {
                 include_hidden: false,
                 limit: 10,
                 // Ten is the ceiling; a caller asking for more gets ten.
-                ancestors: 99,
+                ancestors: Ancestors::Levels(99),
             },
         );
         assert!(script.contains("const climbCount = 10;"));
@@ -826,7 +885,7 @@ mod tests {
                 exact: true,
                 include_hidden: false,
                 limit: 100,
-                ancestors: 0,
+                ancestors: Ancestors::Levels(0),
             },
         );
         assert!(script.contains(r#"const wanted = "a\"b";"#));
@@ -907,13 +966,23 @@ mod tests {
                 exact: false,
                 include_hidden: false,
                 limit: 10,
-                ancestors: 0,
+                ancestors: Ancestors::Levels(0),
             },
         );
         assert!(script.contains(r#"const wantedName = "Save changes";"#));
         assert!(script.contains("compareValue(actual, expectedName)"));
+        // name narrows every strategy, not only role.
+        assert!(script.contains("if (!matchesBy(el)) return false;"));
+        assert!(script.contains("if (by === 'role' || !wantedName) return true;"));
+        // A title answers only when no visible element matched the lookup,
+        // for role + name and for text, over a bounded read of titled elements.
+        assert!(script.contains("((by === 'role' && wantedName) || by === 'text')"));
+        assert!(script.contains("document.querySelectorAll('[title]')"));
+        assert!(script.contains("++titled > 1000"));
+        assert!(script.contains("by === 'role' ? compareValue(title, expectedName) : compare(title)"));
         assert!(script.contains("const expectedName = normalize(wantedName).toLocaleLowerCase()"));
-        assert!(script.contains("if (!role || (!roleMatches(role) && !searchReachesEntry)) return false;"));
+        assert!(script
+            .contains("if (!role || (!roleMatches(role) && !searchReachesEntry)) return false;"));
         // A searchbox lookup also reaches editable comboboxes/textboxes (Maps/MDN/Bing
         // search boxes are comboboxes), scoped to real text entry so a <select> never matches.
         assert!(script.contains("expectedValue === 'searchbox' && (role === 'textbox' || role === 'combobox') && isTextEntry(el)"));
@@ -946,7 +1015,7 @@ mod tests {
                 exact: false,
                 include_hidden: false,
                 limit: 10,
-                ancestors: 0,
+                ancestors: Ancestors::Levels(0),
             },
         );
         // Pocketed by tag on every element the walk visits, resolved (render,
@@ -964,15 +1033,15 @@ mod tests {
 
     #[test]
     fn an_over_specific_css_selector_relaxes_toward_what_the_page_has() {
-        // Every measured canvas miss was answered by the agent with the bare
-        // tag on its next call; the ladder offers that in the same reply.
+        // A tag in front of a class or id goes first; the bare tag, which the
+        // agents used to fall back to, is still on the ladder.
         assert_eq!(
             css_relaxations("table.chart-markup-table.pane canvas"),
-            vec!["canvas"]
+            vec![".chart-markup-table.pane canvas", "canvas"]
         );
         assert_eq!(
             css_relaxations("#scene canvas, canvas.widget-scene-canvas"),
-            vec!["canvas"]
+            vec!["canvas", ".widget-scene-canvas"]
         );
         assert_eq!(
             css_relaxations("div[data-component-type=\"s-search-result\"] h2 a"),
@@ -980,13 +1049,14 @@ mod tests {
         );
         assert_eq!(
             css_relaxations("input#search, input[name=\"search_query\"]"),
-            vec!["input", "input[name]"]
+            vec!["#search", "input", "input[name]"]
         );
         assert_eq!(
             css_relaxations(
                 "table.chart-markup-table td.chart-markup-table .chart-gui-wrapper canvas"
             ),
             vec![
+                ".chart-markup-table .chart-markup-table .chart-gui-wrapper canvas",
                 "td.chart-markup-table .chart-gui-wrapper canvas",
                 ".chart-gui-wrapper canvas",
                 "canvas"
@@ -994,7 +1064,10 @@ mod tests {
         );
         // Nothing generic enough to match the whole page is ever offered, and
         // the selector itself is not its own relaxation.
-        assert!(css_relaxations("div.foo span").is_empty());
+        // An attribute alone never loses its tag: `[name]` would match every
+        // named field on the page.
+        assert_eq!(css_relaxations("div.foo span"), vec![".foo span"]);
+        assert_eq!(css_relaxations("input[name=\"q\"]"), vec!["input[name]", "input"]);
         assert!(css_relaxations("canvas").is_empty());
         // Values inside :not() are dropped too, and a quoted comma does not split.
         assert_eq!(
@@ -1019,10 +1092,13 @@ mod tests {
                 exact: false,
                 include_hidden: false,
                 limit: 10,
-                ancestors: 0,
+                ancestors: Ancestors::Levels(0),
             },
         );
-        assert!(css.contains("const relaxations = [\"canvas\"];"), "{css}");
+        assert!(
+            css.contains("const relaxations = [\".chart-markup-table.pane canvas\",\"canvas\"];"),
+            "{css}"
+        );
         assert!(css
             .contains("const nearest = (by === 'css' && !matches.length) ? nearestCss() : null;"));
         let role = build_find_js(
@@ -1035,7 +1111,7 @@ mod tests {
                 exact: false,
                 include_hidden: false,
                 limit: 10,
-                ancestors: 0,
+                ancestors: Ancestors::Levels(0),
             },
         );
         assert!(

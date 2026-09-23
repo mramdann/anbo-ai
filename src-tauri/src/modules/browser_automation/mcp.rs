@@ -42,11 +42,13 @@ pub const SERVER_INSTRUCTIONS: &str = concat!(
     "Use waitFor to describe the result you expect (each navigation-shaped ",
     "action reply carries page.url and page.title, so no separate URL read), a ",
     "read of that result with browser_get_text or browser_find (both take ",
-    "ancestors:N, which reads the whole enclosing block in one call) or ",
+    "ancestors:'row' for a table/ARIA row, or ancestors:N for explicit levels) or ",
     "browser_get_property (live ",
     "state such as paused, currentTime, value, checked), then endSession: true ",
     "on your last call: browser_close if you close the tab, or that final read ",
     "if the page stays open for the user. ",
+    "Ambiguous errors include candidate refs: select the intended one, never blindly the first. exact:true requests a full name match. ",
+    "Streaming pages need an explicit text/URL/locator condition, not networkIdle. ",
     "Tools that take a workspace argument need your own workspace root, ",
     "never the one currently on screen. ",
     "For files, downloads, dialogs, terminals or other agents, call skills_list ",
@@ -76,6 +78,10 @@ fn tab_id_prop() -> Value {
 }
 fn ref_prop() -> Value {
     json!({ "type": "string", "description": "Live tab ref (last 8 scans); rediscover on stale_ref." })
+}
+
+fn ancestors_prop() -> Value {
+    json!({"oneOf":[{"type":"integer","minimum":0,"maximum":10},{"type":"string","enum":["row"]}],"default":0,"description":"Read enclosing context: row finds the nearest table/ARIA row (up to 32 ancestors); a number climbs 0-10 levels. No row never falls back to body text. Shared blocks use blockRef."})
 }
 
 /// How long an action waits for the surface it opens before replying. The wait
@@ -153,7 +159,7 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_forward", "description": "Start navigating a browser tab forward in history and return immediately.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_stop", "description": "Stop a browser tab's page load. Reports wasLoading, whether a load was actually in flight when the call arrived, and cancelledUrl, the target that was interrupted when one was known.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
         { "name": "browser_snapshot", "description": "Token-bounded accessibility snapshot: viewport text first, then interactive elements with refs; 8000 characters by default, 16000 at most, paged with offset and nextOffset. Reuse live refs through the next 8 scans; a new find or snapshot alone does not invalidate them.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "offset": { "type": "integer", "minimum": 0, "description": "Skip this many items; the reply carries nextOffset while more of the page is waiting." }, "maxChars": { "type": "integer", "minimum": 2000, "maximum": 16000, "default": 8000 } }, "required": ["tabId"] } },
-        { "name": "browser_find", "description": "Discover or disambiguate elements and return refs across Shadow DOM and child frames. Prefer role + name or label using visible wording; do not guess CSS attributes. Known unique targets can go directly into an action/read's locator without find. Implicit roles include link, button, textbox, searchbox, combobox, heading and dialog. hiddenMatches counts non-rendered matches. A settled complete miss can return early with observed controls and nearest simpler CSS; these are discovery hints, not automatic fallback targets. Inspect candidates before choosing a ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "by": { "type": "string", "enum": ["role", "text", "label", "placeholder", "testId", "title", "alt", "css"] }, "value": { "type": "string", "minLength": 1, "maxLength": 4096 }, "name": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Computed accessible-name filter for role: visible text, referenced/associated label, aria-label, alt or title. Not a CSS name attribute." }, "exact": { "type": "boolean", "default": false }, "includeHidden": { "type": "boolean", "default": false }, "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 }, "ancestors": { "type": "integer", "minimum": 0, "maximum": 10, "default": 0, "description": "Climb N ancestors from each match and return that block's text with it, so a row, card or section is read in the find itself instead of one call per fact. Matches that climb to the same block share it through blockRef." }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 5000 } }, "required": ["tabId", "by", "value"] } },
+        { "name": "browser_find", "description": "Discover or disambiguate elements and return refs across Shadow DOM and child frames. Prefer role + name or label using visible wording; do not guess CSS attributes. Known unique targets can go directly into an action/read's locator without find. Implicit roles include link, button, textbox, searchbox, combobox, heading and dialog. hiddenMatches counts non-rendered matches. A settled complete miss can return early with observed controls and nearest simpler CSS; these are discovery hints, not automatic fallback targets. Inspect candidates before choosing a ref.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "by": { "type": "string", "enum": ["role", "text", "label", "placeholder", "testId", "title", "alt", "css"] }, "value": { "type": "string", "minLength": 1, "maxLength": 4096 }, "name": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Computed accessible-name filter for role or any other by: visible text, referenced/associated label, aria-label, alt or title. Not a CSS name attribute." }, "exact": { "type": "boolean", "default": false }, "includeHidden": { "type": "boolean", "default": false }, "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 }, "ancestors": { "type": "integer", "minimum": 0, "maximum": 10, "default": 0, "description": "Climb N ancestors from each match and return that block's text with it, so a row, card or section is read in the find itself instead of one call per fact. Matches that climb to the same block share it through blockRef." }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 5000 } }, "required": ["tabId", "by", "value"] } },
         { "name": "browser_click", "description": "Click an element by ref after bounded visibility, stability, enabled, and hit-target checks. A menu, date picker or dialog the click opens comes back in revealed with refs, so the next step needs no separate look.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "reveal": reveal.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_focus", "description": "Focus a visible enabled element by ref without activating the user's workspace.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_check", "description": "Set a checkbox or radio ref to the requested checked state and verify the result.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "checked": { "type": "boolean", "default": true } }, "required": ["tabId", "ref"] } },
@@ -191,6 +197,14 @@ pub fn tool_definitions() -> Value {
         { "name": "terminal_wait", "description": "Wait for a command started by terminal_execute without holding the terminal lock. Returns stable phase, completionReason, interrupted, per-execution exitCode, and redacted bounded output. Completed results are idempotent.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "terminalId": terminal_id.clone(), "executionId": { "type": "string", "minLength": 1, "maxLength": 128 }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 10000 }, "maxChars": { "type": "integer", "minimum": 1, "maximum": 12000, "default": 4000 } }, "required": ["workspace", "terminalId", "executionId"] } },
         { "name": "terminal_interrupt", "description": "Cancel a specific queued, dispatched, or running execution by executionId. When executionId is omitted, send Ctrl+C to the terminal foreground command or safely clear unsubmitted prompt input.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace, "terminalId": terminal_id, "executionId": { "type": "string", "minLength": 1, "maxLength": 128 } }, "required": ["workspace", "terminalId"] } }
     ];
+    for tool in definitions.as_array_mut().unwrap() {
+        if matches!(
+            tool["name"].as_str(),
+            Some("browser_find" | "browser_get_text")
+        ) {
+            tool["inputSchema"]["properties"]["ancestors"] = ancestors_prop();
+        }
+    }
     let find_schema = definitions
         .as_array()
         .unwrap()
@@ -560,8 +574,9 @@ mod tests {
             .find(|tool| tool["name"] == "browser_find")
             .unwrap();
         let ancestors = &find["inputSchema"]["properties"]["ancestors"];
-        assert_eq!(ancestors["type"], "integer");
-        assert_eq!(ancestors["maximum"], 10);
+        assert_eq!(ancestors["oneOf"][0]["type"], "integer");
+        assert_eq!(ancestors["oneOf"][0]["maximum"], 10);
+        assert_eq!(ancestors["oneOf"][1]["enum"], json!(["row"]));
         assert_eq!(ancestors["default"], 0);
         assert!(SERVER_INSTRUCTIONS.contains("ancestors:N"));
     }

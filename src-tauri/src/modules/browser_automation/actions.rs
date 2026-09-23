@@ -12,6 +12,7 @@ use tauri::Listener;
 use tauri::Webview;
 
 use super::accessible_name::ACCESSIBLE_NAME_JS;
+use super::context_block::{Ancestors, CONTEXT_BLOCK_JS};
 use crate::modules::browser::embed::{
     active_loading, active_local_root, active_navigation_generation, active_pending_url,
     set_active_loading, set_active_pending_url, BROWSER_POPUP_REQUEST_EVENT,
@@ -534,13 +535,18 @@ async fn handle_action_inner(
         let resolved = timings
             .measure(
                 "locator",
-                resolve_target_locator(app, &params, method == "wait"),
+                resolve_target_locator(app, &params, method == "wait", method == "get_text"),
             )
             .await?;
         if method == "wait" {
             return Ok(resolved);
         }
         params["ref"] = resolved["ref"].clone();
+        for key in ["sameTextMatches", "onlyInformativeOf"] {
+            if let Some(merged) = resolved.get(key) {
+                params[key] = merged.clone();
+            }
+        }
         if method == "drag" {
             // One element, two positions: a locator on drag means "pan inside
             // this". Every measured canvas drag was exactly that, and each cost
@@ -818,15 +824,7 @@ async fn handle_action_inner(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
             let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
-            // How long a matched-but-hidden element must stay hidden before find gives up on it
-            // rendering. Scaled to the caller's patience, floored at the settle, capped at 3s so a
-            // hostile-but-passing page (e.g. TradingView: live data keeps it "loading" forever) is
-            // not held for the full timeout when the only matches are genuinely not-rendered.
-            let hidden_settle = Duration::from_millis(
-                (timeout_ms / 2)
-                    .min(3_000)
-                    .max(ABSENCE_SETTLE.as_millis() as u64),
-            );
+            let hidden_settle = hidden_only_settle(timeout_ms);
 
             let mut empty_scans = 0;
             let mut last_empty_scan = None;
@@ -840,6 +838,7 @@ async fn handle_action_inner(
             // constantly (live charts) would otherwise never let a genuinely not-rendered match
             // settle. Resets only when the hidden-only condition itself breaks.
             let mut hidden_since: Option<tokio::time::Instant> = None;
+            let mut recoveries = 0usize;
             loop {
                 let now = tokio::time::Instant::now();
                 if now >= deadline {
@@ -882,27 +881,48 @@ async fn handle_action_inner(
                 }
                 scanned_state = current_state;
                 scanned_at = tokio::time::Instant::now();
-                let (generation, result) = scan_with_fresh_refs(
+                let scanned = scan_with_fresh_refs(
                     tab_id,
                     deadline,
                     |generation| collect_locator_matches(&webview, tab_id, generation, &locator),
                     |result| !result.matches.is_empty(),
                 )
-                .await
-                .map_err(|error| {
-                    if error.0 == error_codes::TIMEOUT {
-                        find_timeout(
+                .await;
+                let (generation, result) = match scanned {
+                    Ok(scanned) => scanned,
+                    // TradingView replaces its document right after it loads, and
+                    // a find asked to wait 15 s failed at once on the change. A
+                    // document that changes under the scan is looked at again
+                    // within the caller's timeout, as browser_open's read does.
+                    Err((code, message))
+                        if super::initial_read::retry_read_error(
+                            &code,
+                            &message,
+                            message.contains("document changed during reference scan"),
+                            recoveries,
+                        ) =>
+                    {
+                        recoveries += 1;
+                        scanned_state = None;
+                        tokio::time::sleep_until(
+                            (tokio::time::Instant::now() + Duration::from_millis(LOCATOR_RETRY_MS))
+                                .min(deadline),
+                        )
+                        .await;
+                        continue;
+                    }
+                    Err(error) if error.0 == error_codes::TIMEOUT => {
+                        return Err(find_timeout(
                             &locator,
                             timeout_ms,
                             empty_scans,
                             Some(&error.1),
                             last_empty_scan.as_ref(),
                             quiet_waits,
-                        )
-                    } else {
-                        error
+                        ));
                     }
-                })?;
+                    Err(error) => return Err(error),
+                };
                 if !result.matches.is_empty() {
                     let count = result.matches.len();
                     return Ok(json!({
@@ -958,9 +978,13 @@ async fn handle_action_inner(
                         .as_ref()
                         .is_some_and(|state| state.mutations >= 0)
                 {
+                    // Not while the page is still loading, as for absence above:
+                    // TradingView keeps its header hidden until the chart has
+                    // loaded, and a find asked to wait 15 s gave up after 3.
                     if hidden_since.is_some_and(|since| {
                         completed.saturating_duration_since(since) >= hidden_settle
-                    }) {
+                    }) && active_loading(tab_id) != Some(true)
+                    {
                         let elapsed = timeout_ms.saturating_sub(
                             deadline.saturating_duration_since(completed).as_millis() as u64,
                         );
@@ -2488,7 +2512,13 @@ async fn handle_action_inner(
             // instead of just the leaf -- browser_find hands back flat leaves
             // with no neighbourhood, so reading a multi-fact block otherwise
             // costs a probe per fact. Capped, and only meaningful with a target.
-            let ancestors = params.get("ancestors").and_then(as_count).unwrap_or(0).min(10);
+            let ancestors = Ancestors::parse(params.get("ancestors"))?.value();
+            if ancestors == "row" && ref_id.is_none() {
+                return Err((
+                    error_codes::INVALID_REQUEST.into(),
+                    "ancestors:'row' requires a ref or locator".into(),
+                ));
+            }
             let tab_lock = get_tab_lock(tab_id);
             let _lock = tab_lock.lock().await;
             let webview = get_embed_webview(app, tab_id)
@@ -2505,9 +2535,9 @@ async fn handle_action_inner(
                     {VISIBILITY_JS}
                     {READABLE_TEXT_JS}
                     {ACCESSIBLE_NAME_JS}
-                    let target = el;
-                    let climb = climbCount;
-                    while (climb-- > 0 && target.parentElement) target = target.parentElement;
+                    {CONTEXT_BLOCK_JS}
+                    const target = contextBlock(el, climbCount);
+                    if (!target) return JSON.stringify({{ok:false,error:'context_not_found'}});
                     const readable = readableText(target);
                     const domText = readable.text;
                     const accessibleText = domText ? '' : accessibleName(target);
@@ -2586,7 +2616,11 @@ async fn handle_action_inner(
                 parsed = serde_json::from_str(&unquoted).unwrap_or_default();
             }
             if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-                let reported_ancestors = if ref_id.is_some() { ancestors } else { 0 };
+                let reported_ancestors = if ref_id.is_some() {
+                    ancestors
+                } else {
+                    json!(0)
+                };
                 Ok(json!({
                     "tabId": tab_id,
                     "ancestors": reported_ancestors,
@@ -2599,11 +2633,22 @@ async fn handle_action_inner(
                     "totalLength": parsed.get("totalLength").and_then(as_count).unwrap_or(0),
                     "totalLengthIsLowerBound": parsed.get("totalLengthIsLowerBound").and_then(Value::as_bool).unwrap_or(false)
                 }))
+                .map(|mut reply| {
+                    for key in ["sameTextMatches", "onlyInformativeOf"] {
+                        if let Some(merged) = params.get(key).filter(|value| value.is_u64()) {
+                            reply[key] = merged.clone();
+                        }
+                    }
+                    reply
+                })
             } else {
                 let err = parsed
                     .get("error")
                     .and_then(|v| v.as_str())
                     .unwrap_or("stale_ref");
+                if err == "context_not_found" {
+                    return Err(("context_not_found".into(), "no enclosing row within 32 ancestors; the target ref is still valid, choose another context explicitly".into()));
+                }
                 Err((
                     error_codes::STALE_REF.to_string(),
                     format!(
@@ -3536,7 +3581,7 @@ struct LocatorRequest {
     exact: bool,
     include_hidden: bool,
     limit: usize,
-    ancestors: u32,
+    ancestors: Ancestors,
 }
 
 struct CollectedLocatorMatches {
@@ -3588,7 +3633,8 @@ fn describe_ambiguity(error: (String, String), matches: &[LocatorMatch]) -> (Str
                 .map(|b| format!(" at {:.0},{:.0}", b.x, b.y))
                 .unwrap_or_default();
             let hidden = if item.visible { "" } else { ", hidden" };
-            format!("<{}> \"{label}\"{position}{hidden}", item.tag)
+            let label = serde_json::to_string(&label).unwrap_or_default();
+            format!("{} <{}> {label}{position}{hidden}", item.ref_id, item.tag)
         })
         .collect::<Vec<_>>()
         .join("; ");
@@ -3633,12 +3679,65 @@ fn absence_conclusive(scan: &CollectedLocatorMatches) -> bool {
 /// The elements are already in the DOM, so waiting rarely renders them; once the hidden-only
 /// state has held for the settle, find can fail fast with the includeHidden hint instead of
 /// burning the whole timeout. The agent recovers via includeHidden or a different target either way.
+/// How many matches a text read inspects before calling a locator ambiguous.
+const SAME_TEXT_READ_LIMIT: usize = 5;
+
+/// Whether a text read may take the first of several matches: the scan saw
+/// all of them and every one reads the same non-empty text, so any choice
+/// returns the same answer. The YouTube title is an h1 around a
+/// yt-formatted-string with identical text, and a css list naming both cost an
+/// ambiguous_target plus a retry. Input still demands exactly one match.
+fn same_text_matches(scan: &CollectedLocatorMatches) -> bool {
+    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let Some(first) = scan.matches.first().map(|item| normalize(&item.text)) else {
+        return false;
+    };
+    // A scan stops at its limit, so a full one may have left a different match unread.
+    (2..SAME_TEXT_READ_LIMIT).contains(&scan.matches.len())
+        && !first.is_empty()
+        && !scan.truncated
+        && !scan.node_limit_reached
+        && scan.skipped_frames == 0
+        && scan.matches.iter().all(|item| normalize(&item.text) == first)
+}
+
+/// How many matches a text read collects, so the rule below can see them all.
+const READ_SCAN_LIMIT: usize = MAX_LOCATOR_MATCHES;
+
+/// The one match a text read may take when every other match is blank, text
+/// and name alike, and the scan saw them all. TradingView paints its chart on
+/// eleven canvases and names one; a read of `canvas` failed as ambiguous and
+/// cost a retry, three times over two runs. Input still demands one match.
+fn only_informative_match(scan: &CollectedLocatorMatches) -> Option<usize> {
+    let blank = |item: &LocatorMatch| item.text.trim().is_empty() && item.name.trim().is_empty();
+    if !(2..READ_SCAN_LIMIT).contains(&scan.matches.len())
+        || scan.truncated
+        || scan.node_limit_reached
+        || scan.skipped_frames != 0
+    {
+        return None;
+    }
+    let mut informative = scan.matches.iter().enumerate().filter(|(_, item)| !blank(item));
+    let (index, _) = informative.next()?;
+    informative.next().is_none().then_some(index)
+}
+
 fn hidden_only_miss(scan: &CollectedLocatorMatches) -> bool {
     scan.matches.is_empty()
         && scan.hidden > 0
         && !scan.truncated
         && !scan.node_limit_reached
         && scan.skipped_frames == 0
+}
+
+/// How long a matched-but-hidden element must stay hidden before find gives up on it
+/// rendering: a fifth of the caller's timeout, between 0.75 and 1.5 seconds. Menus and
+/// suggestion lists reveal within a few hundred milliseconds of the action that opens them.
+/// The old half-timeout window (up to 3 s) never paid off in the Sept 22 heavy run: all ten
+/// hidden-only misses there were auto-hidden player controls and responsive-layout buttons
+/// that stayed hidden, so each spent about 3 s before the same error.
+fn hidden_only_settle(timeout_ms: u64) -> Duration {
+    Duration::from_millis((timeout_ms / 5).clamp(750, 1_500))
 }
 
 fn find_timeout(
@@ -3826,6 +3925,41 @@ fn target_locator_timeout(
     )
 }
 
+/// Roles an agent writes as the locator type itself, habits from other tools:
+/// `{by:"combobox", name:"Search"}` means a role lookup, never a new strategy.
+const ROLE_AS_BY: [&str; 24] = [
+    "button", "link", "textbox", "searchbox", "combobox", "checkbox", "radio", "switch",
+    "slider", "spinbutton", "tab", "menuitem", "option", "listbox", "heading", "dialog",
+    "img", "list", "listitem", "row", "cell", "navigation", "main", "region",
+];
+
+/// A locator type that is not one of the strategies but says plainly what it
+/// means: `id` is an id selector, a role name is a role lookup whose value, if
+/// any, is the name. Anything else stays unsupported.
+fn alias_locator(by: &str, value: &str, name: Option<&str>) -> Option<(String, String, Option<String>)> {
+    if by == "id" {
+        let value = value.trim().trim_start_matches('#');
+        if value.is_empty() {
+            return None;
+        }
+        let plain = value.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        let selector = if plain {
+            format!("#{value}")
+        } else {
+            format!("[id=\"{}\"]", value.replace('\\', "\\\\").replace('"', "\\\""))
+        };
+        return Some(("css".into(), selector, name.map(str::to_string)));
+    }
+    if ROLE_AS_BY.contains(&by) {
+        let named = name
+            .map(str::to_string)
+            .or_else(|| Some(value.trim().to_string()).filter(|value| !value.is_empty()));
+        return Some(("role".into(), by.to_string(), named));
+    }
+    None
+}
+
 fn extract_locator(params: &Value) -> Result<LocatorRequest, (String, String)> {
     let by = params.get("by").and_then(Value::as_str).ok_or_else(|| {
         (
@@ -3833,19 +3967,39 @@ fn extract_locator(params: &Value) -> Result<LocatorRequest, (String, String)> {
             "browser_find requires a 'by' locator type".to_string(),
         )
     })?;
-    if !matches!(
+    let raw_value = params.get("value").and_then(Value::as_str).unwrap_or("");
+    let raw_name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    let aliased = if matches!(
         by,
         "role" | "text" | "label" | "placeholder" | "testId" | "title" | "alt" | "css"
     ) {
-        return Err((
-            error_codes::INVALID_REQUEST.to_string(),
-            format!("unsupported locator type '{by}'"),
-        ));
-    }
-    let value = params
-        .get("value")
-        .and_then(Value::as_str)
-        .map(str::trim)
+        None
+    } else {
+        Some(alias_locator(by, raw_value, raw_name).ok_or_else(|| {
+            (
+                error_codes::INVALID_REQUEST.to_string(),
+                // An agent that guessed by:"name" on YouTube spent a call to
+                // learn the list; the accessible name is a filter, not a type.
+                format!(
+                    "unsupported locator type '{by}'; use role, text, label, placeholder, testId, title, alt or css, and pass an accessible name as name (by:'role', value:'combobox', name:'Search')"
+                ),
+            )
+        })?)
+    };
+    let (by, value, name) = match aliased {
+        Some((by, value, name)) => (by, value, name),
+        None => (
+            by.to_string(),
+            raw_value.trim().to_string(),
+            raw_name.map(str::to_string),
+        ),
+    };
+    let by = by.as_str();
+    let value = Some(value.as_str())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             (
@@ -3854,20 +4008,8 @@ fn extract_locator(params: &Value) -> Result<LocatorRequest, (String, String)> {
             )
         })?;
     ensure_bounded(value, MAX_LOCATOR_VALUE_BYTES, "value")?;
-    let name = params
-        .get("name")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_string);
     if let Some(name) = name.as_deref() {
         ensure_bounded(name, MAX_LOCATOR_VALUE_BYTES, "name")?;
-        if by != "role" {
-            return Err((
-                error_codes::INVALID_REQUEST.to_string(),
-                "locator 'name' is only supported with by='role'".to_string(),
-            ));
-        }
     }
     Ok(LocatorRequest {
         by: by.to_string(),
@@ -3889,12 +4031,7 @@ fn extract_locator(params: &Value) -> Result<LocatorRequest, (String, String)> {
             .clamp(1, MAX_LOCATOR_MATCHES),
         // A match is a leaf. Reading the row, card or section it sits in used
         // to cost one call per fact in it.
-        ancestors: params
-            .get("ancestors")
-            .and_then(as_count)
-            .and_then(|value| u32::try_from(value).ok())
-            .unwrap_or(0)
-            .min(10),
+        ancestors: Ancestors::parse(params.get("ancestors"))?,
     })
 }
 
@@ -3902,11 +4039,15 @@ async fn resolve_target_locator(
     app: &AppHandle,
     params: &Value,
     waiting: bool,
+    reading: bool,
 ) -> Result<Value, (String, String)> {
     let target = &params["locator"];
     let lookup_timeout = super::locator_target::validate_locator(target)?;
     let mut locator = extract_locator(target)?;
-    locator.limit = 2;
+    // A read may settle an ambiguity by itself when every match says the same
+    // thing, or only one says anything, so it looks at more of them than an
+    // action does.
+    locator.limit = if reading { READ_SCAN_LIMIT } else { 2 };
     let invalid = || {
         (error_codes::INVALID_REQUEST.into(), "locator wait accepts locator, state, minCount, and top-level timeout, not legacy conditions or waitFor".into())
     };
@@ -4019,7 +4160,14 @@ async fn resolve_target_locator(
             }
         })?;
         let complete = !result.node_limit_reached && result.skipped_frames == 0;
-        let first = result.matches.first();
+        let same_text = reading && state.is_none() && same_text_matches(&result);
+        let informative = (reading && state.is_none() && !same_text)
+            .then(|| only_informative_match(&result))
+            .flatten();
+        let first = match informative {
+            Some(index) => result.matches.get(index),
+            None => result.matches.first(),
+        };
         let matched = if let (Some(state), Some(wanted)) = (state, min_count) {
             let visible = result.matches.iter().filter(|item| item.visible).count();
             super::locator_target::wait_count_state(
@@ -4038,11 +4186,25 @@ async fn resolve_target_locator(
                 first.is_some_and(|m| m.enabled),
                 first.and_then(|m| m.checked),
             )
+        } else if same_text || informative.is_some() {
+            Ok(true)
         } else {
             super::locator_target::unique(result.matches.len(), complete)
         }
         .map_err(|error| describe_ambiguity(error, &result.matches))?;
         if matched {
+            if same_text {
+                return Ok(json!({
+                    "ok":true, "tabId":tab_id, "generation":generation,
+                    "ref":first.map(|m| &m.ref_id), "sameTextMatches":result.matches.len(),
+                }));
+            }
+            if informative.is_some() {
+                return Ok(json!({
+                    "ok":true, "tabId":tab_id, "generation":generation,
+                    "ref":first.map(|m| &m.ref_id), "onlyInformativeOf":result.matches.len(),
+                }));
+            }
             return Ok(json!({
                 "ok":true, "tabId":tab_id, "generation":generation,
                 "ref":first.map(|m| &m.ref_id), "condition":"locator", "state":state,
@@ -7361,6 +7523,105 @@ mod tests {
     }
 
     #[test]
+    fn habitual_locator_types_become_the_lookup_they_mean() {
+        let id = extract_locator(&json!({ "by": "id", "value": "confirmButton" })).unwrap();
+        assert_eq!((id.by.as_str(), id.value.as_str()), ("css", "#confirmButton"));
+        let hashed = extract_locator(&json!({ "by": "id", "value": "#submit" })).unwrap();
+        assert_eq!(hashed.value, "#submit");
+        // An id no plain selector can hold is quoted as data.
+        let odd = extract_locator(&json!({ "by": "id", "value": "a b\"c" })).unwrap();
+        assert_eq!(odd.value, r#"[id="a b\"c"]"#);
+        let role = extract_locator(&json!({ "by": "combobox", "value": "", "name": "Search" })).unwrap();
+        assert_eq!((role.by.as_str(), role.value.as_str(), role.name.as_deref()), ("role", "combobox", Some("Search")));
+        let named = extract_locator(&json!({ "by": "button", "value": "Submit" })).unwrap();
+        assert_eq!((named.by.as_str(), named.value.as_str(), named.name.as_deref()), ("role", "button", Some("Submit")));
+        for unsupported in [json!({ "by": "xpath", "value": "//a" }), json!({ "by": "id", "value": " " })] {
+            assert_eq!(extract_locator(&unsupported).unwrap_err().0, error_codes::INVALID_REQUEST, "{unsupported}");
+        }
+        // A guessed type is refused with the list and where a name goes.
+        let guessed = extract_locator(&json!({ "by": "name", "value": "Search" })).unwrap_err().1;
+        assert!(guessed.contains("use role, text, label, placeholder, testId, title, alt or css"));
+        assert!(guessed.contains("name:'Search'"));
+    }
+
+    #[test]
+    fn a_text_read_settles_an_ambiguity_only_when_every_match_reads_the_same() {
+        let item = |text: &str| LocatorMatch {
+            ref_id: "g1-e1".into(),
+            tag: "h1".into(),
+            role: "heading".into(),
+            name: text.into(),
+            text: text.into(),
+            value: None,
+            visible: true,
+            enabled: true,
+            checked: None,
+            editable: false,
+            read_only: false,
+            in_viewport: true,
+            bounds: None,
+            block: None,
+            block_ref: None,
+        };
+        let scan = |texts: &[&str]| CollectedLocatorMatches {
+            matches: texts.iter().map(|text| item(text)).collect(),
+            scanned: 900,
+            truncated: false,
+            node_limit_reached: false,
+            included_frames: 1,
+            skipped_frames: 0,
+            hidden: 0,
+            name_misses: vec![],
+            candidates: vec![],
+            nearest: None,
+        };
+        // The YouTube title: an h1 and the yt-formatted-string inside it.
+        assert!(same_text_matches(&scan(&["lofi hip hop radio", "lofi  hip hop\nradio"])));
+        // One match is not an ambiguity, different texts are a real one, and
+        // two empty canvases say nothing worth returning.
+        assert!(!same_text_matches(&scan(&["only one"])));
+        assert!(!same_text_matches(&scan(&["ETHUSDT", "BTCUSDT"])));
+        assert!(!same_text_matches(&scan(&["", ""])));
+        // A scan that filled its limit may have stopped before a different match.
+        let full = vec!["same"; SAME_TEXT_READ_LIMIT];
+        assert!(!same_text_matches(&scan(&full)));
+        // Unread parts of the page leave the question open.
+        for incomplete in [
+            CollectedLocatorMatches { truncated: true, ..scan(&["a", "a"]) },
+            CollectedLocatorMatches { node_limit_reached: true, ..scan(&["a", "a"]) },
+            CollectedLocatorMatches { skipped_frames: 1, ..scan(&["a", "a"]) },
+        ] {
+            assert!(!same_text_matches(&incomplete));
+        }
+
+        // TradingView's chart canvases: eleven, one named. The named one is read.
+        let mut canvases = vec![""; 11];
+        canvases[1] = "Chart for BINANCE:ETHUSDT, 1 month";
+        assert_eq!(only_informative_match(&scan(&canvases)), Some(1));
+        // Two that say something, or none, stay ambiguous.
+        assert_eq!(only_informative_match(&scan(&["", "a", "b"])), None);
+        assert_eq!(only_informative_match(&scan(&["", ""])), None);
+        assert_eq!(only_informative_match(&scan(&["only one"])), None);
+        // A full scan may have stopped before a second informative match.
+        let mut full = vec![""; READ_SCAN_LIMIT];
+        full[0] = "named";
+        assert_eq!(only_informative_match(&scan(&full)), None);
+        assert_eq!(
+            only_informative_match(&CollectedLocatorMatches { truncated: true, ..scan(&["", "a"]) }),
+            None
+        );
+    }
+
+    #[test]
+    fn hidden_only_settle_is_a_fifth_of_the_timeout_within_bounds() {
+        assert_eq!(hidden_only_settle(100), Duration::from_millis(750));
+        assert_eq!(hidden_only_settle(3_000), Duration::from_millis(750));
+        assert_eq!(hidden_only_settle(5_000), Duration::from_millis(1_000));
+        assert_eq!(hidden_only_settle(10_000), Duration::from_millis(1_500));
+        assert_eq!(hidden_only_settle(60_000), Duration::from_millis(1_500));
+    }
+
+    #[test]
     fn open_read_validates_before_creating_a_tab_and_never_accepts_another_target() {
         assert!(open_read_request(&json!({})).unwrap().is_none());
         assert_eq!(
@@ -7768,7 +8029,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_locator_validates_role_name_filters() {
+    fn semantic_locator_accepts_name_filters_for_every_strategy() {
         let locator = extract_locator(&json!({
             "by": "role",
             "value": "button",
@@ -7778,10 +8039,21 @@ mod tests {
         assert_eq!(locator.by, "role");
         assert_eq!(locator.name.as_deref(), Some("Save"));
 
+        // A css or text lookup narrowed by accessible name used to be refused,
+        // which cost a turn to learn the rule and another to ask again.
+        for by in ["css", "text", "label", "placeholder", "testId"] {
+            let locator = extract_locator(&json!({
+                "by": by,
+                "value": "canvas",
+                "name": "Chart for"
+            }))
+            .unwrap();
+            assert_eq!(locator.name.as_deref(), Some("Chart for"), "{by}");
+        }
         let error = extract_locator(&json!({
-            "by": "text",
-            "value": "Save",
-            "name": "button"
+            "by": "css",
+            "value": "canvas",
+            "name": "x".repeat(MAX_LOCATOR_VALUE_BYTES + 1)
         }))
         .unwrap_err();
         assert_eq!(error.0, error_codes::INVALID_REQUEST);

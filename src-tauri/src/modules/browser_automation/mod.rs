@@ -5,6 +5,7 @@ pub mod agent_actions;
 mod artifacts;
 pub mod caller;
 pub mod cdp;
+mod context_block;
 pub mod design;
 pub mod download;
 pub mod http;

@@ -101,20 +101,29 @@ describe("shipped isolated ref registry", () => {
     const f = fixture();
     const a = f.node();
     const others = Array.from({ length: 9 }, () => f.node());
-    f.run("refRegistry.begin(1);refRegistry.remember('g1-e1', a)", { a, others });
+    f.run("refRegistry.begin(1);refRegistry.remember('g1-e1', a)", {
+      a,
+      others,
+    });
     for (let scan = 2; scan <= 9; scan++) {
-      f.run(`refRegistry.begin(${scan});refRegistry.remember('g${scan}-e1', others[${scan - 2}])`);
+      f.run(
+        `refRegistry.begin(${scan});refRegistry.remember('g${scan}-e1', others[${scan - 2}])`,
+      );
       expect(f.run("return refRegistry.resolve('g1-e1')")).toBe(a);
     }
     // The ninth scan after it is one too many: the ref and its label go.
     f.run("refRegistry.begin(10);refRegistry.remember('g10-e1', others[8])");
     expect(f.run("return refRegistry.resolve('g1-e1')")).toBeNull();
-    expect(f.run("return refRegistry.reason('g1-e1')")).toBe("generation_changed");
+    expect(f.run("return refRegistry.reason('g1-e1')")).toBe(
+      "generation_changed",
+    );
     expect(a.getAttribute("data-anbo-ref")).toBeNull();
     expect(f.run("return refRegistry.resolve('g2-e1')")).toBe(others[0]);
     // A ref from a scan that has not happened is never valid.
     expect(f.run("return refRegistry.resolve('g11-e1')")).toBeNull();
-    expect(f.run("return refRegistry.reason('g11-e1')")).toBe("generation_changed");
+    expect(f.run("return refRegistry.reason('g11-e1')")).toBe(
+      "generation_changed",
+    );
   });
   it("still rejects a retained ref whose node left the document", () => {
     const f = fixture();
@@ -133,7 +142,9 @@ describe("shipped isolated ref registry", () => {
     // Re-found under a newer ref: the node now wears that label.
     f.run("refRegistry.begin(5);refRegistry.remember('g5-e1', a)");
     for (let scan = 6; scan <= 10; scan++) {
-      f.run(`refRegistry.begin(${scan});refRegistry.remember('g${scan}-e1', a)`);
+      f.run(
+        `refRegistry.begin(${scan});refRegistry.remember('g${scan}-e1', a)`,
+      );
     }
     // g1 fell out of the window, but the label belongs to g10 and stays.
     expect(f.run("return refRegistry.resolve('g1-e1')")).toBeNull();
@@ -440,6 +451,53 @@ describe("shipped isolated ref registry", () => {
     expect(f.run("return refRegistry.resolve('g1-e1')")).toBeNull();
   });
 
+  it("keeps a ref whose container grew past the link cap, by identity alone", () => {
+    // TradingView's symbol search: the field's container had a few links when
+    // the dialog opened and more than the cap once its list loaded.
+    const f = fixture(),
+      item = f.node("div"),
+      target = f.node();
+    target.parentElement = item;
+    item.setAttribute("data-id", "search");
+    const addLinks = (count: number) => {
+      let previous = null as ReturnType<typeof f.node> | null;
+      for (let i = 0; i < count; i++) {
+        const link = f.node("a");
+        link.setAttribute("href", `/symbol/${i}`);
+        if (previous) previous.nextElementSibling = link;
+        else item.firstElementChild = link;
+        previous = link;
+      }
+    };
+    addLinks(2);
+    f.run("refRegistry.begin(1);refRegistry.remember('g1-e1', target)", {
+      target,
+    });
+    addLinks(20);
+    expect(f.run("return refRegistry.resolve('g1-e1')")).toBe(target);
+    item.setAttribute("data-id", "other");
+    expect(f.run("return refRegistry.resolve('g1-e1')")).toBeNull();
+    expect(f.run("return refRegistry.reason('g1-e1')")).toBe("context_changed");
+  });
+
+  it("still compares links while both reads saw every one of them", () => {
+    const f = fixture(),
+      item = f.node("li"),
+      link = f.node("a"),
+      target = f.node();
+    item.firstElementChild = link;
+    item.nextElementSibling = f.node("li");
+    link.nextElementSibling = target;
+    link.parentElement = item;
+    target.parentElement = item;
+    link.setAttribute("href", "/one");
+    f.run("refRegistry.begin(1);refRegistry.remember('g1-e1', target)", {
+      target,
+    });
+    link.setAttribute("href", "/two");
+    expect(f.run("return refRegistry.resolve('g1-e1')")).toBeNull();
+  });
+
   it("bounds serialized context identity, including escaped characters", () => {
     const f = fixture(),
       item = f.node("li"),
@@ -503,7 +561,9 @@ describe("shipped isolated ref registry", () => {
     f.run("refRegistry.remember('g2-e1', f.node())", { f });
     expect(f.run("return refRegistry.reason('g1-e1')")).toBe("node_detached");
     for (let scan = 3; scan <= 10; scan++) {
-      f.run(`refRegistry.begin(${scan});refRegistry.remember('g${scan}-e1', f.node())`);
+      f.run(
+        `refRegistry.begin(${scan});refRegistry.remember('g${scan}-e1', f.node())`,
+      );
     }
     expect(f.run("return refRegistry.reason('g1-e1')")).toBe(
       "generation_changed",

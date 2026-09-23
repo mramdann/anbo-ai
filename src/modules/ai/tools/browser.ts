@@ -182,7 +182,7 @@ export function buildBrowserTools(ctx: ToolContext) {
           .string()
           .optional()
           .describe(
-            "Computed role name; ARIA, labels, alt, or title may override visible text.",
+            "Computed accessible name, for any by; ARIA, labels, alt, or title may override visible text.",
           ),
         exact: z.boolean().default(false),
         includeHidden: z.boolean().default(false),

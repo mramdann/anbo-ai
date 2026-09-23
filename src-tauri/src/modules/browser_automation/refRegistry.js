@@ -89,8 +89,10 @@ const refRegistry = (() => {
                 return true;
             };
             if (!visit(current) && !capped) return undefined;
-            const fingerprint = JSON.stringify([identities, capped ? null : [...urls].sort()]);
-            return fingerprint.length <= 16384 ? { root: new WeakRef(current), fingerprint } : undefined;
+            const identity = JSON.stringify(identities);
+            const links = capped ? null : JSON.stringify([...urls].sort());
+            return identity.length + (links?.length || 0) <= 16384
+                ? { root: new WeakRef(current), identity, links } : undefined;
         }
         return current ? undefined : null;
     };
@@ -140,9 +142,14 @@ const refRegistry = (() => {
             }
             if (entry.destination === null) {
                 const context = itemContext(node);
+                // A container past the link cap keeps only its identity, so one
+                // that grew past it (a dialog filling its list) is compared by
+                // identity alone; links count only when both reads saw them all.
                 if (context === undefined) entry.reason = 'context_limit';
                 else if (context?.root.deref() !== entry.context?.root.deref() ||
-                    context?.fingerprint !== entry.context?.fingerprint) entry.reason = 'context_changed';
+                    context?.identity !== entry.context?.identity ||
+                    (context?.links != null && entry.context?.links != null &&
+                        context.links !== entry.context.links)) entry.reason = 'context_changed';
                 if (entry.reason) return null;
             }
             return node;
