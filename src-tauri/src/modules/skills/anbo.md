@@ -6,85 +6,59 @@ sections: on-demand
 
 # Working inside Anbo
 
-You are running inside Anbo, a desktop workspace that gives you a browser,
-terminals, and the other agents in this project through MCP tools named
-`browser_*`, `terminal_*`, `agent_*` and `skills_*`.
+Anbo provides a real browser, terminals and other agents through MCP. Use your
+own workspace root or assigned space id wherever `workspace` is required,
+never whichever workspace the user is viewing. Other browser calls use `tabId`.
 
-**Workspace isolation.** Tools that take `workspace` need **your own
-workspace root** (the directory you were started in) or the space id you were
-given. Anbo never falls back to whatever the user is looking at. Needed by
-every `skills_*`, `agent_*` and `terminal_*` call, plus `browser_open`,
-`browser_close`, `browser_upload` and the download tools; the other browser
-tools are addressed by `tabId`. `workspace_not_found` means the path is not one
-Anbo has open: use the root you were launched in.
+Five browser patterns:
 
-**A browser task.** `browser_open {url, workspace}` returns a `tabId` and the
-`controlId` of your session, which opens itself on your first browser call.
-Reuse a live ref, or act/read directly with a known unique `locator`, e.g.
-`browser_type {tabId, locator: {by: "label", value: "Email", exact: true},
-text: "person@example.test"}`. Do not find before every action. To discover
-or disambiguate, use `browser_find {tabId, by: "role", value: "button", name:
-"Search"}` (also `text`, `label`, `placeholder`, `testId`, `css`; implicit
-roles include heading, searchbox, textbox, combobox, dialog, list, table and
-landmarks), or read the page with `browser_snapshot` (viewport text first, then
-interactive elements, paged with `offset`). Both return refs like `g3-e12`; a ref
-stays valid while its element is on the page, through the next eight finds or
-snapshots, so find A, find B, drag A onto B just works. `stale_ref` means the
-element is gone or the ref is older than that: find it again. Single-target
-actions and reads take either `ref` or `locator`. Navigation-shaped replies carry `page`
-(`url`, `title`, `loading`), so you never need a separate URL read after a
-click or a key. `revealed` carries what an action opened, ref'd. Read with
-`browser_get_text` or `browser_find` (both take `ancestors: N`: the enclosing
-block in one call) or
-`browser_get_property` for live state such as `paused`, `currentTime`,
-`value`, `checked`, `scrollTop` (a closed list of plain DOM properties, one
-call, no page JavaScript). When the task is done, put `endSession: true` on
-your last call: `browser_close {tabId, workspace, endSession: true}` if you
-close the tab, or that final read (`browser_get_text`, `browser_screenshot`,
-`browser_get_property`, `browser_snapshot`) if the page stays open for the
-user. The cursor and badge go at once; there is nothing to start and nothing
-else to end.
+1. **Open and read.** `browser_open {url, workspace}` returns `tabId` and
+   `controlId`. Add `find: {by:"role", value:"heading"}` or `snapshot:true`
+   for an initial read after document commit in the same call. Check `readOk`;
+   `readError` keeps the new tab for recovery, so do not open a duplicate.
+   One-shot research: `browser_open {url,workspace,snapshot:true,closeTab:true,endSession:true}`.
+   Or replace snapshot with `find:{by:"text",value:"India",ancestors:"row"}`.
+   Use this instead of open + read + close when no follow-up interaction is needed.
+   `closeTab` only closes the new tab after a successful read; returned refs then
+   cannot be reused. Omit it when you need to click, inspect more, or show the user.
+2. **Discover once, act directly.** Use `browser_find` for unknown targets or
+   `browser_snapshot` for unfamiliar structure (paged with `offset`). Otherwise
+   pass one live `ref` or unique `locator`, e.g. `{by:"label",value:"Email",exact:true}`.
+   Use observed names in the page's language, never guessed CSS or translations.
+   `exact:true` requests a full name match. Ambiguous errors carry candidate refs;
+   choose the intended one without another find, never blindly the first.
+   Refs survive eight scans while their node and identity survive, not navigation
+   or replacement. On `stale_ref`, rediscover; no similar target is clicked silently.
+3. **Act and observe.** Type/click return menu or autocomplete items in `revealed`;
+   use their refs. Type verifies the immediate value; autocomplete may use guarded
+   native key events when a value-only fill opens nothing. Append is never replayed.
+   To search, `browser_type {ref,text,submit:true,waitFor}` types and presses
+   Enter in one call. A separate Enter uses `browser_press` with the input `ref`,
+   `expectedValue` and a result `waitFor`.
+   Navigation-shaped replies already carry `page.url` and `page.title`; a new page
+   adds `page.hints` with its `heading` and `results` (title links with refs).
+   `waitFor:{url,title,text,timeout}` checks the result; URL supports globs, text
+   is a visible substring, title is exact (`*` is literal). A changing title can
+   use `titleMatch:"prefix"`. Streaming pages need explicit readiness, not
+   `networkIdle`. `matched:true,stable:false` means matched but not stable.
+   A timeout after dispatch must not trigger blind resubmission.
+4. **Read facts together.** `browser_find` and `browser_get_text` accept
+   `ancestors:"row"` for the nearest table/ARIA row or `ancestors:N` for explicit
+   levels. No row never means the whole page. Shared blocks use `blockRef`.
+   `browser_get_property` reads live `paused`, `currentTime`, `value`, `checked`
+   and other allowed properties without eval; a press or click on a player
+   already returns them in `media`, and landing on a playing player adds
+   `page.media`. Screenshot checks visual state;
+   console logs help diagnose failures. Absence/hints describe observed state,
+   not guaranteed future absence or unique substitute targets. Bound retries.
+5. **Finish.** Put `endSession:true` on the last successful call. Use
+   `browser_close {tabId,workspace,endSession:true}` to close a task tab, or a final
+   read to leave it for the user. Ending control removes cursor/badge, not tabs.
 
-**Waiting.** Navigation is asynchronous: `browser_navigate`, `browser_reload`
-and `browser_back` return at once. Put `waitFor: {url, title, text, timeout}`
-on click, press or wait to verify the state you expect; `text` is a
-case-insensitive substring of the visible page text, `url` a glob. `title`
-matches exactly by default; `*` is literal. For a changing title suffix use
-`waitFor: {title: "Report", titleMatch: "prefix"}` without a wildcard. The
-prefix ignores case and whitespace; the existing stability window still applies.
-A reply of
-`matched: true, stable: false` means the condition held but the page kept
-changing (a live price, a ticker, an advert): treat it as matched. A timed-out
-postcondition never repeats the action, so inspect the page before retrying
-instead of resubmitting. `browser_wait` also takes `locator` + `state`
-(including `absent`) with a top-level `timeout`.
-
-**Reading pages well.** Use names in the page's language, not guessed translations.
-Failed locators offer observed-name hints, not proof of uniqueness. Bound your
-retries and report a blocker rather than searching for the same absent label
-again. Prefer observed role/name or label; use CSS/testId only when observed,
-never guessed. Use a valid ref or unique locator directly. If several elements
-match, inspect them with find and pick the intended ref, never blindly the first.
-A `confirmed absence`
-reports the latest complete scan after settling, not a prediction that a late
-render cannot add the target. It also lists controls by role and name:
-act on one of them with `locator` instead of asking for a snapshot. A css miss
-names the nearest simpler selector that does match, with counts, so the next
-call can use it rather than guess.
-`browser_screenshot` returns the viewport image in its reply (use
-`format: "jpeg"` to keep it small), and `browser_console_logs` is the cheapest
-explanation for a page that looks right and does nothing.
-
-**Typing.** `browser_type` sets the value once (input and change events); a
-site that reacts per keystroke needs `browser_press`. Enter in
-a search box may pick a highlighted suggestion instead of submitting the typed
-text, so verify the URL and results afterwards. `browser_press` accepts the
-input `ref` plus `expectedValue` to refuse typing into a replaced field.
-
-**Files.** Screenshots: `.anbo/artifacts/browser/<task-folder>/` in the tab's
-workspace. Reuse `context` per task; `label` names each image. Use the returned
-`path`. Downloads: `.anbo/downloads/`. Uploads must stay in your workspace.
-Never use another workspace's files, cookies or sessions as test data.
+Screenshots live in `.anbo/artifacts/browser/<task-folder>/`: reuse `context`
+per task, `label` per image, and the returned path. Downloads use `.anbo/downloads/`;
+uploads must stay inside your workspace. Never use another workspace's files,
+cookies or sessions as test data. Read the relevant section below for details.
 
 ## Browser details
 
