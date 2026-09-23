@@ -27,15 +27,11 @@ pub const SERVER_NAME: &str = "anbo";
 /// describes a tool; it says what the tools are for, which is the part a model
 /// weighs when it decides whether to bother.
 pub const SERVER_INSTRUCTIONS: &str = concat!(
-    "You are working inside Anbo, which is providing these tools. ",
-    "The browser_ tools drive a real browser the user is watching in this app: ",
-    "pages open as tabs on their screen, and your cursor and clicks are visible ",
-    "to them as you work. When a task involves opening, reading, or interacting ",
-    "with a web page, use these tools rather than fetching or searching the web ",
-    "yourself. A page you read privately is not on the user's screen, cannot be ",
-    "scrolled or clicked, and cannot be handed back to them. ",
+    "You are working inside Anbo. browser_ tools drive a real browser the user is watching, with visible cursor and clicks. ",
+    "Use them rather than fetching or searching the web yourself. ",
     "The usual shape of a browser task: browser_open with your own workspace ",
-    "root, reuse a live ref or act/read directly with a known unique locator. ",
+    "root, with find:{by,value,...} or snapshot:true to read after commit. For a disposable lookup use browser_open {url,workspace,snapshot:true,closeTab:true,endSession:true} instead of open + read + close; omit closeTab for follow-up interaction or user review. Check readOk: readError retains the new tab for recovery. ",
+    "Reuse a live ref or act/read directly with a known unique locator. ",
     "Use observed names, labels and placeholders in the page's language, not ",
     "guessed translations or CSS attributes. If unknown, use browser_find ",
     "without a guessed name filter for discovery or disambiguation, ",
@@ -63,7 +59,8 @@ pub const BROWSER_SESSION_INSTRUCTIONS: &str = "Browser work runs in a session t
 /// The calls a task can end on. Each takes endSession so the release rides the
 /// last call instead of costing one more; browser_close carries it in its own
 /// definition, since closing the last tab is the other way a task ends.
-const LAST_CALL_TOOLS: [&str; 8] = [
+const LAST_CALL_TOOLS: [&str; 9] = [
+    "browser_open",
     "browser_click",
     "browser_press",
     "browser_page_info",
@@ -203,6 +200,17 @@ pub fn tool_definitions() -> Value {
         .clone();
     for tool in definitions.as_array_mut().unwrap() {
         let name = tool["name"].as_str().unwrap().to_string();
+        if name == "browser_open" {
+            let mut properties = find_schema.clone();
+            properties.as_object_mut().unwrap().remove("tabId");
+            for property in properties.as_object_mut().unwrap().values_mut() {
+                property.as_object_mut().unwrap().remove("description");
+            }
+            properties["timeout"]["maximum"] = json!(10000);
+            tool["inputSchema"]["properties"]["find"] = json!({"type":"object","properties":properties,"required":["by","value"],"additionalProperties":false,"description":"Initial find; timeout includes readiness/recovery. Results: read. Failure: readError + retained tabId."});
+            tool["inputSchema"]["properties"]["snapshot"] = json!({"type":"boolean","default":false,"description":"Snapshot after commit, up to 10s; empty content gets 1s grace. Cannot combine with find."});
+            tool["inputSchema"]["properties"]["closeTab"] = json!({"type":"boolean","default":false,"description":"Only with find/snapshot: close this newly created tab after a successful read. Never closes an existing tab. A failed read keeps it open. Closed refs cannot be reused."});
+        }
         if matches!(
             name.as_str(),
             "browser_click" | "browser_press" | "browser_wait"
@@ -741,6 +749,35 @@ mod tests {
             .expect("browser_open");
         let description = open["description"].as_str().unwrap_or_default();
         assert!(description.contains("controlId"), "{description}");
+    }
+
+    #[test]
+    fn initial_read_guidance_covers_disposable_reads_and_retained_tabs() {
+        assert!(SERVER_INSTRUCTIONS.contains("snapshot:true,closeTab:true,endSession:true"));
+        assert!(
+            SERVER_INSTRUCTIONS.contains("omit closeTab for follow-up interaction or user review")
+        );
+        assert!(SERVER_INSTRUCTIONS.contains("readError retains the new tab for recovery"));
+        let definitions = tool_definitions();
+        let open = definitions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "browser_open")
+            .unwrap();
+        let properties = &open["inputSchema"]["properties"];
+        assert!(properties["find"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("timeout includes readiness"));
+        assert!(properties["snapshot"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("up to 10s"));
+        assert!(properties["closeTab"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("failed read keeps it open"));
     }
 
     #[test]

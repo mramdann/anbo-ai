@@ -557,6 +557,7 @@ async fn handle_action_inner(
     }
     match method {
         "open" => {
+            let read = open_read_request(&params)?;
             let mut result = open_browser(app, &params, caller, timings).await?;
             // The tab an agent just opened is the tab it is about to work, and
             // the open response is the first thing it reads. Naming the session
@@ -566,6 +567,44 @@ async fn handle_action_inner(
                 let tab_id = object.get("tabId").and_then(Value::as_i64);
                 if let Some(control_id) = super::activity::begin_session(app, tab_id, caller) {
                     object.insert("controlId".into(), control_id.into());
+                }
+            }
+            if let Some((method, mut read_params)) = read {
+                let tab_id = result["tabId"].clone();
+                read_params["tabId"] = tab_id.clone();
+                match read_initial_page(app, method, read_params, timings, caller).await {
+                    Ok(value) => {
+                        result["read"] = value;
+                        result["readOk"] = json!(true);
+                        if let Some(id) = tab_id.as_i64() {
+                            if let Ok(webview) = get_embed_webview(app, id) {
+                                result["page"] = landing(&webview, id).await;
+                            }
+                        }
+                        if params["closeTab"] == true {
+                            let close_params =
+                                json!({"tabId":tab_id,"workspace":params["workspace"]});
+                            match close_browser(app, &close_params).await {
+                                Ok(_) => {
+                                    result["closed"] = json!(true);
+                                    result["refsUsable"] = json!(false);
+                                }
+                                Err((code, message)) => {
+                                    result["closeError"] = json!({"code":code,"message":message})
+                                }
+                            }
+                        }
+                    }
+                    Err((code, message)) => {
+                        result["readOk"] = json!(false);
+                        result["readError"] = json!({"code":code,"message":message});
+                        result["closed"] = json!(false);
+                        if let Some(id) = tab_id.as_i64() {
+                            if let Ok(webview) = get_embed_webview(app, id) {
+                                result["page"] = landing(&webview, id).await;
+                            }
+                        }
+                    }
                 }
             }
             Ok(result)
@@ -5880,6 +5919,170 @@ async fn request_browser_tabs_metadata(app: &AppHandle) -> Option<BrowserTabsRes
     serde_json::from_str(&payload).ok()
 }
 
+fn open_read_request(params: &Value) -> Result<Option<(&'static str, Value)>, (String, String)> {
+    let invalid = || {
+        (error_codes::INVALID_REQUEST.into(), "open accepts either find:{by,value,...} or snapshot:true; closeTab:true requires one and only closes the new tab after a successful read".into())
+    };
+    for key in ["snapshot", "closeTab"] {
+        if params.get(key).is_some_and(|value| !value.is_boolean()) {
+            return Err(invalid());
+        }
+    }
+    let read = if let Some(find) = params.get("find") {
+        let object = find.as_object().ok_or_else(invalid)?;
+        if params["snapshot"] == true
+            || object.keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    "by" | "value"
+                        | "name"
+                        | "exact"
+                        | "includeHidden"
+                        | "limit"
+                        | "ancestors"
+                        | "timeout"
+                )
+            })
+        {
+            return Err(invalid());
+        }
+        extract_locator(find)?;
+        let mut find = find.clone();
+        find["timeout"] = json!(find
+            .get("timeout")
+            .and_then(as_count)
+            .unwrap_or(5000)
+            .clamp(100, 10000));
+        Some(("find", find))
+    } else if params["snapshot"] == true {
+        Some(("snapshot", json!({})))
+    } else {
+        None
+    };
+    if params["closeTab"] == true && read.is_none() {
+        return Err(invalid());
+    }
+    Ok(read)
+}
+
+async fn initial_document(
+    webview: &Webview,
+    tab_id: i64,
+    deadline: tokio::time::Instant,
+) -> Result<(u64, String), (String, String)> {
+    use super::initial_read::{DocumentProbe, PROBE_JS};
+    loop {
+        let navigation = active_navigation_generation(tab_id).ok_or_else(|| {
+            (
+                error_codes::TAB_NOT_FOUND.into(),
+                "initial read tab was closed".into(),
+            )
+        })?;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(initial_read_timeout("document commit/readiness"));
+        }
+        if navigation > 0 {
+            let native_url = read_url(webview, Duration::from_millis(300)).await;
+            if let Ok(native_url) = native_url {
+                let raw =
+                    execute_script_with_timeout(webview, PROBE_JS, Duration::from_millis(300))
+                        .await;
+                let probe = raw
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<String>(&raw).ok())
+                    .and_then(|raw| serde_json::from_str::<DocumentProbe>(&raw).ok());
+                if let Some(probe) = probe.filter(|probe| {
+                    probe.is_committed(
+                        &native_url,
+                        navigation,
+                        active_navigation_generation(tab_id),
+                    )
+                }) {
+                    return Ok((navigation, probe.url));
+                }
+            }
+        }
+        tokio::time::sleep_until(
+            (tokio::time::Instant::now() + Duration::from_millis(50)).min(deadline),
+        )
+        .await;
+    }
+}
+
+fn initial_read_timeout(phase: &str) -> (String, String) {
+    (
+        error_codes::TIMEOUT.into(),
+        format!(
+            "initial read deadline expired during {phase}; the new tab remains open for recovery"
+        ),
+    )
+}
+
+async fn read_initial_page(
+    app: &AppHandle,
+    method: &str,
+    mut params: Value,
+    timings: &mut ActionTimings,
+    caller: &super::caller::Caller,
+) -> Result<Value, (String, String)> {
+    use super::initial_read::{retry_read_error, EMPTY_GRACE, MAX_RECOVERIES, SNAPSHOT_TIMEOUT};
+    let tab_id = extract_tab_id(&params)?;
+    let webview = get_embed_webview(app, tab_id)
+        .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
+    let budget = params
+        .get("timeout")
+        .and_then(as_count)
+        .map(Duration::from_millis)
+        .unwrap_or(SNAPSHOT_TIMEOUT);
+    let deadline = tokio::time::Instant::now() + budget;
+    let mut phase = "document commit/readiness";
+    let result = tokio::time::timeout_at(deadline, async {
+        let mut recoveries = 0;
+        let mut empty_since = None;
+        let mut empty_navigation = None;
+        loop {
+            phase = "document commit/readiness";
+            let (navigation, url) = timings.measure("initialDocument", initial_document(&webview, tab_id, deadline)).await?;
+            if empty_navigation != Some(navigation) {
+                empty_since = None;
+                empty_navigation = Some(navigation);
+            }
+            if method == "find" {
+                params["timeout"] = json!(deadline.saturating_duration_since(tokio::time::Instant::now()).as_millis() as u64);
+            }
+            phase = "document read";
+            let result = Box::pin(handle_action_inner(app, method, params.clone(), timings, caller)).await;
+            let changed = active_navigation_generation(tab_id) != Some(navigation);
+            match result {
+                Ok(value) if changed || (method == "snapshot" && value["url"].as_str() != Some(url.as_str())) => {
+                    if recoveries >= MAX_RECOVERIES {
+                        return Err((error_codes::STALE_REF.into(), "initial read document kept changing; the new tab remains open for recovery".into()));
+                    }
+                    recoveries += 1;
+                }
+                Ok(value) => {
+                    if method == "snapshot" && value["totalItems"] == 0 {
+                        let since = empty_since.get_or_insert_with(tokio::time::Instant::now);
+                        if since.elapsed() < EMPTY_GRACE {
+                            phase = "initial content";
+                            tokio::time::sleep_until((tokio::time::Instant::now() + Duration::from_millis(200)).min(deadline)).await;
+                            continue;
+                        }
+                    }
+                    return Ok(value);
+                }
+                Err((code, message)) if retry_read_error(&code, &message, changed, recoveries) => {
+                    recoveries += 1;
+                }
+                Err(error) => return Err(error),
+            }
+            ref_context::remove(tab_id);
+            tokio::time::sleep_until((tokio::time::Instant::now() + Duration::from_millis(50)).min(deadline)).await;
+        }
+    }).await;
+    result.map_err(|_| initial_read_timeout(phase))?
+}
+
 async fn open_browser(
     app: &AppHandle,
     params: &Value,
@@ -6953,6 +7156,34 @@ mod tests {
             skipped_frames: 1,
             ..empty()
         }));
+    }
+
+    #[test]
+    fn open_read_validates_before_creating_a_tab_and_never_accepts_another_target() {
+        assert!(open_read_request(&json!({})).unwrap().is_none());
+        assert_eq!(
+            open_read_request(&json!({"snapshot":true,"closeTab":true}))
+                .unwrap()
+                .unwrap()
+                .0,
+            "snapshot"
+        );
+        let (_, query) = open_read_request(
+            &json!({"find":{"by":"text","value":"India","ancestors":"row","timeout":60000}}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query["timeout"], 10000);
+        for params in [
+            json!({"closeTab":true}),
+            json!({"snapshot":"true"}),
+            json!({"closeTab":"true"}),
+            json!({"find":{}}),
+            json!({"snapshot":true,"find":{"by":"text","value":"x"}}),
+            json!({"find":{"by":"text","value":"x","tabId":123}}),
+        ] {
+            assert!(open_read_request(&params).is_err(), "{params}");
+        }
     }
 
     #[test]
