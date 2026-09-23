@@ -389,6 +389,8 @@ Browser close and reconciliation share the same per-tab lock and re-read native 
 
 Browser startup reservations are owned by native child records and released on record disposal after close. Failed creation releases its uncommitted reservation. Owner transfers retain it, failed close does not discard it, and any remaining reservation still expires after 30 seconds. Rapid sequential open/close must not accumulate reservations for already destroyed children; concurrent live startups must continue to reserve independently.
 
+Browser verification notes (2026-09-22): native hover records a temporary trusted event witness at the guarded point during its existing stability probe. Verification distinguishes successful delivery followed by DOM removal/movement from an intercepted or unobserved move. Listeners are removed on verification/error, expire after five seconds if abandoned, and do not add normal-path IPC or replay hover input. `get_text` checks readiness in the same script as the read; only an unready document uses the existing bounded readiness wait. Composed text and ref identity checks are unchanged.
+
 ## Further reading
 
 Long-form contributor guides live under `docs/`. These guides elaborate on `ANBO.md`; if anything conflicts, `ANBO.md` wins.

@@ -27,6 +27,7 @@ function harness(
   requirement = "pointer",
   scroll = true,
   valueAction?: () => unknown,
+  onReady?: (point: unknown) => unknown,
 ) {
   let id = 0;
   let index = 0;
@@ -38,12 +39,13 @@ function harness(
     return id;
   });
   const promise = vm.runInNewContext(
-    `${source}; waitForActionableSample(probe, requirement, scroll, valueAction)`,
+    `${source}; waitForActionableSample(probe, requirement, scroll, valueAction, onReady)`,
     {
       probe,
       requirement,
       scroll,
       valueAction,
+      onReady,
       requestAnimationFrame: (callback: () => void) => {
         frames.set(++id, callback);
         return id;
@@ -70,6 +72,40 @@ function harness(
 }
 
 describe("bounded actionability frame sampling", () => {
+  it("arms hover observation only after a stable ready sample", async () => {
+    const observe = vi.fn();
+    const h = harness([ready()], "pointer", true, undefined, observe);
+    expect(observe).not.toHaveBeenCalled();
+    h.frame();
+    expect(observe).not.toHaveBeenCalled();
+    h.frame();
+    await h.result;
+    expect(observe).toHaveBeenCalledExactlyOnceWith(ready());
+  });
+
+  it("does not arm observation on unstable or invalid samples", async () => {
+    for (const samples of [
+      [ready({ receives: false })],
+      [ready(), ready({ x: 80 }), ready({ x: 100 })],
+    ]) {
+      const observe = vi.fn();
+      const h = harness(samples, "pointer", true, undefined, observe);
+      h.frame();
+      h.frame();
+      await h.result;
+      expect(observe).not.toHaveBeenCalled();
+    }
+  });
+
+  it("cleans up sampling if observation cannot be armed", async () => {
+    const h = harness([ready()], "pointer", true, undefined, () => {
+      throw Error("detached");
+    });
+    h.frame();
+    h.frame();
+    await expect(h.result).rejects.toThrow("detached");
+    expect(h.frames.size + h.timers.size).toBe(0);
+  });
   it.each([
     ["checkbox", true],
     ["checkbox", false],

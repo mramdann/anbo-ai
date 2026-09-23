@@ -1,4 +1,4 @@
-function waitForActionableSample(probe, requirement, scroll, valueAction) {
+function waitForActionableSample(probe, requirement, scroll, valueAction, onReady) {
   return new Promise((resolve, reject) => {
     let frame = null;
     let timer = null;
@@ -19,6 +19,7 @@ function waitForActionableSample(probe, requirement, scroll, valueAction) {
     };
     const finish = (value, settled) => {
       if (finished) return;
+      if (settled && ready(value) && onReady) onReady(value);
       finished = true;
       cleanup();
       resolve(JSON.stringify({ ...value, stable: settled }));

@@ -2335,14 +2335,25 @@ async fn handle_action_inner(
             .await?;
             let main_document = target.as_ref().is_none_or(|target| target.is_main);
             if main_document {
-                dispatch_mouse_move(&webview, actionable.x, actionable.y)
-                    .await
-                    .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+                if let Err(error) = dispatch_mouse_move(&webview, actionable.x, actionable.y).await
+                {
+                    let _ = execute_ref_script(
+                        &webview,
+                        target.as_ref(),
+                        "globalThis.__anboHoverObservation?.stop()",
+                    )
+                    .await;
+                    return Err((error_codes::CDP_FAILED.to_string(), error));
+                }
             }
             let js = deep_ref_expression(
                 &ref_id,
                 &format!(
                     r#"
+                    if ({main_document}) {{
+                        const observed = globalThis.__anboHoverObservation?.take(refId);
+                        if (observed) return JSON.stringify(observed);
+                    }}
                     if (!el) {{
                         return JSON.stringify({{ ok: false, error: "stale_ref" }});
                     }}
@@ -2366,7 +2377,9 @@ async fn handle_action_inner(
             let parsed: Value = serde_json::from_str(&unquoted).unwrap_or_default();
             if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
                 let css_hover = parsed.get("cssHover").and_then(Value::as_bool) == Some(true);
-                if main_document && !css_hover {
+                let event_verified =
+                    parsed.get("eventVerified").and_then(Value::as_bool) == Some(true);
+                if main_document && !css_hover && !event_verified {
                     return Err((
                         error_codes::CDP_FAILED.to_string(),
                         format!("hover did not activate the CSS pseudo-state for ref '{ref_id}'"),
@@ -2377,9 +2390,20 @@ async fn handle_action_inner(
                     "ref": ref_id,
                     "ok": true,
                     "cssHover": css_hover,
+                    "eventVerified": event_verified,
+                    "connected": parsed.get("connected").cloned().unwrap_or(json!(true)),
                     "dispatch": if main_document { "devtools" } else { "dom-frame" }
                 }))
             } else {
+                if matches!(
+                    parsed["error"].as_str(),
+                    Some("hover_intercepted" | "hover_not_observed")
+                ) {
+                    return Err((error_codes::CDP_FAILED.to_string(), format!(
+                        "hover verification failed for ref '{ref_id}': {}; native movement was dispatched once; inspect the current target before retrying",
+                        parsed["error"].as_str().unwrap_or_default()
+                    )));
+                }
                 Err((
                     error_codes::STALE_REF.to_string(),
                     format!("element ref '{ref_id}' is stale or no longer valid"),
@@ -2449,7 +2473,6 @@ async fn handle_action_inner(
             let _lock = tab_lock.lock().await;
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
-            wait_for_ready(&webview, 5000).await;
             if let Some(ref_id) = ref_id.as_deref() {
                 ensure_current_ref(ref_id, get_current_generation(tab_id))?;
             }
@@ -2498,11 +2521,50 @@ async fn handle_action_inner(
             } else {
                 format!("(function() {{ const el = document.body; const climbCount = 0; {text_body} }})()")
             };
-            let res = execute_ref_script(&webview, target.as_ref(), &js)
-                .await
-                .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
+            let readiness = include_str!("readWhenReady.js");
+            let ready_js = format!("(() => {{ {readiness} return readWhenReady(() => {js}); }})()");
+            let ready_deadline = Instant::now() + Duration::from_secs(5);
+            let navigation = active_navigation_generation(tab_id);
+            let read = execute_ref_script(&webview, target.as_ref(), &ready_js).await;
+            let res = match read {
+                Ok(res) => res,
+                Err(error)
+                    if super::initial_read::retry_read_error(
+                        error_codes::CDP_FAILED,
+                        &error,
+                        active_navigation_generation(tab_id) != navigation,
+                        0,
+                    ) =>
+                {
+                    wait_for_ready(
+                        &webview,
+                        ready_deadline
+                            .saturating_duration_since(Instant::now())
+                            .as_millis() as u64,
+                    )
+                    .await;
+                    execute_ref_script(&webview, target.as_ref(), &js)
+                        .await
+                        .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?
+                }
+                Err(error) => return Err((error_codes::CDP_FAILED.to_string(), error)),
+            };
             let unquoted: String = serde_json::from_str(&res).unwrap_or(res);
-            let parsed: Value = serde_json::from_str(&unquoted).unwrap_or_default();
+            let mut parsed: Value = serde_json::from_str(&unquoted).unwrap_or_default();
+            if parsed["error"].as_str() == Some("document_not_ready") {
+                wait_for_ready(
+                    &webview,
+                    ready_deadline
+                        .saturating_duration_since(Instant::now())
+                        .as_millis() as u64,
+                )
+                .await;
+                let res = execute_ref_script(&webview, target.as_ref(), &js)
+                    .await
+                    .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
+                let unquoted: String = serde_json::from_str(&res).unwrap_or(res);
+                parsed = serde_json::from_str(&unquoted).unwrap_or_default();
+            }
             if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
                 let reported_ancestors = if ref_id.is_some() { ancestors } else { 0 };
                 Ok(json!({
@@ -4351,6 +4413,18 @@ fn actionable_attempt_script(
 ) -> String {
     let sampler = include_str!("actionabilityWait.js");
     let probe = actionable_probe_script(ref_id, "scroll", position);
+    let on_ready = if matches!(requirement, ActionabilityRequirement::Hover(_)) {
+        let observer = include_str!("hoverObservation.js");
+        let install = deep_ref_expression(
+            ref_id,
+            &format!(
+            "if (window === window.top) {{ {observer} beginHoverObservation(el, refId, point); }}"
+        ),
+        );
+        format!("point => {install}")
+    } else {
+        "undefined".into()
+    };
     let requirement = match requirement {
         ActionabilityRequirement::Check(true) => "check",
         ActionabilityRequirement::Check(false) => "uncheck",
@@ -4360,10 +4434,10 @@ fn actionable_attempt_script(
         _ => "pointer",
     };
     let value_action = value_script
-        .map(|script| format!(", () => JSON.parse({script})"))
-        .unwrap_or_default();
+        .map(|script| format!("() => JSON.parse({script})"))
+        .unwrap_or_else(|| "undefined".into());
     format!(
-        "(() => {{ {sampler}\nreturn waitForActionableSample((scroll) => JSON.parse({probe}), '{requirement}', {scroll}{value_action}); }})()"
+        "(() => {{ {sampler}\nreturn waitForActionableSample((scroll) => JSON.parse({probe}), '{requirement}', {scroll}, {value_action}, {on_ready}); }})()"
     )
 }
 
@@ -5590,7 +5664,16 @@ async fn dispatch_mouse_click_profiled(
 }
 
 async fn dispatch_mouse_move(webview: &Webview, x: f64, y: f64) -> Result<(), String> {
-    dispatch_mouse_move_profiled(webview, x, y, &mut ActionTimings::default()).await
+    super::activity::pointer("move", x, y);
+    ref_context::ensure_focus(webview).await?;
+    call_devtools_protocol_method(
+        webview,
+        "Input.dispatchMouseEvent",
+        &mouse_event_params("mouseMoved", x, y, false, 0).to_string(),
+        Duration::from_secs(5),
+    )
+    .await
+    .map(|_| ())
 }
 
 async fn dispatch_mouse_move_profiled(
@@ -7542,9 +7625,28 @@ mod tests {
             for scroll in [true, false] {
                 let script = actionability_wait_script("g1-e1", scroll, None, requirement);
                 assert!(script.contains("prepareActionPoint(el, scroll, null)"));
-                assert!(script.contains(&format!("'{expected}', {scroll})")));
+                assert!(script.contains(&format!("'{expected}', {scroll},")));
                 assert!(script.contains("refRegistry.resolve(refId)"));
             }
+        }
+    }
+
+    #[test]
+    fn only_hover_installs_a_bounded_event_observer_in_the_existing_readiness_call() {
+        let hover =
+            actionability_wait_script("g1-e1", true, None, ActionabilityRequirement::Hover(None));
+        assert!(hover.contains("beginHoverObservation(el, refId, point)"));
+        assert!(hover.contains("window === window.top"));
+        assert!(hover.contains("setTimeout(() => observation.stop(), 5000)"));
+        for requirement in [
+            ActionabilityRequirement::Click,
+            ActionabilityRequirement::Check(true),
+            ActionabilityRequirement::Editable,
+            ActionabilityRequirement::Select,
+            ActionabilityRequirement::Focus,
+        ] {
+            assert!(!actionability_wait_script("g1-e1", true, None, requirement)
+                .contains("beginHoverObservation"));
         }
     }
 
@@ -7565,7 +7667,7 @@ mod tests {
                 );
                 let callback = format!(", () => JSON.parse({value_script})");
                 assert_eq!(script.matches(&callback).count(), 1);
-                assert!(script.contains(&format!("'{expected}', {scroll}{callback})")));
+                assert!(script.contains(&format!("'{expected}', {scroll}{callback}, undefined)")));
                 assert!(script.contains("prepareActionPoint(el, scroll, null)"));
                 let readiness_only = actionability_wait_script("g1-e1", scroll, None, requirement);
                 assert!(!readiness_only.contains(&callback));
