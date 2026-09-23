@@ -51,6 +51,12 @@ function waitForActionableSample(probe, requirement, scroll, valueAction) {
     try {
       first = sample(scroll);
       if (!first) return;
+      if ((requirement === 'check' || requirement === 'uncheck') && first.tag === 'input' &&
+          (first.inputType === 'checkbox' || (first.inputType === 'radio' && requirement === 'check')) &&
+          first.checked === (requirement === 'check')) {
+        finish(first, false);
+        return;
+      }
       if (requirement === 'editable' || requirement === 'select') {
         if (valueAction) first = { ...first, valueActionResult: valueAction() };
         finish(first, false);

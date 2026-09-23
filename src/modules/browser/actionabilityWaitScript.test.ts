@@ -23,7 +23,7 @@ const ready = (overrides: Record<string, unknown> = {}) => ({
 });
 
 function harness(
-  samples = [ready()],
+  samples: Record<string, unknown>[] = [ready()],
   requirement = "pointer",
   scroll = true,
   valueAction?: () => unknown,
@@ -70,6 +70,104 @@ function harness(
 }
 
 describe("bounded actionability frame sampling", () => {
+  it.each([
+    ["checkbox", true],
+    ["checkbox", false],
+    ["radio", true],
+  ] as const)(
+    "%s already checked=%s skips geometry sampling without claiming stability",
+    async (inputType, checked) => {
+      const action = vi.fn();
+      const h = harness(
+        [ready({ tag: "input", inputType, checked })],
+        checked ? "check" : "uncheck",
+        true,
+        action,
+      );
+      expect(await h.result).toMatchObject({ checked, stable: false });
+      expect(h.probe).toHaveBeenCalledTimes(1);
+      expect(h.frames.size + h.timers.size).toBe(0);
+      expect(action).not.toHaveBeenCalled();
+    },
+  );
+
+  it("unchanged checks retain every readiness guard", async () => {
+    for (const bad of [
+      { ok: false, error: "stale_ref" },
+      { visible: false },
+      { enabled: false },
+      { receives: false },
+      { x: Number.NaN },
+    ]) {
+      const h = harness(
+        [ready({ tag: "input", inputType: "checkbox", checked: true, ...bad })],
+        "check",
+      );
+      expect(await h.result).toMatchObject({
+        ...JSON.parse(JSON.stringify(bad)),
+        stable: false,
+      });
+      expect(h.probe).toHaveBeenCalledTimes(1);
+      expect(h.frames.size + h.timers.size).toBe(0);
+    }
+  });
+
+  it("changed checks and invalid controls retain both frame samples", async () => {
+    for (const [requirement, sample] of [
+      ["check", { checked: false }],
+      ["uncheck", { checked: true }],
+      ["check", { checked: "true" }],
+      ["check", { checked: null }],
+      ["check", { tag: "div" }],
+      ["check", { inputType: "text" }],
+      ["uncheck", { inputType: "radio", checked: false }],
+      ["pointer", {}],
+      ["focus", {}],
+    ] as const) {
+      const h = harness(
+        [
+          ready({
+            tag: "input",
+            inputType: "checkbox",
+            checked: true,
+            ...sample,
+          }),
+        ],
+        requirement,
+      );
+      h.frame();
+      h.frame();
+      expect(await h.result).toMatchObject({ stable: true });
+      expect(h.probe).toHaveBeenCalledTimes(3);
+      expect(h.frames.size + h.timers.size).toBe(0);
+    }
+  });
+
+  it("moving checks that need input are not considered stable", async () => {
+    const sample = { tag: "input", inputType: "checkbox", checked: false };
+    const h = harness(
+      [ready(sample), ready({ ...sample, x: 50 }), ready({ ...sample, x: 80 })],
+      "check",
+    );
+    h.frame();
+    h.frame();
+    expect(await h.result).toMatchObject({ stable: false, checked: false });
+    expect(h.probe).toHaveBeenCalledTimes(3);
+  });
+
+  it("changed check frame sampling still rejects identity drift", async () => {
+    const h = harness(
+      [
+        ready({ tag: "input", inputType: "checkbox", checked: false }),
+        { ok: false, error: "stale_ref" },
+      ],
+      "check",
+    );
+    h.frame();
+    expect(await h.result).toMatchObject({ error: "stale_ref", stable: false });
+    expect(h.frames.size + h.timers.size).toBe(0);
+  });
+
   it.each(["editable", "select"])(
     "%s can perform one guarded value action in the ready sample",
     async (requirement) => {

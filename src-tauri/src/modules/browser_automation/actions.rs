@@ -1109,13 +1109,17 @@ async fn handle_action_inner(
             let generation = get_current_generation(tab_id);
             ensure_current_ref(&ref_id, generation)?;
             let target = get_ref_frame_target(tab_id, &ref_id);
-            let actionable = wait_for_actionable_ref(
-                &webview,
-                target.as_ref(),
-                &ref_id,
-                ActionabilityRequirement::Click,
-            )
-            .await?;
+            let actionable = timings
+                .measure(
+                    "actionability",
+                    wait_for_actionable_ref(
+                        &webview,
+                        target.as_ref(),
+                        &ref_id,
+                        ActionabilityRequirement::Check(requested),
+                    ),
+                )
+                .await?;
             if actionable.tag != "input"
                 || !matches!(actionable.input_type.as_str(), "checkbox" | "radio")
             {
@@ -4191,6 +4195,7 @@ async fn execute_ref_script(
 #[derive(Clone, Copy)]
 enum ActionabilityRequirement {
     Click,
+    Check(bool),
     /// A click aimed at a fraction of the box rather than its centre, which is
     /// how a drag inside one element picks its start and end.
     ClickAt(Option<(f64, f64)>),
@@ -4225,6 +4230,7 @@ fn actionability_failure_reason(
     } else if matches!(
         requirement,
         ActionabilityRequirement::Click
+            | ActionabilityRequirement::Check(_)
             | ActionabilityRequirement::ClickAt(_)
             | ActionabilityRequirement::Hover(_)
             | ActionabilityRequirement::Editable
@@ -4346,6 +4352,8 @@ fn actionable_attempt_script(
     let sampler = include_str!("actionabilityWait.js");
     let probe = actionable_probe_script(ref_id, "scroll", position);
     let requirement = match requirement {
+        ActionabilityRequirement::Check(true) => "check",
+        ActionabilityRequirement::Check(false) => "uncheck",
         ActionabilityRequirement::Focus => "focus",
         ActionabilityRequirement::Editable => "editable",
         ActionabilityRequirement::Select => "select",
@@ -4467,6 +4475,24 @@ async fn wait_for_value_action(
     })
 }
 
+fn unchanged_check_sample(parsed: &Value, requirement: ActionabilityRequirement) -> bool {
+    let ActionabilityRequirement::Check(requested) = requirement else {
+        return false;
+    };
+    ["ok", "visible", "enabled", "receives"]
+        .iter()
+        .all(|key| parsed.get(key).and_then(Value::as_bool) == Some(true))
+        && ["x", "y", "width", "height"].iter().all(|key| {
+            parsed
+                .get(key)
+                .and_then(Value::as_f64)
+                .is_some_and(f64::is_finite)
+        })
+        && parsed.get("tag").and_then(Value::as_str) == Some("input")
+        && matches!(parsed.get("inputType").and_then(Value::as_str), Some("checkbox") | Some("radio") if requested || parsed["inputType"] == "checkbox")
+        && parsed.get("checked").and_then(Value::as_bool) == Some(requested)
+}
+
 async fn wait_for_actionable_attempt(
     webview: &Webview,
     target: Option<&RefFrameTarget>,
@@ -4529,6 +4555,7 @@ async fn wait_for_actionable_attempt(
         let stable = parsed.get("stable").and_then(Value::as_bool) == Some(true);
         let requirement_met = match requirement {
             ActionabilityRequirement::Click
+            | ActionabilityRequirement::Check(_)
             | ActionabilityRequirement::ClickAt(_)
             | ActionabilityRequirement::Hover(_) => enabled && receives,
             ActionabilityRequirement::Focus | ActionabilityRequirement::Select => enabled,
@@ -4537,7 +4564,7 @@ async fn wait_for_actionable_attempt(
         let needs_stability = !matches!(
             requirement,
             ActionabilityRequirement::Editable | ActionabilityRequirement::Select
-        );
+        ) && !unchanged_check_sample(&parsed, requirement);
         if visible && (stable || !needs_stability) && requirement_met {
             if target.is_none_or(|target| target.is_main) {
                 super::activity::target(
@@ -7274,6 +7301,63 @@ mod tests {
         assert!(!expression.contains("querySelector"));
         assert!(expression.contains(r#"const refId = "g1-e1\";alert(1)//""#));
         assert!(!expression.contains("const refId = g1-e1"));
+    }
+
+    #[test]
+    fn unchanged_check_requires_exact_state_and_all_readiness_guards() {
+        let sample = json!({"ok":true,"visible":true,"enabled":true,"receives":true,
+            "x":1,"y":2,"width":20,"height":20,"tag":"input","inputType":"checkbox","checked":true});
+        assert!(unchanged_check_sample(
+            &sample,
+            ActionabilityRequirement::Check(true)
+        ));
+        assert!(!unchanged_check_sample(
+            &sample,
+            ActionabilityRequirement::Check(false)
+        ));
+        assert!(!unchanged_check_sample(
+            &sample,
+            ActionabilityRequirement::Click
+        ));
+        for (key, invalid) in [
+            ("ok", json!(false)),
+            ("visible", json!(false)),
+            ("enabled", json!(false)),
+            ("receives", json!(false)),
+            ("x", Value::Null),
+            ("height", json!("20")),
+            ("tag", json!("div")),
+            ("inputType", json!("text")),
+            ("checked", json!("true")),
+            ("checked", Value::Null),
+        ] {
+            let mut bad = sample.clone();
+            bad[key] = invalid;
+            assert!(
+                !unchanged_check_sample(&bad, ActionabilityRequirement::Check(true)),
+                "{key}"
+            );
+        }
+        for input_type in ["checkbox", "radio"] {
+            for checked in [true, false] {
+                let mut exact = sample.clone();
+                exact["inputType"] = json!(input_type);
+                exact["checked"] = json!(checked);
+                assert_eq!(
+                    unchanged_check_sample(&exact, ActionabilityRequirement::Check(checked)),
+                    input_type == "checkbox" || checked
+                );
+            }
+        }
+        for (requested, mode) in [(true, "check"), (false, "uncheck")] {
+            let script = actionability_wait_script(
+                "g1-e1",
+                true,
+                None,
+                ActionabilityRequirement::Check(requested),
+            );
+            assert!(script.contains(&format!("'{mode}', true")));
+        }
     }
 
     #[test]
