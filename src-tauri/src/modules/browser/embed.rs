@@ -682,7 +682,70 @@ async fn spawn_browser_child(
                 .map_err(|error| error.to_string())?;
         }
     }
+    #[cfg(windows)]
+    {
+        let window = window.clone();
+        tauri::async_runtime::spawn(async move {
+            // Out of the way of the tab that was just opened.
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            keep_host_warm(&window);
+        });
+    }
     Ok(())
+}
+
+/// A parked about:blank child that keeps the WebView2 host alive between tabs.
+/// WebView2 shuts the host down with the last tab and starts a fresh one for the
+/// next: an agent that closed its only tab and opened another waited 550 to 700
+/// ms more for the child, then loaded the page in a cold renderer, about 1.5 s
+/// per open across the benchmark sites. Let go after five minutes without a tab.
+#[cfg(windows)]
+const WARM_HOST_LABEL: &str = "browser-host-warm";
+#[cfg(windows)]
+const WARM_HOST_IDLE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+#[cfg(windows)]
+static WARM_HOST_SWEEP: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+fn keep_host_warm(window: &tauri::Window) {
+    let app = window.app_handle().clone();
+    if app.get_webview(WARM_HOST_LABEL).is_none() {
+        let (Ok(profile), Ok(blank)) = (super::data::profile_dir(&app), Url::parse("about:blank"))
+        else {
+            return;
+        };
+        let builder = WebviewBuilder::new(WARM_HOST_LABEL, WebviewUrl::External(blank))
+            .focused(false)
+            .data_directory(profile);
+        let (x, y) = super::presentation::background_origin(64);
+        match window.add_child(builder, PhysicalPosition::new(x, y), PhysicalSize::new(64, 64)) {
+            Ok(webview) => {
+                let _ = webview.hide();
+                super::host::adopt_from_webview(&webview);
+            }
+            Err(error) => {
+                log::warn!("could not keep the browser host warm: {error}");
+                return;
+            }
+        }
+    }
+    if WARM_HOST_SWEEP.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let tick = std::time::Duration::from_secs(60);
+        let mut idle = std::time::Duration::ZERO;
+        loop {
+            tokio::time::sleep(tick).await;
+            idle = if list_active_tab_ids().is_empty() { idle + tick } else { std::time::Duration::ZERO };
+            if idle >= WARM_HOST_IDLE {
+                idle = std::time::Duration::ZERO;
+                if let Some(webview) = app.get_webview(WARM_HOST_LABEL) {
+                    let _ = webview.close();
+                }
+            }
+        }
+    });
 }
 
 /// Have WebView2 tell the shell whenever this tab's page takes focus.
