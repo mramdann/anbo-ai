@@ -9,9 +9,17 @@ const source = readFileSync(
   ),
   "utf8",
 );
+const baselineSource = readFileSync(
+  new URL(
+    "../../../src-tauri/src/modules/browser_automation/revealBaseline.js",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 function harness(select = false) {
   const events: string[] = [];
+  let surfaceScans = 0;
   class Input {
     tagName = "INPUT";
     disabled = false;
@@ -83,26 +91,51 @@ function harness(select = false) {
     // The page the value action runs in: fillValue records where the caller
     // acted so the reply can say what the action changed.
     location: { href: "https://example.test/search" },
-    document: { title: "Example" },
+    document: {
+      title: "Example",
+      querySelectorAll: () => {
+        surfaceScans++;
+        return [];
+      },
+    },
   });
-  vm.runInContext(source, context);
+  vm.runInContext(`${baselineSource}\n${source}`, context);
   return {
     el,
     events,
+    scans: () => surfaceScans,
     detach: () => {
       live = null;
     },
-    run: (text = "b", append = false, verify = true) =>
+    run: (text = "b", append = false, verify = true, capture = false) =>
       vm.runInContext(
         select
           ? `selectValue(el, refRegistry, 'g1-e1', ${JSON.stringify(text)})`
-          : `fillValue(el, refRegistry, 'g1-e1', ${JSON.stringify(text)}, ${append}, ${verify})`,
+          : `fillValue(el, refRegistry, 'g1-e1', ${JSON.stringify(text)}, ${append}, ${verify}, ${capture})`,
         context,
       ),
   };
 }
 
 describe("guarded value actions", () => {
+  it("captures before focus/input and skips work for ordinary or disabled reveal", () => {
+    const h = harness();
+    h.run("plain", false, true, true);
+    expect(h.scans()).toBe(0);
+    h.el.attributes.role = "combobox";
+    h.run("disabled", false, true, false);
+    expect(h.scans()).toBe(0);
+    h.el.focus = () => {
+      expect(h.scans()).toBe(1);
+    };
+    h.el.handler = () => {
+      expect(h.scans()).toBe(1);
+    };
+    const result = h.run("capture", false, true, true);
+    expect(result.ok).toBe(true);
+    expect(result.before.revealToken).toBeGreaterThan(0);
+  });
+
   it("fills and appends with exactly one input/change pair each", () => {
     const h = harness();
     expect(h.run("hello").ok).toBe(true);

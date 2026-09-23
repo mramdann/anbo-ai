@@ -32,11 +32,11 @@ use crate::modules::browser_automation::protocol::error_codes;
 use crate::modules::browser_automation::readable_text::READABLE_TEXT_JS;
 use crate::modules::browser_automation::ref_context::{self, REF_REGISTRY_JS};
 use crate::modules::browser_automation::ref_scan::scan_with_fresh_refs;
-use crate::modules::browser_automation::reveal::{
-    build_reveal_js, parse_reveal, reveal_budget, DEFAULT_REVEAL_MS,
-};
 use crate::modules::browser_automation::registry::{
     get_active_tabs, get_embed_webview, get_tab_lock, remove_tab_lock,
+};
+use crate::modules::browser_automation::reveal::{
+    build_reveal_js, parse_reveal, reveal_budget, DEFAULT_REVEAL_MS, REVEAL_BASELINE_JS,
 };
 use crate::modules::browser_automation::snapshot::{
     build_frame_snapshot_js, build_snapshot_js, commit_generation, format_snapshot,
@@ -1025,7 +1025,14 @@ async fn handle_action_inner(
                 let revealed = timings
                     .measure(
                         "reveal",
-                        run_reveal(&webview, tab_id, target.as_ref(), &ref_id, budget, None, true),
+                        run_reveal(
+                            &webview,
+                            tab_id,
+                            target.as_ref(),
+                            &ref_id,
+                            budget,
+                            RevealAfter::Click,
+                        ),
                     )
                     .await;
                 (webview, dispatch, revealed)
@@ -1327,6 +1334,7 @@ async fn handle_action_inner(
                 )
             })?;
             ensure_bounded(text, MAX_INPUT_TEXT_BYTES, "text")?;
+            let budget = reveal_budget(&params, DEFAULT_REVEAL_MS);
             let append = params
                 .get("append")
                 .and_then(|v| v.as_bool())
@@ -1359,11 +1367,13 @@ async fn handle_action_inner(
                 &format!(
                     r#"
                     {VISIBILITY_JS}
+                    {REVEAL_BASELINE_JS}
                     {VALUE_ACTION_JS}
-                    return JSON.stringify(fillValue(el, refRegistry, refId, {}, {}, {}));"#,
+                    return JSON.stringify(fillValue(el, refRegistry, refId, {}, {}, {}, {}));"#,
                     serde_json::to_string(text).unwrap(),
                     append,
-                    verify_value
+                    verify_value,
+                    budget > 0
                 ),
             );
 
@@ -1406,36 +1416,46 @@ async fn handle_action_inner(
                 // A field the page opens a list under is worth a bounded wait:
                 // the suggestions arrive in this reply instead of costing the
                 // caller a round trip to discover that they arrived at all.
-                let budget = reveal_budget(&params, DEFAULT_REVEAL_MS);
                 if budget > 0 && parsed.get("popup").and_then(Value::as_bool) == Some(true) {
                     let before = parsed.get("before");
-                    let mut revealed =
-                        run_reveal(&webview, tab_id, target.as_ref(), &ref_id, budget, before, false)
-                            .await;
+                    let mut revealed = timings
+                        .measure(
+                            "reveal",
+                            run_reveal(
+                                &webview,
+                                tab_id,
+                                target.as_ref(),
+                                &ref_id,
+                                budget,
+                                RevealAfter::Fill { before, query: text },
+                            ),
+                        )
+                        .await;
                     // Nothing opened, and this is a field things open under.
                     // Some autocompletes only listen for real keystrokes
                     // (Wikipedia's is one), so the value goes in once more
                     // through the input pipeline before the caller is told the
                     // page stayed shut.
-                    let opened =
-                        |value: &Option<Value>| matches!(value, Some(value) if value["count"].as_u64().unwrap_or(0) > 0);
+                    let opened = |value: &Option<Value>| matches!(value, Some(value) if value["count"].as_u64().unwrap_or(0) > 0);
                     if value_verified
+                        && !append
+                        && revealed.is_some()
                         && !opened(&revealed)
-                        && native_retype(&webview, text).await.is_ok()
+                        && timings.measure("nativeRetype", native_retype(&webview, target.as_ref(), &ref_id, text)).await
+                            .map_err(|_| (error_codes::INPUT_NOT_READY.into(), "value was dispatched; native autocomplete input stopped after target/focus/value drift or a transport error; inspect before retrying".into()))?
                     {
-                        if let Some(retried) = run_reveal(
+                        result["nativeRetype"] = json!(true);
+                        if let Some(retried) = timings.measure("fallbackReveal", run_reveal(
                             &webview,
                             tab_id,
                             target.as_ref(),
                             &ref_id,
                             budget,
-                            before,
-                            false,
-                        )
+                            RevealAfter::Fill { before, query: text },
+                        ))
                         .await
                         {
                             if retried["count"].as_u64().unwrap_or(0) > 0 {
-                                result["nativeRetype"] = json!(true);
                                 revealed = Some(retried);
                             }
                         }
@@ -2940,20 +2960,34 @@ fn deep_ref_expression(ref_id: &str, body: &str) -> String {
 /// generation is published only when something was registered: a reveal that
 /// saw nothing has replaced nothing, so the refs the caller already holds stay
 /// live. A failure here never fails the action, which has already happened.
+/// What a reveal follows: a click, which waits only on a control that declares
+/// a popup, or a fill, which knows its field's pre-fill baseline and the text
+/// it put there.
+enum RevealAfter<'a> {
+    Click,
+    Fill {
+        before: Option<&'a Value>,
+        query: &'a str,
+    },
+}
+
 async fn run_reveal(
     webview: &Webview,
     tab_id: i64,
     target: Option<&RefFrameTarget>,
     ref_id: &str,
     budget_ms: u64,
-    before: Option<&Value>,
-    declared_only: bool,
+    after: RevealAfter<'_>,
 ) -> Option<Value> {
     if budget_ms == 0 {
         return None;
     }
     let generation = peek_next_generation(tab_id);
-    let script = build_reveal_js(ref_id, generation, budget_ms, before, declared_only);
+    let (before, declared_only, query) = match after {
+        RevealAfter::Click => (None, true, None),
+        RevealAfter::Fill { before, query } => (before, false, Some(query)),
+    };
+    let script = build_reveal_js(ref_id, generation, budget_ms, before, declared_only, query);
     let frame_id = target
         .filter(|target| !target.is_main)
         .map(|target| target.frame_id.as_str());
@@ -3014,7 +3048,33 @@ const REVEAL_GRACE_MS: u64 = 300;
 /// and exact. Some autocompletes only open for real key events, so a field that
 /// took the value but opened nothing gets one attempt with keystrokes rather
 /// than leaving the caller to discover the silence in another turn.
-async fn native_retype(webview: &Webview, text: &str) -> Result<(), String> {
+async fn native_retype(
+    webview: &Webview,
+    target: Option<&RefFrameTarget>,
+    ref_id: &str,
+    text: &str,
+) -> Result<bool, String> {
+    let guard = |expected: &str| {
+        let expected = serde_json::to_string(expected).unwrap();
+        deep_ref_expression(
+            ref_id,
+            &format!(
+                r#"
+            {VISIBILITY_JS}
+            {VALUE_ACTION_JS}
+            if (valueActionGuard(el, refRegistry, refId, true)) return false;
+            return !el.isContentEditable && el.getRootNode().activeElement === el && el.value === {expected};
+        "#
+            ),
+        )
+    };
+    if execute_ref_script(webview, target, &guard(text))
+        .await?
+        .trim()
+        != "true"
+    {
+        return Ok(false);
+    }
     let modifiers = if cfg!(target_os = "macos") { 4 } else { 2 };
     for event in ["keyDown", "keyUp"] {
         let mut params = json!({
@@ -3033,16 +3093,39 @@ async fn native_retype(webview: &Webview, text: &str) -> Result<(), String> {
         .await?;
     }
     if text.chars().count() > MAX_NATIVE_RETYPE_CHARS {
-        return call_devtools_protocol_method(
+        if execute_ref_script(webview, target, &guard(text))
+            .await?
+            .trim()
+            != "true"
+        {
+            return Err("native input target changed".into());
+        }
+        call_devtools_protocol_method(
             webview,
             "Input.insertText",
             &json!({ "text": text }).to_string(),
             SCRIPT_POLL_TIMEOUT,
         )
-        .await
-        .map(|_| ());
+        .await?;
+        if execute_ref_script(webview, target, &guard(text))
+            .await?
+            .trim()
+            != "true"
+        {
+            return Err("native input value changed".into());
+        }
+        return Ok(true);
     }
+    let mut expected = text.to_string();
+    let mut inserted = String::new();
     for character in text.chars() {
+        if execute_ref_script(webview, target, &guard(&expected))
+            .await?
+            .trim()
+            != "true"
+        {
+            return Err("native input target changed".into());
+        }
         let as_text = character.to_string();
         // Only keyDown carries text: that is the event that produces the
         // character, and a keyUp with text is not a keystroke any page expects.
@@ -3058,8 +3141,17 @@ async fn native_retype(webview: &Webview, text: &str) -> Result<(), String> {
             )
             .await?;
         }
+        inserted.push(character);
+        expected.clone_from(&inserted);
     }
-    Ok(())
+    if execute_ref_script(webview, target, &guard(text))
+        .await?
+        .trim()
+        != "true"
+    {
+        return Err("native input value changed".into());
+    }
+    Ok(true)
 }
 
 fn ref_failure_reason(value: &Value) -> &str {

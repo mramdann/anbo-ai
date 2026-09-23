@@ -9,6 +9,13 @@ const revealSource = readFileSync(
   ),
   "utf8",
 );
+const baselineSource = readFileSync(
+  new URL(
+    "../../../src-tauri/src/modules/browser_automation/revealBaseline.js",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 type Attributes = Record<string, string>;
 
@@ -18,15 +25,51 @@ class Node {
   visible = true;
   localName = "div";
   name = "";
+  type?: string;
+  className = "";
+  /** Text this node holds directly, read back as one text node. */
+  text?: string;
+  isConnected = true;
+  parent: Node | null = null;
 
   constructor(init: Partial<Node> & { attributes?: Attributes } = {}) {
     Object.assign(this, init);
     this.attributes = init.attributes ?? {};
     this.children = init.children ?? [];
+    for (const child of this.children) child.parent = this;
   }
 
   getAttribute(name: string): string | null {
     return this.attributes[name] ?? null;
+  }
+
+  get parentElement(): Node | null {
+    return this.parent;
+  }
+
+  get textContent(): string {
+    return [
+      this.text ?? "",
+      ...this.children.map((child) => child.textContent),
+    ].join("");
+  }
+
+  contains(other: Node | null): boolean {
+    for (let node = other; node; node = node.parent) {
+      if (node === this) return true;
+    }
+    return false;
+  }
+
+  closest(selector: string): Node | null {
+    const roles = [...selector.matchAll(/\[role="([a-z]+)"\]/g)].map(
+      (match) => match[1],
+    );
+    for (let node: Node | null = this; node; node = node.parent) {
+      const role = node.getAttribute("role");
+      if (role && roles.includes(role)) return node;
+    }
+    return null;
   }
 
   descendants(): Node[] {
@@ -36,6 +79,7 @@ class Node {
   // Enough of a matcher for the three selectors reveal.js uses: role lists
   // plus a couple of bare tags.
   querySelectorAll(selector: string): Node[] {
+    if (selector === "*") return this.descendants();
     const roles = [...selector.matchAll(/\[role="([a-z]+)"\]/g)].map(
       (match) => match[1],
     );
@@ -74,6 +118,12 @@ function run(options: {
   };
   registryThrows?: boolean;
   declaredOnly?: boolean;
+  duringAction?: () => void;
+  activeElement?: Node | null;
+  /** The text a type action filled in. */
+  query?: string;
+  /** What the registry resolves a ref to on a given frame; defaults to the node remembered last. */
+  resolve?: (ref: string, frame: number) => Node | null;
 }): Promise<Record<string, unknown>> {
   const remembered: Array<[string, Node]> = [];
   let frames = 0;
@@ -94,8 +144,16 @@ function run(options: {
         return page.title;
       },
       documentElement: { scrollHeight: 1000 },
+      activeElement: options.activeElement ?? null,
       querySelectorAll: (selector: string) =>
         options.body.querySelectorAll(selector),
+      createTreeWalker: (root: Node) => {
+        const texts = [root, ...root.descendants()]
+          .filter((node) => node.text !== undefined)
+          .map((node) => ({ nodeValue: node.text, parentElement: node }));
+        let index = 0;
+        return { nextNode: () => texts[index++] ?? null };
+      },
       getElementById: (id: string) =>
         options.body.descendants().find((node) => node.attributes.id === id) ??
         null,
@@ -106,6 +164,7 @@ function run(options: {
       },
     },
     Date,
+    NodeFilter: { SHOW_TEXT: 4 },
     requestAnimationFrame: (callback: () => void) => {
       frameQueue.push(callback);
       return frameQueue.length;
@@ -123,9 +182,29 @@ function run(options: {
         if (options.registryThrows) throw new Error("stale_scan");
       },
       remember: (ref: string, node: Node) => remembered.push([ref, node]),
+      resolve: (ref: string) => {
+        if (options.resolve) return options.resolve(ref, frames);
+        for (let index = remembered.length - 1; index >= 0; index--) {
+          if (remembered[index][0] === ref) return remembered[index][1];
+        }
+        return null;
+      },
     },
   });
-  vm.runInContext(revealSource, context);
+  vm.runInContext(`${baselineSource}\n${revealSource}`, context);
+  let before = options.before ?? null;
+  if (options.duringAction) {
+    Object.assign(context, {
+      target: options.target,
+      query: options.query ?? null,
+    });
+    const revealToken = vm.runInContext(
+      "captureRevealBaseline(target, query)",
+      context,
+    ) as number;
+    before = { url: page.url, title: page.title, ...{ revealToken } };
+    options.duringAction();
+  }
 
   const promise = vm.runInContext(
     `revealAfterAction(target, ${JSON.stringify({
@@ -134,7 +213,8 @@ function run(options: {
       limit: 10,
       generation: options.generation ?? 7,
       declaredOnly: options.declaredOnly ?? false,
-      before: options.before ?? null,
+      before,
+      query: options.query ?? null,
     })}, refRegistry)`,
     Object.assign(context, { target: options.target }),
   ) as Promise<string>;
@@ -156,6 +236,72 @@ function run(options: {
 }
 
 describe("revealAfterAction", () => {
+  it("recognizes an undeclared list opened synchronously by the action", async () => {
+    const list = new Node({
+      attributes: { role: "listbox" },
+      visible: false,
+      children: [option("Fresh result")],
+    });
+    const old = new Node({
+      attributes: { role: "menu" },
+      children: [option("Unrelated")],
+    });
+    const target = new Node({ attributes: { role: "combobox" } });
+    const result = await run({
+      target,
+      body: new Node({ children: [target, old, list] }),
+      duringAction: () => {
+        list.visible = true;
+      },
+    });
+    expect(result.count).toBe(1);
+    expect(result.items).toEqual([
+      { ref: "g7-r1", role: "option", name: "Fresh result" },
+    ]);
+  });
+
+  it("resolves a replaced declared surface instead of retaining its old node", async () => {
+    const list = new Node({
+      attributes: { role: "listbox", id: "suggestions" },
+      visible: false,
+    });
+    const target = new Node({ attributes: { "aria-controls": "suggestions" } });
+    const body = new Node({ children: [target, list] });
+    const result = await run({
+      target,
+      body,
+      after: {
+        frames: 3,
+        apply: () => {
+          body.children = [
+            target,
+            new Node({
+              attributes: { role: "listbox", id: "suggestions" },
+              children: [option("Replacement")],
+            }),
+          ];
+        },
+      },
+    });
+    expect(result.items).toEqual([
+      { ref: "g7-r1", role: "option", name: "Replacement" },
+    ]);
+  });
+
+  it("does not attribute a pre-existing surface to the action", async () => {
+    const target = new Node({ attributes: { role: "combobox" } });
+    const list = new Node({
+      attributes: { role: "listbox" },
+      children: [option("Old result")],
+    });
+    const result = await run({
+      target,
+      body: new Node({ children: [target, list] }),
+      duringAction: () => {},
+    });
+    expect(result.count).toBe(0);
+  });
+
   it("hands back the declared listbox's options as refs", async () => {
     const list = new Node({
       attributes: { role: "listbox", id: "suggestions" },
@@ -269,6 +415,274 @@ describe("revealAfterAction", () => {
     });
     expect(opened.surface).toBe("menu");
     expect(opened.count).toBe(1);
+  });
+
+  it("hands back the search field an undeclared click focused, still without a sweep", async () => {
+    // TradingView's symbol button declares no popup; its dialog opens with the
+    // search field focused, and the caller spent a find to learn its ref.
+    let sweeps = 0;
+    const field = new Node({
+      localName: "input",
+      type: "search",
+      name: "Symbol, ISIN, or CUSIP",
+    });
+    const dialog = new Node({
+      attributes: { role: "dialog" },
+      children: [field],
+    });
+    const target = new Node({ localName: "button" });
+    const body = new Node({ children: [target, dialog] });
+    body.querySelectorAll = (selector: string) => {
+      sweeps += 1;
+      return Node.prototype.querySelectorAll.call(body, selector);
+    };
+
+    const result = await run({
+      target,
+      body,
+      declaredOnly: true,
+      activeElement: field,
+    });
+    expect(result.surface).toBe("focus");
+    expect(result.items).toEqual([
+      { ref: "g7-r1", role: "searchbox", name: "Symbol, ISIN, or CUSIP" },
+    ]);
+    expect(result.remembered).toEqual([["g7-r1", field]]);
+    expect(sweeps).toBe(0);
+
+    // A plain text field in a dialog counts too: the dialog is what opened.
+    const plain = new Node({ localName: "input", name: "Title" });
+    const edit = await run({
+      target,
+      body: new Node({
+        children: [
+          target,
+          new Node({ attributes: { role: "dialog" }, children: [plain] }),
+        ],
+      }),
+      declaredOnly: true,
+      activeElement: plain,
+    });
+    expect(edit.items).toEqual([
+      { ref: "g7-r1", role: "textbox", name: "Title" },
+    ]);
+  });
+
+  it("does not report focus that says nothing about what the click opened", async () => {
+    const target = new Node({ localName: "button" });
+    const outside = new Node({ localName: "input", name: "Email" });
+    const checkbox = new Node({ localName: "input", type: "checkbox" });
+    const hidden = new Node({
+      localName: "input",
+      type: "search",
+      visible: false,
+    });
+    new Node({ attributes: { role: "dialog" }, children: [checkbox, hidden] });
+    const body = new Node({ children: [target, outside] });
+    for (const activeElement of [null, target, outside, checkbox, hidden]) {
+      const result = await run({
+        target,
+        body,
+        declaredOnly: true,
+        activeElement,
+      });
+      expect(result.surface).toBeNull();
+      expect(result.count).toBe(0);
+      expect(result.remembered).toEqual([]);
+    }
+  });
+
+  it("re-registers a field whose ref went stale while its dialog was still mounting", async () => {
+    // v37: every TradingView ref taken on the first frame failed as
+    // context_changed on the caller's next call.
+    const field = new Node({
+      localName: "input",
+      type: "search",
+      name: "Find",
+    });
+    const target = new Node({ localName: "button" });
+    const result = await run({
+      target,
+      body: new Node({ children: [target, field] }),
+      declaredOnly: true,
+      activeElement: field,
+      resolve: (_ref, frame) => (frame === 1 ? null : field),
+    });
+    expect(result.items).toEqual([
+      { ref: "g7-r1", role: "searchbox", name: "Find" },
+    ]);
+    expect(result.remembered).toEqual([
+      ["g7-r1", field],
+      ["g7-r1", field],
+    ]);
+  });
+
+  it("hands back nothing when the focused field never settles", async () => {
+    const field = new Node({
+      localName: "input",
+      type: "search",
+      name: "Find",
+    });
+    const target = new Node({ localName: "button" });
+    const result = await run({
+      target,
+      body: new Node({ children: [target, field] }),
+      declaredOnly: true,
+      activeElement: field,
+      resolve: () => null,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.surface).toBeNull();
+    expect(result.count).toBe(0);
+  });
+
+  it("reads the new rows that carry the typed text inside the dialog the field sits in", async () => {
+    // TradingView: the symbol search dialog is already open, and its results
+    // are plain repeated divs with no role, so no surface ever opens.
+    const row = (name: string, symbol: string) =>
+      new Node({
+        className: "itemRow",
+        name,
+        children: [
+          new Node({ localName: "span", text: symbol.slice(0, 1) }),
+          new Node({ localName: "em", text: symbol }),
+        ],
+      });
+    const field = new Node({ localName: "input", type: "search" });
+    // A default row that already matched before the fill is not an answer.
+    const list = new Node({
+      className: "list",
+      children: [
+        row("E ETHUSDT (recent)", "ETHUSDT"),
+        row("B BTCUSDT", "BTCUSDT"),
+      ],
+    });
+    const dialog = new Node({
+      attributes: { role: "dialog" },
+      children: [field, list],
+    });
+    const fresh = [
+      row("E ETHUSDT Ethereum / TetherUS Binance", "ETHUSDT"),
+      row("E ETHUSDT Bybit", "ETHUSDT"),
+      row("S SOLUSDT", "SOLUSDT"),
+    ];
+    const result = await run({
+      target: field,
+      body: new Node({ children: [dialog] }),
+      query: "ethusdt",
+      duringAction: () => {
+        list.children = fresh;
+        for (const item of fresh) item.parent = list;
+      },
+    });
+    expect(result.surface).toBe("results");
+    expect(result.items).toEqual([
+      {
+        ref: "g7-r1",
+        role: "option",
+        name: "E ETHUSDT Ethereum / TetherUS Binance",
+      },
+      { ref: "g7-r2", role: "option", name: "E ETHUSDT Bybit" },
+    ]);
+  });
+
+  it("points a row laid out with display: contents at its rendered part", async () => {
+    // TradingView: the list item itself has no box; its symbol column does,
+    // and a click there bubbles to the row. The item keeps the row name.
+    const row = (name: string, symbol: string) =>
+      new Node({
+        className: "itemRow",
+        name,
+        visible: false,
+        children: [
+          new Node({ localName: "span", visible: false }),
+          new Node({
+            className: "symbol",
+            name: symbol,
+            children: [new Node({ localName: "em", text: symbol })],
+          }),
+        ],
+      });
+    const field = new Node({ localName: "input", type: "search" });
+    const list = new Node({ className: "list", children: [] });
+    const dialog = new Node({
+      attributes: { role: "dialog" },
+      children: [field, list],
+    });
+    const fresh = [
+      row("E ETHUSDT Ethereum / TetherUS Binance", "ETHUSDT"),
+      row("E ETHUSDT Bybit", "ETHUSDT"),
+    ];
+    const result = await run({
+      target: field,
+      body: new Node({ children: [dialog] }),
+      query: "ethusdt",
+      duringAction: () => {
+        list.children = fresh;
+        for (const item of fresh) item.parent = list;
+      },
+    });
+    expect(result.items).toEqual([
+      {
+        ref: "g7-r1",
+        role: "option",
+        name: "E ETHUSDT Ethereum / TetherUS Binance",
+      },
+      { ref: "g7-r2", role: "option", name: "E ETHUSDT Bybit" },
+    ]);
+    expect((result.remembered as Array<[string, Node]>)[0][1]).toBe(
+      fresh[0].children[1],
+    );
+  });
+
+  it("does not answer a fill with rows the dialog already showed", async () => {
+    const row = (symbol: string) =>
+      new Node({
+        className: "itemRow",
+        name: symbol,
+        children: [
+          new Node({ localName: "span", text: "E" }),
+          new Node({ localName: "em", text: symbol }),
+        ],
+      });
+    const field = new Node({ localName: "input", type: "search" });
+    const dialog = new Node({
+      attributes: { role: "dialog" },
+      children: [
+        field,
+        new Node({
+          className: "list",
+          children: [row("ETHUSDT"), row("ETHBTC")],
+        }),
+      ],
+    });
+    const result = await run({
+      target: field,
+      body: new Node({ children: [dialog] }),
+      query: "ethusdt",
+      duringAction: () => {},
+    });
+    expect(result.count).toBe(0);
+    expect(result.surface).toBeNull();
+  });
+
+  it("keeps the reply when the focused field cannot be registered", async () => {
+    const field = new Node({
+      localName: "input",
+      type: "search",
+      name: "Find",
+    });
+    const target = new Node({ localName: "button" });
+    const result = await run({
+      target,
+      body: new Node({ children: [target, field] }),
+      declaredOnly: true,
+      activeElement: field,
+      registryThrows: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.surface).toBeNull();
+    expect(result.count).toBe(0);
   });
 
   it("reports nothing rather than guessing when nothing opens", async () => {

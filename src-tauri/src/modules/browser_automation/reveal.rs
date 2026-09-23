@@ -12,6 +12,7 @@ use super::ref_context::REF_REGISTRY_JS;
 use super::visibility::VISIBILITY_JS;
 
 const REVEAL_JS: &str = include_str!("reveal.js");
+pub const REVEAL_BASELINE_JS: &str = include_str!("revealBaseline.js");
 
 /// Waiting this long is worth it because the alternative is another turn.
 pub const DEFAULT_REVEAL_MS: u64 = 400;
@@ -44,13 +45,23 @@ pub fn build_reveal_js(
     budget_ms: u64,
     before: Option<&Value>,
     declared_only: bool,
+    query: Option<&str>,
 ) -> String {
+    let baseline_js = if before
+        .and_then(|value| value["revealToken"].as_u64())
+        .is_some()
+    {
+        REVEAL_BASELINE_JS
+    } else {
+        "const readRevealBaseline = () => null;"
+    };
     let options = json!({
         "budgetMs": budget_ms,
         "refPrefix": reveal_ref_prefix(generation),
         "limit": REVEAL_ITEM_LIMIT,
         "generation": generation,
         "declaredOnly": declared_only,
+        "query": query,
         "before": before.cloned().unwrap_or(Value::Null),
     });
     format!(
@@ -60,6 +71,7 @@ pub fn build_reveal_js(
             const el = refRegistry.resolve(refId);
             {VISIBILITY_JS}
             {ACCESSIBLE_NAME_JS}
+            {baseline_js}
             {REVEAL_JS}
             return revealAfterAction(el, {options}, refRegistry);
         }})()"#,
@@ -122,10 +134,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn baseline_lookup_is_only_included_for_a_captured_input() {
+        let captured = build_reveal_js("g1-e1", 2, 400, Some(&json!({"revealToken": 1})), false, None);
+        assert!(captured.contains("function readRevealBaseline"));
+        let click = build_reveal_js("g1-e1", 2, 400, None, true, None);
+        assert!(!click.contains("function readRevealBaseline"));
+        assert!(click.contains("const readRevealBaseline = () => null;"));
+    }
+
+    #[test]
     fn budget_defaults_and_clamps() {
-        assert_eq!(reveal_budget(&json!({}), DEFAULT_REVEAL_MS), DEFAULT_REVEAL_MS);
+        assert_eq!(
+            reveal_budget(&json!({}), DEFAULT_REVEAL_MS),
+            DEFAULT_REVEAL_MS
+        );
         assert_eq!(reveal_budget(&json!({ "reveal": 0 }), DEFAULT_REVEAL_MS), 0);
-        assert_eq!(reveal_budget(&json!({ "reveal": 120 }), DEFAULT_REVEAL_MS), 120);
+        assert_eq!(
+            reveal_budget(&json!({ "reveal": 120 }), DEFAULT_REVEAL_MS),
+            120
+        );
         assert_eq!(
             reveal_budget(&json!({ "reveal": 99_000 }), DEFAULT_REVEAL_MS),
             MAX_REVEAL_MS
@@ -144,17 +171,19 @@ mod tests {
     #[test]
     fn reveal_refs_carry_their_generation() {
         assert_eq!(reveal_ref_prefix(12), "g12-e");
-        let script = build_reveal_js("g12-e3", 13, 250, None, false);
+        let script = build_reveal_js("g12-e3", 13, 250, None, false, Some("ETHUSDT"));
         assert!(script.contains("\"refPrefix\":\"g13-e\""));
         assert!(script.contains("\"budgetMs\":250"));
+        // The typed text travels as data, never as script.
+        assert!(script.contains("\"query\":\"ETHUSDT\""));
         assert!(script.contains("revealAfterAction(el,"));
         assert!(script.contains("refRegistry.resolve(refId)"));
     }
 
     #[test]
     fn a_click_waits_only_on_a_control_that_declares_a_popup() {
-        assert!(build_reveal_js("g1-e1", 2, 400, None, true).contains("\"declaredOnly\":true"));
-        assert!(build_reveal_js("g1-e1", 2, 400, None, false).contains("\"declaredOnly\":false"));
+        assert!(build_reveal_js("g1-e1", 2, 400, None, true, None).contains("\"declaredOnly\":true"));
+        assert!(build_reveal_js("g1-e1", 2, 400, None, false, None).contains("\"declaredOnly\":false"));
     }
 
     #[test]

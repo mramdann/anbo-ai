@@ -24,12 +24,13 @@ function opensASurface(el) {
   return el instanceof HTMLInputElement && String(el.type || '').toLowerCase() === 'search';
 }
 
-function fillValue(el, refRegistry, refId, text, append, verify = true) {
+function fillValue(el, refRegistry, refId, text, append, verify = true, captureReveal = false) {
   let error = valueActionGuard(el, refRegistry, refId, true);
   if (error) return { ok: false, error };
   // Read before the mutation: what the page looked like when the caller acted.
   const before = { url: String(location.href).slice(0, 2000), title: String(document.title || '').slice(0, 500) };
   const popup = opensASurface(el);
+  if (popup && captureReveal) before.revealToken = captureRevealBaseline(el, text);
   el.focus();
   error = valueActionGuard(el, refRegistry, refId, true);
   if (error) return { ok: false, error };
