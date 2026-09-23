@@ -4,7 +4,14 @@ function waitForActionableSample(probe, requirement, scroll, valueAction, onRead
     let timer = null;
     let finished = false;
     let first;
+    let firstAt = NaN;
     let previous;
+    // The call-time sample and the next frame already span a frame boundary,
+    // one frame sooner on a page that keeps rendering. Never closer than the
+    // two frames of a 60 Hz display, so a timer-driven slide shows no less than
+    // it did there, and never across our own scroll, answered on later frames.
+    const quickSpanMs = 16;
+    const now = () => (typeof performance === 'object' ? performance.now() : NaN);
     const keys = ['x', 'y', 'width', 'height'];
     const ready = value => value?.ok === true && value.visible === true &&
       keys.every(key => Number.isFinite(value[key])) &&
@@ -40,9 +47,11 @@ function waitForActionableSample(probe, requirement, scroll, valueAction, onRead
       if (finished) return;
       frame = null;
       try {
+        const quick = !previous && first.scrolled !== true && now() - firstAt >= quickSpanMs;
         const current = sample(false);
         if (!current) return;
         if (previous) finish(current, stable(previous, current));
+        else if (quick && stable(first, current)) finish(current, true);
         else {
           previous = current;
           frame = requestAnimationFrame(onFrame);
@@ -51,6 +60,7 @@ function waitForActionableSample(probe, requirement, scroll, valueAction, onRead
     };
     try {
       first = sample(scroll);
+      firstAt = now();
       if (!first) return;
       if ((requirement === 'check' || requirement === 'uncheck') && first.tag === 'input' &&
           (first.inputType === 'checkbox' || (first.inputType === 'radio' && requirement === 'check')) &&

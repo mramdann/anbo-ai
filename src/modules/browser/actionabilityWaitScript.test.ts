@@ -28,6 +28,7 @@ function harness(
   scroll = true,
   valueAction?: () => unknown,
   onReady?: (point: unknown) => unknown,
+  clock?: number[],
 ) {
   let id = 0;
   let index = 0;
@@ -53,6 +54,9 @@ function harness(
       cancelAnimationFrame: (key: number) => frames.delete(key),
       setTimeout,
       clearTimeout: (key: number) => timers.delete(key),
+      ...(clock && {
+        performance: { now: () => clock.shift() ?? Number.NaN },
+      }),
     },
   ) as Promise<string>;
   const run = (callbacks: Map<number, () => void>) => {
@@ -322,6 +326,65 @@ describe("bounded actionability frame sampling", () => {
     expect(await h.result).toMatchObject({ stable: true });
     expect(h.probe.mock.calls).toEqual([[true], [false], [false]]);
     expect(h.frames.size + h.timers.size).toBe(0);
+  });
+
+  it("accepts the call-time sample and the next frame when far enough apart", async () => {
+    const h = harness([ready()], "pointer", true, undefined, undefined, [0, 16]);
+    h.frame();
+    expect(await h.result).toMatchObject({ stable: true });
+    expect(h.probe.mock.calls).toEqual([[true], [false]]);
+    expect(h.frames.size + h.timers.size).toBe(0);
+  });
+
+  it("keeps two frame samples when the next frame comes too soon", async () => {
+    const h = harness([ready()], "pointer", true, undefined, undefined, [0, 15]);
+    h.frame();
+    expect(h.frames.size).toBe(1);
+    h.frame();
+    expect(await h.result).toMatchObject({ stable: true });
+    expect(h.probe).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps two frame samples after scrolling the target into view", async () => {
+    const h = harness(
+      [ready({ scrolled: true }), ready()],
+      "pointer",
+      true,
+      undefined,
+      undefined,
+      [0, 30],
+    );
+    h.frame();
+    expect(h.frames.size).toBe(1);
+    h.frame();
+    expect(await h.result).toMatchObject({ stable: true });
+    expect(h.probe).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not take the quick path over movement since the call", async () => {
+    const moving = harness(
+      [ready(), ready({ x: 22 }), ready({ x: 24 })],
+      "pointer",
+      true,
+      undefined,
+      undefined,
+      [0, 30],
+    );
+    moving.frame();
+    moving.frame();
+    expect(await moving.result).toMatchObject({ stable: false, x: 24 });
+    const settled = harness(
+      [ready(), ready({ x: 22 })],
+      "pointer",
+      true,
+      undefined,
+      undefined,
+      [0, 30],
+    );
+    settled.frame();
+    settled.frame();
+    expect(await settled.result).toMatchObject({ stable: true, x: 22 });
+    expect(settled.probe).toHaveBeenCalledTimes(3);
   });
 
   it("does not accept geometry that changes between render frames", async () => {

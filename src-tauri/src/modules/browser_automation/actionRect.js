@@ -34,7 +34,7 @@ const prepareActionPoint = (element, scroll, position) => {
     let point = actionPoint(element, position);
     if (scroll && !receivesActionPointer(element, point)) {
         element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-        point = actionPoint(element, position);
+        point = { ...actionPoint(element, position), scrolled: true };
     }
     return point;
 };
