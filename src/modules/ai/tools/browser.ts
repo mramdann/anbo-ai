@@ -263,10 +263,17 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_type: tool({
       description:
-        "Type into a current ref and verify its value. An autocomplete or combobox field also returns its suggestions in revealed with refs. Before Enter, pass ref and expectedValue to browser_press_key to detect subsequent resets/replacements.",
+        "Type into a current ref and verify its value. An autocomplete or combobox field also returns its suggestions in revealed with refs. submit:true presses Enter on the same field in this call, value-guarded like browser_press_key, and waitFor checks the result.",
       inputSchema: withLocator(
         z.object({
           text: z.string().describe("Text content to type into the field."),
+          submit: z
+            .boolean()
+            .optional()
+            .describe("Press Enter on this field after filling it."),
+          waitFor: pageExpectation
+            .optional()
+            .describe("Expected page state after the fill or its submit."),
           reveal: revealBudget,
           append: z
             .boolean()

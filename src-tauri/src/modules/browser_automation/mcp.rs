@@ -39,6 +39,7 @@ pub const SERVER_INSTRUCTIONS: &str = concat!(
     "A click or type that opens a menu, date picker or autocomplete returns ",
     "its items in revealed with refs: act on one of those instead of looking ",
     "the page up again. ",
+    "To search, browser_type with submit:true and waitFor types and presses Enter in one call. ",
     "Use waitFor to describe the result you expect (each navigation-shaped ",
     "action reply carries page.url and page.title, so no separate URL read), a ",
     "read of that result with browser_get_text or browser_find (both take ",
@@ -164,7 +165,7 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_focus", "description": "Focus a visible enabled element by ref without activating the user's workspace.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone() }, "required": ["tabId", "ref"] } },
         { "name": "browser_check", "description": "Set a checkbox or radio ref to the requested checked state and verify the result.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "checked": { "type": "boolean", "default": true } }, "required": ["tabId", "ref"] } },
         { "name": "browser_drag", "description": "Native mouse drag from one ref to another, or inside one element by passing the same ref twice with sourcePosition and targetPosition (fractions of the element, e.g. {x:0.7,y:0.5} to {x:0.4,y:0.5} pans a chart left). Both points must be visible; nothing is retried automatically.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "sourceRef": refr.clone(), "targetRef": refr.clone(), "sourcePosition": fraction_point_prop("Where the press lands inside sourceRef, as fractions strictly between 0 and 1 (0.5 is the center), not pixels."), "targetPosition": fraction_point_prop("Where the release lands inside targetRef, as fractions strictly between 0 and 1, not pixels.") }, "required": ["tabId", "sourceRef", "targetRef"] } },
-        { "name": "browser_type", "description": "Fill a known input directly using its ref or semantic locator; find only to discover or disambiguate. Sets value and emits input/change once, not per-key events. Returns the ref and immediate valueVerified. An autocomplete or combobox field also waits briefly and returns its suggestions in revealed with refs, so picking one costs no extra call; submit separately with press and waitFor.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "text": { "type": "string" }, "reveal": reveal.clone(), "append": { "type": "boolean", "description": "Append to existing value instead of replacing it." }, "verifyValue": { "type": "boolean", "description": "Verify the field kept the typed value (default true). Set false for canvas, terminal, or remote-desktop inputs that capture keystrokes then clear the field, where the retain check would be a false input_mismatch; the value is still dispatched, so confirm via screenshot." }, "force": { "type": "boolean", "description": "Skip the viewport/hit-test actionability gate and dispatch into the resolved element even when it is off-viewport or covered (e.g. a canvas, terminal, or remote-desktop hidden input). The field must still be rendered, enabled and editable — this skips actionability, not safety. Prefer browser_focus first when it works; confirm the result via screenshot." } }, "required": ["tabId", "ref", "text"] } },
+        { "name": "browser_type", "description": "Fill a known input by ref or locator; find only to discover or disambiguate. Sets the value once with input/change, not per key, and returns the ref and immediate valueVerified. An autocomplete field also returns its suggestions in revealed with refs, as does a dialog search with its new result rows. submit:true then presses Enter in this call, value-guarded like browser_press, and waitFor checks the result.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "text": { "type": "string" }, "reveal": reveal.clone(), "append": { "type": "boolean", "description": "Append to existing value instead of replacing it." }, "verifyValue": { "type": "boolean", "description": "Verify the field kept the value (default true). false for canvas, terminal or remote-desktop inputs that clear after capturing keys; the value is still sent, so confirm by screenshot." }, "force": { "type": "boolean", "description": "Skip the viewport/hit-test gate for an off-viewport or covered input (canvas, terminal, remote desktop). It must still be rendered, enabled and editable. Try browser_focus first; confirm by screenshot." } }, "required": ["tabId", "ref", "text"] } },
         { "name": "browser_fill_form", "description": "Fill several fields in one call, in order. Each field names its target by ref or a unique locator and carries exactly one of text (typed and verified like browser_type, replacing the value), checked (checkbox or radio) or option (select value or label). Stops at the first field that fails and says which fields were done; never submits.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "fields": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "type": "object", "additionalProperties": false, "properties": { "ref": refr.clone(), "text": { "type": "string" }, "checked": { "type": "boolean" }, "option": { "type": "string" } } } } }, "required": ["tabId", "fields"] } },
         { "name": "browser_press", "description": "Press a keyboard key through the browser input pipeline (e.g. Enter, Tab). Key dispatch holds the tab lock, but Enter observation does not, so stop and navigation remain responsive. submissionObserved and navigationObserved report only effects seen within the bounded observation window; false does not mean dispatch failed.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "key": { "type": "string" }, "observationTimeout": { "type": "integer", "minimum": 0, "maximum": 10000, "default": 3000, "description": "Milliseconds to observe submit or navigation after Enter without holding the tab lock. Ignored for other keys." } }, "required": ["tabId", "key"] } },
         { "name": "browser_scroll", "description": "Scroll the page by x/y pixels.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "x": { "type": "number" }, "y": { "type": "number" } }, "required": ["tabId"] } },
@@ -230,7 +231,18 @@ pub fn tool_definitions() -> Value {
             "browser_click" | "browser_press" | "browser_wait"
         ) {
             tool["inputSchema"]["properties"]["waitFor"] = page_expectation_prop();
-            tool["inputSchema"]["properties"]["diagnostics"] = json!({"type":"boolean", "default":false, "description":"Opt-in phase timings in the reply; no input values are included."});
+        }
+        if name == "browser_type" {
+            // The press path validates it; the full schema already rides on
+            // click, press and wait, so a pointer keeps the budget.
+            tool["inputSchema"]["properties"]["submit"] = json!({"type":"boolean","default":false,"description":"Press Enter after filling; skips suggestion waits."});
+            tool["inputSchema"]["properties"]["waitFor"] = json!({"type":"object","description":"Same fields as browser_press waitFor; checked after the fill or its submit."});
+        }
+        if matches!(
+            name.as_str(),
+            "browser_click" | "browser_press" | "browser_wait" | "browser_type" | "browser_check"
+        ) {
+            tool["inputSchema"]["properties"]["diagnostics"] = json!({"type":"boolean", "default":false, "description":"Phase timings, without input values."});
         }
         if name == "browser_press" {
             tool["inputSchema"]["properties"]["ref"] = ref_prop();
@@ -562,6 +574,7 @@ mod tests {
             );
         }
         assert!(SERVER_INSTRUCTIONS.contains("revealed"));
+        assert!(SERVER_INSTRUCTIONS.contains("browser_type with submit:true"));
     }
 
     #[test]
@@ -991,6 +1004,19 @@ mod tests {
             press["inputSchema"]["properties"]["expectedValue"]["maxLength"],
             65536
         );
+        for name in ["browser_type", "browser_check"] {
+            let tool = tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap();
+            let properties = &tool["inputSchema"]["properties"];
+            assert_eq!(properties["diagnostics"]["default"], false);
+            // Only a submitted type has a result to wait for.
+            assert_eq!(properties.get("waitFor").is_some(), name == "browser_type");
+            assert_eq!(properties.get("submit").is_some(), name == "browser_type");
+        }
         for name in ["browser_press", "browser_click", "browser_wait"] {
             let tool = tools
                 .as_array()

@@ -174,12 +174,34 @@ pub fn input_guard_body(expected_value: Option<&str>) -> String {
         const value = el.isContentEditable ? (el.textContent || '') : el.value;
         if (expected !== null && value !== expected) return JSON.stringify({{ok:false,error:'input_mismatch'}});
         if (el.disabled || el.readOnly || el.getAttribute('aria-disabled') === 'true') return JSON.stringify({{ok:false,error:'input_not_ready'}});
+        const holds = node => {{ const active = node.getRootNode().activeElement; return active === node || node.contains(active); }};
         el.focus({{preventScroll:true}});
-        const root = el.getRootNode();
-        if (root.activeElement !== el && !el.contains(root.activeElement)) return JSON.stringify({{ok:false,error:'input_not_ready'}});
+        let focusedAncestor = null;
+        if (!holds(el)) {{
+            // A <video> or a plain container cannot take focus; the player or widget
+            // around it can, and that is where its shortcuts listen. An input guarded
+            // by expectedValue must be the input itself, so it never moves.
+            if (expected !== null) return JSON.stringify({{ok:false,error:'input_not_ready'}});
+            const parent = node => node.assignedSlot || node.parentElement || node.getRootNode?.().host || null;
+            for (let node = parent(el), depth = 0; node && depth < 8; node = parent(node), depth++) {{
+                if (node === document.body || node === document.documentElement) break;
+                if (!(node.hasAttribute?.('tabindex') || node.tabIndex >= 0)) continue;
+                if (node.disabled || node.getAttribute('aria-disabled') === 'true') continue;
+                node.focus({{preventScroll:true}});
+                if (holds(node)) {{ focusedAncestor = node; break; }}
+            }}
+            if (!focusedAncestor) return JSON.stringify({{ok:false,error:'input_not_ready'}});
+        }}
         const focusedValue = el.isContentEditable ? (el.textContent || '') : el.value;
         if (!el.isConnected || (expected !== null && focusedValue !== expected)) return JSON.stringify({{ok:false,error:'input_mismatch'}});
-        return JSON.stringify({{ok:true}});
+        if (!focusedAncestor) return JSON.stringify({{ok:true}});
+        const label = (focusedAncestor.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+        return JSON.stringify({{ok:true, focusedAncestor: {{
+            tag: focusedAncestor.localName,
+            id: focusedAncestor.id || undefined,
+            role: focusedAncestor.getAttribute('role') || undefined,
+            name: label || undefined
+        }}}});
     "#
     )
 }
@@ -235,6 +257,18 @@ mod tests {
             .script()
             .contains(&serde_json::to_string(value).unwrap()));
         assert!(input_guard_body(Some(value)).contains(&serde_json::to_string(value).unwrap()));
+    }
+
+    #[test]
+    fn unfocusable_targets_hand_the_key_to_a_focusable_ancestor_only_without_a_value_guard() {
+        let body = input_guard_body(None);
+        // A value-guarded input must take the key itself.
+        assert!(body.contains("if (expected !== null) return JSON.stringify({ok:false,error:'input_not_ready'});"));
+        // The walk is bounded, composed, stops at the document and reports what took focus.
+        assert!(body.contains("depth < 8"));
+        assert!(body.contains("node.assignedSlot || node.parentElement || node.getRootNode?.().host"));
+        assert!(body.contains("if (node === document.body || node === document.documentElement) break;"));
+        assert!(body.contains("focusedAncestor: {"));
     }
 
     #[test]

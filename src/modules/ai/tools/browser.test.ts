@@ -230,6 +230,26 @@ describe("AI browser tools", () => {
     ]);
   });
 
+  it("submits a typed field in the same call with its expected result", async () => {
+    const waitFor = { url: "*results*", timeout: 4000 };
+    await run("browser_type", {
+      ref: "g4-e1",
+      text: "lofi",
+      submit: true,
+      waitFor,
+    });
+    expect(JSON.parse(invokeMock.mock.calls[0][1].requestJson)).toEqual(
+      expect.objectContaining({
+        action: "type",
+        tabId: 42,
+        ref: "g4-e1",
+        text: "lofi",
+        submit: true,
+        waitFor,
+      }),
+    );
+  });
+
   it("targets the active preview with snapshot refs", async () => {
     await run("browser_click", { ref: "e7" });
 

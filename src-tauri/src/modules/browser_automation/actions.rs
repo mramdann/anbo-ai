@@ -337,9 +337,12 @@ pub(crate) const ELEMENT_PROPERTIES: [&str; 25] = [
 ];
 
 /// Actions after which the agent wants to know where the tab is.
-const LANDING_METHODS: [&str; 11] = [
+const LANDING_METHODS: [&str; 12] = [
     "click",
     "double_click",
+    // A pan or a slider moves maps and viewers to a new URL; without the page
+    // block the agent spent a ToolSearch and a page_info to read it back.
+    "drag",
     "press_key",
     "press",
     "key",
@@ -522,6 +525,10 @@ async fn handle_action_inner(
         ));
     }
     if params.get("locator").is_some() {
+        // A malformed submit is refused before the lookup can spend its timeout.
+        if matches!(method, "type" | "type_text") {
+            type_submit(&params)?;
+        }
         if params.get("ref").is_some()
             || (method == "drag"
                 && (params.get("sourceRef").is_some() || params.get("targetRef").is_some()))
@@ -1028,7 +1035,7 @@ async fn handle_action_inner(
             // visible the wait ends after a couple of frames, so an ordinary
             // click keeps paying almost nothing for it.
             let budget = reveal_budget(&params, DEFAULT_REVEAL_MS);
-            let (webview, dispatch, revealed) = {
+            let (webview, dispatch, revealed, media) = {
                 let _lock = timings.measure("queue", tab_lock.lock()).await;
                 let webview = get_embed_webview(app, tab_id)
                     .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
@@ -1059,7 +1066,18 @@ async fn handle_action_inner(
                         ),
                     )
                     .await;
-                (webview, dispatch, revealed)
+                // A click that starts a navigation leaves nothing to report and
+                // must not wait on a document that is going away.
+                let media = if active_loading(tab_id) == Some(true)
+                    || active_pending_url(tab_id).is_some()
+                {
+                    None
+                } else {
+                    timings
+                        .measure("media", media_state(&webview, target.as_ref(), &ref_id))
+                        .await
+                };
+                (webview, dispatch, revealed, media)
             };
             let mut result = json!({
                 "tabId": tab_id,
@@ -1070,12 +1088,12 @@ async fn handle_action_inner(
             if click_count == 2 {
                 result["clickCount"] = json!(2);
             }
-            if let Some(revealed) = revealed
-                .filter(|revealed| {
-                    revealed["count"].as_u64().unwrap_or(0) > 0
-                        || revealed.get("observed").is_some()
-                })
-            {
+            if let Some(media) = media {
+                result["media"] = media;
+            }
+            if let Some(revealed) = revealed.filter(|revealed| {
+                revealed["count"].as_u64().unwrap_or(0) > 0 || revealed.get("observed").is_some()
+            }) {
                 merge_reveal(&mut result, revealed);
             }
             if let Some(expectation) = expectation {
@@ -1358,7 +1376,13 @@ async fn handle_action_inner(
                 )
             })?;
             ensure_bounded(text, MAX_INPUT_TEXT_BYTES, "text")?;
-            let budget = reveal_budget(&params, DEFAULT_REVEAL_MS);
+            let (submit, submit_expectation) = type_submit(&params)?;
+            // Suggestions are not worth waiting for when the field is submitted.
+            let budget = if submit {
+                0
+            } else {
+                reveal_budget(&params, DEFAULT_REVEAL_MS)
+            };
             let append = params
                 .get("append")
                 .and_then(|v| v.as_bool())
@@ -1486,6 +1510,53 @@ async fn handle_action_inner(
                     }
                     if let Some(revealed) = revealed {
                         merge_reveal(&mut result, revealed);
+                    }
+                }
+                let fill_expectation = if submit {
+                    None
+                } else {
+                    PageExpectation::parse(submit_expectation.as_ref())?
+                };
+                if let Some(expectation) = fill_expectation {
+                    // Waits release the tab lock between polls, like click's.
+                    drop(_lock);
+                    result["postcondition"] = timings
+                        .measure("postcondition", wait_for_page_state(&webview, tab_id, &expectation))
+                        .await
+                        .map_err(|(code, message)| {
+                            (code, format!("the text was typed, but {message}; inspect the page before typing again"))
+                        })?;
+                    return Ok(result);
+                }
+                if submit {
+                    // browser_press takes the same tab lock.
+                    drop(_lock);
+                    let mut press = json!({ "tabId": tab_id, "ref": ref_id, "key": "Enter" });
+                    // Refuse to submit a field the page replaced or rewrote
+                    // between the fill and the key. An appended value is not
+                    // known here, so only the ref identity guards it.
+                    if !append && value_verified {
+                        press["expectedValue"] = json!(text);
+                    }
+                    if let Some(expectation) = submit_expectation {
+                        press["waitFor"] = expectation;
+                    }
+                    let pressed = Box::pin(handle_action_inner(app, "press", press, timings, caller))
+                        .await
+                        .map_err(|(code, message)| {
+                            (code, format!("the text was typed, but Enter did not complete: {message}"))
+                        })?;
+                    result["submitted"] = json!(true);
+                    for key in [
+                        "postcondition",
+                        "submissionObserved",
+                        "navigationObserved",
+                        "observationPerformed",
+                        "observationWindowMs",
+                    ] {
+                        if let Some(value) = pressed.get(key) {
+                            result[key] = value.clone();
+                        }
                     }
                 }
                 Ok(result)
@@ -1636,6 +1707,7 @@ async fn handle_action_inner(
                 && expectation.is_none();
 
             let tab_lock = get_tab_lock(tab_id);
+            let mut focused_ancestor: Option<Value> = None;
             let (webview, before_url, before_navigation_generation, observation_id) = {
                 let _lock = timings.measure("queue", tab_lock.lock()).await;
                 let webview = get_embed_webview(app, tab_id)
@@ -1684,6 +1756,7 @@ async fn handle_action_inner(
                             };
                             return Err((code.to_string(), "key was not dispatched: the input changed or could not be focused; inspect it before retrying".to_string()));
                         }
+                        focused_ancestor = guard.get("focusedAncestor").filter(|value| value.is_object()).cloned();
                     }
                     dispatch_key(&webview, key, action, modifiers, timings).await.map_err(|error| (error_codes::CDP_FAILED.to_string(), error))
                 }.await;
@@ -1747,6 +1820,36 @@ async fn handle_action_inner(
                 "ok": true,
                 "dispatch": "devtools",
             });
+            // The key went to the focusable element around the target, not the
+            // target itself; say which, so the caller never has to guess.
+            if let Some(ancestor) = focused_ancestor {
+                result["focusedAncestor"] = ancestor;
+            }
+            // A text field is not a player, and a page mid-navigation has no
+            // state worth waiting on, so only an aimed key on a settled page asks.
+            if let Some(ref_id) = input_ref.as_deref().filter(|_| {
+                expected_value.is_none()
+                    && !observation.navigation
+                    && active_loading(tab_id) != Some(true)
+            }) {
+                let target = get_ref_frame_target(tab_id, ref_id);
+                if let Some(media) = timings
+                    .measure("media", media_state(&webview, target.as_ref(), ref_id))
+                    .await
+                {
+                    result["media"] = media;
+                }
+            } else if input_ref.is_none()
+                && player_key(key, action, modifiers)
+                && !observation.navigation
+                && active_loading(tab_id) != Some(true)
+            {
+                // A player shortcut is usually pressed at the page, not at a
+                // ref: YouTube's 'k' then cost a get_property to learn it paused.
+                if let Some(media) = timings.measure("media", page_media_state(&webview)).await {
+                    result["media"] = media;
+                }
+            }
             if let Some(expectation) = expectation {
                 // The caller asked a question and gets its answer. Repeating the
                 // observation flags beside it invited the reading that a
@@ -3087,6 +3190,91 @@ const MAX_NATIVE_RETYPE_CHARS: usize = 64;
 /// the round trip to the page and back, not another wait.
 const REVEAL_GRACE_MS: u64 = 300;
 
+/// Finds the video or audio a key or click was aimed at: the target itself, one
+/// inside it, or one in the player around it (eight composed levels up at most,
+/// never the document), and reads its playback state.
+const MEDIA_STATE_BODY: &str = r#"
+    if (!el || !el.isConnected) return 'null';
+    const pick = node => node?.matches?.('video,audio') ? node : (node?.querySelector?.('video,audio') || null);
+    const parent = node => node.assignedSlot || node.parentElement || node.getRootNode?.().host || null;
+    let media = pick(el);
+    for (let node = parent(el), depth = 0; !media && node && depth < 8; node = parent(node), depth++) {
+        if (node === document.body || node === document.documentElement) break;
+        media = pick(node);
+    }
+    if (!media) return 'null';
+    const round = n => Number.isFinite(n) ? Math.round(n * 10) / 10 : null;
+    return JSON.stringify({ paused: media.paused, ended: media.ended, muted: media.muted, currentTime: round(media.currentTime), duration: round(media.duration) });
+"#;
+
+/// The page's main player: the largest visible video, else the first audio,
+/// among the first sixteen media elements of the document.
+const PAGE_MEDIA_JS: &str = r#"(() => {
+    let best = null, area = -1, count = 0;
+    for (const media of document.querySelectorAll('video,audio')) {
+        if (++count > 16) break;
+        const rect = media.getBoundingClientRect();
+        const size = media.localName === 'video' ? rect.width * rect.height : 0;
+        if (media.localName === 'video' && size <= 0) continue;
+        if (size > area) { best = media; area = size; }
+    }
+    if (!best) return 'null';
+    const round = n => Number.isFinite(n) ? Math.round(n * 10) / 10 : null;
+    return JSON.stringify({ paused: best.paused, ended: best.ended, muted: best.muted, currentTime: round(best.currentTime), duration: round(best.duration) });
+})()"#;
+
+/// Keys a media player answers to: a single character, Space, the arrows or a
+/// media key, pressed alone. Enter, Tab and Escape belong to forms and dialogs.
+fn player_key(key: &str, action: &str, modifiers: u8) -> bool {
+    action == "press"
+        && modifiers == 0
+        && (key.chars().count() == 1
+            || matches!(
+                key,
+                "Space"
+                    | "ArrowLeft"
+                    | "ArrowRight"
+                    | "ArrowUp"
+                    | "ArrowDown"
+                    | "MediaPlayPause"
+                    | "MediaStop"
+            ))
+}
+
+/// Playback state of the page's main player after an untargeted key, or None
+/// when the page has no media.
+async fn page_media_state(webview: &Webview) -> Option<Value> {
+    let raw = execute_script_with_timeout(webview, PAGE_MEDIA_JS, Duration::from_millis(500))
+        .await
+        .ok()?;
+    let decoded: String = serde_json::from_str(&raw).unwrap_or(raw);
+    serde_json::from_str::<Value>(&decoded)
+        .ok()
+        .filter(Value::is_object)
+}
+
+/// Playback state for the media a press or click was aimed at, or None when the
+/// target has no media around it. Every YouTube play/pause toggle used to be
+/// followed by a browser_get_property turn just to learn this.
+async fn media_state(
+    webview: &Webview,
+    target: Option<&RefFrameTarget>,
+    ref_id: &str,
+) -> Option<Value> {
+    let script = deep_ref_expression(ref_id, MEDIA_STATE_BODY);
+    let raw = tokio::time::timeout(
+        Duration::from_millis(500),
+        execute_ref_script(webview, target, &script),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let decoded: String = serde_json::from_str(&raw).unwrap_or(raw);
+    serde_json::from_str::<Value>(&decoded)
+        .ok()
+        .filter(Value::is_object)
+}
+
 /// Replace the focused field's value through the browser's own input pipeline.
 ///
 /// The ordinary path sets `value` and fires one `input` event, which is faster
@@ -3738,6 +3926,29 @@ fn hidden_only_miss(scan: &CollectedLocatorMatches) -> bool {
 /// that stayed hidden, so each spent about 3 s before the same error.
 fn hidden_only_settle(timeout_ms: u64) -> Duration {
     Duration::from_millis((timeout_ms / 5).clamp(750, 1_500))
+}
+
+/// browser_type's submit flag and the result it waits for. Type then Enter was
+/// two calls in every search task; submit presses Enter through the same
+/// guarded path as browser_press, on the field just filled. Without submit,
+/// waitFor is the page state the fill should produce: a live filter showing a
+/// row, which demoqa's book search asked for in every session.
+fn type_submit(params: &Value) -> Result<(bool, Option<Value>), (String, String)> {
+    let submit = match params.get("submit") {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => {
+            return Err((
+                error_codes::INVALID_REQUEST.into(),
+                "submit must be a boolean".into(),
+            ))
+        }
+    };
+    let expectation = params.get("waitFor").cloned();
+    if let Some(expectation) = expectation.as_ref() {
+        PageExpectation::parse(Some(expectation))?;
+    }
+    Ok((submit, expectation))
 }
 
 fn find_timeout(
@@ -7523,6 +7734,18 @@ mod tests {
     }
 
     #[test]
+    fn media_state_reads_the_aimed_player_without_climbing_to_the_document() {
+        let script = deep_ref_expression("g1-e1", MEDIA_STATE_BODY);
+        assert!(script.contains("node?.matches?.('video,audio')"));
+        assert!(script.contains("depth < 8"));
+        assert!(script.contains("if (node === document.body || node === document.documentElement) break;"));
+        assert!(script.contains("if (!media) return 'null';"));
+        for field in ["paused:", "ended:", "muted:", "currentTime:", "duration:"] {
+            assert!(script.contains(field), "{field}");
+        }
+    }
+
+    #[test]
     fn habitual_locator_types_become_the_lookup_they_mean() {
         let id = extract_locator(&json!({ "by": "id", "value": "confirmButton" })).unwrap();
         assert_eq!((id.by.as_str(), id.value.as_str()), ("css", "#confirmButton"));
@@ -7610,6 +7833,46 @@ mod tests {
             only_informative_match(&CollectedLocatorMatches { truncated: true, ..scan(&["", "a"]) }),
             None
         );
+    }
+
+    #[test]
+    fn untargeted_player_keys_report_the_main_player_but_form_keys_do_not() {
+        for key in ["k", " ", "m", "Space", "ArrowRight", "MediaPlayPause"] {
+            assert!(player_key(key, "press", 0), "{key}");
+        }
+        for key in ["Enter", "Tab", "Escape", "Backspace"] {
+            assert!(!player_key(key, "press", 0), "{key}");
+        }
+        assert!(!player_key("k", "down", 0));
+        assert!(!player_key("k", "press", 1));
+        assert!(PAGE_MEDIA_JS.contains("++count > 16"));
+        assert!(PAGE_MEDIA_JS.contains("rect.width * rect.height"));
+    }
+
+    #[test]
+    fn type_submit_accepts_a_wait_with_or_without_submit_but_refuses_a_malformed_one() {
+        assert_eq!(type_submit(&json!({})).unwrap(), (false, None));
+        let waited = json!({ "url": "*results*" });
+        assert_eq!(
+            type_submit(&json!({ "submit": true, "waitFor": waited })).unwrap(),
+            (true, Some(waited.clone()))
+        );
+        // A fill may wait for what it produces without submitting.
+        assert_eq!(
+            type_submit(&json!({ "waitFor": waited })).unwrap(),
+            (false, Some(waited.clone()))
+        );
+        for invalid in [
+            json!({ "submit": "yes" }),
+            json!({ "submit": true, "waitFor": { "typo": true } }),
+            json!({ "waitFor": { "typo": true } }),
+        ] {
+            assert_eq!(
+                type_submit(&invalid).unwrap_err().0,
+                error_codes::INVALID_REQUEST,
+                "{invalid}"
+            );
+        }
     }
 
     #[test]
