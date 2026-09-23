@@ -2,6 +2,7 @@ use super::caller::Caller;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -273,6 +274,79 @@ fn control_for(caller: &Caller, next: u64) -> Option<u64> {
     }
     controls.insert(next, (caller.clone(), Instant::now()));
     Some(next)
+}
+
+/// Workspaces each caller has opened a tab in, for `foreign_holder`.
+static WORKSPACES: Mutex<Vec<(Caller, PathBuf, Instant)>> = Mutex::new(Vec::new());
+const MAX_WORKSPACE_NOTES: usize = 256;
+
+/// Remember that `caller` works in `root`, having opened a tab there.
+pub fn note_workspace(caller: &Caller, root: PathBuf) {
+    let Ok(mut notes) = WORKSPACES.lock() else {
+        return;
+    };
+    notes.retain(|(_, _, at)| at.elapsed() < CONTROL_TTL);
+    if let Some(note) = notes
+        .iter_mut()
+        .find(|(owner, path, _)| owner == caller && *path == root)
+    {
+        note.2 = Instant::now();
+        return;
+    }
+    if notes.len() >= MAX_WORKSPACE_NOTES {
+        notes.remove(0);
+    }
+    notes.push((caller.clone(), root, Instant::now()));
+}
+
+/// Keep a caller's note on `root` fresh while it works there, so an agent that
+/// spends longer than the session TTL in one tab still holds it. Adds nothing:
+/// only an open says where a caller works.
+pub fn touch_workspace(caller: &Caller, root: &Path) {
+    if let Ok(mut notes) = WORKSPACES.lock() {
+        if let Some(note) = notes
+            .iter_mut()
+            .find(|(owner, path, at)| owner == caller && path == root && at.elapsed() < CONTROL_TTL)
+        {
+            note.2 = Instant::now();
+        }
+    }
+}
+
+/// The agent a tab must be left to: an agent working in the tab's workspace,
+/// whose session is still live, holds it, and this caller has only ever opened
+/// tabs in other workspaces. Agents in different workspaces share one browser
+/// and tab ids are a single counter, so one wrong id had an agent clicking in
+/// another agent's task. A caller with no workspace yet, a tab nobody in its
+/// workspace is driving, a finished session and work inside a shared
+/// workspace are all left alone.
+pub fn foreign_holder(tab_id: i64, root: &Path, caller: &Caller) -> Option<Caller> {
+    let workers: Vec<Caller> = {
+        let notes = WORKSPACES.lock().ok()?;
+        let fresh = || notes.iter().filter(|(_, _, at)| at.elapsed() < CONTROL_TTL);
+        let mut mine = fresh().filter(|(owner, _, _)| owner == caller).peekable();
+        mine.peek()?;
+        if mine.any(|(_, path, _)| path == root) {
+            return None;
+        }
+        fresh()
+            .filter(|(_, path, _)| path == root)
+            .map(|(owner, _, _)| owner.clone())
+            .collect()
+    };
+    if workers.is_empty() {
+        return None;
+    }
+    let guard = TABS.lock().ok()?;
+    let surface = guard.as_ref()?.get(&tab_id)?;
+    let holder = surface
+        .members
+        .values()
+        .chain(surface.last.iter().map(|(event, _)| event))
+        .filter(|event| event.phase != "ended" && workers.contains(&event.actor))
+        .find(|event| control_idle(event.control_id).is_some_and(|idle| idle < CONTROL_TTL))
+        .map(|event| event.actor.clone());
+    holder
 }
 
 /// Whether this caller already holds a session.
@@ -1212,6 +1286,55 @@ mod tests {
             assert!(members.values().count() <= MAX_CONTROLS);
         }
         assert!(members.get(1000).is_some());
+    }
+
+    #[test]
+    fn a_live_agents_tab_in_another_workspace_is_left_to_it() {
+        let _serial = CONTROL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_controls();
+        let claude = |pty| {
+            Caller::from_client_info(&serde_json::json!({"name":"claude"})).with_pty(Some(pty))
+        };
+        let (owner, other, neighbour) = (claude(41), claude(42), claude(43));
+        let (tab, theirs, mine) = (9_001, PathBuf::from("D:/work/b"), PathBuf::from("D:/work/a"));
+        let mut driving = event(71, "done", 1);
+        driving.actor = owner.clone();
+        driving.tab_id = tab;
+        seed_control(71, &owner, Duration::from_secs(5));
+        TABS.lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .entry(tab)
+            .or_default()
+            .members
+            .record(&driving);
+
+        note_workspace(&owner, theirs.clone());
+        // A caller with no workspace yet is not refused.
+        assert!(foreign_holder(tab, &theirs, &other).is_none());
+        note_workspace(&other, mine);
+        assert_eq!(foreign_holder(tab, &theirs, &other), Some(owner.clone()));
+        // The holder, and anyone working in the same workspace, go ahead.
+        note_workspace(&neighbour, theirs.clone());
+        assert!(foreign_holder(tab, &theirs, &owner).is_none());
+        assert!(foreign_holder(tab, &theirs, &neighbour).is_none());
+        // A session that ended holds nothing, even after a helper with no
+        // workspace of its own has read the tab.
+        let mut helper = event(72, "done", 2);
+        helper.actor = claude(44);
+        helper.tab_id = tab;
+        seed_control(72, &helper.actor, Duration::from_secs(1));
+        TABS.lock().unwrap().as_mut().unwrap().get_mut(&tab).unwrap().members.record(&helper);
+        TABS.lock().unwrap().as_mut().unwrap().get_mut(&tab).unwrap().finish(71, &owner, 3);
+        assert!(foreign_holder(tab, &theirs, &other).is_none());
+
+        TABS.lock().unwrap().as_mut().unwrap().remove(&tab);
+        WORKSPACES
+            .lock()
+            .unwrap()
+            .retain(|(caller, _, _)| ![&owner, &other, &neighbour].contains(&caller));
     }
 
     #[test]

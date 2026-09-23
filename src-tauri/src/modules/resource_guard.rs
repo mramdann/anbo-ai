@@ -58,6 +58,13 @@ impl Admissions {
     fn release(&mut self, id: u64) {
         self.0.retain(|(_, _, ticket)| *ticket != Some(id));
     }
+
+    /// Whether a refused start would fit once the pending startups hand their
+    /// headroom back, by closing or by their grace running out.
+    fn fits_without_pending(&self, memory: Memory, bytes: u64) -> bool {
+        !self.0.is_empty()
+            && memory.available >= (memory.limit / 20).max(512 * MIB).saturating_add(bytes)
+    }
 }
 
 #[cfg(windows)]
@@ -146,8 +153,37 @@ pub(crate) fn admit(workload: Workload) -> Result<(), String> {
     check(workload, 1, true)
 }
 
-pub(crate) fn preflight(workload: Workload) -> Result<(), String> {
-    check(workload, 1, false)
+/// Checks, without reserving, that a start would be admitted, and waits up to
+/// `patience` while the only shortfall is headroom other startups still hold.
+/// Eight agents opening tabs side by side refused the eighth on reservations
+/// the first seven returned seconds later; a real shortage is refused at once.
+pub(crate) async fn preflight_patiently(
+    workload: Workload,
+    patience: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + patience;
+    loop {
+        let waiting = {
+            let mut admissions = ADMISSIONS
+                .get_or_init(Default::default)
+                .lock()
+                .map_err(|_| "resource guard unavailable".to_string())?;
+            let Some(memory) = memory()? else {
+                return Ok(());
+            };
+            match admissions.check(memory, workload.bytes(), Instant::now()) {
+                Ok(()) => return Ok(()),
+                Err(message) if !admissions.fits_without_pending(memory, workload.bytes()) => {
+                    return Err(message)
+                }
+                Err(message) => message,
+            }
+        };
+        if Instant::now() >= deadline {
+            return Err(waiting);
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 #[tauri::command]
@@ -252,6 +288,29 @@ mod tests {
             .push((now + STARTUP_GRACE, Workload::Agent.bytes(), None));
         guard.release(99);
         assert!(guard.check(memory, bytes, now).is_err());
+    }
+
+    #[test]
+    fn a_start_waits_only_for_headroom_other_startups_will_return() {
+        let now = Instant::now();
+        let bytes = Workload::Browser.bytes();
+        let memory = Memory {
+            limit: 16 * 1024 * MIB,
+            available: 2718 * MIB,
+        };
+        let mut guard = Admissions::default();
+        for id in 1..=7 {
+            guard.0.push((now + STARTUP_GRACE, bytes, Some(id)));
+        }
+        assert!(guard.check(memory, bytes, now).is_err());
+        assert!(guard.fits_without_pending(memory, bytes));
+        // Short of memory with nothing pending: waiting would not help.
+        let short = Memory {
+            limit: 16 * 1024 * MIB,
+            available: 900 * MIB,
+        };
+        assert!(!guard.fits_without_pending(short, bytes));
+        assert!(!Admissions::default().fits_without_pending(memory, bytes));
     }
 
     #[test]

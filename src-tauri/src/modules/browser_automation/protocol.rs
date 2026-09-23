@@ -78,6 +78,7 @@ pub mod error_codes {
     pub const INVALID_REQUEST: &str = "invalid_request";
     pub const UNSUPPORTED_PLATFORM: &str = "unsupported_platform";
     pub const TAB_NOT_FOUND: &str = "tab_not_found";
+    pub const TAB_IN_USE: &str = "tab_in_use";
     pub const STALE_REF: &str = "stale_ref";
     pub const AMBIGUOUS_TARGET: &str = "ambiguous_target";
     pub const INPUT_MISMATCH: &str = "input_mismatch";

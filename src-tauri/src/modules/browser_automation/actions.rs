@@ -226,6 +226,16 @@ pub async fn handle_action_as(
         && !method.starts_with("agent_")
         && !method.starts_with("terminal_")
         && !method.starts_with("skills_");
+    if let Some((id, root)) = tab_id.and_then(|id| Some((id, active_local_root(id)?))) {
+        if super::activity::foreign_holder(id, &root, &actor).is_some() {
+            return Err((
+                error_codes::TAB_IN_USE.to_string(),
+                format!(
+                    "tab {id} is in another workspace, where another agent is working in it; nothing was done. Use a tab you opened with browser_open in your own workspace."
+                ),
+            ));
+        }
+    }
     let before_navigation = tab_id.and_then(active_navigation_generation);
     // A single-page app moves to a new URL without a native navigation:
     // YouTube and Maps after a search, YouTube after a result click. Their
@@ -257,6 +267,18 @@ pub async fn handle_action_as(
         return result;
     }
     let mut result = result;
+    if method == "open" {
+        if let Some(root) = result
+            .as_ref()
+            .ok()
+            .and_then(|value| value.get("tabId").and_then(Value::as_i64))
+            .and_then(active_local_root)
+        {
+            super::activity::note_workspace(&actor, root);
+        }
+    } else if let Some(root) = tab_id.filter(|_| result.is_ok()).and_then(active_local_root) {
+        super::activity::touch_workspace(&actor, &root);
+    }
     if let Ok(value) = &mut result {
         // An action that can move the page says where it landed. Without this
         // the agent asked browser_get_url after almost every one: 19 times in
@@ -6987,7 +7009,15 @@ async fn open_browser(
     timings: &mut ActionTimings,
 ) -> Result<Value, (String, String)> {
     let (url, workspace) = extract_browser_open_params(params)?;
-    crate::modules::resource_guard::preflight(crate::modules::resource_guard::Workload::Browser)
+    timings
+        .measure(
+            "admission",
+            crate::modules::resource_guard::preflight_patiently(
+                crate::modules::resource_guard::Workload::Browser,
+                Duration::from_secs(5),
+            ),
+        )
+        .await
         .map_err(|message| ("resource_exhausted".to_string(), message))?;
 
     let request_id = format!(
@@ -7106,6 +7136,7 @@ async fn close_browser(app: &AppHandle, params: &Value) -> Result<Value, (String
     let listener_id = app.once(response_event, move |event| {
         let _ = sender.send(event.payload().to_string());
     });
+    let had_browser = get_embed_webview(app, tab_id).is_ok();
     if let Err(error) = app.emit(
         BROWSER_CLOSE_REQUEST_EVENT,
         json!({
@@ -7121,21 +7152,50 @@ async fn close_browser(app: &AppHandle, params: &Value) -> Result<Value, (String
         ));
     }
 
-    let received = tokio::time::timeout(Duration::from_secs(10), receiver).await;
+    let mut receiver = receiver;
+    let received = match tokio::time::timeout(Duration::from_secs(10), &mut receiver).await {
+        Ok(received) => Some(received),
+        // A saturated UI can answer late while the close itself goes through:
+        // with eight agents at once the tab was gone and the agent was told the
+        // close had failed. Wait as long again, and take the tab's browser
+        // being gone for the answer.
+        Err(_) => {
+            let grace = tokio::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                if had_browser && get_embed_webview(app, tab_id).is_err() {
+                    break None;
+                }
+                if tokio::time::Instant::now() >= grace {
+                    app.unlisten(listener_id);
+                    return Err((
+                        error_codes::TIMEOUT.to_string(),
+                        "Anbo UI did not close the browser tab in time".to_string(),
+                    ));
+                }
+                if let Ok(received) =
+                    tokio::time::timeout(Duration::from_millis(100), &mut receiver).await
+                {
+                    break Some(received);
+                }
+            }
+        }
+    };
     app.unlisten(listener_id);
-    let payload = received
-        .map_err(|_| {
-            (
-                error_codes::TIMEOUT.to_string(),
-                "Anbo UI did not close the browser tab in time".to_string(),
-            )
-        })?
-        .map_err(|_| {
-            (
-                error_codes::APP_UNAVAILABLE.to_string(),
-                "Anbo UI closed before closing the browser tab".to_string(),
-            )
-        })?;
+    let Some(received) = received else {
+        remove_tab_lock(tab_id);
+        return Ok(json!({
+            "tabId": tab_id,
+            "workspace": workspace,
+            "closed": true,
+            "ok": true,
+        }));
+    };
+    let payload = received.map_err(|_| {
+        (
+            error_codes::APP_UNAVAILABLE.to_string(),
+            "Anbo UI closed before closing the browser tab".to_string(),
+        )
+    })?;
     let response: BrowserCloseResponse = serde_json::from_str(&payload).map_err(|error| {
         (
             error_codes::INTERNAL.to_string(),
