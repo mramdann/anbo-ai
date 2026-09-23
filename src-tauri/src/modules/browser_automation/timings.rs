@@ -26,6 +26,16 @@ impl ActionTimings {
         result
     }
 
+    /// A phase that could not be wrapped as one future, timed from `started`.
+    pub fn record(&mut self, phase: &'static str, started: Instant) {
+        if let Some(entries) = self.0.as_mut().filter(|entries| entries.len() < 24) {
+            entries.push(json!({
+                "phase": phase,
+                "durationMs": started.elapsed().as_millis().min(u64::MAX as u128) as u64
+            }));
+        }
+    }
+
     pub fn finish(
         self,
         result: Result<Value, (String, String)>,
@@ -58,6 +68,20 @@ mod tests {
             timings.finish(Ok(json!({"ok": true}))).unwrap(),
             json!({"ok": true})
         );
+    }
+
+    #[test]
+    fn recorded_phases_are_kept_only_with_diagnostics_and_stay_bounded() {
+        let mut off = ActionTimings::default();
+        off.record("webview", Instant::now());
+        assert!(off.0.is_none());
+        let mut on = ActionTimings::new(true);
+        for _ in 0..30 {
+            on.record("webview", Instant::now());
+        }
+        let entries = on.0.unwrap();
+        assert_eq!(entries.len(), 24);
+        assert_eq!(entries[0]["phase"], "webview");
     }
 
     #[tokio::test]

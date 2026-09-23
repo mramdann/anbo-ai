@@ -557,7 +557,7 @@ async fn handle_action_inner(
     }
     match method {
         "open" => {
-            let mut result = open_browser(app, &params, caller).await?;
+            let mut result = open_browser(app, &params, caller, timings).await?;
             // The tab an agent just opened is the tab it is about to work, and
             // the open response is the first thing it reads. Naming the session
             // here spares it hunting for the id in some later call's payload,
@@ -1064,7 +1064,7 @@ async fn handle_action_inner(
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
             let tab_lock = get_tab_lock(tab_id);
-            let _lock = tab_lock.lock().await;
+            let _lock = timings.measure("queue", tab_lock.lock()).await;
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
             let generation = get_current_generation(tab_id);
@@ -1094,13 +1094,23 @@ async fn handle_action_inner(
             let before = actionable.checked.unwrap_or(false);
             if before != requested {
                 if target.as_ref().is_some_and(|target| !target.is_main) {
-                    dom_click_ref(&webview, target.as_ref(), &ref_id, 1).await?;
+                    timings
+                        .measure(
+                            "frameClick",
+                            dom_click_ref(&webview, target.as_ref(), &ref_id, 1),
+                        )
+                        .await?;
                 } else {
-                    dispatch_mouse_click(&webview, &actionable, &ref_id, 1).await?;
+                    dispatch_mouse_click_profiled(&webview, &actionable, &ref_id, 1, timings)
+                        .await?;
                 }
             }
-            let checked =
-                wait_for_checked_state(&webview, target.as_ref(), &ref_id, requested).await?;
+            let checked = timings
+                .measure(
+                    "verifyChecked",
+                    wait_for_checked_state(&webview, target.as_ref(), &ref_id, requested),
+                )
+                .await?;
             Ok(json!({
                 "tabId": tab_id,
                 "ref": ref_id,
@@ -1295,7 +1305,7 @@ async fn handle_action_inner(
                 .unwrap_or(false);
 
             let tab_lock = get_tab_lock(tab_id);
-            let _lock = tab_lock.lock().await;
+            let _lock = timings.measure("queue", tab_lock.lock()).await;
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
             let cur_gen = get_current_generation(tab_id);
@@ -1321,20 +1331,28 @@ async fn handle_action_inner(
                     .as_ref()
                     .filter(|target| !target.is_main)
                     .map(|target| target.frame_id.as_str());
-                let response = ref_context::execute_awaited(&webview, frame_id, &js)
+                let response = timings
+                    .measure(
+                        "valueAction",
+                        ref_context::execute_awaited(&webview, frame_id, &js),
+                    )
                     .await
                     .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
                 let decoded: String = serde_json::from_str(&response).unwrap_or(response);
                 serde_json::from_str(&decoded).unwrap_or_default()
             } else {
-                wait_for_value_action(
-                    &webview,
-                    target.as_ref(),
-                    &ref_id,
-                    ActionabilityRequirement::Editable,
-                    &js,
-                )
-                .await?
+                timings
+                    .measure(
+                        "valueAction",
+                        wait_for_value_action(
+                            &webview,
+                            target.as_ref(),
+                            &ref_id,
+                            ActionabilityRequirement::Editable,
+                            &js,
+                        ),
+                    )
+                    .await?
             };
             if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
                 // valueVerified stays true unless the field was dispatched but did not keep the value
@@ -5866,6 +5884,7 @@ async fn open_browser(
     app: &AppHandle,
     params: &Value,
     caller: &super::caller::Caller,
+    timings: &mut ActionTimings,
 ) -> Result<Value, (String, String)> {
     let (url, workspace) = extract_browser_open_params(params)?;
     crate::modules::resource_guard::preflight(crate::modules::resource_guard::Workload::Browser)
@@ -5899,7 +5918,9 @@ async fn open_browser(
         ));
     }
 
-    let received = tokio::time::timeout(Duration::from_secs(10), receiver).await;
+    let received = timings
+        .measure("uiCreate", tokio::time::timeout(Duration::from_secs(10), receiver))
+        .await;
     app.unlisten(listener_id);
     let payload = received
         .map_err(|_| {
@@ -5931,6 +5952,7 @@ async fn open_browser(
     })?;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let webview_wait = std::time::Instant::now();
     while get_embed_webview(app, tab_id).is_err() {
         if tokio::time::Instant::now() >= deadline {
             // The UI already created this tab. Returning without it would leave a
@@ -5957,6 +5979,7 @@ async fn open_browser(
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    timings.record("webview", webview_wait);
 
     Ok(json!({
         "tabId": tab_id,
