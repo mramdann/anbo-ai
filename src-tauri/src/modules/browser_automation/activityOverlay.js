@@ -71,6 +71,7 @@
       .copy{min-width:0;display:flex;flex-direction:column;gap:1px}.heading{display:flex;align-items:baseline;gap:5px;min-width:0;white-space:nowrap}
       .name{min-width:0;max-width:110px;flex:0 1 auto;font-weight:700;color:#e4f2f5;overflow:hidden;text-overflow:ellipsis}.separator{color:#58737f}.tool{min-width:0;flex:1;color:#a9c0cc;overflow:hidden;text-overflow:ellipsis}
       .detail{color:#91aab6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.badge[data-state=error] .detail{color:#ffb7a9}
+      .detail:empty{display:none}
       .cursor{position:absolute;left:0;top:0;width:14px;height:18px;display:none;opacity:0;transition:transform var(--travel,220ms) cubic-bezier(.22,.61,.36,1),opacity 180ms ease-out;filter:drop-shadow(0 1px 1px #0006);will-change:transform}.cursor svg{display:block;width:100%;height:100%}
       .ring{position:absolute;left:-15px;top:-15px;width:30px;height:30px;display:none}
       /* A parked cursor still has to read as held rather than left behind, so a
@@ -197,7 +198,7 @@
     const canonicalMethod = Object.hasOwn(aliases, data.method) ? aliases[data.method] : data.method;
     const knownMethod = Object.hasOwn(verbs, canonicalMethod);
     const method = knownMethod ? 'browser_' + (canonicalMethod === 'scroll_to' ? 'scroll_to_element' : canonicalMethod) : 'browser_action';
-    const action = data.phase === 'error' ? 'Action stopped' : data.phase === 'idle' ? 'Idle, still holding this tab' : canonicalMethod === 'start_session' ? 'Holding this tab' : data.phase === 'done' ? 'Action complete' : data.phase === 'frame' ? 'Interacting in a frame' : (knownMethod ? verbs[canonicalMethod] : 'Working');
+    const action = data.phase === 'done' ? '' : data.phase === 'error' ? 'Action stopped' : data.phase === 'idle' ? 'Idle, still holding this tab' : canonicalMethod === 'start_session' ? 'Holding this tab' : data.phase === 'frame' ? 'Interacting in a frame' : (knownMethod ? verbs[canonicalMethod] : 'Working');
     if (label.textContent !== name) label.textContent = name;
     if (tool.textContent !== method) tool.textContent = method;
     badge.dataset.state = data.phase === 'error' ? 'error' : data.phase === 'idle' ? 'idle' : data.phase === 'done' ? 'done' : 'working';
@@ -239,7 +240,7 @@
       cursor.style.transform = 'translate(' + badgePoint.x + 'px,' + badgePoint.y + 'px)';
     }
     if (idle) ring.style.display = target.style.display = 'none';
-    const description = action + (badgePoint ? ` \u00b7 x ${Math.round(badgePoint.x)} \u00b7 y ${Math.round(badgePoint.y)}` : '');
+    const description = action ? action + (badgePoint ? ` \u00b7 x ${Math.round(badgePoint.x)} \u00b7 y ${Math.round(badgePoint.y)}` : '') : '';
     if (detail.textContent !== description) detail.textContent = description;
     positionBadge(smoothPoint);
   };

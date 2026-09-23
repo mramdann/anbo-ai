@@ -192,6 +192,8 @@ function overlay({ reducedMotion = false } = {}) {
     },
     cursor: () => find("cursor"),
     detail: () => find("detail"),
+    name: () => find("name"),
+    tool: () => find("tool"),
     // data-idle is what tells the stylesheet the session is held rather than
     // working, so it is the switch the breathing halo hangs off.
     held: () => documentElement.children[0]?.attributes.has("data-idle"),
@@ -233,8 +235,36 @@ describe("browser automation presence overlay", () => {
 
     view.advance(60_000);
     expect(view.cursor().style.transform).toBe("translate(420px,310px)");
-    expect(view.detail().textContent).toContain("x 420");
-    expect(view.detail().textContent).toContain("y 310");
+    expect(view.detail().textContent).toBe("");
+    expect(view.name().textContent).toBe("Claude");
+    expect(view.tool().textContent).toBe("browser_click");
+  });
+
+  it("hides completed detail without hiding the cursor or subsequent progress and errors", () => {
+    const view = overlay();
+    view.send(
+      event({ sequence: 1, phase: "running", point: { x: 420, y: 310 } }),
+    );
+    expect(view.detail().textContent).toContain("Clicking");
+    view.send(event({ sequence: 2, phase: "done" }));
+    expect(view.detail().textContent).toBe("");
+    expect(view.styles()).toContain(".detail:empty{display:none}");
+    expect(view.cursor().style.display).toBe("block");
+    expect(view.cursor().style.transform).toBe("translate(420px,310px)");
+    expect(view.name().textContent).toBe("Claude");
+    view.send(
+      event({
+        sequence: 3,
+        requestId: 2,
+        phase: "running",
+        method: "get_text",
+      }),
+    );
+    expect(view.detail().textContent).toContain("Reading the page");
+    view.send(
+      event({ sequence: 4, requestId: 2, phase: "error", method: "get_text" }),
+    );
+    expect(view.detail().textContent).toContain("Action stopped");
   });
 
   it("marks the session held between calls so the halo can breathe", () => {
