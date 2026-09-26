@@ -457,6 +457,35 @@ describe("hydrateTabs", () => {
     }
   });
 
+  it("keeps a tab's layout key across a restart and gives a repeated one up", () => {
+    const [saved] = serializeTabs([term({ id: 7, layoutKey: "kept" })]);
+    expect(saved.key).toBe("kept");
+    // A tab opened this launch gets a key tied to this launch and its id.
+    const [fresh] = serializeTabs([term({ id: 7 })]);
+    expect(fresh.key).toMatch(/:7$/);
+
+    const restored = hydrateTabs(
+      [
+        { kind: "browser", key: "twice", url: "https://a.test/" },
+        { kind: "browser", key: "twice", url: "https://b.test/" },
+        {
+          kind: "browser",
+          key: 42 as unknown as string,
+          url: "https://c.test/",
+        },
+        { kind: "editor", key: "solo", path: "/a/x.ts" },
+      ],
+      "s1",
+      counter(),
+    );
+    expect(restored.map((tab) => tab.layoutKey)).toEqual([
+      "twice",
+      undefined,
+      undefined,
+      "solo",
+    ]);
+  });
+
   it("returns empty for corrupted input without throwing", () => {
     expect(hydrateTabs([] as SerializedTab[], "s1", counter())).toEqual([]);
     expect(

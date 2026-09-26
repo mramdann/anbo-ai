@@ -21,6 +21,7 @@ export class DormantRing {
   private tailLen = 0;
   private total = 0;
   private overflowed = false;
+  private changes = 0;
 
   constructor(
     private readonly byteCap = DEFAULT_BYTE_CAP,
@@ -28,6 +29,7 @@ export class DormantRing {
   ) {}
 
   push(bytes: Uint8Array): void {
+    this.changes++;
     let offset = 0;
     while (offset < bytes.length) {
       let tail = this.blocks[this.blocks.length - 1];
@@ -55,6 +57,7 @@ export class DormantRing {
   }
 
   drain(write: (bytes: Uint8Array) => void): void {
+    this.changes++;
     const last = this.blocks.length - 1;
     let skip = 0;
     if (this.overflowed && this.head <= last) {
@@ -98,5 +101,10 @@ export class DormantRing {
 
   byteLength(): number {
     return this.total;
+  }
+
+  /** Changes with every push or drain, so a reader can reuse what it decoded. */
+  revision(): number {
+    return this.changes;
   }
 }

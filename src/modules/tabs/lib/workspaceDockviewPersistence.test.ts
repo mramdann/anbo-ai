@@ -26,6 +26,45 @@ function tabs(...ids: number[]): Tab[] {
   return ids.map((id) => terminalTab(id));
 }
 
+function keyed(tab: Tab, layoutKey: string): Tab {
+  return { ...tab, layoutKey };
+}
+
+function memoryStorage() {
+  let saved: string | null = null;
+  return {
+    getItem: vi.fn(() => saved),
+    setItem: vi.fn((_key: string, value: string) => {
+      saved = value;
+    }),
+  };
+}
+
+function splitLayout(left: number[], right: number[]) {
+  const layout = workspaceTabsToDockviewLayout([...left, ...right], left[0]);
+  layout.grid.root.data = [
+    {
+      type: "leaf",
+      size: 600,
+      data: {
+        id: "left",
+        views: left.map((id) => `tab:${id}`),
+        activeView: `tab:${left[0]}`,
+      },
+    },
+    {
+      type: "leaf",
+      size: 400,
+      data: {
+        id: "right",
+        views: right.map((id) => `tab:${id}`),
+        activeView: `tab:${right[0]}`,
+      },
+    },
+  ];
+  return layout;
+}
+
 describe("workspace dockview persistence", () => {
   it("uses a versioned, space-specific key", () => {
     expect(workspaceDockviewLayoutKey("space/a b")).toBe(
@@ -279,6 +318,72 @@ describe("workspace dockview persistence", () => {
     ]);
   });
 
+  it("keeps every tab in its panel when a restart reissues overlapping runtime ids", () => {
+    // One more tab in an earlier workspace shifts every later runtime id, so
+    // the old ids 13 and 15 now belong to other tabs of this workspace.
+    const storage = memoryStorage();
+    writeWorkspaceDockviewLayout(
+      storage,
+      "space",
+      splitLayout([11, 13], [15]),
+      [
+        keyed(terminalTab(11, "/one"), "k1"),
+        keyed(terminalTab(13, "/two"), "k2"),
+        keyed(terminalTab(15, "/three"), "k3"),
+      ],
+    );
+
+    const restored = readWorkspaceDockviewLayout(storage, "space", [
+      keyed(terminalTab(13, "/one"), "k1"),
+      keyed(terminalTab(15, "/two"), "k2"),
+      keyed(terminalTab(17, "/three"), "k3"),
+    ]);
+    expect(restored?.grid.root.data).toEqual([
+      {
+        type: "leaf",
+        size: 600,
+        data: { id: "left", views: ["tab:13", "tab:15"], activeView: "tab:13" },
+      },
+      {
+        type: "leaf",
+        size: 400,
+        data: { id: "right", views: ["tab:17"], activeView: "tab:17" },
+      },
+    ]);
+  });
+
+  it("matches tabs whose cwd or URL changed while their workspace was hidden", () => {
+    const storage = memoryStorage();
+    writeWorkspaceDockviewLayout(storage, "space", splitLayout([4], [9]), [
+      keyed(terminalTab(4, "/before"), "agent"),
+      keyed(terminalTab(9, "/shell"), "shell"),
+    ]);
+
+    const restored = readWorkspaceDockviewLayout(storage, "space", [
+      keyed(terminalTab(9, "/after"), "agent"),
+      keyed(terminalTab(4, "/shell/sub"), "shell"),
+    ]);
+    expect(restored?.grid.root.data).toMatchObject([
+      { data: { id: "left", views: ["tab:9"] } },
+      { data: { id: "right", views: ["tab:4"] } },
+    ]);
+  });
+
+  it("never matches a key that two current tabs share", () => {
+    const storage = memoryStorage();
+    writeWorkspaceDockviewLayout(storage, "space", splitLayout([4], [9]), [
+      keyed(terminalTab(4, "/a"), "same"),
+      keyed(terminalTab(9, "/b"), "other"),
+    ]);
+
+    const restored = readWorkspaceDockviewLayout(storage, "space", [
+      keyed(terminalTab(40, "/x"), "same"),
+      keyed(terminalTab(41, "/y"), "same"),
+      keyed(terminalTab(90, "/b"), "other"),
+    ]);
+    expect(Object.keys(restored?.panels ?? {})).toEqual(["tab:90"]);
+  });
+
   it("disambiguates duplicate terminal identities by occurrence", () => {
     let saved: string | null = null;
     const storage = {
@@ -391,8 +496,10 @@ describe("workspace dockview persistence", () => {
     );
     const legacyEnvelope = JSON.parse(saved ?? "null") as {
       layoutIdentities?: unknown;
+      tabKeys?: unknown;
     };
     delete legacyEnvelope.layoutIdentities;
+    delete legacyEnvelope.tabKeys;
     const storage = {
       getItem: vi.fn(() => JSON.stringify(legacyEnvelope)),
       setItem: vi.fn(),
@@ -470,6 +577,13 @@ describe("workspace dockview persistence", () => {
     };
     brokenRoot.layout.grid.root.type = "leaf";
     saved = JSON.stringify(brokenRoot);
+    expect(
+      readWorkspaceDockviewLayout(storage, "space", tabs(4, 9)),
+    ).toBeNull();
+
+    const brokenKeys = JSON.parse(valid) as { tabKeys: unknown[] };
+    brokenKeys.tabKeys = [1, 2];
+    saved = JSON.stringify(brokenKeys);
     expect(
       readWorkspaceDockviewLayout(storage, "space", tabs(4, 9)),
     ).toBeNull();

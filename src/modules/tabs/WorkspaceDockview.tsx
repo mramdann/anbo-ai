@@ -86,6 +86,7 @@ import {
 } from "./lib/workspaceDockviewLayout";
 import {
   readWorkspaceDockviewLayout,
+  registerWorkspaceLayoutFlusher,
   workspaceDockviewLayoutIdentities,
   writeWorkspaceDockviewLayout,
 } from "./lib/workspaceDockviewPersistence";
@@ -760,6 +761,9 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
   const handledExternalSplits = useRef(new Map<string, number>());
   const loadedSpaceRef = useRef<string | null>(null);
   const loadedTabsRef = useRef<readonly Tab[]>([]);
+  // Tabs the workspace already had when its saved layout was applied; the
+  // ones that layout could not place go beside their neighbours.
+  const restoredTabIdsRef = useRef<ReadonlySet<number>>(new Set());
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const layoutSettledFrameRef = useRef(0);
   latest.current = props;
@@ -1198,6 +1202,7 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
     const current = latest.current;
     const tabIds = current.tabs.map((tab) => tab.id);
     loadedTabsRef.current = current.tabs;
+    restoredTabIdsRef.current = new Set(tabIds);
     const fallback = workspaceTabsToDockviewLayout(
       tabIds,
       current.activeId,
@@ -1232,6 +1237,11 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
     }
     scheduleLayoutSettled();
   }, [api, props.spaceId, flushPersistedLayout, scheduleLayoutSettled]);
+
+  useEffect(
+    () => registerWorkspaceLayoutFlusher(() => flushPersistedLayout()),
+    [flushPersistedLayout],
+  );
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: persistenceTabsKey deliberately tracks ref-backed tab snapshots.
   useEffect(() => {
@@ -1373,6 +1383,7 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
             api.activeGroup,
             neighbor,
             neighborIndex,
+            restoredTabIdsRef.current.has(tab.id),
           ),
         });
         added.api.group.header.hidden = current.hideTabs ?? false;

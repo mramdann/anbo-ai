@@ -14,11 +14,18 @@ export function workspaceDockviewPanelId(tabId: number): string {
   return `tab:${tabId}`;
 }
 
+/** A tab opened by the user goes to the group they are working in; one the
+ * saved layout could not place (`besideNeighbor`) goes next to the tab it
+ * follows, so it does not pull a panel's tabs into another. */
 export function workspaceDockviewInsertionPosition(
   activeGroup: DockviewGroupPanel | undefined,
   fallbackPanel: IDockviewPanel | null,
   fallbackIndex: number,
+  besideNeighbor = false,
 ): AddPanelPositionOptions | undefined {
+  if (besideNeighbor && fallbackPanel) {
+    return { referencePanel: fallbackPanel, index: fallbackIndex };
+  }
   if (activeGroup) {
     return {
       referenceGroup: activeGroup,

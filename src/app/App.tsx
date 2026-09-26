@@ -138,6 +138,7 @@ import {
 } from "@/modules/spaces";
 import { StatusBar } from "@/modules/statusbar";
 import {
+  flushWorkspaceLayoutNow,
   TabSwitcherHud,
   useTabSwitcher,
   useTabs,
@@ -145,6 +146,7 @@ import {
   useWorkspaceCwd,
   WorkspaceDockview,
 } from "@/modules/tabs";
+import { isSerializableTab } from "@/modules/spaces/lib/serialize";
 import { createAutomationTabSelection } from "@/modules/tabs/lib/automationTabPlacement";
 import { runtimeTabIdAllocator } from "@/modules/tabs/lib/runtimeId";
 import { DEFAULT_SPACE_ID } from "@/modules/tabs/lib/useTabs";
@@ -405,6 +407,7 @@ export default function App() {
   // split/unsplit re-mount components but the leaf is still live.
   const liveLeavesRef = useRef<Set<number>>(new Set());
   const liveBrowserIdsRef = useRef<Set<number>>(new Set());
+  const lastReconcileKeyRef = useRef<string | null>(null);
 
   const workspaceEnv = useWorkspaceEnvStore((s) => s.env);
   const setWorkspaceEnv = useWorkspaceEnvStore((s) => s.setEnv);
@@ -558,6 +561,16 @@ export default function App() {
     enabled: spacesHydrated && spacesCount > 0,
   });
 
+  // The tab each space last showed, so coming back to a space shows it again
+  // instead of the space's last tab. A space not yet shown in this launch
+  // starts from the index saved on disk.
+  const lastActiveBySpaceRef = useRef(new Map<string, number>());
+  const restoredActiveSpacesRef = useRef(new Set<string>());
+  useEffect(() => {
+    const tab = tabsRef.current.find((candidate) => candidate.id === activeId);
+    if (tab) lastActiveBySpaceRef.current.set(tab.spaceId, tab.id);
+  }, [activeId]);
+
   const prevSpaceRef = useRef(activeSpaceId);
   useEffect(() => {
     if (!spacesHydrated || !activeSpaceId) return;
@@ -584,9 +597,19 @@ export default function App() {
       return;
     }
     // Keep the active tab if it already belongs to the newly active space (a
-    // cross-space jump set it explicitly); else fall to the space's last tab.
+    // cross-space jump set it explicitly); else show the one it last showed.
     if (inSpace.some((t) => t.id === activeId)) return;
-    setActiveId(inSpace[inSpace.length - 1].id);
+    const remembered = lastActiveBySpaceRef.current.get(activeSpaceId);
+    let next = inSpace.find((t) => t.id === remembered);
+    if (!next && !restoredActiveSpacesRef.current.has(activeSpaceId)) {
+      const saved = useSpaces.getState().initialActiveIndex[activeSpaceId];
+      next =
+        saved === undefined
+          ? undefined
+          : inSpace.filter(isSerializableTab)[saved];
+    }
+    restoredActiveSpacesRef.current.add(activeSpaceId);
+    setActiveId((next ?? inSpace[inSpace.length - 1]).id);
   }, [
     activeSpaceId,
     activeId,
@@ -763,9 +786,13 @@ export default function App() {
     handlePathDeleted,
   } = useTabCloseGuards({ tabs, disposeTab, disposePane: closePaneByLeaf });
 
+  const flushPersistenceBeforeClose = useCallback(async () => {
+    flushWorkspaceLayoutNow();
+    await flushSpacePersistenceNow();
+  }, []);
   const { pendingAppClose, confirmAppClose, cancelAppClose } = useAppCloseGuard(
     tabsRef,
-    flushSpacePersistenceNow,
+    flushPersistenceBeforeClose,
   );
 
   useEffect(() => {
@@ -794,11 +821,17 @@ export default function App() {
     liveBrowserIdsRef.current = liveBrowsers;
     // A close only queues the destroy and forgets the label, so one that never
     // reached the event loop would strand a live child forever. Reconcile from
-    // the pass that already knows every live tab: no timer, no polling.
-    void browserEmbedReconcile(
-      [...liveBrowsers],
-      runtimeTabIdAllocator().current - 1,
-    ).catch(() => {});
+    // the pass that already knows every live tab: no timer, no polling. Only
+    // when the set of browser tabs changed: a title or a loading flag, which
+    // pages send constantly, cannot strand anything.
+    const reconcileKey = [...liveBrowsers].sort((a, b) => a - b).join(",");
+    if (reconcileKey !== lastReconcileKeyRef.current) {
+      lastReconcileKeyRef.current = reconcileKey;
+      void browserEmbedReconcile(
+        [...liveBrowsers],
+        runtimeTabIdAllocator().current - 1,
+      ).catch(() => {});
+    }
   }, [tabs]);
 
   useEffect(() => {

@@ -170,6 +170,14 @@ function notifyTerminalInput(leafId: number, data: string): void {
   for (const listener of terminalInputListeners) listener(leafId, data);
 }
 
+// Agent status reads every agent terminal five times a second; one with no
+// live buffer decodes up to 256 KB each time, so the text is reused until its
+// ring or snapshot changes.
+const dormantReads = new WeakMap<
+  Session,
+  { revision: number; snapshot: string | null; maxLines: number; text: string }
+>();
+
 export function readTerminalBuffer(
   leafId: number,
   maxLines = 200,
@@ -193,13 +201,30 @@ export function readTerminalBuffer(
     }
     return joinTerminalBufferRows(rows, maxLines);
   }
+  const revision = session.dormantRing.revision();
+  const cached = dormantReads.get(session);
+  if (
+    cached &&
+    cached.revision === revision &&
+    cached.snapshot === session.snapshot &&
+    cached.maxLines === maxLines
+  ) {
+    return cached.text;
+  }
   const source =
     session.snapshot ??
     new TextDecoder().decode(session.dormantRing.tail(256 * 1024));
   if (!source) return "";
   const lines = stripAnsi(source).split(/\r?\n/).slice(-maxLines);
   while (lines.length && lines[lines.length - 1] === "") lines.pop();
-  return lines.join("\n");
+  const text = lines.join("\n");
+  dormantReads.set(session, {
+    revision,
+    snapshot: session.snapshot,
+    maxLines,
+    text,
+  });
+  return text;
 }
 
 // Block-overlay viewport listeners, keyed by leafId at module scope so the

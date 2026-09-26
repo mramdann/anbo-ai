@@ -21,6 +21,7 @@ export {
   type TerminalTab,
   useTabs,
 } from "./lib/useTabs";
+export { flushWorkspaceLayoutNow } from "./lib/workspaceDockviewPersistence";
 export { useWindowTitle } from "./lib/useWindowTitle";
 export { useWorkspaceCwd } from "./lib/useWorkspaceCwd";
 export { TabIcon } from "./TabIcon";

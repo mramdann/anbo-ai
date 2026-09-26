@@ -15,6 +15,7 @@ import type {
   Tab,
   TerminalTab,
 } from "@/modules/tabs/lib/useTabs";
+import { isTabLayoutKey, tabLayoutKey } from "@/modules/tabs/lib/tabLayoutKey";
 import {
   adoptLeafAgentResume,
   isLeaf,
@@ -31,17 +32,22 @@ export type SerializedNode =
     }
   | { kind: "split"; dir: SplitDir; children: SerializedNode[] };
 
-export type SerializedTab =
-  | {
-      kind: "terminal";
-      tree: SerializedNode;
-      blocks?: boolean;
-      customTitle?: string;
-      agent?: AgentTabIdentity;
-    }
-  | { kind: "editor"; path: string }
-  | { kind: "browser"; url: string }
-  | { kind: "markdown"; path: string };
+/** The panel layout matches tabs through this key across launches. */
+type SerializedTabKey = { key?: string };
+
+export type SerializedTab = SerializedTabKey &
+  (
+    | {
+        kind: "terminal";
+        tree: SerializedNode;
+        blocks?: boolean;
+        customTitle?: string;
+        agent?: AgentTabIdentity;
+      }
+    | { kind: "editor"; path: string }
+    | { kind: "browser"; url: string }
+    | { kind: "markdown"; path: string }
+  );
 
 function basename(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
@@ -100,17 +106,18 @@ function serializeTab(tab: Tab): SerializedTab | null {
     case "terminal":
       return {
         kind: "terminal",
+        key: tabLayoutKey(tab),
         tree: serializeNode(tab.paneTree, tab.activeLeafId),
         ...(tab.blocks && { blocks: true }),
         ...(tab.customTitle !== undefined && { customTitle: tab.customTitle }),
         ...(tab.agent && { agent: tab.agent }),
       };
     case "editor":
-      return { kind: "editor", path: tab.path };
+      return { kind: "editor", key: tabLayoutKey(tab), path: tab.path };
     case "browser":
-      return { kind: "browser", url: tab.url };
+      return { kind: "browser", key: tabLayoutKey(tab), url: tab.url };
     case "markdown":
-      return { kind: "markdown", path: tab.path };
+      return { kind: "markdown", key: tabLayoutKey(tab), path: tab.path };
     default:
       return null;
   }
@@ -277,9 +284,16 @@ export function hydrateTabs(
   if (!Array.isArray(serialized)) return [];
   const out: Tab[] = [];
   const agentNames = new Set<string>();
+  const layoutKeys = new Set<string>();
   for (const s of serialized) {
     try {
       let tab = hydrateTab(s, spaceId, allocId);
+      // A key seen twice would match two tabs to one panel; the second tab
+      // takes this launch's key instead.
+      if (tab && isTabLayoutKey(s.key) && !layoutKeys.has(s.key)) {
+        layoutKeys.add(s.key);
+        tab = { ...tab, layoutKey: s.key };
+      }
       if (tab?.kind === "terminal" && tab.agent) {
         const agent = tab.agent;
         const key = agent.name.toLocaleLowerCase();

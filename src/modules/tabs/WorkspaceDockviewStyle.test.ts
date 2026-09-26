@@ -50,8 +50,13 @@ describe("WorkspaceDockview active tab treatment", () => {
   it("gives the accent line, glow and pulse only to the focused group, and holds still under reduced motion", () => {
     expect(css).toContain("@keyframes anbo-workspace-active-tab-focus-pulse");
     expect(css).toContain(".dv-groupview.dv-active-group");
+    // A few breaths when focus lands, then still: an endless pulse repainted
+    // the window at the display rate while the app sat idle.
     expect(css).toContain(
-      "animation: anbo-workspace-active-tab-focus-pulse 1.8s ease-in-out infinite",
+      "animation: anbo-workspace-active-tab-focus-pulse 1.8s ease-in-out 3",
+    );
+    expect(css).not.toContain(
+      "anbo-workspace-active-tab-focus-pulse 1.8s ease-in-out infinite",
     );
     // Focus is still legible without motion: the line at full strength.
     expect(css).toMatch(
@@ -109,6 +114,15 @@ describe("WorkspaceDockview active tab treatment", () => {
       "animation-delay: calc(var(--anbo-automation-period, 1.8s) / -2)",
     );
     expect(css).toContain("border-radius: 50%");
+  });
+
+  it("rests the wave of a parked session but keeps held and acting tabs beating", () => {
+    expect(css).toMatch(
+      /indicator\[data-state="idle"\]::before,\s*\.anbo-browser-automation-indicator\[data-state="idle"\]::after \{\s*animation: none;/,
+    );
+    expect(css).not.toMatch(
+      /indicator\[data-state="(?:held|acting)"\]::(?:before|after)/,
+    );
   });
 
   it("beats for the whole session and says which tab is being worked", () => {

@@ -16,9 +16,12 @@ use crate::modules::workspace::WorkspaceEnv;
 const AGENT_EVENT: &str = "anbo:agent-signal";
 
 // Flusher coalesces a short window after first-byte arrival so we send chunks,
-// not single bytes. MAX_IDLE is only a safety net for missed signals.
+// not single bytes. MAX_IDLE is only a safety net: output is pushed and
+// signalled under the lock, so it never waits for it, and only the exit flag
+// can race its signal. At 50 ms every idle terminal woke its flusher twenty
+// times a second.
 const FLUSH_COALESCE: Duration = Duration::from_millis(4);
-const FLUSH_MAX_IDLE: Duration = Duration::from_millis(50);
+const FLUSH_MAX_IDLE: Duration = Duration::from_secs(1);
 const READ_BUF: usize = 16 * 1024;
 // Cap on buffered-but-not-yet-flushed bytes. On overflow we discard the
 // entire pending buffer and emit an SGR-reset + notice in its place.

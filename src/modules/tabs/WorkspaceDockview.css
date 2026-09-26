@@ -138,7 +138,7 @@
   box-shadow:
     0 2px 0 var(--anbo-chrome-tab-surface),
     0 -1px 6px color-mix(in oklab, var(--primary) 14%, transparent);
-  animation: anbo-workspace-active-tab-focus-pulse 1.8s ease-in-out infinite;
+  animation: anbo-workspace-active-tab-focus-pulse 1.8s ease-in-out 3;
   transition:
     background-color var(--dur-base) var(--ease-soft),
     border-color var(--dur-base) var(--ease-soft);
@@ -160,8 +160,10 @@
   --anbo-chrome-tab-surface: var(--card);
 }
 
-/* The focused tab breathes: the line brightens and a faint ring swells, so
- * a glance finds the panel the keys go to. Border colour and shadow only; the
+/* The focused tab breathes when it takes focus: the line brightens and a
+ * faint ring swells, so a glance finds the panel the keys go to. Three breaths,
+ * then the bright line holds; a pulse that never ended repainted the window at
+ * the display rate while nothing happened. Border colour and shadow only; the
  * surface never changes and the shape never moves. */
 @keyframes anbo-workspace-active-tab-focus-pulse {
   0%,
@@ -394,8 +396,8 @@
  * between calls made every held tab look finished, and made every held tab look
  * the same, so the strip could not answer the only question worth asking of it:
  * which tab is the agent in right now. The tab with a call in flight beats
- * faster and brighter; the tabs merely held keep a slow, faint wave. Nothing
- * here stops the wave -- the end of the session unmounts the indicator instead.
+ * faster and brighter; the tabs merely held keep a slow, faint wave. Only a
+ * parked session's wave rests; the end of the session unmounts the indicator.
  */
 .anbo-browser-automation-indicator[data-state="acting"] {
   --anbo-automation-wave: 82%;
@@ -407,11 +409,17 @@
   --anbo-automation-period: 3.4s;
 }
 
-/* Parked: the session is still named, but nothing has happened for a while. */
+/* Parked: the session is still named, but nothing has happened for a while,
+ * so the wave rests instead of repainting the strip for up to ten minutes. */
 .anbo-browser-automation-indicator[data-state="idle"] {
   --anbo-automation-wave: 18%;
   --anbo-automation-period: 6s;
   opacity: 0.55;
+}
+
+.anbo-browser-automation-indicator[data-state="idle"]::before,
+.anbo-browser-automation-indicator[data-state="idle"]::after {
+  animation: none;
 }
 
 .anbo-browser-automation-indicator::before,

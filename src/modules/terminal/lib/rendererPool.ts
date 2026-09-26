@@ -166,7 +166,14 @@ function restoreVisibleSlotsAfterWindowRestore(): void {
 }
 
 function scheduleSettledSlotFit(slot: Slot): void {
-  if (slot.settledFitRaf !== null || isWindowPresentationBlocked()) return;
+  // A parked terminal still parses its output, and every write landed here;
+  // it cannot be fitted while hidden and is refitted when it is shown.
+  if (
+    slot.settledFitRaf !== null ||
+    slot.parked ||
+    isWindowPresentationBlocked()
+  )
+    return;
   const proposed = slot.fitAddon.proposeDimensions();
   if (
     !proposed ||
@@ -472,9 +479,10 @@ function createSlot(): Slot {
   };
 
   const syncTerminalLayout = () => {
-    host.dataset.anboTerminalScrollable = String(
-      shouldShowTerminalScrollbar(term.buffer.active),
-    );
+    const scrollable = String(shouldShowTerminalScrollbar(term.buffer.active));
+    if (host.dataset.anboTerminalScrollable !== scrollable) {
+      host.dataset.anboTerminalScrollable = scrollable;
+    }
     scheduleSettledSlotFit(slot);
   };
   term.buffer.onBufferChange(syncTerminalLayout);

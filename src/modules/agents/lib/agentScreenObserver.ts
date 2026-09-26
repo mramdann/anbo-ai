@@ -26,6 +26,13 @@ type Entry = {
   readySince: number | null;
   sawWorkingForTurn: boolean;
   screen: string | null;
+  /** The last classification and what it read; a screen that did not change
+   * classifies the same, so it is not read through the patterns again. */
+  classified?: {
+    screen: string | null;
+    complete: boolean;
+    state: AgentScreenState;
+  };
 };
 
 const STABLE_POLLS = 2;
@@ -138,11 +145,13 @@ export class AgentScreenObserver {
     const signals: ObservedAgentSignal[] = [];
     for (const entry of this.entries.values()) {
       const screen = read(entry.leafId);
-      const candidate = this.classify(
-        entry.agent,
-        screen,
-        codexTurnEvidence.completed(entry.leafId),
-      );
+      const complete = codexTurnEvidence.completed(entry.leafId);
+      const previous = entry.classified;
+      const candidate =
+        previous && previous.screen === screen && previous.complete === complete
+          ? previous.state
+          : this.classify(entry.agent, screen, complete);
+      entry.classified = { screen, complete, state: candidate };
       if (candidate === null) continue;
       const painting = screen !== entry.screen;
       entry.screen = screen;

@@ -91,6 +91,20 @@ describe("workspaceDockviewInsertionPosition", () => {
     });
   });
 
+  it("puts a tab the saved layout could not place beside its neighbor", () => {
+    const activeGroup = {
+      panels: [{ id: "tab:1" }, { id: "tab:3" }],
+    } as DockviewGroupPanel;
+    const neighbor = { id: "tab:2" } as IDockviewPanel;
+
+    expect(
+      workspaceDockviewInsertionPosition(activeGroup, neighbor, 1, true),
+    ).toEqual({ referencePanel: neighbor, index: 1 });
+    expect(
+      workspaceDockviewInsertionPosition(activeGroup, null, 0, true),
+    ).toEqual({ referenceGroup: activeGroup, index: 2 });
+  });
+
   it("uses the ordered neighbor only while no group is active", () => {
     const neighbor = { id: "tab:2" } as IDockviewPanel;
 

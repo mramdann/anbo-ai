@@ -12,6 +12,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   forwardRef,
   lazy,
+  memo,
   Suspense,
   useCallback,
   useEffect,
@@ -155,8 +156,10 @@ function releaseNativeBrowserSurface(id: number): void {
   syncNativeBrowserSurface();
 }
 
-export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
-  function BrowserPane(
+// Memoized: the app re-renders for every title, URL and loading change of any
+// tab in any workspace, and each pane would re-render with it.
+export const BrowserPane = memo(
+  forwardRef<BrowserPaneHandle, Props>(function BrowserPane(
     {
       id,
       url,
@@ -933,7 +936,7 @@ export const BrowserPane = forwardRef<BrowserPaneHandle, Props>(
         </div>
       </div>
     );
-  },
+  }),
 );
 
 function BrowserError({ message }: { message: string }) {

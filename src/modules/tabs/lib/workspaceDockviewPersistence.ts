@@ -1,4 +1,5 @@
 import type { SerializedDockview } from "dockview-react";
+import { isTabLayoutKey, tabLayoutKey } from "./tabLayoutKey";
 import type { Tab } from "./useTabs";
 import { workspaceDockviewPanelId } from "./workspaceDockviewLayout";
 
@@ -9,7 +10,23 @@ type LayoutStorage = Pick<Storage, "getItem" | "setItem">;
 interface StoredWorkspaceDockviewLayout {
   runtimeTabIds: number[];
   layoutIdentities: string[];
+  tabKeys: string[];
   layout: SerializedDockview;
+}
+
+let activeLayoutFlusher: (() => void) | null = null;
+
+/** The shown workspace registers its pending layout write, so closing the
+ * app can save it: the write is debounced and nothing unmounts on close. */
+export function registerWorkspaceLayoutFlusher(flush: () => void): () => void {
+  activeLayoutFlusher = flush;
+  return () => {
+    if (activeLayoutFlusher === flush) activeLayoutFlusher = null;
+  };
+}
+
+export function flushWorkspaceLayoutNow(): void {
+  activeLayoutFlusher?.();
 }
 
 type TerminalPaneNode = Extract<Tab, { kind: "terminal" }>["paneTree"];
@@ -293,6 +310,17 @@ function isUniqueLayoutIdentityList(
   return new Set(value).size === value.length;
 }
 
+function isLayoutKeyList(
+  value: unknown,
+  expectedLength: number,
+): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length === expectedLength &&
+    value.every(isTabLayoutKey)
+  );
+}
+
 function slotTabIds(count: number): Map<string, number> {
   return new Map(
     Array.from({ length: count }, (_, index) => [`slot:${index}`, index]),
@@ -386,6 +414,8 @@ export function readWorkspaceDockviewLayout(
       const stored = parsed as Partial<StoredWorkspaceDockviewLayout>;
       if (
         !isUniqueTabIdList(stored.runtimeTabIds) ||
+        ("tabKeys" in stored &&
+          !isLayoutKeyList(stored.tabKeys, stored.runtimeTabIds.length)) ||
         ("layoutIdentities" in stored &&
           !isUniqueLayoutIdentityList(
             stored.layoutIdentities,
@@ -399,14 +429,30 @@ export function readWorkspaceDockviewLayout(
         return null;
       }
 
-      const currentIds = new Set(tabIds);
+      // Runtime ids are reissued every launch, so a stored id only names a
+      // tab through its key. Identities place what keys cannot: layouts
+      // saved before tabs had keys, and a tab opened while hidden that took
+      // over a closed one.
       const matchingSlots = new Map<number, number>();
       const matchedCurrentIds = new Set<number>();
-      stored.runtimeTabIds.forEach((tabId, index) => {
-        if (!currentIds.has(tabId)) return;
-        matchingSlots.set(index, tabId);
-        matchedCurrentIds.add(tabId);
-      });
+      if (stored.tabKeys) {
+        const keyCounts = new Map<string, number>();
+        for (const tab of tabs) {
+          const key = tabLayoutKey(tab);
+          keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
+        }
+        const currentIdsByKey = new Map(
+          tabs
+            .filter((tab) => keyCounts.get(tabLayoutKey(tab)) === 1)
+            .map((tab) => [tabLayoutKey(tab), tab.id]),
+        );
+        stored.tabKeys.forEach((key, index) => {
+          const tabId = currentIdsByKey.get(key);
+          if (tabId === undefined || matchedCurrentIds.has(tabId)) return;
+          matchingSlots.set(index, tabId);
+          matchedCurrentIds.add(tabId);
+        });
+      }
 
       if (stored.layoutIdentities) {
         const currentIdsByIdentity = new Map(
@@ -464,6 +510,7 @@ export function writeWorkspaceDockviewLayout(
       JSON.stringify({
         runtimeTabIds: [...tabIds],
         layoutIdentities: workspaceDockviewLayoutIdentities(tabs),
+        tabKeys: tabs.map(tabLayoutKey),
         layout: encodeLayoutSlots(layout, tabIds),
       } satisfies StoredWorkspaceDockviewLayout),
     );

@@ -77,6 +77,9 @@ export function BrowserStack({
   const loadingCallbacks = useRef(
     new Map<number, (loading: boolean) => void>(),
   );
+  // Stable per tab like the others, so a memoized pane skips the renders the
+  // app does for every title, URL and loading change of any tab.
+  const activateCallbacks = useRef(new Map<number, () => void>());
 
   const getRefCallback = (id: number) => {
     let cb = refCallbacks.current.get(id);
@@ -115,6 +118,14 @@ export function BrowserStack({
     }
     return cb;
   };
+  const getActivateCallback = (id: number) => {
+    let cb = activateCallbacks.current.get(id);
+    if (!cb) {
+      cb = () => activateRef.current?.(id);
+      activateCallbacks.current.set(id, cb);
+    }
+    return cb;
+  };
 
   useEffect(() => {
     const live = new Set(browserTabs.map((t) => t.id));
@@ -129,6 +140,9 @@ export function BrowserStack({
     }
     for (const id of loadingCallbacks.current.keys()) {
       if (!live.has(id)) loadingCallbacks.current.delete(id);
+    }
+    for (const id of activateCallbacks.current.keys()) {
+      if (!live.has(id)) activateCallbacks.current.delete(id);
     }
   }, [browserTabs]);
 
@@ -158,7 +172,7 @@ export function BrowserStack({
               onUrlChange={getUrlCallback(t.id)}
               onTitleChange={getTitleCallback(t.id)}
               onLoadingChange={getLoadingCallback(t.id)}
-              onActivate={() => activateRef.current?.(t.id)}
+              onActivate={getActivateCallback(t.id)}
             />
           </div>
         );

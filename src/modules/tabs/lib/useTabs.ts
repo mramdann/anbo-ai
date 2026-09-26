@@ -47,6 +47,8 @@ type TabBase = {
   spaceId: string;
   /** Restored from disk, not yet activated: rendered as a placeholder, not mounted. */
   cold?: boolean;
+  /** Restored from disk; see tabLayoutKey for tabs opened in this launch. */
+  layoutKey?: string;
 };
 
 export type TerminalTab = TabBase & {
@@ -485,6 +487,61 @@ export function planSpaceReset(
     disposeLeafIds,
     activeId: tabId,
   };
+}
+
+function patchTab(x: Tab, patch: TabPatch): Tab {
+  if (x.kind === "terminal") {
+    return {
+      ...x,
+      ...(patch.title !== undefined && { title: patch.title }),
+      ...(patch.cwd !== undefined && { cwd: patch.cwd }),
+      ...(patch.customTitle !== undefined && {
+        customTitle: patch.customTitle === "" ? undefined : patch.customTitle,
+      }),
+    };
+  }
+  if (x.kind === "browser") {
+    return {
+      ...x,
+      ...(patch.title !== undefined && { title: patch.title }),
+      ...(patch.favicon !== undefined && {
+        favicon: patch.favicon ?? undefined,
+      }),
+      ...(patch.url !== undefined && {
+        url: patch.url,
+      }),
+      ...(patch.loading !== undefined && { loading: patch.loading }),
+    };
+  }
+  if (x.kind === "markdown") {
+    return {
+      ...x,
+      ...(patch.title !== undefined && { title: patch.title }),
+    };
+  }
+  // editor tab: auto-promote from preview the moment the file becomes dirty.
+  const autoPin =
+    patch.dirty === true && (x as EditorTab).preview ? { preview: false } : {};
+  return {
+    ...x,
+    ...autoPin,
+    ...(patch.title !== undefined && { title: patch.title }),
+    ...(patch.dirty !== undefined && { dirty: patch.dirty }),
+    ...(patch.path !== undefined && { path: patch.path }),
+    ...(patch.overrideLanguage !== undefined && {
+      overrideLanguage: patch.overrideLanguage,
+    }),
+  };
+}
+
+/** Browser pages repeat their title, URL and loading state; a patch that
+ * changes nothing keeps the tab, so the app above it does not re-render. */
+function sameTab(before: Tab, after: Tab): boolean {
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of keys) {
+    if (before[key as keyof Tab] !== after[key as keyof Tab]) return false;
+  }
+  return true;
 }
 
 export function useTabs(initial?: Partial<TerminalTab>) {
@@ -1294,56 +1351,17 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   }, []);
 
   const updateTab = useCallback((id: number, patch: TabPatch) => {
-    setTabs((t) =>
-      t.map((x) => {
+    setTabs((t) => {
+      let changed = false;
+      const next = t.map((x) => {
         if (x.id !== id) return x;
-        if (x.kind === "terminal") {
-          return {
-            ...x,
-            ...(patch.title !== undefined && { title: patch.title }),
-            ...(patch.cwd !== undefined && { cwd: patch.cwd }),
-            ...(patch.customTitle !== undefined && {
-              customTitle:
-                patch.customTitle === "" ? undefined : patch.customTitle,
-            }),
-          };
-        }
-        if (x.kind === "browser") {
-          return {
-            ...x,
-            ...(patch.title !== undefined && { title: patch.title }),
-            ...(patch.favicon !== undefined && {
-              favicon: patch.favicon ?? undefined,
-            }),
-            ...(patch.url !== undefined && {
-              url: patch.url,
-            }),
-            ...(patch.loading !== undefined && { loading: patch.loading }),
-          };
-        }
-        if (x.kind === "markdown") {
-          return {
-            ...x,
-            ...(patch.title !== undefined && { title: patch.title }),
-          };
-        }
-        // editor tab: auto-promote from preview the moment the file becomes dirty.
-        const autoPin =
-          patch.dirty === true && (x as EditorTab).preview
-            ? { preview: false }
-            : {};
-        return {
-          ...x,
-          ...autoPin,
-          ...(patch.title !== undefined && { title: patch.title }),
-          ...(patch.dirty !== undefined && { dirty: patch.dirty }),
-          ...(patch.path !== undefined && { path: patch.path }),
-          ...(patch.overrideLanguage !== undefined && {
-            overrideLanguage: patch.overrideLanguage,
-          }),
-        };
-      }),
-    );
+        const updated = patchTab(x, patch);
+        if (sameTab(x, updated)) return x;
+        changed = true;
+        return updated;
+      });
+      return changed ? next : t;
+    });
   }, []);
 
   const selectByIndex = useCallback(
