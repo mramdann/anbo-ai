@@ -554,6 +554,9 @@ fn build_navigation_hints_js(
         if (!name) continue;
         const rect = el.getBoundingClientRect();
         if (!(rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight)) continue;
+        // A box is not visibility: TradingView lays out a hidden twin of its
+        // symbol button, and the ref handed back for it could not be clicked.
+        if (!shown(el)) continue;
         const key = role + '|' + name.toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
@@ -890,6 +893,11 @@ async fn handle_action_inner(
                 params[key] = merged.clone();
             }
         }
+        // Only the lookup says a read took screen-reader text, never the caller.
+        if method == "get_text" {
+            params["screenReaderOnly"] =
+                (resolved.get("screenReaderOnly").and_then(Value::as_bool) == Some(true)).into();
+        }
         if method == "drag" {
             // One element, two positions: a locator on drag means "pan inside
             // this". Every measured canvas drag was exactly that, and each cost
@@ -930,7 +938,12 @@ async fn handle_action_inner(
                                 result["page"] = landing(&webview, id).await;
                             }
                         }
-                        if params["closeTab"] == true {
+                        if params["closeTab"] == true
+                            && !read_lets_tab_close(method, &result["read"])
+                        {
+                            result["closed"] = json!(false);
+                            result["closeSkipped"] = json!("the snapshot continues at nextOffset, so the tab stays open for the rest");
+                        } else if params["closeTab"] == true {
                             let close_params =
                                 json!({"tabId":tab_id,"workspace":params["workspace"]});
                             match close_browser(app, &close_params).await {
@@ -1167,7 +1180,6 @@ async fn handle_action_inner(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
             let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
-            let hidden_settle = hidden_only_settle(timeout_ms);
 
             let mut empty_scans = 0;
             let mut last_empty_scan = None;
@@ -1176,11 +1188,7 @@ async fn handle_action_inner(
             let mut quiet_waits = 0usize;
             let mut backoff_ms = LOCATOR_RETRY_MS;
             // Early absence requires another complete scan after settling.
-            let mut absent_since: Option<tokio::time::Instant> = None;
-            // The hidden-only settle clock. Revision-independent on purpose: a page that mutates
-            // constantly (live charts) would otherwise never let a genuinely not-rendered match
-            // settle. Resets only when the hidden-only condition itself breaks.
-            let mut hidden_since: Option<tokio::time::Instant> = None;
+            let mut clock = MissClock::default();
             let mut recoveries = 0usize;
             loop {
                 let now = tokio::time::Instant::now();
@@ -1196,30 +1204,22 @@ async fn handle_action_inner(
                 }
                 let current_state = page_scan_state(&webview).await;
                 if let Some(previous) = &scanned_state {
-                    if let Some(current) = &current_state {
-                        if !previous.same_revision(current) {
-                            absent_since = None;
-                        }
-                        let settled = absent_since.is_some_and(|since| {
-                            now.saturating_duration_since(since) >= ABSENCE_SETTLE
-                        });
-                        if !settled
+                    clock.page_read(previous, current_state.as_ref());
+                    if current_state.as_ref().is_some_and(|current| {
+                        !clock.absence_settled(now, timeout_ms)
                             && previous.can_reuse(
                                 current,
                                 now.saturating_duration_since(scanned_at),
-                                absent_since.is_some(),
+                                clock.absence_pending(),
                             )
-                        {
-                            quiet_waits += 1;
-                            backoff_ms = (backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
-                            tokio::time::sleep_until(locator_retry_at(
-                                now, scanned_at, backoff_ms, deadline,
-                            ))
-                            .await;
-                            continue;
-                        }
-                    } else {
-                        absent_since = None;
+                    }) {
+                        quiet_waits += 1;
+                        backoff_ms = (backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
+                        tokio::time::sleep_until(locator_retry_at(
+                            now, scanned_at, backoff_ms, deadline,
+                        ))
+                        .await;
+                        continue;
                     }
                 }
                 scanned_state = current_state;
@@ -1285,64 +1285,24 @@ async fn handle_action_inner(
                 }
                 empty_scans += 1;
                 let completed = tokio::time::Instant::now();
-                if absence_conclusive(&result)
-                    && scanned_state
-                        .as_ref()
-                        .is_some_and(|state| state.mutations >= 0)
-                {
-                    if absent_since.is_some_and(|since| {
-                        completed.saturating_duration_since(since) >= ABSENCE_SETTLE
-                    }) && active_loading(tab_id) != Some(true)
-                    {
-                        let elapsed = timeout_ms.saturating_sub(
-                            deadline.saturating_duration_since(completed).as_millis() as u64,
-                        );
-                        return Err(find_timeout(
-                            &locator,
-                            elapsed,
-                            empty_scans,
-                            None,
-                            Some(&result),
-                            quiet_waits,
-                        ));
-                    }
-                    absent_since.get_or_insert(completed);
-                } else {
-                    absent_since = None;
-                }
-                // A matched-but-hidden element already exists in the DOM, so unlike a complete
-                // absence a still-"loading" page (live-data streams that never idle) will not
-                // summon it — the loading gate is intentionally omitted here. Once the hidden-only
-                // state has held for the settle, fail fast with the includeHidden hint. The
-                // scan-completeness guards inside hidden_only_miss still protect against a visible
-                // match hiding in an unread part of the page.
-                if hidden_only_miss(&result)
-                    && scanned_state
-                        .as_ref()
-                        .is_some_and(|state| state.mutations >= 0)
-                {
-                    // Not while the page is still loading, as for absence above:
-                    // TradingView keeps its header hidden until the chart has
-                    // loaded, and a find asked to wait 15 s gave up after 3.
-                    if hidden_since.is_some_and(|since| {
-                        completed.saturating_duration_since(since) >= hidden_settle
-                    }) && active_loading(tab_id) != Some(true)
-                    {
-                        let elapsed = timeout_ms.saturating_sub(
-                            deadline.saturating_duration_since(completed).as_millis() as u64,
-                        );
-                        return Err(find_timeout(
-                            &locator,
-                            elapsed,
-                            empty_scans,
-                            None,
-                            Some(&result),
-                            quiet_waits,
-                        ));
-                    }
-                    hidden_since.get_or_insert(completed);
-                } else {
-                    hidden_since = None;
+                if clock.missed(
+                    &result,
+                    scanned_state.as_ref(),
+                    completed,
+                    timeout_ms,
+                    active_loading(tab_id) == Some(true),
+                ) {
+                    let elapsed = timeout_ms.saturating_sub(
+                        deadline.saturating_duration_since(completed).as_millis() as u64,
+                    );
+                    return Err(find_timeout(
+                        &locator,
+                        elapsed,
+                        empty_scans,
+                        None,
+                        Some(&result),
+                        quiet_waits,
+                    ));
                 }
                 last_empty_scan = Some(result);
                 // A page that has already disappointed twice rarely answers on
@@ -2272,20 +2232,15 @@ async fn handle_action_inner(
 
         "wait" => {
             let tab_id = extract_tab_id(&params)?;
-            if let Some(expectation) = PageExpectation::parse(params.get("waitFor"))? {
-                if [
-                    "condition",
-                    "text",
-                    "url",
-                    "ref",
-                    "state",
-                    "loadState",
-                    "timeout",
-                ]
-                .iter()
-                .any(|key| params.get(*key).is_some())
+            let wait_for = params
+                .get("waitFor")
+                .map(|wait_for| with_outer_timeout(wait_for, params.get("timeout")));
+            if let Some(expectation) = PageExpectation::parse(wait_for.as_ref())? {
+                if ["condition", "text", "url", "ref", "state", "loadState"]
+                    .iter()
+                    .any(|key| params.get(*key).is_some())
                 {
-                    return Err((error_codes::INVALID_REQUEST.to_string(), "waitFor cannot be combined with legacy wait conditions or timeout; put timeout inside waitFor".to_string()));
+                    return Err((error_codes::INVALID_REQUEST.to_string(), "waitFor cannot be combined with legacy wait conditions; put the condition inside waitFor".to_string()));
                 }
                 let webview = get_embed_webview(app, tab_id)
                     .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
@@ -2988,15 +2943,22 @@ async fn handle_action_inner(
                     const readable = readableText(target);
                     const domText = readable.text;
                     const accessibleText = domText ? '' : accessibleName(target);
-                    const text = domText || accessibleText.trim();
-                    const source = domText ? 'domText' : (text ? 'accessibleName' : 'empty');
+                    // Words drawn on screen but hidden from assistive technology
+                    // read as nothing to both of those: Amazon marks its visible
+                    // price aria-hidden. A rendered target still says what it shows.
+                    const drawnText = domText || accessibleText.trim() || !isRenderedElement(target)
+                        ? '' : String(target.innerText || '').replace(/\s+/g, ' ').trim();
+                    const text = domText || accessibleText.trim() || drawnText;
+                    const source = domText ? 'domText' : accessibleText.trim() ? 'accessibleName' : (text ? 'renderedText' : 'empty');
                     // A control that hides itself seconds later reads one way now
                     // and another way then, and an accessible name can hold a
                     // value the visible text has already moved past. Say which
                     // reading this is rather than leaving it to be noticed.
                     const sourceNote = source === 'accessibleName'
                         ? 'the element renders no text, so this is its accessible name, which can lag the value on screen'
-                        : null;
+                        : source === 'renderedText'
+                          ? 'the page hides this text from assistive technology; this is what is drawn on screen'
+                          : null;
                     const max = {max_length};
                     let truncated = readable.sourceTruncated;
                     let out = text;
@@ -3085,6 +3047,12 @@ async fn handle_action_inner(
                         if let Some(merged) = params.get(key).filter(|value| value.is_u64()) {
                             reply[key] = merged.clone();
                         }
+                    }
+                    if params.get("locator").is_some()
+                        && params.get("screenReaderOnly").and_then(Value::as_bool) == Some(true)
+                    {
+                        reply["screenReaderOnly"] = true.into();
+                        reply["sourceNote"] = "nothing visible matched; this element is hidden from sight but kept for screen readers".into();
                     }
                     reply
                 })
@@ -4114,6 +4082,8 @@ struct LocatorRequest {
     include_hidden: bool,
     limit: usize,
     ancestors: Ancestors,
+    /// Set by a read only; see LocatorQuery::screen_reader_text.
+    screen_reader_text: bool,
 }
 
 struct CollectedLocatorMatches {
@@ -4194,6 +4164,20 @@ fn locator_retry_at(
 // A fresh complete scan must reconfirm absence after the settle window.
 const ABSENCE_SETTLE: Duration = Duration::from_millis(1_500);
 
+/// How long absence must hold before find gives up early. A page that went
+/// quiet answers after the settle. A live page (TradingView rewrites its prices
+/// many times a second) never goes quiet and used to hold every miss for the
+/// whole timeout, 5 to 8 s each in the R35 run; it answers once absence has
+/// held, shape unchanged, for half the caller's patience, so an element that
+/// arrives late still has the other half.
+fn absence_settle(timeout_ms: u64, live: bool) -> Duration {
+    if live {
+        Duration::from_millis((timeout_ms / 2).clamp(1_500, 5_000))
+    } else {
+        ABSENCE_SETTLE
+    }
+}
+
 /// The one shape of empty scan that proves an element is absent rather than
 /// merely not found yet: the whole page was read, no frame was skipped, the
 /// node budget was not hit, and nothing matched at all -- not even a hidden
@@ -4270,6 +4254,91 @@ fn hidden_only_miss(scan: &CollectedLocatorMatches) -> bool {
 /// that stayed hidden, so each spent about 3 s before the same error.
 fn hidden_only_settle(timeout_ms: u64) -> Duration {
     Duration::from_millis((timeout_ms / 5).clamp(750, 1_500))
+}
+
+/// When a lookup that keeps missing may stop before its timeout, shared by
+/// browser_find and the locator of an action or read. Absence is final once it
+/// has held for `absence_settle`, surviving page changes that keep the page's
+/// shape; a miss with only hidden matches is final after `hidden_only_settle`,
+/// whatever the page does. Neither is final while the tab is still loading.
+#[derive(Default)]
+struct MissClock {
+    absent_since: Option<tokio::time::Instant>,
+    // The page as it was when absence began, and whether it has kept changing
+    // since without changing shape.
+    absent_baseline: Option<PageScanState>,
+    absent_live: bool,
+    // Revision-independent on purpose: a page that mutates constantly (live
+    // charts) would otherwise never let a genuinely not-rendered match settle.
+    hidden_since: Option<tokio::time::Instant>,
+}
+
+impl MissClock {
+    fn reset_absence(&mut self) {
+        self.absent_since = None;
+        self.absent_baseline = None;
+        self.absent_live = false;
+    }
+
+    /// The page as read before the next scan, against the one scanned last.
+    fn page_read(&mut self, previous: &PageScanState, current: Option<&PageScanState>) {
+        match current {
+            Some(current) if previous.same_revision(current) => {}
+            Some(current)
+                if self.absent_since.is_some()
+                    && self
+                        .absent_baseline
+                        .as_ref()
+                        .is_some_and(|base| base.same_structure(current)) =>
+            {
+                self.absent_live = true;
+            }
+            _ => self.reset_absence(),
+        }
+    }
+
+    fn absence_pending(&self) -> bool {
+        self.absent_since.is_some()
+    }
+
+    fn absence_settled(&self, now: tokio::time::Instant, timeout_ms: u64) -> bool {
+        self.absent_since.is_some_and(|since| {
+            now.saturating_duration_since(since) >= absence_settle(timeout_ms, self.absent_live)
+        })
+    }
+
+    /// Records a scan that matched nothing usable; true when the miss is final.
+    fn missed(
+        &mut self,
+        scan: &CollectedLocatorMatches,
+        state: Option<&PageScanState>,
+        completed: tokio::time::Instant,
+        timeout_ms: u64,
+        loading: bool,
+    ) -> bool {
+        let readable = state.is_some_and(|state| state.mutations >= 0);
+        let mut last = false;
+        if readable && absence_conclusive(scan) {
+            last = self.absence_settled(completed, timeout_ms) && !loading;
+            if self.absent_since.is_none() {
+                self.absent_since = Some(completed);
+                self.absent_baseline = state.cloned();
+                self.absent_live = false;
+            }
+        } else {
+            self.reset_absence();
+        }
+        // Not while loading either: TradingView keeps its header hidden until
+        // the chart has loaded, and a find asked to wait 15 s gave up after 3.
+        if readable && hidden_only_miss(scan) {
+            let since = *self.hidden_since.get_or_insert(completed);
+            last |= completed.saturating_duration_since(since) >= hidden_only_settle(timeout_ms)
+                && !loading;
+        } else {
+            self.hidden_since = None;
+        }
+        last
+    }
 }
 
 /// browser_type's submit flag and the result it waits for. Type then Enter was
@@ -4375,8 +4444,16 @@ fn locator_timeout_diagnostics(
         } else {
             "contained"
         };
+        // Kimi read "the role matched" under a css lookup and had to guess
+        // that its own name filter was what excluded every match.
+        let matched = match locator.by.as_str() {
+            "role" => "the role matched but",
+            "css" => "the selector matched but the name filter excluded every match:",
+            "name" => "elements with a role were found but",
+            _ => "the locator matched but",
+        };
         format!(
-            "the role matched but no accessible name {comparison} the requested one; names seen here: {names}; check the page's language and use its observed name, not a guessed translation. These are hints (up to 80 characters each), not verified unique targets"
+            "{matched} no accessible name {comparison} the requested one; names seen here: {names}; check the page's language and use its observed name, not a guessed translation. These are hints (up to 80 characters each), not verified unique targets"
         )
     } else {
         format!(
@@ -4512,7 +4589,42 @@ fn alias_locator(by: &str, value: &str, name: Option<&str>) -> Option<(String, S
             .or_else(|| Some(value.trim().to_string()).filter(|value| !value.is_empty()));
         return Some(("role".into(), by.to_string(), named));
     }
+    // An accessible name asked for as the lookup itself: agents guessed
+    // by:"name" on YouTube (R31, R36, R37), and Kimi twice wrote
+    // {by:"role", value:"Cari di Wikipedia"}, each waiting out a confirmed
+    // absence. Any element with a role answers to its name; an action still
+    // refuses more than one.
+    if by == "name" || (by == "role" && !names_a_role(value)) {
+        let named = name
+            .map(str::to_string)
+            .or_else(|| Some(value.trim().to_string()).filter(|value| !value.is_empty()))?;
+        return Some(("name".into(), named.clone(), Some(named)));
+    }
     None
+}
+
+/// WAI-ARIA 1.2 roles. A role lookup matches when a role contains the value,
+/// so a value that no role contains cannot be a role.
+const ARIA_ROLES: &str = concat!(
+    "alert alertdialog application article banner blockquote button caption cell checkbox ",
+    "code columnheader combobox complementary contentinfo definition deletion dialog ",
+    "directory document emphasis feed figure form generic grid gridcell group heading img ",
+    "image insertion link list listbox listitem log main mark marquee math menu menubar ",
+    "menuitem menuitemcheckbox menuitemradio meter navigation none note option paragraph ",
+    "presentation progressbar radio radiogroup region row rowgroup rowheader scrollbar ",
+    "search searchbox separator slider spinbutton status strong subscript superscript ",
+    "switch tab table tablist tabpanel term textbox time timer toolbar tooltip tree ",
+    "treegrid treeitem",
+);
+
+fn names_a_role(value: &str) -> bool {
+    let value = value.trim().to_lowercase();
+    value.is_empty()
+        || value.starts_with("doc-")
+        || value.starts_with("graphics-")
+        || ARIA_ROLES
+            .split(' ')
+            .any(|role| role.contains(value.as_str()))
 }
 
 fn extract_locator(params: &Value) -> Result<LocatorRequest, (String, String)> {
@@ -4528,7 +4640,9 @@ fn extract_locator(params: &Value) -> Result<LocatorRequest, (String, String)> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|name| !name.is_empty());
-    let aliased = if matches!(
+    let aliased = if by == "role" && !names_a_role(raw_value) {
+        alias_locator(by, raw_value, raw_name)
+    } else if matches!(
         by,
         "role" | "text" | "label" | "placeholder" | "testId" | "title" | "alt" | "css"
     ) {
@@ -4587,6 +4701,7 @@ fn extract_locator(params: &Value) -> Result<LocatorRequest, (String, String)> {
         // A match is a leaf. Reading the row, card or section it sits in used
         // to cost one call per fact in it.
         ancestors: Ancestors::parse(params.get("ancestors"))?,
+        screen_reader_text: false,
     })
 }
 
@@ -4603,6 +4718,7 @@ async fn resolve_target_locator(
     // thing, or only one says anything, so it looks at more of them than an
     // action does.
     locator.limit = if reading { READ_SCAN_LIMIT } else { 2 };
+    locator.screen_reader_text = reading;
     let invalid = || {
         (error_codes::INVALID_REQUEST.into(), "locator wait accepts locator, state, minCount, and top-level timeout, not legacy conditions or waitFor".into())
     };
@@ -4663,8 +4779,15 @@ async fn resolve_target_locator(
     let mut scanned_state: Option<PageScanState> = None;
     let mut scanned_at = tokio::time::Instant::now();
     let mut wait_backoff_ms = LOCATOR_RETRY_MS;
+    // An action or read gives up on a settled miss as browser_find does: a
+    // click on TradingView's hidden "BINANCE:BTCUSDT" label waited out 5 to
+    // 8 s for the error find gives in one. A wait for a state is asked to
+    // outlast exactly that, so it keeps its whole timeout.
+    let settles = state.is_none();
+    let mut clock = MissClock::default();
     loop {
-        if tokio::time::Instant::now() >= deadline {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
             return Err(target_locator_timeout(
                 &locator,
                 state,
@@ -4676,10 +4799,13 @@ async fn resolve_target_locator(
         }
         let current_state = page_scan_state(&webview).await;
         if let Some(previous) = &scanned_state {
-            if current_state
-                .as_ref()
-                .is_some_and(|current| previous.can_reuse(current, scanned_at.elapsed(), false))
-            {
+            if settles {
+                clock.page_read(previous, current_state.as_ref());
+            }
+            if current_state.as_ref().is_some_and(|current| {
+                !clock.absence_settled(now, timeout_ms)
+                    && previous.can_reuse(current, scanned_at.elapsed(), clock.absence_pending())
+            }) {
                 wait_backoff_ms = (wait_backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
                 tokio::time::sleep_until(locator_retry_at(
                     tokio::time::Instant::now(),
@@ -4748,27 +4874,55 @@ async fn resolve_target_locator(
         }
         .map_err(|error| describe_ambiguity(error, &result.matches))?;
         if matched {
-            if same_text {
-                return Ok(json!({
+            // Without includeHidden a read sees only rendered matches, so one
+            // that saw none rendered took the page's screen-reader text.
+            let spoken = locator.screen_reader_text && result.matches.iter().all(|m| !m.visible);
+            let mut reply = if same_text {
+                json!({
                     "ok":true, "tabId":tab_id, "generation":generation,
                     "ref":first.map(|m| &m.ref_id), "sameTextMatches":result.matches.len(),
-                }));
-            }
-            if informative.is_some() {
-                return Ok(json!({
+                })
+            } else if informative.is_some() {
+                json!({
                     "ok":true, "tabId":tab_id, "generation":generation,
                     "ref":first.map(|m| &m.ref_id), "onlyInformativeOf":result.matches.len(),
-                }));
+                })
+            } else {
+                json!({
+                    "ok":true, "tabId":tab_id, "generation":generation,
+                    "ref":first.map(|m| &m.ref_id), "condition":"locator", "state":state,
+                    "count":result.matches.len(), "coverageComplete":complete,
+                    "scanned":result.scanned, "includedFrames":result.included_frames,
+                    "skippedFrames":result.skipped_frames, "nodeLimitReached":result.node_limit_reached,
+                })
+            };
+            if spoken {
+                reply["screenReaderOnly"] = true.into();
             }
-            return Ok(json!({
-                "ok":true, "tabId":tab_id, "generation":generation,
-                "ref":first.map(|m| &m.ref_id), "condition":"locator", "state":state,
-                "count":result.matches.len(), "coverageComplete":complete,
-                "scanned":result.scanned, "includedFrames":result.included_frames,
-                "skippedFrames":result.skipped_frames, "nodeLimitReached":result.node_limit_reached,
-            }));
+            return Ok(reply);
         }
         completed_scans += 1;
+        let completed = tokio::time::Instant::now();
+        if settles
+            && clock.missed(
+                &result,
+                scanned_state.as_ref(),
+                completed,
+                timeout_ms,
+                active_loading(tab_id) == Some(true),
+            )
+        {
+            let elapsed = timeout_ms
+                .saturating_sub(deadline.saturating_duration_since(completed).as_millis() as u64);
+            return Err(target_locator_timeout(
+                &locator,
+                state,
+                elapsed,
+                completed_scans,
+                None,
+                Some(&result),
+            ));
+        }
         last_scan = Some(result);
         wait_backoff_ms = (wait_backoff_ms * 2).min(MAX_LOCATOR_RETRY_MS);
         tokio::time::sleep_until(locator_retry_at(
@@ -4800,6 +4954,7 @@ async fn collect_locator_matches(
         include_hidden: locator.include_hidden,
         limit: locator.limit,
         ancestors: locator.ancestors,
+        screen_reader_text: locator.screen_reader_text,
     };
     let root_script = build_find_js(generation, &format!("g{generation}-e"), &query);
     let root_raw = ref_context::execute_main(webview, &root_script)
@@ -4872,6 +5027,16 @@ async fn collect_locator_matches(
         );
     }
     let mut matches = std::mem::take(&mut root.matches);
+    let mut unseen: Vec<(LocatorMatch, RefFrameTarget)> = std::mem::take(&mut root.unseen)
+        .into_iter()
+        .map(|item| {
+            let target = RefFrameTarget {
+                frame_id: root_frame_id.clone(),
+                is_main: true,
+            };
+            (item, target)
+        })
+        .collect();
     let mut scanned = root.scanned;
     let mut truncated = root.truncated;
     let mut node_limit_reached = root.truncated;
@@ -4936,6 +5101,15 @@ async fn collect_locator_matches(
         }
         truncated |= payload.truncated;
         node_limit_reached |= payload.truncated;
+        for item in payload.unseen {
+            if unseen.len() < locator.limit {
+                let target = RefFrameTarget {
+                    frame_id: frame_id.clone(),
+                    is_main: false,
+                };
+                unseen.push((item, target));
+            }
+        }
         truncated |= payload.matches.len() > remaining;
         for item in payload.matches.into_iter().take(remaining) {
             targets.insert(
@@ -4950,6 +5124,14 @@ async fn collect_locator_matches(
         if matches.len() >= locator.limit {
             truncated = true;
             break;
+        }
+    }
+    // Screen-reader text answers a read only when no document had anything
+    // visible; one visible match anywhere keeps the read on what is seen.
+    if matches.is_empty() {
+        for (item, target) in unseen {
+            targets.insert(item.ref_id.clone(), target);
+            matches.push(item);
         }
     }
     record_ref_frame_targets(tab_id, targets);
@@ -5796,6 +5978,17 @@ async fn click_ref_profiled(
     }
     dispatch_mouse_click_profiled(webview, &actionable, ref_id, count, timings).await?;
     Ok(("devtools", actionable.popup_url))
+}
+
+/// browser_wait's own timeout next to waitFor fills in waitFor's when it has
+/// none: that is where Kimi put it on every wait, and each was refused, which
+/// cost a call to learn where it goes. waitFor's own timeout wins.
+fn with_outer_timeout(wait_for: &Value, outer: Option<&Value>) -> Value {
+    let mut wait_for = wait_for.clone();
+    if let (Some(object), Some(outer)) = (wait_for.as_object_mut(), outer) {
+        object.entry("timeout").or_insert_with(|| outer.clone());
+    }
+    wait_for
 }
 
 fn extract_click_count(params: &Value, double: bool) -> Result<u8, (String, String)> {
@@ -6884,6 +7077,13 @@ fn open_read_request(params: &Value) -> Result<Option<(&'static str, Value)>, (S
     Ok(read)
 }
 
+/// A snapshot that goes on past this read still holds what the caller came
+/// for: agy's snapshot of a Wikipedia article stopped at item 254, closeTab
+/// closed the tab with it, and the next read had to open the page again.
+fn read_lets_tab_close(method: &str, read: &Value) -> bool {
+    method != "snapshot" || read["nextOffset"].is_null()
+}
+
 async fn initial_document(
     webview: &Webview,
     tab_id: i64,
@@ -6928,6 +7128,29 @@ async fn initial_document(
     }
 }
 
+/// Single-page apps draw their content after the document is ready: an open
+/// with snapshot:true read YouTube's results page with 6 items and Maps' place
+/// page with 3, and the agent waited and took the snapshot again. The read
+/// waits while the page is still growing, for up to LANDING_PATIENCE; a page
+/// whose shape holds across one look answers after that look.
+async fn settle_rendering(webview: &Webview, deadline: tokio::time::Instant) {
+    const LOOK: Duration = Duration::from_millis(300);
+    let cap = (tokio::time::Instant::now() + LANDING_PATIENCE).min(deadline);
+    let mut previous = page_scan_state(webview).await;
+    while tokio::time::Instant::now() < cap {
+        tokio::time::sleep_until((tokio::time::Instant::now() + LOOK).min(cap)).await;
+        let current = page_scan_state(webview).await;
+        if previous
+            .as_ref()
+            .zip(current.as_ref())
+            .is_some_and(|(before, now)| before.same_structure(now))
+        {
+            return;
+        }
+        previous = current;
+    }
+}
+
 fn initial_read_timeout(phase: &str) -> (String, String) {
     (
         error_codes::TIMEOUT.into(),
@@ -6959,12 +7182,18 @@ async fn read_initial_page(
         let mut recoveries = 0;
         let mut empty_since = None;
         let mut empty_navigation = None;
+        let mut settled = false;
         loop {
             phase = "document commit/readiness";
             let (navigation, url) = timings.measure("initialDocument", initial_document(&webview, tab_id, deadline)).await?;
             if empty_navigation != Some(navigation) {
                 empty_since = None;
                 empty_navigation = Some(navigation);
+            }
+            if method == "snapshot" && !settled {
+                settled = true;
+                phase = "rendering";
+                timings.measure("rendering", settle_rendering(&webview, deadline)).await;
             }
             if method == "find" {
                 params["timeout"] = json!(deadline.saturating_duration_since(tokio::time::Instant::now()).as_millis() as u64);
@@ -8143,10 +8372,87 @@ mod tests {
         for unsupported in [json!({ "by": "xpath", "value": "//a" }), json!({ "by": "id", "value": " " })] {
             assert_eq!(extract_locator(&unsupported).unwrap_err().0, error_codes::INVALID_REQUEST, "{unsupported}");
         }
-        // A guessed type is refused with the list and where a name goes.
-        let guessed = extract_locator(&json!({ "by": "name", "value": "Search" })).unwrap_err().1;
+        // A type nobody means is refused with the list and where a name goes.
+        let guessed = extract_locator(&json!({ "by": "xpath", "value": "//a" })).unwrap_err().1;
         assert!(guessed.contains("use role, text, label, placeholder, testId, title, alt or css"));
         assert!(guessed.contains("name:'Search'"));
+    }
+
+    #[test]
+    fn a_wait_timeout_beside_wait_for_fills_in_its_own() {
+        let timeout = |wait_for: Value, outer: Option<Value>| {
+            let wait_for = with_outer_timeout(&wait_for, outer.as_ref());
+            PageExpectation::parse(Some(&wait_for))
+                .unwrap()
+                .unwrap()
+                .timeout
+        };
+        assert_eq!(
+            timeout(json!({ "url": "https://a.test/*" }), Some(json!(15000))),
+            15000
+        );
+        // Kimi's call carried both; waitFor's own is the one that counts.
+        assert_eq!(
+            timeout(
+                json!({ "url": "https://a.test/*", "stableFor": 500, "timeout": 3000 }),
+                Some(json!(15000))
+            ),
+            3000
+        );
+        assert_eq!(timeout(json!({ "text": "Ready" }), None), 10_000);
+        let invalid = with_outer_timeout(&json!({ "text": "Ready" }), Some(json!(50)).as_ref());
+        assert!(PageExpectation::parse(Some(&invalid)).is_err());
+    }
+
+    #[test]
+    fn a_name_asked_for_as_the_lookup_matches_any_role_by_that_name() {
+        let as_triple = |params: Value| {
+            let locator = extract_locator(&params).unwrap();
+            (locator.by, locator.value, locator.name)
+        };
+        let named = |value: &str| {
+            (
+                "name".to_string(),
+                value.to_string(),
+                Some(value.to_string()),
+            )
+        };
+        assert_eq!(
+            as_triple(json!({ "by": "name", "value": "Search" })),
+            named("Search")
+        );
+        // Kimi's two Wikipedia calls, and a value that is prose next to a name.
+        assert_eq!(
+            as_triple(
+                json!({ "by": "role", "value": "Cari di Wikipedia", "name": "Cari di Wikipedia" })
+            ),
+            named("Cari di Wikipedia")
+        );
+        assert_eq!(
+            as_triple(json!({ "by": "role", "value": "Telusuri Wikipedia" })),
+            named("Telusuri Wikipedia")
+        );
+        assert_eq!(
+            as_triple(json!({ "by": "role", "value": "Search box", "name": "Search" })),
+            named("Search")
+        );
+        // Anything a role contains stays a role lookup, as the page matches it.
+        for role in [
+            "button",
+            "Search",
+            "text",
+            "searchbox",
+            "doc-chapter",
+            "treeitem",
+        ] {
+            let locator =
+                extract_locator(&json!({ "by": "role", "value": role, "name": "Go" })).unwrap();
+            assert_eq!(
+                (locator.by.as_str(), locator.name.as_deref()),
+                ("role", Some("Go")),
+                "{role}"
+            );
+        }
     }
 
     #[test]
@@ -8334,12 +8640,101 @@ mod tests {
     }
 
     #[test]
+    fn a_live_page_settles_absence_over_half_the_timeout_within_bounds() {
+        assert_eq!(absence_settle(5_000, false), ABSENCE_SETTLE);
+        assert_eq!(absence_settle(60_000, false), ABSENCE_SETTLE);
+        assert_eq!(absence_settle(1_000, true), Duration::from_millis(1_500));
+        assert_eq!(absence_settle(5_000, true), Duration::from_millis(2_500));
+        assert_eq!(absence_settle(8_000, true), Duration::from_millis(4_000));
+        assert_eq!(absence_settle(60_000, true), Duration::from_millis(5_000));
+    }
+
+    #[test]
     fn hidden_only_settle_is_a_fifth_of_the_timeout_within_bounds() {
         assert_eq!(hidden_only_settle(100), Duration::from_millis(750));
         assert_eq!(hidden_only_settle(3_000), Duration::from_millis(750));
         assert_eq!(hidden_only_settle(5_000), Duration::from_millis(1_000));
         assert_eq!(hidden_only_settle(10_000), Duration::from_millis(1_500));
         assert_eq!(hidden_only_settle(60_000), Duration::from_millis(1_500));
+    }
+
+    #[test]
+    fn a_miss_ends_early_only_once_it_has_held_and_the_tab_has_loaded() {
+        let page = |mutations: i64, elements: i64| PageScanState {
+            id: "doc".into(),
+            mutations,
+            animating: false,
+            elements,
+        };
+        let scan = |hidden: usize| CollectedLocatorMatches {
+            matches: vec![],
+            scanned: 3_000,
+            truncated: false,
+            node_limit_reached: false,
+            included_frames: 1,
+            skipped_frames: 0,
+            hidden,
+            name_misses: vec![],
+            candidates: vec![],
+            nearest: None,
+        };
+        let start = tokio::time::Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+
+        // A quiet page: absence holds for the fixed settle, never while loading.
+        let mut clock = MissClock::default();
+        assert!(!clock.missed(&scan(0), Some(&page(1, 1_000)), at(0), 5_000, false));
+        assert!(!clock.missed(&scan(0), Some(&page(1, 1_000)), at(1_499), 5_000, false));
+        assert!(!clock.missed(&scan(0), Some(&page(1, 1_000)), at(1_500), 5_000, true));
+        assert!(clock.missed(&scan(0), Some(&page(1, 1_000)), at(1_500), 5_000, false));
+
+        // A live page keeps its absence while its shape holds, over half the timeout.
+        let mut clock = MissClock::default();
+        assert!(!clock.missed(&scan(0), Some(&page(1, 1_000)), at(0), 8_000, false));
+        clock.page_read(&page(1, 1_000), Some(&page(9, 1_004)));
+        assert!(!clock.missed(&scan(0), Some(&page(9, 1_004)), at(1_500), 8_000, false));
+        assert!(clock.missed(&scan(0), Some(&page(9, 1_004)), at(4_000), 8_000, false));
+
+        // A page that changed shape starts absence over.
+        clock.page_read(&page(9, 1_004), Some(&page(12, 1_200)));
+        assert!(!clock.absence_pending());
+        assert!(!clock.missed(&scan(0), Some(&page(12, 1_200)), at(6_000), 8_000, false));
+
+        // Only hidden matches: a fifth of the timeout, however much the page churns.
+        let mut clock = MissClock::default();
+        assert!(!clock.missed(&scan(1), Some(&page(1, 1_000)), at(0), 5_000, false));
+        clock.page_read(&page(1, 1_000), Some(&page(40, 1_300)));
+        assert!(!clock.missed(&scan(1), Some(&page(40, 1_300)), at(999), 5_000, false));
+        assert!(clock.missed(&scan(1), Some(&page(40, 1_300)), at(1_000), 5_000, false));
+        // A scan without the hidden match restarts that clock.
+        assert!(!clock.missed(&scan(0), Some(&page(40, 1_300)), at(1_100), 5_000, false));
+        assert!(!clock.missed(&scan(1), Some(&page(40, 1_300)), at(1_200), 5_000, false));
+
+        // A page whose revision cannot be read never ends a miss early.
+        let mut clock = MissClock::default();
+        for ms in [0, 2_000, 4_000] {
+            assert!(!clock.missed(&scan(0), Some(&page(-1, 1_000)), at(ms), 5_000, false));
+            assert!(!clock.missed(&scan(1), None, at(ms), 5_000, false));
+        }
+    }
+
+    #[test]
+    fn close_tab_waits_for_a_snapshot_that_continues() {
+        // agy's Wikipedia snapshot stopped at item 254 and closeTab closed the
+        // tab with it; a complete snapshot or a find still closes it.
+        assert!(!read_lets_tab_close(
+            "snapshot",
+            &json!({"nextOffset":254,"offset":0})
+        ));
+        assert!(read_lets_tab_close(
+            "snapshot",
+            &json!({"nextOffset":null,"totalItems":3})
+        ));
+        assert!(read_lets_tab_close("snapshot", &json!({"totalItems":0})));
+        assert!(read_lets_tab_close(
+            "find",
+            &json!({"matches":[],"nextOffset":5})
+        ));
     }
 
     #[test]
@@ -8419,6 +8814,56 @@ mod tests {
         assert!(script.contains("Search Wikipedia');alert(1)//"));
         assert!(!script.contains("const needle = Search Wikipedia"));
         assert!(script.contains("replace(/\\s+/g, ' ')"));
+    }
+
+    #[test]
+    fn a_text_find_falls_back_to_the_attributes_a_text_wait_reads() {
+        // Maps put "Alamat" only in an aria-label: wait saw the word while
+        // find timed out beside it. Both now read the same attributes.
+        let selector = "[aria-label],[placeholder],[alt],[title]";
+        assert!(build_wait_for_text_js("Alamat").contains(selector));
+        let find = build_find_js(
+            1,
+            "g1-e",
+            &LocatorQuery {
+                by: "text",
+                value: "Alamat",
+                name: None,
+                exact: false,
+                include_hidden: false,
+                limit: 5,
+                ancestors: Ancestors::Levels(0),
+                screen_reader_text: false,
+            },
+        );
+        assert!(find.contains(&format!("by === 'text' ? '{selector}' : '[title]'")));
+    }
+
+    #[test]
+    fn only_a_read_may_take_screen_reader_text() {
+        // Amazon's whole price sits in .a-offscreen (opacity 0): a read that
+        // found nothing visible takes it, an action never does.
+        let query = |screen_reader_text| LocatorQuery {
+            by: "css",
+            value: ".a-price .a-offscreen",
+            name: None,
+            exact: false,
+            include_hidden: false,
+            limit: 5,
+            ancestors: Ancestors::Levels(0),
+            screen_reader_text,
+        };
+        let read = build_find_js(1, "g1-e", &query(true));
+        assert!(read.contains("const screenReaderText = true;"));
+        assert!(read.contains("if (screenReaderText && unseen.length < collectLimit && keptForScreenReaders(el)) unseen.push(el);"));
+        assert!(read.contains("!el.closest('[aria-hidden=\"true\"],[inert]')"));
+        assert!(read.contains("el.checkVisibility({checkVisibilityCSS: true})"));
+        // Every copy must carry words, or none is taken: Amazon's empty deal
+        // price copy sat beside a filled list price copy.
+        assert!(read.contains("if (screenReaderText && !matches.length && spokenCopies.every(el => normalize(readText(el)))) {"));
+        assert!(read.contains("describe(el, unseenMatches)"));
+        assert!(read.contains("matches, unseen: unseenMatches, scanned"));
+        assert!(build_find_js(1, "g1-e", &query(false)).contains("const screenReaderText = false;"));
     }
 
     #[test]
@@ -8688,6 +9133,17 @@ mod tests {
     }
 
     #[test]
+    fn a_hit_on_the_control_that_owns_the_target_is_the_target_receiving_it() {
+        // YouTube's Skip button covers its own "Skip" text with a full-size
+        // ::after; the click must reach the button, and a control stays strict.
+        let script = actionable_probe_script("g1-e1", "true", None);
+        assert!(script.contains("if (!first || element.matches?.(ACTION_CONTROL)) return false;"));
+        assert!(script.contains("const owner = element.parentElement?.closest?.(ACTION_CONTROL);"));
+        assert!(script.contains("return !!owner && owner.contains(first);"));
+        assert!(script.contains("[role=\"button\"]"));
+    }
+
+    #[test]
     fn actionability_sampler_preserves_per_action_requirements_and_scroll_policy() {
         for (requirement, expected) in [
             (ActionabilityRequirement::Click, "pointer"),
@@ -8798,8 +9254,9 @@ mod tests {
         assert!(script.contains("found.length >= 5 || ++links > 3000"));
         assert!(script.contains("el.closest('h2,h3,h4') || el.querySelector('h2,h3,h4')"));
         assert!(script.contains("rect.top < innerHeight * 2"));
-        // A result title must be visible, not only laid out.
-        assert!(script.contains("if (!shown(el)) continue;"));
+        // A result title must be visible, not only laid out, and so must a
+        // control: TradingView's hidden twin of its symbol button was handed out.
+        assert!(script.matches("if (!shown(el)) continue;").count() >= 2);
         // The heading is the first line of the first h1 a reader can see.
         assert!(script.contains("checkVisibility"));
         assert!(script.contains(".slice(0, 120)"));

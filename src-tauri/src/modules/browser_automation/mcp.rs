@@ -150,7 +150,7 @@ pub fn tool_definitions() -> Value {
     let mut definitions = tool_array![
         { "name": "skills_list", "description": "List the skills available in a workspace: project procedures kept in .anbo/skills, plus the skills Anbo ships. Returns names, one-line descriptions and, for skills read on demand, their section titles, so it stays cheap to scan. Check this before solving a task from first principles.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
         { "name": "skills_read", "description": "Read a skill and follow it. A skill read on demand returns its essentials plus a section index; pass section to read one section in full. Names come from skills_list.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "name": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Skill name from skills_list." }, "section": { "type": "string", "minLength": 1, "maxLength": 120, "description": "A section title from the skill's index, matched case-insensitively." } }, "required": ["workspace", "name"] } },
-        { "name": "browser_open", "description": "Open a page in the user's real browser: a visible tab in this app, not a private fetch. Use it whenever a task needs a web page opened, read, or interacted with. Pass your own workspace root or space id; UI focus is never a fallback. The first tab in an empty active workspace is shown, later tabs stay in the background. The reply carries the tabId and the controlId of your session.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["url", "workspace"] } },
+        { "name": "browser_open", "description": "Open a page in the user's real browser: a visible tab in this app, not a private fetch. Pass your own workspace root or space id. To read the page in this same call, add find:{by,value} or snapshot:true; both wait for it to load, so no separate wait or snapshot. With find, closeTab:true makes a one-off lookup one call. The reply carries the tabId and your controlId.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["url", "workspace"] } },
         { "name": "browser_close", "description": "Close a native browser tab in an explicitly selected Anbo workspace. Pass endSession: true when this is the last tab of your task, so closing it and ending your session is one call instead of two.", "annotations": { "destructiveHint": true, "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." }, "endSession": { "type": "boolean", "default": false, "description": "Also end your control session after the tab closes; the reply then carries sessionEnded: true." } }, "required": ["tabId", "workspace"] } },
         { "name": "browser_tabs", "description": "List active native browser tabs with foreground, workspace, space, loading, pendingUrl, automation-target, automation-activity, and durationMs metadata. While loading, url remains the last committed URL and pendingUrl identifies the target when known.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "browser_navigate", "description": "Start navigating a browser tab to an http(s) URL and return immediately. Use browser_wait or browser_tabs to observe completion; browser_stop can interrupt the active load.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "url": { "type": "string" } }, "required": ["tabId", "url"] } },
@@ -222,9 +222,9 @@ pub fn tool_definitions() -> Value {
                 property.as_object_mut().unwrap().remove("description");
             }
             properties["timeout"]["maximum"] = json!(10000);
-            tool["inputSchema"]["properties"]["find"] = json!({"type":"object","properties":properties,"required":["by","value"],"additionalProperties":false,"description":"Initial find; timeout includes readiness/recovery. Results: read. Failure: readError + retained tabId."});
-            tool["inputSchema"]["properties"]["snapshot"] = json!({"type":"boolean","default":false,"description":"Snapshot after commit, up to 10s; empty content gets 1s grace. Cannot combine with find."});
-            tool["inputSchema"]["properties"]["closeTab"] = json!({"type":"boolean","default":false,"description":"Only with find/snapshot: close this newly created tab after a successful read. Never closes an existing tab. A failed read keeps it open. Closed refs cannot be reused."});
+            tool["inputSchema"]["properties"]["find"] = json!({"type":"object","properties":properties,"required":["by","value"],"additionalProperties":false,"description":"Initial find; timeout includes readiness. Result: read; failure: readError, tab kept."});
+            tool["inputSchema"]["properties"]["snapshot"] = json!({"type":"boolean","default":false,"description":"Snapshot once the page has committed and stopped growing, up to 10s. Cannot combine with find."});
+            tool["inputSchema"]["properties"]["closeTab"] = json!({"type":"boolean","default":false,"description":"Only with find/snapshot: close this new tab after a successful read; a failed read keeps it open, as does a partial snapshot. Closed refs cannot be reused."});
         }
         if matches!(
             name.as_str(),
@@ -323,7 +323,7 @@ pub fn tool_definitions() -> Value {
         if LAST_CALL_TOOLS.iter().any(|last| *last == name) {
             tool["inputSchema"]["properties"]["endSession"] = json!({
                 "type": "boolean", "default": false,
-                "description": "Last call only: end control on success; keep tabs open."
+                "description": "Optional, on a call you make anyway; it ends by itself too."
             });
         }
     }
@@ -521,6 +521,14 @@ mod tests {
                 tool["inputSchema"]["properties"]["endSession"]["type"], "boolean",
                 "{last} takes endSession"
             );
+            // OpenCode and Kimi spent a page_info of its own on endSession at
+            // the end of every task: the flag is optional and never a call.
+            if *last != "browser_close" {
+                assert_eq!(
+                    tool["inputSchema"]["properties"]["endSession"]["description"],
+                    "Optional, on a call you make anyway; it ends by itself too."
+                );
+            }
         }
         // No tool text sends the agent to a tool that no longer exists.
         for tool in &tools {
@@ -844,6 +852,10 @@ mod tests {
             .to_ascii_lowercase();
         assert!(description.contains("real browser"));
         assert!(description.contains("not a private fetch"));
+        // Only Claude Code showed the connect message: Kimi, OpenCode and agy
+        // opened plainly, then waited, snapshotted and closed in separate calls.
+        assert!(description.contains("find:{by,value} or snapshot:true"));
+        assert!(description.contains("with find, closetab:true makes a one-off lookup one call"));
     }
 
     #[test]

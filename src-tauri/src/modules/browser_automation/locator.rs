@@ -20,6 +20,9 @@ pub struct LocatorQuery<'a> {
     /// Climb this many ancestors from each match and carry that block's text
     /// back with it. A match is a leaf; the facts around it are the block.
     pub ancestors: Ancestors,
+    /// A read, when nothing visible matched, may take an element the page
+    /// hides from sight but keeps for screen readers. Never set for input.
+    pub screen_reader_text: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -90,6 +93,10 @@ pub struct LocatorPayload {
     /// that does match something, with how much and what it looks like.
     #[serde(default)]
     pub nearest: Option<NearestCss>,
+    /// Matches hidden from sight but kept for screen readers, described only
+    /// for a read that found nothing visible in this document.
+    #[serde(default)]
+    pub unseen: Vec<LocatorMatch>,
     pub error: Option<String>,
 }
 
@@ -452,7 +459,13 @@ pub const PAGE_SCAN_STATE_JS: &str = r#"(function() {
     } catch (error) {
         animating = true;
     }
-    return JSON.stringify({ id: state.id, mutations: state.mutations, animating });
+    let elements = -1;
+    try {
+        elements = document.getElementsByTagName('*').length;
+    } catch (error) {
+        elements = -1;
+    }
+    return JSON.stringify({ id: state.id, mutations: state.mutations, animating, elements });
 })()"#;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -460,9 +473,29 @@ pub struct PageScanState {
     pub id: String,
     pub mutations: i64,
     pub animating: bool,
+    /// Elements in the main document, or -1 when unknown.
+    #[serde(default = "unknown_count")]
+    pub elements: i64,
+}
+
+fn unknown_count() -> i64 {
+    -1
 }
 
 impl PageScanState {
+    /// The same document with roughly the same number of elements: a page
+    /// that rewrites text and attributes all the time (TradingView's prices,
+    /// a clock) without building anything new. A page still rendering adds
+    /// elements by the dozen and fails this.
+    pub fn same_structure(&self, current: &PageScanState) -> bool {
+        self.mutations >= 0
+            && current.mutations >= 0
+            && current.id == self.id
+            && self.elements >= 0
+            && current.elements >= 0
+            && (current.elements - self.elements).abs() <= (self.elements / 100).max(8)
+    }
+
     pub fn same_revision(&self, current: &PageScanState) -> bool {
         self.mutations >= 0 && current.id == self.id && current.mutations == self.mutations
     }
@@ -499,6 +532,7 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
             const wantedName = {name};
             const exact = {exact};
             const includeHidden = {include_hidden};
+            const screenReaderText = {screen_reader_text};
             const limit = {limit};
             const climbCount = {ancestors};
             {context_block}
@@ -507,6 +541,7 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
             const relaxations = {relaxations};
             const maxScanned = 50000;
             const matches = [];
+            const unseen = [];
             let visualPoint = null;
             let scanned = 0;
             let truncated = false;
@@ -535,6 +570,7 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                 if (bucket.length < 5 && !bucket.includes(seen)) bucket.push(seen);
             }};
             const roleTags = new Set(['A','BUTTON','TEXTAREA','SELECT','OPTION','IMG','INPUT','H1','H2','H3','H4','H5','H6','DIALOG','UL','OL','LI','TABLE','TR','TH','TD','NAV','MAIN','ARTICLE','FORM','PROGRESS','HR','HEADER','FOOTER']);
+            const AUTHOR_NAMED = new Set(['banner','main','navigation','contentinfo','complementary','region','search','form','application','document','generic','group','list','table','grid','treegrid','tablist','toolbar','menu','menubar','tree','radiogroup','listbox','rowgroup','feed','log','status','dialog','alertdialog','article','figure','note','tabpanel','none','presentation']);
             const implicitRole = el => {{
                 const explicit = normalize(el.getAttribute('role')).split(' ')[0];
                 if (explicit) return explicit;
@@ -636,6 +672,14 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                     const label = labelName(el);
                     return !!label && compare(label);
                 }}
+                // Any role, the name check that follows does the matching. A
+                // landmark or container is named by its author, never by its
+                // content: YouTube's masthead otherwise answered to "Search".
+                if (by === 'name') {{
+                    const role = implicitRole(el);
+                    return !!role && (!AUTHOR_NAMED.has(role)
+                        || el.hasAttribute('aria-label') || el.hasAttribute('aria-labelledby'));
+                }}
                 if (by === 'placeholder') return compare(el.getAttribute('placeholder'));
                 if (by === 'testId') return compare(el.getAttribute('data-testid'));
                 if (by === 'title') return compare(el.getAttribute('title'));
@@ -662,21 +706,32 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                 if (control) candidatePool.push(el);
             }};
             const CONTROL_ROLES = new Set(['button','link','textbox','searchbox','combobox','checkbox','radio','switch','slider','spinbutton','menuitem','menuitemcheckbox','menuitemradio','tab','option','treeitem']);
+            // A control whose name shares a word with the lookup goes first. On
+            // Maps the button named "Alamat: Merdeka Square, ..." sat past the
+            // first eight controls, and a miss for "Alamat" offered eight
+            // category buttons instead.
+            const lookupWords = normalize([by === 'role' || by === 'name' || by === 'css' ? '' : wanted, wantedName].join(' '))
+                .toLocaleLowerCase().split(' ').filter(word => word.length > 2);
             const pickCandidates = () => {{
-                const picked = [];
+                const near = [];
+                const rest = [];
                 for (const el of candidatePool) {{
-                    if (picked.length >= 12) break;
+                    if (near.length >= 8 || (rest.length >= 12 && !lookupWords.length)) break;
                     if (!readVisible(el)) continue;
                     const role = implicitRole(el);
                     if (!CONTROL_ROLES.has(role)) continue;
-                    const name = normalize(readName(el)).slice(0, 60);
-                    if (!name) continue;
+                    const full = normalize(readName(el));
+                    if (!full) continue;
                     const r = el.getBoundingClientRect();
                     const inViewport = r.width > 0 && r.height > 0 && r.left < innerWidth && r.top < innerHeight && r.right > 0 && r.bottom > 0;
-                    picked.push({{role, name, inViewport}});
+                    const candidate = {{role, name: full.slice(0, 60), inViewport}};
+                    const lower = full.toLocaleLowerCase();
+                    if (lookupWords.some(word => lower.includes(word))) near.push(candidate);
+                    else if (rest.length < 12) rest.push(candidate);
                 }}
                 // The viewport first: that is where the agent is looking.
-                return picked.filter(c => c.inViewport).concat(picked.filter(c => !c.inViewport)).slice(0, 8);
+                const viewportFirst = list => list.filter(c => c.inViewport).concat(list.filter(c => !c.inViewport));
+                return viewportFirst(near).concat(viewportFirst(rest)).slice(0, 8);
             }};
             // The first rung of the relaxation ladder the page actually has,
             // with a count and a few visible examples. Only on a css miss.
@@ -709,7 +764,10 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                     if (!hits.length) pocketCandidate(el);
                     const matched = isMatch(el);
                     const isVisible = matched && readVisible(el);
-                    if (matched && !includeHidden && !isVisible) hidden += 1;
+                    if (matched && !includeHidden && !isVisible) {{
+                        hidden += 1;
+                        if (screenReaderText && unseen.length < collectLimit && keptForScreenReaders(el)) unseen.push(el);
+                    }}
                     if (matched && (includeHidden || isVisible)) {{
                         hits.push(el);
                     }}
@@ -717,9 +775,16 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                 }}
             }};
 
-            const describe = el => {{
+            // Hidden from sight only, by opacity, clipping or position, and
+            // not from assistive technology: Amazon writes each price once for
+            // sight, split into whole and fraction, and once whole for screen
+            // readers in .a-offscreen (opacity 0), the copy agents ask for.
+            const keptForScreenReaders = el =>
+                !el.closest('[aria-hidden="true"],[inert]') &&
+                typeof el.checkVisibility === 'function' && el.checkVisibility({{checkVisibilityCSS: true}});
+            const describe = (el, into = matches) => {{
                         const isVisible = readVisible(el);
-                        const ref = refPrefix + (matches.length + 1);
+                        const ref = refPrefix + (into.length + 1);
                         refRegistry.remember(ref, el);
                         const type = el.tagName === 'INPUT' ? String(el.type || '').toLowerCase() : '';
                         const password = type === 'password';
@@ -733,7 +798,7 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                                 visualPoint = {{x, y, width:r.width, height:r.height}};
                             }}
                         }}
-                        matches.push({{
+                        into.push({{
                             ref,
                             tag: el.tagName.toLowerCase(),
                             role: implicitRole(el),
@@ -755,10 +820,10 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                             const block = contextBlock(el, climbCount);
                             if (!block) return;
                             const seen = blockRefs.get(block);
-                            if (seen) matches[matches.length - 1].blockRef = seen;
+                            if (seen) into[into.length - 1].blockRef = seen;
                             else {{
                                 blockRefs.set(block, ref);
-                                matches[matches.length - 1].block = normalize(readText(block)).slice(0, blockLimit);
+                                into[into.length - 1].block = normalize(readText(block)).slice(0, blockLimit);
                             }}
                         }}
             }};
@@ -772,17 +837,28 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                 // with a role answer to its title, so a real match is never widened
                 // into an ambiguity. The page's titled elements are read directly:
                 // the controls a scan pockets stop at 200, which a busy chart passes.
+                // A text lookup reads every attribute a text wait counts as the
+                // page's words: Maps writes "Alamat" only in the aria-label of the
+                // address button, whose text is the address, so wait saw it and
+                // find timed out.
                 const byTitle = !hits.length && !includeHidden &&
-                    ((by === 'role' && wantedName) || by === 'text');
+                    (((by === 'role' || by === 'name') && wantedName) || by === 'text');
                 if (byTitle) {{
+                    const attributes = by === 'text' ? ['aria-label', 'placeholder', 'alt', 'title'] : ['title'];
                     let titled = 0;
-                    for (const el of document.querySelectorAll('[title]')) {{
-                        if (hits.length >= collectLimit || ++titled > 1000) break;
-                        const title = el.getAttribute('title');
-                        const said = by === 'role' ? compareValue(title, expectedName) : compare(title);
+                    for (const el of document.querySelectorAll(by === 'text' ? '[aria-label],[placeholder],[alt],[title]' : '[title]')) {{
+                        if (hits.length >= collectLimit || ++titled > 2000) break;
+                        const said = attributes.some(attribute => by === 'text'
+                            ? compare(el.getAttribute(attribute))
+                            : compareValue(el.getAttribute(attribute), expectedName));
                         if (!said) continue;
                         const role = implicitRole(el);
-                        if (!role || (by === 'role' && !roleMatches(role)) || !readVisible(el)) continue;
+                        // A drawing has no role and no words of its own: TradingView's
+                        // chart is a canvas whose aria-label "Chart for BINANCE:BTCUSDT,
+                        // 1D" is the only place those words exist, and agents asked
+                        // for it by text in R26, R35 and the moment of truth.
+                        const drawing = !role && by === 'text' && compare(el.getAttribute('aria-label')) && !normalize(readText(el));
+                        if ((!role && !drawing) || (by === 'role' && !roleMatches(role)) || !readVisible(el)) continue;
                         hits.push(el);
                     }}
                 }}
@@ -794,9 +870,19 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                     if (!chosen.length) chosen = hits;
                 }}
                 for (const el of chosen.slice(0, limit)) describe(el);
+                // Only for a read that found nothing visible here, and each nest
+                // is read at its tightest, as a text match is. A copy with no
+                // words means the page stopped filling them: Amazon left its
+                // deal price's copy empty and filled the list price's, and
+                // reading the rest would have answered with the wrong price.
+                const unseenMatches = [];
+                const spokenCopies = unseen.filter(el => !unseen.some(other => other !== el && el.contains(other)));
+                if (screenReaderText && !matches.length && spokenCopies.every(el => normalize(readText(el)))) {{
+                    for (const el of spokenCopies.slice(0, limit)) describe(el, unseenMatches);
+                }}
                 const candidates = matches.length ? [] : pickCandidates();
                 const nearest = (by === 'css' && !matches.length) ? nearestCss() : null;
-                return JSON.stringify({{ matches, scanned, truncated, hidden, nameMisses: (nameNear.length ? nameNear : nameAny), candidates, nearest, visualPoint, error: null }});
+                return JSON.stringify({{ matches, unseen: unseenMatches, scanned, truncated, hidden, nameMisses: (nameNear.length ? nameNear : nameAny), candidates, nearest, visualPoint, error: null }});
             }} catch (error) {{
                 return JSON.stringify({{
                     matches: [],
@@ -814,6 +900,7 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
         name = serde_json::to_string(&query.name).unwrap(),
         exact = query.exact,
         include_hidden = query.include_hidden,
+        screen_reader_text = query.screen_reader_text,
         limit = limit,
         ancestors = ancestors,
         relaxations = serde_json::to_string(&if query.by == "css" {
@@ -842,6 +929,7 @@ mod tests {
                 include_hidden: false,
                 limit: 10,
                 ancestors: Ancestors::Levels(0),
+                screen_reader_text: false,
             },
         );
         assert!(script.contains("const climbCount = 0;"));
@@ -863,13 +951,14 @@ mod tests {
                 limit: 10,
                 // Ten is the ceiling; a caller asking for more gets ten.
                 ancestors: Ancestors::Levels(99),
+                screen_reader_text: false,
             },
         );
         assert!(script.contains("const climbCount = 10;"));
         // Two cells of one row climb to the same block: the text is carried
         // once and the second match points at the first.
         assert!(script.contains("blockRefs.get(block)"));
-        assert!(script.contains("matches[matches.length - 1].blockRef = seen;"));
+        assert!(script.contains("into[into.length - 1].blockRef = seen;"));
         assert!(script.contains("blockRefs.set(block, ref);"));
     }
 
@@ -886,6 +975,7 @@ mod tests {
                 include_hidden: false,
                 limit: 100,
                 ancestors: Ancestors::Levels(0),
+                screen_reader_text: false,
             },
         );
         assert!(script.contains(r#"const wanted = "a\"b";"#));
@@ -899,6 +989,7 @@ mod tests {
             id: id.to_string(),
             mutations,
             animating,
+            elements: 3_000,
         };
         let scanned = state("abc", 42, false);
 
@@ -925,6 +1016,7 @@ mod tests {
             id: id.to_string(),
             mutations,
             animating,
+            elements: 3_000,
         };
         let scanned = state("abc", 42, false);
 
@@ -943,6 +1035,40 @@ mod tests {
 
         // An uninstallable observer (-1) is never trusted to prove absence.
         assert!(!state("abc", -1, false).same_revision(&state("abc", -1, false)));
+    }
+
+    #[test]
+    fn a_live_page_keeps_its_shape_while_a_page_still_rendering_does_not() {
+        let state = |id: &str, mutations: i64, elements: i64| PageScanState {
+            id: id.to_string(),
+            mutations,
+            animating: false,
+            elements,
+        };
+        // TradingView between two scans: thousands of price mutations, the
+        // element count within two of where it was.
+        let chart = state("abc", 10, 3_030);
+        assert!(chart.same_structure(&state("abc", 4_812, 3_028)));
+        assert!(chart.same_structure(&state("abc", 4_812, 3_060)));
+        // A result list arriving, a new document, or a page nobody can watch
+        // is not the same page.
+        assert!(!chart.same_structure(&state("abc", 4_812, 3_061)));
+        assert!(!chart.same_structure(&state("abc", 4_812, 2_990)));
+        assert!(!chart.same_structure(&state("xyz", 4_812, 3_030)));
+        assert!(!chart.same_structure(&state("abc", -1, 3_030)));
+        assert!(!chart.same_structure(&state("abc", 4_812, -1)));
+        // A small page still needs more than a handful of new elements.
+        let small = state("abc", 1, 40);
+        assert!(small.same_structure(&state("abc", 9, 48)));
+        assert!(!small.same_structure(&state("abc", 9, 49)));
+    }
+
+    #[test]
+    fn the_page_probe_counts_the_elements_it_sees() {
+        assert!(PAGE_SCAN_STATE_JS.contains("document.getElementsByTagName('*').length"));
+        let legacy: PageScanState =
+            serde_json::from_str(r#"{"id":"a","mutations":1,"animating":false}"#).unwrap();
+        assert_eq!(legacy.elements, -1);
     }
 
     #[test]
@@ -967,6 +1093,7 @@ mod tests {
                 include_hidden: false,
                 limit: 10,
                 ancestors: Ancestors::Levels(0),
+                screen_reader_text: false,
             },
         );
         assert!(script.contains(r#"const wantedName = "Save changes";"#));
@@ -975,11 +1102,36 @@ mod tests {
         assert!(script.contains("if (!matchesBy(el)) return false;"));
         assert!(script.contains("if (by === 'role' || !wantedName) return true;"));
         // A title answers only when no visible element matched the lookup,
-        // for role + name and for text, over a bounded read of titled elements.
-        assert!(script.contains("((by === 'role' && wantedName) || by === 'text')"));
-        assert!(script.contains("document.querySelectorAll('[title]')"));
-        assert!(script.contains("++titled > 1000"));
-        assert!(script.contains("by === 'role' ? compareValue(title, expectedName) : compare(title)"));
+        // for role + name, a bare name and text, over a bounded read of
+        // titled elements.
+        assert!(
+            script.contains("(((by === 'role' || by === 'name') && wantedName) || by === 'text')")
+        );
+        // A text lookup also reads the attributes a text wait counts.
+        assert!(script.contains(
+            "document.querySelectorAll(by === 'text' ? '[aria-label],[placeholder],[alt],[title]' : '[title]')"
+        ));
+        assert!(script.contains(
+            "const attributes = by === 'text' ? ['aria-label', 'placeholder', 'alt', 'title'] : ['title'];"
+        ));
+        assert!(script.contains("++titled > 2000"));
+        assert!(script.contains("? compare(el.getAttribute(attribute))"));
+        assert!(script.contains(": compareValue(el.getAttribute(attribute), expectedName))"));
+        // Without a role, only a drawing answers: its aria-label holds the
+        // words and it has none of its own, so a labelled container never does.
+        assert!(script.contains(
+            "const drawing = !role && by === 'text' && compare(el.getAttribute('aria-label')) && !normalize(readText(el));"
+        ));
+        assert!(script.contains(
+            "if ((!role && !drawing) || (by === 'role' && !roleMatches(role)) || !readVisible(el)) continue;"
+        ));
+        // A bare name lookup takes any element with a role, and the name check
+        // after it does the matching; a container answers only to its author's name.
+        assert!(script.contains("if (by === 'name') {"));
+        assert!(script.contains("!AUTHOR_NAMED.has(role)"));
+        assert!(
+            script.contains("el.hasAttribute('aria-label') || el.hasAttribute('aria-labelledby')")
+        );
         assert!(script.contains("const expectedName = normalize(wantedName).toLocaleLowerCase()"));
         assert!(script
             .contains("if (!role || (!roleMatches(role) && !searchReachesEntry)) return false;"));
@@ -1000,7 +1152,8 @@ mod tests {
         assert!(script.contains("bucket.length < 5"));
         assert!(script.contains("nameWords.some(word => lower.includes(word))"));
         // Matches dropped for being out of sight are counted, never silent.
-        assert!(script.contains("if (matched && !includeHidden && !isVisible) hidden += 1;"));
+        assert!(script.contains("if (matched && !includeHidden && !isVisible) {"));
+        assert!(script.contains("                        hidden += 1;"));
     }
 
     #[test]
@@ -1016,6 +1169,7 @@ mod tests {
                 include_hidden: false,
                 limit: 10,
                 ancestors: Ancestors::Levels(0),
+                screen_reader_text: false,
             },
         );
         // Pocketed by tag on every element the walk visits, resolved (render,
@@ -1025,6 +1179,16 @@ mod tests {
         assert!(script.contains("candidates, nearest, visualPoint"));
         // Landmarks carry names too, but nothing to act on; only controls are offered.
         assert!(script.contains("if (!CONTROL_ROLES.has(role)) continue;"));
+        // Controls named with a word of the lookup come first, each group
+        // viewport first; without words the first twelve are kept as before.
+        assert!(script
+            .contains("if (lookupWords.some(word => lower.includes(word))) near.push(candidate);"));
+        assert!(script.contains("else if (rest.length < 12) rest.push(candidate);"));
+        assert!(
+            script.contains("return viewportFirst(near).concat(viewportFirst(rest)).slice(0, 8);")
+        );
+        assert!(script
+            .contains("by === 'role' || by === 'name' || by === 'css' ? '' : wanted, wantedName"));
         assert!(!script.contains(
             "refRegistry.remember(ref, el);
                     candidates"
@@ -1093,6 +1257,7 @@ mod tests {
                 include_hidden: false,
                 limit: 10,
                 ancestors: Ancestors::Levels(0),
+                screen_reader_text: false,
             },
         );
         assert!(
@@ -1112,6 +1277,7 @@ mod tests {
                 include_hidden: false,
                 limit: 10,
                 ancestors: Ancestors::Levels(0),
+                screen_reader_text: false,
             },
         );
         assert!(
