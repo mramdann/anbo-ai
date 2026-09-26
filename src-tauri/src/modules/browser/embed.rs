@@ -16,7 +16,10 @@ use base64::Engine;
 #[cfg(windows)]
 use webview2_com::{
     CapturePreviewCompletedHandler, FocusChangedEventHandler,
-    Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG,
+    Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_22, COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG,
+        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+    },
     SourceChangedEventHandler,
 };
 #[cfg(windows)]
@@ -671,6 +674,8 @@ async fn spawn_browser_child(
         register_focus_handler(&webview, tab_id);
         #[cfg(windows)]
         register_source_handler(&webview, tab_id, app_url, local_root);
+        #[cfg(windows)]
+        drop_app_protocol_filters(&webview);
         set_embed_presentation(&webview, visible)?;
         #[cfg(windows)]
         {
@@ -811,6 +816,53 @@ fn register_source_handler(
         };
         if let Err(error) = register() {
             log::warn!("browser source observer could not be registered: {error}");
+        }
+    });
+}
+
+#[cfg(windows)]
+const APP_PROTOCOLS: [&str; 3] = ["tauri", "ipc", "asset"];
+
+/// Tauri gives every webview its own protocols, which wry serves through
+/// WebResourceRequested filters. A tab never loads them (pages are HTTP(S) or
+/// workspace files, and the app origin is refused), yet the filters route every
+/// request of the page and its workers through WebView2's DevTools URL loader
+/// interceptor. Since WebView2 155 a YouTube live stream makes it report a
+/// duplicate request id: the browser kills its network service, spins at about
+/// 160% CPU, and every tab stays at about:blank until the host is released.
+#[cfg(windows)]
+fn drop_app_protocol_filters(webview: &tauri::Webview) {
+    let _ = webview.with_webview(|platform| {
+        use windows::core::{Interface, HSTRING};
+        let core = match unsafe { platform.controller().CoreWebView2() } {
+            Ok(core) => core,
+            Err(error) => {
+                log::warn!("browser tab kept the app protocol filters: {error}");
+                return;
+            }
+        };
+        let with_sources = core.cast::<ICoreWebView2_22>().ok();
+        for protocol in APP_PROTOCOLS {
+            // The prefix wry registers for a custom protocol without the https scheme.
+            let filter = HSTRING::from(format!("http://{protocol}.*"));
+            let removed = match &with_sources {
+                Some(core) => unsafe {
+                    core.RemoveWebResourceRequestedFilterWithRequestSourceKinds(
+                        &filter,
+                        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                        COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+                    )
+                },
+                None => unsafe {
+                    core.RemoveWebResourceRequestedFilter(
+                        &filter,
+                        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                    )
+                },
+            };
+            if let Err(error) = removed {
+                log::warn!("browser tab kept the {protocol} protocol filter: {error}");
+            }
         }
     });
 }
