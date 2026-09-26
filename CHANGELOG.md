@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.32.0](https://github.com/mramdann/anbo-ai/compare/v0.31.0...v0.32.0) (2026-09-26)
+
+
+### Features
+
+* **browser:** carry navigation hints and settle submits in action replies ([ed2e3bc](https://github.com/mramdann/anbo-ai/commit/ed2e3bc3fb98d016b99762086030bde0d8b4b595))
+* **browser:** land with result titles, a visible heading and SPA routes ([7976175](https://github.com/mramdann/anbo-ai/commit/797617574eb29963e5ea2536917f53d97de314e0))
+* **browser:** let agents in several workspaces drive the browser at once ([7bb3893](https://github.com/mramdann/anbo-ai/commit/7bb389350499a53fc04ee9d007ce2ccab4b3cae3))
+* **browser:** read an enclosing block via browser_get_text ancestors ([94b58e6](https://github.com/mramdann/anbo-ai/commit/94b58e674d8b97b4ebba2bc96b2232c46ff01279))
+* **browser:** read the page in the same browser_open call ([b47fd3f](https://github.com/mramdann/anbo-ai/commit/b47fd3f7e031e1c3578c991f72dd5f2bd9d0cb73))
+* **browser:** register hint controls as live refs ([3925f0c](https://github.com/mramdann/anbo-ai/commit/3925f0cee2e667a98124dcbaccbf3e62e8a71e6d))
+* **browser:** return what the next call would have asked for ([a81ea0d](https://github.com/mramdann/anbo-ai/commit/a81ea0d1b333fa39b1847730d4dd562914d9b367))
+* **browser:** reveal from a pre-fill baseline and guard the native retype ([2d9ee4d](https://github.com/mramdann/anbo-ai/commit/2d9ee4d1de453f4030eaa2866bbb5e991f94a9e2))
+* **browser:** reveal opened surfaces + native re-type + find ancestors ([df2d688](https://github.com/mramdann/anbo-ai/commit/df2d688d1de9687261a43c4687336bf7512f142e))
+* **browser:** settle locator ambiguity from what the page shows ([73da562](https://github.com/mramdann/anbo-ai/commit/73da5629661f94598dda8ee69ab172ec3cb2b4d5))
+* **browser:** verify hover delivery and read text in one ready call ([ae5a5be](https://github.com/mramdann/anbo-ai/commit/ae5a5be839b7906773e6c7c926b98a14ce1f48be))
+* **browser:** verifyValue canvas, force off-viewport type, focused-bypass, fast-fail hidden finds ([faf7a20](https://github.com/mramdann/anbo-ai/commit/faf7a20c00ac7ead94ff432a6d8b197365e704b0))
+
+
+### Bug Fixes
+
+* **agents:** lazy resume-on-reopen with a tab indicator ([f73df95](https://github.com/mramdann/anbo-ai/commit/f73df95d1b35e5cc356a44ad2faea6b2707e04d2))
+* **agents:** read Kimi 2.0.2 and Antigravity subagents as working ([7574fbc](https://github.com/mramdann/anbo-ai/commit/7574fbc72d531b0c63de10a687ded4646eb9ef97))
+* **browser:** act on what real agents tripped over in the moment of truth ([398c7e1](https://github.com/mramdann/anbo-ai/commit/398c7e154dbfadf28d43b18ebc1b2711332a4ada))
+* **browser:** collapse the cursor card detail after a successful action ([851318b](https://github.com/mramdann/anbo-ai/commit/851318b17b9c528953f90bded02e48ce64e78406))
+* **browser:** keep WebView2 155 live streams from killing the tab's network ([a466f06](https://github.com/mramdann/anbo-ai/commit/a466f06f33fcb1e2e44709755a722063b83cff19))
+* **browser:** let a searchbox lookup reach editable comboboxes ([4e30cda](https://github.com/mramdann/anbo-ai/commit/4e30cda2b0939aab0cf1530125dc1eb763a813f1))
+* **browser:** point a stale get_text ref at the locator path ([ccb05a9](https://github.com/mramdann/anbo-ai/commit/ccb05a9f209241f20671f065a1072d186edb2f22))
+* **browser:** wait for the navigation commit behind a submit and in-flight hints ([32c7e66](https://github.com/mramdann/anbo-ai/commit/32c7e66c24437147eef5d814ad6d11d9e7fdb523))
+* **tabs:** keep tab layouts across launches and stop idle repaints ([b1d4c47](https://github.com/mramdann/anbo-ai/commit/b1d4c47f408ca9ca7b81304d4765f0970a45292c))
+* **voice:** log every dictation failure and keep a moved xterm input ([7d2fef5](https://github.com/mramdann/anbo-ai/commit/7d2fef551ceb8cfdb724f538ada0045ac71f25dd))
+
+
+### Performance Improvements
+
+* **browser:** keep the WebView2 host warm between tabs ([ad2a35b](https://github.com/mramdann/anbo-ai/commit/ad2a35b0f603918b1155bf8449a7174aad57e55c))
+* **browser:** let click stability reuse the call-time sample ([de79f8e](https://github.com/mramdann/anbo-ai/commit/de79f8e5a1cb5ab55450b3733685cf819e698fcd))
+* **browser:** skip geometry sampling for a check already in its state ([b7a84f5](https://github.com/mramdann/anbo-ai/commit/b7a84f58988d17dde9dd76c2493937ef2c19de31))
+* **browser:** time open and action phases under diagnostics ([0a2dfb6](https://github.com/mramdann/anbo-ai/commit/0a2dfb650bcda52e135cd790028111a86a3ad604))
+
 ## [0.31.0](https://github.com/mramdann/anbo-ai/compare/v0.30.0...v0.31.0) (2026-09-15)
 
 
