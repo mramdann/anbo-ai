@@ -32,6 +32,10 @@ const LIVE_WORKING_PATTERNS = [
   /^[\t ]*(?:running|searching|fetching|thinking|generating|loading|waiting)(?:\.{3}|\u2026)(?:[\t ]*\([^\r\n]{1,120}\))?[\t ]*\r?$/im,
   // Antigravity keeps its prompt mounted while this live task footer runs.
   /\d+ task\(s\).*\/tasks/i,
+  // It also returns to the prompt once it hands the work to a subagent, and
+  // counts the ones still running in the same footer until they report back.
+  // Read as ready, the next request arrived before the first was answered.
+  /\d+ subagent\(s\)/i,
 ];
 
 const WORKING_PATTERNS = [
@@ -45,11 +49,27 @@ function tail(value: string): string {
   return value.replace(/\u0000/g, "").slice(-16_000);
 }
 
+// Agent status classifies every agent screen five times a second; compiling
+// each matcher once keeps that from rebuilding dozens of regexes per screen.
+// Keyed by source so a literal written inline, a new object on every call,
+// still finds its compiled matcher. The set of patterns is fixed.
+const globalMatchers = new Map<string, RegExp>();
+
+function globalMatcher(pattern: RegExp): RegExp {
+  const key = `${pattern.flags}/${pattern.source}`;
+  let matcher = globalMatchers.get(key);
+  if (!matcher) {
+    const flags = pattern.flags.includes("g")
+      ? pattern.flags
+      : `${pattern.flags}g`;
+    matcher = new RegExp(pattern.source, flags);
+    globalMatchers.set(key, matcher);
+  }
+  return matcher;
+}
+
 function lastPatternIndex(value: string, pattern: RegExp): number {
-  const flags = pattern.flags.includes("g")
-    ? pattern.flags
-    : `${pattern.flags}g`;
-  const matcher = new RegExp(pattern.source, flags);
+  const matcher = globalMatcher(pattern);
   let last = -1;
   for (const match of value.matchAll(matcher)) last = match.index;
   return last;
@@ -78,6 +98,11 @@ const CODEX_ACTIVITY = /^[\t ]{0,2}\u2022[\t ]+\S[^\r\n]*\r?$/u;
 // always the newer thing on screen, so the spinner has to be read as live work
 // rather than compared for position against the prompt.
 const KIMI_SPINNER = /^[\t ]*[\u2800-\u28ff](?:[\t ]|\r?$)/m;
+
+// Between tool calls Kimi 2.0.2 paints a moon phase instead, sometimes with a
+// tip beside it, over the same composer. Unread, it passed for a finished turn
+// four seconds into a browser call and the next request landed mid-task.
+const KIMI_MOON = /^[\t ]*[\u{1F311}-\u{1F318}](?:[\t ]|\r?$)/mu;
 
 // Kimi parks a message typed mid-turn above the composer and offers to steer
 // the run that is still going. The offer only exists while something is
@@ -190,6 +215,7 @@ export function classifyAgentScreen(
       {
         const busyAt = Math.max(
           lastPatternIndex(screen, KIMI_SPINNER),
+          lastPatternIndex(screen, KIMI_MOON),
           lastPatternIndex(screen, KIMI_QUEUED),
         );
         liveWorkingAt = Math.max(liveWorkingAt, busyAt);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyAgentScreen,
+  classifyAgentTurn,
   isAgentScreenReady,
 } from "./agentScreenClassifier";
 
@@ -268,6 +269,32 @@ describe("classifyAgentScreen", () => {
     ).toBe("working");
   });
 
+  it("keeps Antigravity working while a subagent it handed the task to still runs", () => {
+    // From the natural-prompt benchmark: agy answered, returned to its prompt
+    // and counted the browser subagent still at work in the footer.
+    const handedOff = [
+      "  I have dispatched an agent with access to MCP browser tools to perform",
+      "  this task for you. I will let you know as soon as it reports back!",
+      "",
+      "● Agent(mcp_browser_agent: Browser Agent) I'm focusing intently on to... · 6s",
+      "─".repeat(40),
+      ">",
+      "─".repeat(40),
+      "? for shortcuts                            Gemini 3.1 Pro · high · 1 subagent(s)",
+    ].join("\n");
+    expect(classifyAgentScreen("antigravity", handedOff)).toBe("working");
+    // The subagent may be the one driving the browser, so the tab stays owned.
+    expect(classifyAgentTurn("antigravity", handedOff)).toBe("working");
+    expect(
+      classifyAgentScreen(
+        "antigravity",
+        handedOff
+          .replace(" · 1 subagent(s)", "")
+          .replace(/● Agent[^\n]*\n/, ""),
+      ),
+    ).toBe("ready");
+  });
+
   it("clears an Antigravity question after the selected answer starts processing", () => {
     expect(
       classifyAgentScreen(
@@ -492,6 +519,50 @@ describe("kimi turns", () => {
   it("settles once the spinner row is gone", () => {
     expect(
       classifyAgentScreen("kimi", working.replace("\u2839 thinking\u2026", "")),
+    ).toBe("ready");
+  });
+
+  // Kimi 2.0.2 between two tool calls of a browser task, copied from the
+  // natural-prompt benchmark: a moon phase, alone or with a tip, instead of
+  // the braille spinner.
+  const betweenTools = (moon: string) =>
+    [
+      " \u25cf Used browser_open \u00b7 MCP/anbomcp-dev (https://www.amazon.com/s?k=usb+c+hub)",
+      '   {"controlId":211,"durationMs":247,"ok":true,"placement":"visible-background\u2026',
+      "",
+      `  ${moon}`,
+      " \u256d\u2500\u2500\u2500\u2500\u2500\u2500",
+      " \u2502 >                                                  \u2502",
+      " \u2570\u2500\u2500\u2500\u2500\u2500\u2500",
+      " Ask When Needed  GLM-5.3 thinking: high  D:\\anbo-dev-local\\sandbox",
+      "                                          context: 5% (41k/977k)",
+    ].join("\n");
+
+  it("stays working while a moon phase marks the gap between tool calls", () => {
+    expect(
+      classifyAgentScreen(
+        "kimi",
+        betweenTools("\u{1F316} \u00b7 Tip: /goal for multi-step work"),
+      ),
+    ).toBe("working");
+    expect(classifyAgentScreen("kimi", betweenTools("\u{1F315}"))).toBe(
+      "working",
+    );
+  });
+
+  it("settles once the moon row is gone", () => {
+    expect(classifyAgentScreen("kimi", betweenTools(""))).toBe("ready");
+  });
+
+  it("reads a moon in the transcript as text, not as a live row", () => {
+    expect(
+      classifyAgentScreen(
+        "kimi",
+        betweenTools("").replace(
+          "Used browser_open",
+          "Used \u{1F315} browser_open",
+        ),
+      ),
     ).toBe("ready");
   });
 });
