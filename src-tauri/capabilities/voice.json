@@ -13,6 +13,7 @@
     "core:window:allow-available-monitors",
     "core:window:allow-show",
     "core:window:allow-hide",
+    "log:default",
     "store:default"
   ]
 }

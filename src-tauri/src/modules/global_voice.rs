@@ -231,8 +231,24 @@ pub async fn global_voice_set_enabled(
     })
 }
 
+/// The orb shows a failure only as its colour, so every one is written down
+/// with the step it happened in; the transcript itself never is.
+fn logged<T>(stage: &str, result: Result<T, String>) -> Result<T, String> {
+    if let Err(error) = &result {
+        log::warn!("global voice {stage} failed: {error}");
+    }
+    result
+}
+
 #[tauri::command]
 pub async fn global_voice_capture_target(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GlobalVoiceState>,
+) -> Result<GlobalVoiceTarget, String> {
+    logged("capture", capture_target(app, state).await)
+}
+
+async fn capture_target(
     app: tauri::AppHandle,
     state: tauri::State<'_, GlobalVoiceState>,
 ) -> Result<GlobalVoiceTarget, String> {
@@ -296,6 +312,13 @@ pub async fn global_voice_clear_target(
     app: tauri::AppHandle,
     state: tauri::State<'_, GlobalVoiceState>,
 ) -> Result<(), String> {
+    logged("clear", clear_target(app, state).await)
+}
+
+async fn clear_target(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GlobalVoiceState>,
+) -> Result<(), String> {
     let target = state
         .inner
         .lock()
@@ -327,6 +350,13 @@ pub async fn global_voice_remember_foreground(
     app: tauri::AppHandle,
     state: tauri::State<'_, GlobalVoiceState>,
 ) -> Result<(), String> {
+    logged("remember", remember_foreground(app, state).await)
+}
+
+async fn remember_foreground(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GlobalVoiceState>,
+) -> Result<(), String> {
     let excluded_window = voice_window_handle(&app);
     let pending = tauri::async_runtime::spawn_blocking(move || {
         platform::remember_foreground(excluded_window);
@@ -354,6 +384,14 @@ pub async fn global_voice_insert_text(
     state: tauri::State<'_, GlobalVoiceState>,
     text: String,
 ) -> Result<GlobalVoiceInsertResult, String> {
+    logged("insert", insert_text(app, state, text).await)
+}
+
+async fn insert_text(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GlobalVoiceState>,
+    text: String,
+) -> Result<GlobalVoiceInsertResult, String> {
     let target = state
         .inner
         .lock()
@@ -368,7 +406,8 @@ pub async fn global_voice_insert_text(
             .map_err(|error| error.to_string())??;
         let internal_target = target.clone();
         let restored = tauri::async_runtime::spawn_blocking(move || {
-            platform::restore_internal_target(&internal_target)
+            platform::holds_focus(&internal_target)
+                || platform::restore_internal_target(&internal_target)
         })
         .await
         .map_err(|error| error.to_string())?;
@@ -561,14 +600,36 @@ mod platform {
         Ok(window_is_application_owned(foreground))
     }
 
+    // The page focuses the marked input on its own thread; a renderer busy
+    // with agent output took longer than the half second this used to allow.
     pub fn wait_for_internal_focus() -> bool {
-        for _ in 0..50 {
+        for _ in 0..150 {
             if focused_is_internal_input() {
                 return true;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
         false
+    }
+
+    /// Whether the input captured when dictation began still has focus, which
+    /// it usually does: then nothing needs restoring, and the window-wide
+    /// search below, capped at 4,096 elements, is not asked to find it.
+    pub fn holds_focus(target: &CapturedTarget) -> bool {
+        let Ok(_apartment) = ComApartment::initialize() else {
+            return false;
+        };
+        let Ok(automation): Result<IUIAutomation, _> =
+            (unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) })
+        else {
+            return false;
+        };
+        let Ok(focused) = (unsafe { automation.GetFocusedElement() }) else {
+            return false;
+        };
+        let process_id = unsafe { focused.CurrentProcessId() }.unwrap_or_default();
+        process_id == target.focused_process_id
+            && runtime_id(&focused).is_ok_and(|id| !id.is_empty() && id == target.runtime_id)
     }
 
     pub fn restore_internal_target(target: &CapturedTarget) -> bool {
@@ -904,6 +965,11 @@ mod platform {
     // terminal or editor of a kind shares a class name, so the screen rectangle
     // is what actually distinguishes them. Refusing beats typing into the wrong
     // pane.
+    //
+    // The rectangle can move too: xterm keeps its hidden input at the terminal
+    // cursor, so an agent CLI that redraws while the user speaks moves it. An
+    // Anbo input that kept its runtime id, process and class is still the same
+    // element wherever it now sits.
     fn is_same_input(target: &CapturedTarget, current: &CapturedTarget) -> bool {
         if target == current {
             return true;
@@ -912,9 +978,17 @@ mod platform {
             || !current.application_owned
             || target.hwnd != current.hwnd
             || target.internal_text_input != current.internal_text_input
-            || !bounds_identify(target.bounds)
-            || target.bounds != current.bounds
         {
+            return false;
+        }
+        if !target.runtime_id.is_empty()
+            && target.runtime_id == current.runtime_id
+            && target.focused_process_id == current.focused_process_id
+            && target.focused_class_name == current.focused_class_name
+        {
+            return true;
+        }
+        if !bounds_identify(target.bounds) || target.bounds != current.bounds {
             return false;
         }
         !target.internal_text_input || target.focused_class_name == current.focused_class_name
@@ -1175,6 +1249,37 @@ mod platform {
                     ..base.clone()
                 }
             );
+
+            // An agent CLI repainting under the user's dictation moves xterm's
+            // input with the cursor; the same element is still the target.
+            let moved = CapturedTarget {
+                bounds: (0, 120, 400, 420),
+                ..terminal_a.clone()
+            };
+            assert!(is_same_input(&terminal_a, &moved));
+            // But a moved rectangle never lends another element the identity,
+            // nor does an external app get the relaxed arm.
+            assert!(!is_same_input(
+                &terminal_a,
+                &CapturedTarget {
+                    runtime_id: vec![77, 1],
+                    ..moved.clone()
+                }
+            ));
+            assert!(!is_same_input(
+                &terminal_a,
+                &CapturedTarget {
+                    focused_process_id: 12,
+                    ..moved.clone()
+                }
+            ));
+            assert!(!is_same_input(
+                &base,
+                &CapturedTarget {
+                    bounds: (10, 80, 210, 120),
+                    ..base.clone()
+                }
+            ));
         }
 
         #[test]
@@ -1309,6 +1414,10 @@ mod platform {
     }
 
     pub fn wait_for_internal_focus() -> bool {
+        false
+    }
+
+    pub fn holds_focus(_target: &CapturedTarget) -> bool {
         false
     }
 
