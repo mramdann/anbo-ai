@@ -1,0 +1,438 @@
+use tauri::Webview;
+
+#[cfg(test)]
+mod queue_tests {
+    use super::queued_call_is_live;
+    use std::{
+        sync::Mutex,
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    fn expired_cancelled_or_completed_calls_never_dispatch_from_the_ui_queue() {
+        let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
+        let sender = Mutex::new(Some(sender));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        assert!(queued_call_is_live(&sender, deadline));
+        assert!(!queued_call_is_live(&sender, Instant::now()));
+        drop(receiver);
+        assert!(!queued_call_is_live(&sender, deadline));
+        sender.lock().unwrap().take();
+        assert!(!queued_call_is_live(&sender, deadline));
+    }
+}
+
+#[cfg(any(windows, test))]
+fn queued_call_is_live<T>(
+    sender: &std::sync::Mutex<Option<tokio::sync::oneshot::Sender<T>>>,
+    deadline: std::time::Instant,
+) -> bool {
+    std::time::Instant::now() < deadline
+        && sender
+            .lock()
+            .is_ok_and(|guard| guard.as_ref().is_some_and(|tx| !tx.is_closed()))
+}
+
+#[cfg(windows)]
+pub async fn read_page_info(
+    webview: &Webview,
+    timeout: std::time::Duration,
+) -> Result<(String, String), String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    webview
+        .with_webview(move |platform| {
+            if sender.is_closed() {
+                return;
+            }
+            let result = (|| {
+                let core = unsafe { platform.controller().CoreWebView2() }
+                    .map_err(|error| error.to_string())?;
+                let mut source = windows::core::PWSTR::null();
+                unsafe { core.Source(&mut source) }.map_err(|error| error.to_string())?;
+                let url = webview2_com::take_pwstr(source);
+                let mut title = windows::core::PWSTR::null();
+                unsafe { core.DocumentTitle(&mut title) }.map_err(|error| error.to_string())?;
+                Ok((webview2_com::take_pwstr(title), url))
+            })();
+            let _ = sender.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+    tokio::time::timeout(timeout, receiver)
+        .await
+        .map_err(|_| "timed out reading browser page metadata".to_string())?
+        .map_err(|_| "browser page metadata read was cancelled".to_string())?
+}
+
+#[cfg(not(windows))]
+pub async fn read_page_info(
+    _webview: &Webview,
+    _timeout: std::time::Duration,
+) -> Result<(String, String), String> {
+    Err("native browser page metadata is only supported on Windows".into())
+}
+
+#[cfg(windows)]
+pub async fn read_url(webview: &Webview, timeout: std::time::Duration) -> Result<String, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    webview
+        .with_webview(move |platform| {
+            if sender.is_closed() {
+                return;
+            }
+            let result = (|| {
+                let core = unsafe { platform.controller().CoreWebView2() }
+                    .map_err(|error| error.to_string())?;
+                let mut source = windows::core::PWSTR::null();
+                unsafe { core.Source(&mut source) }.map_err(|error| error.to_string())?;
+                Ok(webview2_com::take_pwstr(source))
+            })();
+            let _ = sender.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+    tokio::time::timeout(timeout, receiver)
+        .await
+        .map_err(|_| "timed out reading the browser URL".to_string())?
+        .map_err(|_| "browser URL read was cancelled".to_string())?
+}
+
+#[cfg(not(windows))]
+pub async fn read_url(webview: &Webview, timeout: std::time::Duration) -> Result<String, String> {
+    let webview = webview.clone();
+    tokio::time::timeout(
+        timeout,
+        tauri::async_runtime::spawn_blocking(move || webview.url()),
+    )
+    .await
+    .map_err(|_| "timed out reading the browser URL".to_string())?
+    .map_err(|error| error.to_string())?
+    .map(|url| url.to_string())
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(windows)]
+pub async fn execute_script(webview: &Webview, script: &str) -> Result<String, String> {
+    execute_script_with_timeout(webview, script, std::time::Duration::from_secs(10)).await
+}
+
+#[cfg(windows)]
+pub async fn call_devtools_protocol_method(
+    webview: &Webview,
+    method: &str,
+    params_json: &str,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
+    use std::sync::{Arc, Mutex};
+    use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
+    use windows::core::PCWSTR;
+
+    let (sender, receiver) = tokio::sync::oneshot::channel::<Result<String, String>>();
+    let sender = Arc::new(Mutex::new(Some(sender)));
+    let method_utf16: Vec<u16> = method.encode_utf16().chain(std::iter::once(0)).collect();
+    let params_utf16: Vec<u16> = params_json
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let platform_sender = sender.clone();
+    let deadline = std::time::Instant::now() + timeout;
+
+    webview
+        .with_webview(move |platform| {
+            if !queued_call_is_live(&platform_sender, deadline) {
+                return;
+            }
+            let call = (|| -> Result<(), String> {
+                let controller = platform.controller();
+                let core =
+                    unsafe { controller.CoreWebView2() }.map_err(|error| error.to_string())?;
+                let callback_sender = platform_sender.clone();
+                let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+                    move |error_code, result_json| {
+                        let result = if error_code.is_ok() {
+                            Ok(result_json)
+                        } else {
+                            Err(format!("DevTools HRESULT error: {error_code:?}"))
+                        };
+                        if let Ok(mut guard) = callback_sender.lock() {
+                            if let Some(tx) = guard.take() {
+                                let _ = tx.send(result);
+                            }
+                        }
+                        Ok(())
+                    },
+                ));
+                unsafe {
+                    core.CallDevToolsProtocolMethod(
+                        PCWSTR(method_utf16.as_ptr()),
+                        PCWSTR(params_utf16.as_ptr()),
+                        &handler,
+                    )
+                }
+                .map_err(|error| error.to_string())
+            })();
+
+            if let Err(error) = call {
+                if let Ok(mut guard) = platform_sender.lock() {
+                    if let Some(tx) = guard.take() {
+                        let _ = tx.send(Err(error));
+                    }
+                }
+            }
+        })
+        .map_err(|error| error.to_string())?;
+
+    tokio::time::timeout(timeout, receiver)
+        .await
+        .map_err(|_| format!("DevTools method '{method}' timed out"))?
+        .map_err(|_| format!("DevTools method '{method}' was cancelled"))?
+}
+
+/// How the page should be encoded on the way out.
+///
+/// A layout check does not need a lossless capture at full device pixel
+/// ratio: an emulated phone at scale 3 produced a 248 KB PNG, three times the
+/// cost of reading it. PNG stays the default so nothing silently loses detail.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScreenshotEncoding {
+    pub format: &'static str,
+    pub quality: Option<u8>,
+}
+
+impl Default for ScreenshotEncoding {
+    fn default() -> Self {
+        Self {
+            format: "png",
+            quality: None,
+        }
+    }
+}
+
+impl ScreenshotEncoding {
+    pub fn parse(format: Option<&str>, quality: Option<u64>) -> Result<Self, String> {
+        let format = match format.unwrap_or("png") {
+            "png" => "png",
+            "jpeg" | "jpg" => "jpeg",
+            "webp" => "webp",
+            other => return Err(format!("unsupported screenshot format '{other}'")),
+        };
+        if format == "png" && quality.is_some() {
+            return Err("quality only applies to jpeg and webp".to_string());
+        }
+        Ok(Self {
+            format,
+            quality: quality.map(|value| value.clamp(1, 100) as u8),
+        })
+    }
+
+    #[cfg(windows)]
+    fn params(self) -> String {
+        match self.quality {
+            Some(quality) if self.format != "png" => format!(
+                r#"{{"format":"{}","quality":{quality},"fromSurface":true,"captureBeyondViewport":false}}"#,
+                self.format
+            ),
+            _ => format!(
+                r#"{{"format":"{}","fromSurface":true,"captureBeyondViewport":false}}"#,
+                self.format
+            ),
+        }
+    }
+}
+
+#[cfg(windows)]
+pub async fn capture_screenshot(
+    webview: &Webview,
+    encoding: ScreenshotEncoding,
+) -> Result<String, String> {
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::RECT;
+    let _visual_capture = super::activity::prepare_capture(&webview.clone().into()).await?;
+
+    let (sender, receiver) =
+        tokio::sync::oneshot::channel::<Result<Option<(RECT, RECT)>, String>>();
+    webview
+        .with_webview(move |platform| {
+            let result = (|| -> Result<Option<(RECT, RECT)>, String> {
+                let controller = platform.controller();
+                let mut visible = BOOL::default();
+                unsafe { controller.IsVisible(&mut visible) }.map_err(|error| error.to_string())?;
+                if visible.as_bool() {
+                    return Ok(None);
+                }
+                let mut original = RECT::default();
+                unsafe { controller.Bounds(&mut original) }.map_err(|error| error.to_string())?;
+                let width = (original.right - original.left).max(1);
+                let height = (original.bottom - original.top).max(1);
+                let offscreen = RECT {
+                    left: -width - 64,
+                    top: 0,
+                    right: -64,
+                    bottom: height,
+                };
+                unsafe {
+                    controller
+                        .SetBounds(offscreen)
+                        .map_err(|error| error.to_string())?;
+                    controller
+                        .SetIsVisible(true)
+                        .map_err(|error| error.to_string())?;
+                }
+                Ok(Some((original, offscreen)))
+            })();
+            let _ = sender.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+    let restore = tokio::time::timeout(std::time::Duration::from_secs(2), receiver)
+        .await
+        .map_err(|_| "timed out preparing background screenshot".to_string())?
+        .map_err(|_| "background screenshot preparation was cancelled".to_string())??;
+    if restore.is_some() {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let result = call_devtools_protocol_method(
+        webview,
+        "Page.captureScreenshot",
+        &encoding.params(),
+        std::time::Duration::from_secs(10),
+    )
+    .await;
+
+    if let Some((original, offscreen)) = restore {
+        let (sender, receiver) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        webview
+            .with_webview(move |platform| {
+                let restore_result = (|| -> Result<(), String> {
+                    let controller = platform.controller();
+                    let mut current = RECT::default();
+                    unsafe { controller.Bounds(&mut current) }
+                        .map_err(|error| error.to_string())?;
+                    if current == offscreen {
+                        unsafe {
+                            controller
+                                .SetIsVisible(false)
+                                .map_err(|error| error.to_string())?;
+                            controller
+                                .SetBounds(original)
+                                .map_err(|error| error.to_string())?;
+                        }
+                    }
+                    Ok(())
+                })();
+                let _ = sender.send(restore_result);
+            })
+            .map_err(|error| error.to_string())?;
+        tokio::time::timeout(std::time::Duration::from_secs(2), receiver)
+            .await
+            .map_err(|_| "timed out restoring background browser visibility".to_string())?
+            .map_err(|_| "background browser visibility restore was cancelled".to_string())??;
+    }
+    result
+}
+
+/// Same as [`execute_script`] but with a caller-controlled timeout. Use a short
+/// timeout (e.g. 2s) for readiness/wait polling: during navigation the WebView2
+/// script-completion callback is dropped, and a single drop must not be allowed
+/// to block for the full default timeout and consume the entire poll budget.
+#[cfg(windows)]
+pub async fn execute_script_with_timeout(
+    webview: &Webview,
+    script: &str,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
+    use std::sync::{Arc, Mutex};
+    use webview2_com::ExecuteScriptCompletedHandler;
+    use windows::core::PCWSTR;
+
+    let (sender, receiver) = tokio::sync::oneshot::channel::<Result<String, String>>();
+    let sender = Arc::new(Mutex::new(Some(sender)));
+    let script_utf16: Vec<u16> = script.encode_utf16().chain(std::iter::once(0)).collect();
+
+    let platform_sender = sender.clone();
+    let deadline = std::time::Instant::now() + timeout;
+
+    webview
+        .with_webview(move |platform| {
+            if !queued_call_is_live(&platform_sender, deadline) {
+                return;
+            }
+            let run = (|| -> Result<(), String> {
+                let controller = platform.controller();
+                let core =
+                    unsafe { controller.CoreWebView2() }.map_err(|error| error.to_string())?;
+                let callback_sender = platform_sender.clone();
+                let handler = ExecuteScriptCompletedHandler::create(Box::new(
+                    move |error_code, result_json| {
+                        let result = if error_code.is_ok() {
+                            let json_str = if result_json.is_empty() {
+                                "null".to_string()
+                            } else {
+                                result_json
+                            };
+                            Ok(json_str)
+                        } else {
+                            Err(format!("ExecuteScript HRESULT error: {:?}", error_code))
+                        };
+
+                        if let Ok(mut guard) = callback_sender.lock() {
+                            if let Some(tx) = guard.take() {
+                                let _ = tx.send(result);
+                            }
+                        }
+                        Ok(())
+                    },
+                ));
+
+                unsafe { core.ExecuteScript(PCWSTR(script_utf16.as_ptr()), &handler) }
+                    .map_err(|error| error.to_string())
+            })();
+
+            if let Err(error) = run {
+                if let Ok(mut guard) = platform_sender.lock() {
+                    if let Some(tx) = guard.take() {
+                        let _ = tx.send(Err(error));
+                    }
+                }
+            }
+        })
+        .map_err(|error| error.to_string())?;
+
+    tokio::time::timeout(timeout, receiver)
+        .await
+        .map_err(|_| "script execution timed out".to_string())?
+        .map_err(|_| "script execution cancelled".to_string())?
+}
+
+#[cfg(not(windows))]
+pub async fn execute_script(_webview: &Webview, _script: &str) -> Result<String, String> {
+    Err("browser automation is only supported on Windows".to_string())
+}
+
+#[cfg(not(windows))]
+pub async fn call_devtools_protocol_method(
+    _webview: &Webview,
+    _method: &str,
+    _params_json: &str,
+    _timeout: std::time::Duration,
+) -> Result<String, String> {
+    Err("browser automation is only supported on Windows".to_string())
+}
+
+#[cfg(not(windows))]
+pub async fn capture_screenshot(
+    _webview: &Webview,
+    encoding: ScreenshotEncoding,
+) -> Result<String, String> {
+    // Read the fields so a platform that cannot capture still consumes the
+    // request shape; otherwise clippy -D warnings reports them never read.
+    let _ = (encoding.format, encoding.quality);
+    Err("browser automation is only supported on Windows".to_string())
+}
+
+#[cfg(not(windows))]
+pub async fn execute_script_with_timeout(
+    _webview: &Webview,
+    _script: &str,
+    _timeout: std::time::Duration,
+) -> Result<String, String> {
+    Err("browser automation is only supported on Windows".to_string())
+}

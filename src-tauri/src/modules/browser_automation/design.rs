@@ -8,13 +8,14 @@
 //! only thing that leaves the page is the model the user chose to send.
 #![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 
+use super::target::BrowserTarget as Webview;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, Webview};
+use tauri::{AppHandle, Emitter};
 
 use super::accessible_name::ACCESSIBLE_NAME_JS;
 use super::output_path;
@@ -372,7 +373,10 @@ async fn evaluate(webview: &Webview, expression: &str) -> Result<Value, String> 
         let description: String = description.chars().take(300).collect();
         return Err(format!("design layer script failed: {description}"));
     }
-    Ok(payload["result"].get("value").cloned().unwrap_or(Value::Null))
+    Ok(payload["result"]
+        .get("value")
+        .cloned()
+        .unwrap_or(Value::Null))
 }
 
 #[cfg(windows)]
@@ -390,8 +394,12 @@ async fn register_receiver(app: AppHandle, webview: &Webview, tab_id: i64) -> Re
     if already {
         return Ok(());
     }
+    if matches!(webview, Webview::External { .. }) {
+        return Ok(());
+    }
     let (sender, receiver) = tokio::sync::oneshot::channel();
     webview
+        .embedded()?
         .with_webview(move |platform| {
             let result = (|| -> Result<(), String> {
                 let core = unsafe { platform.controller().CoreWebView2() }
@@ -400,8 +408,9 @@ async fn register_receiver(app: AppHandle, webview: &Webview, tab_id: i64) -> Re
                     .encode_utf16()
                     .chain(Some(0))
                     .collect();
-                let events = unsafe { core.GetDevToolsProtocolEventReceiver(PCWSTR(name.as_ptr())) }
-                    .map_err(|error| error.to_string())?;
+                let events =
+                    unsafe { core.GetDevToolsProtocolEventReceiver(PCWSTR(name.as_ptr())) }
+                        .map_err(|error| error.to_string())?;
                 let handler =
                     DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_, args| {
                         let Some(args) = args else {
@@ -433,6 +442,15 @@ async fn register_receiver(app: AppHandle, webview: &Webview, tab_id: i64) -> Re
     }
     Ok(())
 }
+
+#[cfg(windows)]
+pub fn external_event(app: &AppHandle, tab_id: i64, payload: &str) {
+    if let Some(kind) = receive(tab_id, payload) {
+        notify(app, tab_id, kind);
+    }
+}
+#[cfg(not(windows))]
+pub fn external_event(_app: &AppHandle, _tab_id: i64, _payload: &str) {}
 
 #[cfg(windows)]
 fn install_script(init: &str) -> String {
@@ -508,6 +526,11 @@ pub async fn set_active(
         let lock = super::registry::get_tab_lock(tab_id);
         let _guard = lock.lock().await;
         if active {
+            if crate::modules::browser_external::dock::contains(tab_id) {
+                return Err(
+                    "Release the native dock before using design mode in this preview".into(),
+                );
+            }
             let theme = theme.as_ref().and_then(sanitize_theme);
             with_session(tab_id, |session| {
                 session.active = true;
@@ -542,7 +565,9 @@ pub async fn set_active(
                 session.dirty = false;
                 session.limit = None;
             });
-            let _ = call(&webview, "Runtime.disable", "{}").await;
+            if matches!(webview, Webview::Embedded(_)) {
+                let _ = call(&webview, "Runtime.disable", "{}").await;
+            }
             notify(app, tab_id, "state");
             Ok(status_of(tab_id))
         }
@@ -648,7 +673,7 @@ fn resolve_workspace(tab_id: i64, workspace: &str) -> Result<PathBuf, String> {
     if !canonical.is_dir() {
         return Err("workspace is not a directory".into());
     }
-    let actual = crate::modules::browser::embed::active_local_root(tab_id)
+    let actual = super::registry::active_local_root(tab_id)
         .ok_or_else(|| format!("tab {tab_id} has no active workspace root"))?;
     if canonical != actual {
         return Err(format!("tab {tab_id} belongs to a different workspace"));
@@ -801,7 +826,9 @@ pub async fn capture(
         )
         .await?;
         if model.is_null() {
-            return Err("the design layer is not on this page yet; toggle design mode again".into());
+            return Err(
+                "the design layer is not on this page yet; toggle design mode again".into(),
+            );
         }
         let serialized = model.to_string();
         if serialized.len() > MAX_MODEL_BYTES {
@@ -830,8 +857,9 @@ pub async fn capture(
             "(() => { const d = globalThis.__anboDesign; return d ? d.present('capture') : false; })()",
         )
         .await;
-        let shot = super::cdp::capture_screenshot(&webview, super::cdp::ScreenshotEncoding::default())
-            .await;
+        let shot =
+            super::cdp::capture_screenshot(&webview, super::cdp::ScreenshotEncoding::default())
+                .await;
         let mut image = shot.and_then(|raw| decode_screenshot(&raw));
         let mut extension = "png";
         if let Ok(bytes) = &image {
@@ -939,7 +967,8 @@ pub fn restore(webview: &Webview) {
     let Some(tab_id) = tab_id_of(webview) else {
         return;
     };
-    let wanted = read_session(tab_id, |session| session.active && !session.installed).unwrap_or(false);
+    let wanted =
+        read_session(tab_id, |session| session.active && !session.installed).unwrap_or(false);
     if !wanted {
         return;
     }
@@ -1075,7 +1104,9 @@ mod tests {
 
     #[test]
     fn input_actions_are_refused_and_reads_are_not() {
-        for method in ["click", "type", "press", "key", "drag", "hover", "upload", "dialog"] {
+        for method in [
+            "click", "type", "press", "key", "drag", "hover", "upload", "dialog",
+        ] {
             assert!(blocks_input(method), "{method}");
         }
         for method in [
@@ -1125,16 +1156,31 @@ mod tests {
         let state = json!({"name": BINDING, "payload": json!({"type": "state", "tool": "pen", "marks": 3, "dirty": true}).to_string()});
         assert_eq!(receive(tab_id, &state.to_string()), Some("state"));
         let status = status_of(tab_id);
-        assert_eq!((status.tool.as_str(), status.marks, status.dirty), ("pen", 3, true));
+        assert_eq!(
+            (status.tool.as_str(), status.marks, status.dirty),
+            ("pen", 3, true)
+        );
         let model = json!({"name": BINDING, "payload": json!({"type": "model", "url": "http://localhost/x#top", "model": {"marks": [{}, {}]}}).to_string()});
         assert_eq!(receive(tab_id, &model.to_string()), Some("state"));
         assert_eq!(status_of(tab_id).marks, 2);
-        assert!(read_session(tab_id, |session| session.model_for("http://localhost/x").is_some()).unwrap());
+        assert!(read_session(tab_id, |session| session
+            .model_for("http://localhost/x")
+            .is_some())
+        .unwrap());
         assert_eq!(
-            receive(tab_id, &json!({"name": BINDING, "payload": "{\"type\":\"exit\"}"}).to_string()),
+            receive(
+                tab_id,
+                &json!({"name": BINDING, "payload": "{\"type\":\"exit\"}"}).to_string()
+            ),
             Some("exit")
         );
-        assert_eq!(receive(tab_id, &json!({"name": "other", "payload": "{}"}).to_string()), None);
+        assert_eq!(
+            receive(
+                tab_id,
+                &json!({"name": "other", "payload": "{}"}).to_string()
+            ),
+            None
+        );
         assert_eq!(receive(tab_id, "not json"), None);
         assert_eq!(receive(tab_id, &"x".repeat(MAX_BINDING_BYTES + 1)), None);
         with_session(tab_id, |session| session.active = false);
@@ -1161,7 +1207,10 @@ mod tests {
         assert_eq!(stamp(0), "19700101-000000");
         assert_eq!(stamp(1_788_716_542), "20260906-174222");
         assert_eq!(stamp(951_782_400), "20000229-000000");
-        assert_eq!(slug_for("http://localhost:3000/settings/Profile?x=1"), "settings-profile");
+        assert_eq!(
+            slug_for("http://localhost:3000/settings/Profile?x=1"),
+            "settings-profile"
+        );
         assert_eq!(slug_for("https://example.com/"), "example-com");
         assert_eq!(slug_for("about:blank"), "blank");
         assert_eq!(slug_for("nope"), "page");
@@ -1211,7 +1260,10 @@ mod tests {
         assert!(!safe_css_value(" (x)"));
         assert!(sanitize_theme(&json!({"mode": "auto"})).is_none());
         assert!(sanitize_theme(&json!("dark")).is_none());
-        assert_eq!(sanitize_theme(&json!({"mode": "dark"})).unwrap(), json!({"mode": "dark"}));
+        assert_eq!(
+            sanitize_theme(&json!({"mode": "dark"})).unwrap(),
+            json!({"mode": "dark"})
+        );
     }
 
     #[test]

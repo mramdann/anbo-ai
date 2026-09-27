@@ -187,6 +187,7 @@ pub fn start_server(_app: AppHandle) -> Result<(), String> {
 }
 
 pub fn stop_server() {
+    crate::modules::browser_external::stop();
     crate::modules::browser_automation::http::stop();
     if let Ok(mut guard) = SERVER_CANCEL_TX.lock() {
         if let Some(tx) = guard.take() {
@@ -317,6 +318,16 @@ async fn handle_client(
             );
             let _ = send_response(&mut writer, &resp).await;
             continue;
+        }
+
+        if req.method == "external_browser_connect" {
+            if let Err(error) =
+                crate::modules::browser_external::serve(app.clone(), buf_reader, writer, req.params)
+                    .await
+            {
+                log::debug!("external browser disconnected: {error}");
+            }
+            return;
         }
 
         let caller = super::caller::Caller::from_pipe_info(

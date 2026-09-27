@@ -66,6 +66,7 @@ tokio = { version = "1", default-features = false, features = [
 	"io-util",
 	"macros",
 	"net",
+	"process",
 	"rt",
 	"rt-multi-thread",
 	"sync",
@@ -86,6 +87,7 @@ path = "src/bin/anbo-browser.rs"
 
 [dev-dependencies]
 proptest = "1"
+tauri = { version = "2", features = ["test"] }
 tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
@@ -124,6 +126,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 webview2-com = "0.38"
 windows = { version = "0.61", features = [
+	"Win32_System_Threading",
 	"Win32_System_Com",
 	"Win32_System_Com_StructuredStorage",
 	"Win32_System_Ole",

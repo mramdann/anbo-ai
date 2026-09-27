@@ -7,6 +7,7 @@ pub mod browser_automation;
 pub mod fs;
 
 pub mod browser;
+pub mod browser_external;
 pub mod git;
 pub mod global_voice;
 pub mod history;

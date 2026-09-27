@@ -313,6 +313,7 @@ pub fn run() {
             if let Some(main) = _app.get_webview_window("main") {
                 let handle = _app.handle().clone();
                 main.on_window_event(move |event| {
+                    modules::browser_external::dock::window_changed();
                     if matches!(event, WindowEvent::Destroyed) {
                         global_voice::shutdown(&handle);
                     }
@@ -397,6 +398,20 @@ pub fn run() {
             browser_automation::browser_automation_start,
             browser_automation::browser_automation_stop,
             browser_automation::browser_automation_status,
+            modules::browser_external::browser_external_connections,
+            modules::browser_external::dock::browser_external_dock,
+            modules::browser_external::target::browser_external_bind,
+            modules::browser_external::control::browser_external_control,
+            modules::browser_external::target::browser_external_unbind,
+            modules::browser_external::browser_external_approve,
+            modules::browser_external::browser_external_disconnect,
+            modules::browser_external::browser_external_inspect,
+            modules::browser_external::browser_external_focus,
+            modules::browser_external::browser_external_list_tabs,
+            modules::browser_external::browser_external_select_tab,
+            modules::browser_external::browser_external_open_tab,
+            modules::browser_external::browser_external_release_tab,
+            modules::browser_external::setup::browser_external_setup,
             browser_automation::browser_automation_handle_action,
             browser_automation::browser_set_agent_callsigns,
             browser_automation::browser_automation_finish_turn,
@@ -482,6 +497,7 @@ pub fn run() {
                 // Servers exit on stdin EOF, but destructors are not guaranteed
                 // on process exit; kill explicitly.
                 tauri::RunEvent::Exit => {
+                    modules::browser_external::dock::shutdown();
                     browser_automation::on_exit();
                     browser::embed::clear_lifecycle_state();
                     net::cancel_all_streams();

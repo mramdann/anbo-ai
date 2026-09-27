@@ -1,4 +1,5 @@
 import { isMarkdownPath } from "@/lib/utils";
+import type { ExternalBrowser } from "@/modules/browser/external/model";
 import {
   type AgentTabIdentity,
   type AgentTabNameRequest,
@@ -88,6 +89,7 @@ export type BrowserTab = TabBase & {
   title: string;
   url: string;
   favicon?: string;
+  external?: ExternalBrowser;
   /** True while the tab's page is navigating/loading. Drives the tab spinner. */
   loading?: boolean;
 };
@@ -156,6 +158,7 @@ export type Tab =
   | GitCommitFileDiffTab;
 
 export type TabPatch = Partial<{
+  external: ExternalBrowser;
   title: string;
   cwd: string;
   path: string;
@@ -511,6 +514,7 @@ function patchTab(x: Tab, patch: TabPatch): Tab {
         url: patch.url,
       }),
       ...(patch.loading !== undefined && { loading: patch.loading }),
+      ...(patch.external !== undefined && { external: patch.external }),
     };
   }
   if (x.kind === "markdown") {
@@ -1128,7 +1132,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   }, []);
 
   const newBrowserTab = useCallback(
-    (url: string, activate = true, spaceId = activeSpaceIdRef.current) => {
+    (url: string, activate = true, spaceId = activeSpaceIdRef.current, external?: ExternalBrowser) => {
       const id = nextIdRef.current++;
       setTabs((t) => [
         ...t,
@@ -1138,6 +1142,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
           spaceId,
           title: titleFromUrl(url),
           url,
+          ...(external && { external, loading: false }),
         },
       ]);
       if (activate) setActiveId(id);

@@ -25,7 +25,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { isTauri } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { IS_WINDOWS } from "@/lib/platform";
 import {
   BROWSER_HISTORY_EVENT,
   type BrowserHistoryEntry,
@@ -42,11 +43,23 @@ import {
 type Props = {
   visible: boolean;
   onNavigate: (url: string) => void;
+  workspaceRoot?: string | null;
 };
 
 const EMPTY_USAGE: BrowserDataUsage = { bytes: 0, files: 0, complete: true };
+const ExternalBrowserConnections = lazy(
+  () => import("@/modules/browser/external/ExternalBrowserConnections"),
+);
 
-export function BrowserStartPage({ visible, onNavigate }: Props) {
+export function BrowserStartPage({
+  visible,
+  onNavigate,
+  workspaceRoot = null,
+}: Props) {
+  const [connectionsOpen, setConnectionsOpen] = useState(false);
+  useEffect(() => {
+    if (!visible) setConnectionsOpen(false);
+  }, [visible]);
   const [history, setHistory] =
     useState<BrowserHistoryEntry[]>(readBrowserHistory);
   const [usage, setUsage] = useState<BrowserDataUsage | null>(null);
@@ -118,6 +131,39 @@ export function BrowserStartPage({ visible, onNavigate }: Props) {
             </p>
           </div>
         </div>
+
+        {import.meta.env.DEV && IS_WINDOWS && isTauri() ? (
+          <>
+            <Button
+              variant="outline"
+              className="self-start"
+              onClick={() => setConnectionsOpen(true)}
+            >
+              Connect Chrome / Edge (preview)
+            </Button>
+            <Dialog open={connectionsOpen} onOpenChange={setConnectionsOpen}>
+              <DialogContent className="max-h-[80vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>Chrome / Edge connections</DialogTitle>
+                  <DialogDescription>
+                    Pair a browser profile without copying its login data.
+                  </DialogDescription>
+                </DialogHeader>
+                {connectionsOpen ? (
+                  <Suspense
+                    fallback={
+                      <p className="text-xs text-muted-foreground">
+                        Loading connections...
+                      </p>
+                    }
+                  >
+                    <ExternalBrowserConnections workspaceRoot={workspaceRoot} />
+                  </Suspense>
+                ) : null}
+              </DialogContent>
+            </Dialog>
+          </>
+        ) : null}
 
         <div className="grid gap-3 md:grid-cols-[minmax(0,1.35fr)_minmax(230px,0.65fr)]">
           <section className="overflow-hidden rounded-xl border border-border/60 bg-card/80 shadow-sm">

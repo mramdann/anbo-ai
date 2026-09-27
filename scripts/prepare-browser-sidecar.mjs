@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import process from "node:process";
 
 const root = process.cwd();
+const development = process.argv.includes("--debug");
 const rustc = spawnSync("rustc", ["-vV"], {
   cwd: root,
   encoding: "utf8",
@@ -26,7 +27,7 @@ mkdirSync(dirname(destination), { recursive: true });
 
 const cargo = spawnSync(
   "cargo",
-  ["build", "--release", "--locked", "--bin", "anbo-browser"],
+  ["build", ...(development ? [] : ["--release"]), "--locked", "--bin", "anbo-browser"],
   {
     cwd: join(root, "src-tauri"),
     stdio: "inherit",
@@ -38,7 +39,7 @@ const source = join(
   root,
   "src-tauri",
   "target",
-  "release",
+  development ? "debug" : "release",
   `anbo-browser${extension}`,
 );
 copyFileSync(source, destination);

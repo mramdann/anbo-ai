@@ -931,7 +931,11 @@ export const BrowserPane = memo(
               />
             )
           ) : (
-            <BrowserStartPage visible={visible} onNavigate={navigate} />
+            <BrowserStartPage
+              visible={visible}
+              onNavigate={navigate}
+              workspaceRoot={workspaceRoot}
+            />
           )}
         </div>
       </div>

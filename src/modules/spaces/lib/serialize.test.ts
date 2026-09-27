@@ -26,6 +26,25 @@ function term(over: Partial<Extract<Tab, { kind: "terminal" }>>): Tab {
 }
 
 describe("serializeTabs", () => {
+  it("persists an external profile and panel key without restoring session authority", () => {
+    const external = { browser: "edge" as const, profileId: "00112233-4455-6677-8899-aabbccddeeff", name: "Work", connectionId: "old-connection", browserTabId: 12, selectionId: "old-lease", connected: true };
+    const [saved] = serializeTabs([{ id: 9, kind: "browser", spaceId: "s1", title: "Page", url: "https://example.com/", layoutKey: "browser-panel", external }]);
+    expect(JSON.stringify(saved)).not.toContain("old-connection");
+    expect(JSON.stringify(saved)).not.toContain("old-lease");
+    const [restored] = hydrateTabs([saved], "s1", counter());
+    expect(restored).toMatchObject({ kind: "browser", layoutKey: "browser-panel", external: { browser: "edge", profileId: external.profileId }, loading: false });
+    if (restored.kind === "browser") expect(restored.external?.connected).toBeUndefined();
+  });
+
+  it("never converts an invalid external binding into a WebView2 tab on later saves", () => {
+    const invalid = { kind: "browser", url: "https://signed-in.example/", external: { profileId: "invalid" } } as SerializedTab;
+    let restored = hydrateTabs([invalid], "s1", counter());
+    for (let index = 0; index < 3; index += 1) {
+      const saved = JSON.parse(JSON.stringify(serializeTabs(restored)));
+      restored = hydrateTabs(saved, "s1", counter());
+      expect(restored[0]).toMatchObject({ kind: "browser", external: { name: "Reconnect profile" } });
+    }
+  });
   it.each([undefined, "process-v1", "explicit"] as const)(
     "round-trips Antigravity binding %s without blessing legacy ids",
     (sessionBinding) => {

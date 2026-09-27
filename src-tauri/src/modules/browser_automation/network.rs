@@ -13,6 +13,21 @@ const MAX_PENDING: usize = 2048;
 #[cfg(any(windows, test))]
 pub struct NetworkState(Mutex<Tracker>);
 
+#[cfg(windows)]
+impl NetworkState {
+    pub fn external_enabled(&self, enabled: bool) {
+        if let Ok(mut tracker) = self.0.lock() {
+            tracker.enabled = enabled;
+        }
+    }
+
+    pub fn external_event(&self, started: bool, payload: &str) {
+        if let Ok(mut tracker) = self.0.lock() {
+            tracker.event(started, payload, Instant::now());
+        }
+    }
+}
+
 #[cfg(any(windows, test))]
 struct Tracker {
     pending: HashSet<String>,
@@ -88,6 +103,9 @@ pub fn is_idle(tab_id: i64) -> Result<bool, String> {
     #[cfg(windows)]
     {
         let state = crate::modules::browser::embed::active_network(tab_id)
+            .or_else(|| {
+                crate::modules::browser_external::get_target(tab_id).map(|target| target.network)
+            })
             .ok_or_else(|| "browser network state is unavailable".to_string())?;
         let tracker = state
             .0
@@ -160,7 +178,7 @@ pub async fn install(webview: &tauri::Webview, state: std::sync::Arc<NetworkStat
         );
     let enabled = registered
         && super::cdp::call_devtools_protocol_method(
-            webview,
+            &webview.clone().into(),
             "Network.enable",
             r#"{"maxTotalBufferSize":1,"maxResourceBufferSize":1,"maxPostDataSize":0}"#,
             Duration::from_secs(2),

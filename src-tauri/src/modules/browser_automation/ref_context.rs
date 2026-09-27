@@ -1,12 +1,12 @@
+use super::target::BrowserTarget as Webview;
 use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::Webview;
 
 use super::cdp::call_devtools_protocol_method;
-use crate::modules::browser::embed::active_navigation_generation;
+use super::registry::active_navigation_generation;
 
 pub const REF_REGISTRY_JS: &str = include_str!("refRegistry.js");
 const CONTEXT_TIMEOUT: Duration = Duration::from_secs(2);

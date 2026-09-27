@@ -1,6 +1,8 @@
+use super::target::BrowserTarget;
+use crate::modules::{browser::embed, browser_external};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
-use tauri::{AppHandle, Manager, Webview};
+use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::modules::browser::embed::{embed_label, is_embed_tab_active, list_active_tab_ids};
@@ -42,10 +44,34 @@ pub fn clear_tab_locks() {
 }
 
 pub fn get_active_tabs() -> Vec<i64> {
-    list_active_tab_ids()
+    let mut tabs = list_active_tab_ids();
+    tabs.extend(browser_external::target_ids());
+    tabs
 }
 
-pub fn get_embed_webview(app: &AppHandle, tab_id: i64) -> Result<Webview, String> {
+pub fn find_target(app: &AppHandle, tab_id: i64) -> Option<BrowserTarget> {
+    if let Some(target) = browser_external::get_target(tab_id) {
+        return Some(BrowserTarget::External {
+            app: app.clone(),
+            target,
+            label: embed_label(tab_id),
+        });
+    }
+    is_embed_tab_active(tab_id)
+        .then(|| app.get_webview(&embed_label(tab_id)))
+        .flatten()
+        .map(BrowserTarget::Embedded)
+}
+
+pub fn get_embed_webview(app: &AppHandle, tab_id: i64) -> Result<BrowserTarget, String> {
+    if let Some(target) = browser_external::get_target(tab_id) {
+        super::activity::stage("running");
+        return Ok(BrowserTarget::External {
+            app: app.clone(),
+            target,
+            label: embed_label(tab_id),
+        });
+    }
     if !is_embed_tab_active(tab_id) {
         return Err(format!("tab {tab_id} not found or closed"));
     }
@@ -54,7 +80,84 @@ pub fn get_embed_webview(app: &AppHandle, tab_id: i64) -> Result<Webview, String
         .get_webview(&label)
         .ok_or_else(|| format!("webview window for tab {tab_id} ({label}) is unavailable"))?;
     super::activity::stage("running");
-    Ok(webview)
+    Ok(webview.into())
+}
+
+pub fn active_navigation_generation(tab_id: i64) -> Option<u64> {
+    embed::active_navigation_generation(tab_id).or_else(|| {
+        browser_external::get_target(tab_id)?
+            .info()
+            .ok()
+            .map(|info| info.generation)
+    })
+}
+
+pub fn active_local_root(tab_id: i64) -> Option<std::path::PathBuf> {
+    embed::active_local_root(tab_id)
+        .or_else(|| Some(browser_external::get_target(tab_id)?.workspace.into()))
+}
+
+pub fn active_loading(tab_id: i64) -> Option<bool> {
+    embed::active_loading(tab_id).or_else(|| browser_external::get_target(tab_id)?.loading())
+}
+
+pub fn active_pending_url(tab_id: i64) -> Option<String> {
+    embed::active_pending_url(tab_id)
+        .or_else(|| browser_external::get_target(tab_id)?.pending_url())
+}
+pub fn set_active_loading(tab_id: i64, loading: bool) {
+    if let Some(target) = browser_external::get_target(tab_id) {
+        target.set_loading(loading);
+    } else {
+        embed::set_active_loading(tab_id, loading);
+    }
+}
+pub fn set_active_pending_url(tab_id: i64, url: Option<String>) {
+    if let Some(target) = browser_external::get_target(tab_id) {
+        target.set_pending_url(url);
+    } else {
+        embed::set_active_pending_url(tab_id, url);
+    }
+}
+
+pub async fn apply_viewport(
+    target: &BrowserTarget,
+    width: u32,
+    height: u32,
+    scale: f64,
+    mobile: bool,
+    fit: f64,
+) -> Result<(), String> {
+    if let BrowserTarget::Embedded(webview) = target {
+        return embed::apply_viewport(webview, width, height, scale, mobile, fit).await;
+    }
+    let (method, params) = if width == 0 {
+        (
+            "Emulation.clearDeviceMetricsOverride",
+            serde_json::json!({}),
+        )
+    } else {
+        (
+            "Emulation.setDeviceMetricsOverride",
+            serde_json::json!({"width":width,"height":height,"deviceScaleFactor":scale,"mobile":mobile,"scale":fit}),
+        )
+    };
+    super::cdp::call_devtools_protocol_method(
+        target,
+        method,
+        &params.to_string(),
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    super::cdp::call_devtools_protocol_method(
+        target,
+        "Emulation.setTouchEmulationEnabled",
+        &serde_json::json!({"enabled":width>0 && mobile,"maxTouchPoints":if mobile {5} else {1}})
+            .to_string(),
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]
