@@ -2,6 +2,7 @@ import {
   createDockLayoutOwnership,
   createDockLayoutPublisher,
   type DockLayout,
+  type DockStatus,
   dockMutationAffectsLayout,
   orderedLayout,
   panelLayout,
@@ -73,15 +74,52 @@ describe("native dock panel layout", () => {
   it("converts the panel, not the whole Anbo window, to physical pixels", () => {
     expect(
       panelLayout({ x: 420, y: 90, width: 600, height: 450 }, 1.5, true),
-    ).toEqual({ x: 630, y: 135, width: 900, height: 675, visible: true });
+    ).toEqual({
+      x: 630,
+      y: 135,
+      width: 900,
+      height: 675,
+      visible: true,
+      covered: false,
+      cutouts: [],
+    });
   });
-  it("hides inactive or undersized panels without changing their tab binding", () => {
+  it("hides inactive panels and leaves the minimum size to the browser", () => {
     expect(
       panelLayout({ x: 20, y: 40, width: 800, height: 600 }, 1, false).visible,
     ).toBe(false);
     expect(
       panelLayout({ x: 20, y: 40, width: 200, height: 100 }, 1, true).visible,
-    ).toBe(false);
+    ).toBe(true);
+  });
+  it("hands Anbo menus the input and keeps floating panels above the page", () => {
+    const layout = panelLayout(
+      { x: 100, y: 50, width: 800, height: 600 },
+      1.25,
+      true,
+      true,
+      [
+        { x: 700, y: 500, width: 400, height: 300 },
+        { x: 0, y: 0, width: 50, height: 50 },
+      ],
+    );
+    expect(layout.covered).toBe(true);
+    expect(layout.cutouts).toEqual([
+      { x: 875, y: 625, width: 250, height: 188 },
+    ]);
+    const many = panelLayout(
+      { x: 0, y: 0, width: 800, height: 600 },
+      1,
+      true,
+      false,
+      Array.from({ length: 12 }, (_, index) => ({
+        x: index * 10,
+        y: 0,
+        width: 5,
+        height: 5,
+      })),
+    );
+    expect(many.cutouts).toHaveLength(8);
   });
   it("rejects invalid or escaping geometry", () => {
     for (const ratio of [NaN, Infinity, 0, 9])
@@ -101,6 +139,8 @@ const visibleLayout: DockLayout = {
   width: 1247,
   height: 771,
   visible: true,
+  covered: false,
+  cutouts: [],
 };
 
 function deferred<Value>() {
@@ -191,7 +231,7 @@ describe("native dock layout delivery", () => {
 
   it("drops a replaced presenter's queued resize, cleanup and late replies", async () => {
     const owners = createDockLayoutOwnership();
-    const pending = deferred<{ dockId: string | null }>();
+    const pending = deferred<DockStatus>();
     const oldWrite = vi.fn(() => pending.promise);
     const settled = vi.fn();
     const failed = vi.fn();
@@ -211,7 +251,7 @@ describe("native dock layout delivery", () => {
       vi.fn(),
     );
     await current.publish({ ...visibleLayout, width: 800 });
-    pending.resolve({ dockId: null });
+    pending.resolve({ dockId: null, live: false, reason: null });
     await flight;
     await previous.stop(visibleLayout);
     await previous.publish(visibleLayout);

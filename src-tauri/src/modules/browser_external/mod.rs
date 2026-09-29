@@ -60,7 +60,7 @@ fn ensure_main(webview: &Webview) -> Result<(), String> {
 }
 
 fn changed(app: &AppHandle) {
-    target::cleanup_retired();
+    target::cleanup_retired(app);
     let _ = app.emit_to("main", EVENT, ());
 }
 

@@ -121,13 +121,23 @@ impl Lease {
         Ok(())
     }
 
+    /// Docking clips the window to its page; recovery hands back the whole frame
+    /// once the window is back where it was, so the frame never shows over Anbo.
     pub fn restore(&self) {
+        use windows::Win32::Graphics::Gdi::{
+            CreateRectRgn, GetWindowRgnBox, SetWindowRgn, RGN_ERROR,
+        };
         if !self.live() {
             return;
         }
+        let window = self.hwnd();
         unsafe {
+            let clipped = GetWindowRgnBox(window, &mut RECT::default()) != RGN_ERROR;
+            if clipped {
+                let _ = SetWindowRgn(window, Some(CreateRectRgn(0, 0, 0, 0)), true);
+            }
             let _ = SetWindowPos(
-                self.hwnd(),
+                window,
                 None,
                 self.original.x,
                 self.original.y,
@@ -135,8 +145,20 @@ impl Lease {
                 self.original.height,
                 SWP_NOACTIVATE | SWP_NOZORDER | SWP_ASYNCWINDOWPOS | SWP_SHOWWINDOW,
             );
-            let _ = ShowWindowAsync(self.hwnd(), SW_SHOWNOACTIVATE);
-            let _ = RemovePropW(self.hwnd(), PCWSTR(self.property().as_ptr()));
+            let _ = ShowWindowAsync(window, SW_SHOWNOACTIVATE);
+            if clipped {
+                // A hung browser never moves; it gets its frame back regardless.
+                for _ in 0..25 {
+                    if window_bounds(window)
+                        .is_ok_and(|now| (now.x, now.y) == (self.original.x, self.original.y))
+                    {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                let _ = SetWindowRgn(window, None, true);
+            }
+            let _ = RemovePropW(window, PCWSTR(self.property().as_ptr()));
         }
     }
 }

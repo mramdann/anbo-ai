@@ -526,11 +526,6 @@ pub async fn set_active(
         let lock = super::registry::get_tab_lock(tab_id);
         let _guard = lock.lock().await;
         if active {
-            if crate::modules::browser_external::dock::contains(tab_id) {
-                return Err(
-                    "Release the native dock before using design mode in this preview".into(),
-                );
-            }
             let theme = theme.as_ref().and_then(sanitize_theme);
             with_session(tab_id, |session| {
                 session.active = true;

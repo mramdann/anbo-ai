@@ -54,6 +54,8 @@ const VALUE_ACTION_JS: &str = include_str!("valueAction.js");
 /// purpose: while a tab is navigating, WebView2 drops the script callback, and a
 /// single dropped callback must not be allowed to eat the whole wait budget.
 const SCRIPT_POLL_TIMEOUT: Duration = Duration::from_secs(2);
+const HIDDEN_TAB: &str = "the tab is hidden in its browser window (another tab is in front, or the window is minimized), and the browser delivers no input to a hidden page. Dock the tab in Anbo or bring it to the front, then try again.";
+const UNDRAWN_TAB: &str = "the browser draws nothing for this tab while its window is not being shown, and a pointer move waits for a drawn frame. Dock the tab in Anbo or bring its browser window forward, then try again.";
 const MAX_TEXT_OUTPUT_CHARS: u64 = 16_000;
 /// The longest a wait may actually run.
 ///
@@ -1371,7 +1373,9 @@ async fn handle_action_inner(
                 let target = get_ref_frame_target(tab_id, &ref_id);
                 let (dispatch, popup_url) =
                     click_ref_profiled(&webview, tab_id, &ref_id, click_count, timings).await?;
-                if let Some(url) = popup_url {
+                // Chrome and Edge open a new-tab link themselves; only the
+                // embedded browser leaves it to Anbo.
+                if let Some(url) = popup_url.filter(|_| webview.embedded().is_ok()) {
                     let _ = app.emit(
                         BROWSER_POPUP_REQUEST_EVENT,
                         json!({ "sourceTabId": tab_id, "url": url }),
@@ -1591,6 +1595,17 @@ async fn handle_action_inner(
                     "dom-frame"
                 }
             } else {
+                if source.page_hidden || source.no_frames {
+                    let reason = if source.page_hidden {
+                        HIDDEN_TAB
+                    } else {
+                        UNDRAWN_TAB
+                    };
+                    return Err((
+                        error_codes::INPUT_NOT_READY.to_string(),
+                        format!("{reason} No input was sent."),
+                    ));
+                }
                 let pair = wait_for_drag_pair(
                     &webview,
                     &source_ref,
@@ -2819,6 +2834,23 @@ async fn handle_action_inner(
                 ActionabilityRequirement::Hover(position),
             )
             .await?;
+            if actionable.page_hidden || actionable.no_frames {
+                let _ = execute_ref_script(
+                    &webview,
+                    target.as_ref(),
+                    "globalThis.__anboHoverObservation?.stop()",
+                )
+                .await;
+                let reason = if actionable.page_hidden {
+                    HIDDEN_TAB
+                } else {
+                    UNDRAWN_TAB
+                };
+                return Err((
+                    error_codes::INPUT_NOT_READY.to_string(),
+                    format!("{reason} No input was sent."),
+                ));
+            }
             let main_document = target.as_ref().is_none_or(|target| target.is_main);
             if main_document {
                 if let Err(error) = dispatch_mouse_move(&webview, actionable.x, actionable.y).await
@@ -5350,6 +5382,11 @@ struct ActionableElement {
     draggable: bool,
     popup_url: Option<String>,
     value_result: Option<Value>,
+    /// Only an external tab reports these. The browser delivers no input to a
+    /// hidden page, and a page shown in a window nobody sees draws no frames,
+    /// so a pointer move waits for one that may never come.
+    page_hidden: bool,
+    no_frames: bool,
 }
 
 fn actionability_failure_reason(
@@ -5475,15 +5512,20 @@ fn actionability_wait_script(
     position: Option<(f64, f64)>,
     requirement: ActionabilityRequirement,
 ) -> String {
-    actionable_attempt_script(ref_id, scroll, position, requirement, None)
+    actionable_attempt_script(ref_id, scroll, position, requirement, None, false)
 }
 
+/// `external` lets a page that draws no frames answer from its first sample
+/// and say so. Only an external browser tab asks for it: an occluded Chrome
+/// window throttles its timers to once a second, which would hold every action
+/// that long, and a pointer move on such a page waits for a frame.
 fn actionable_attempt_script(
     ref_id: &str,
     scroll: bool,
     position: Option<(f64, f64)>,
     requirement: ActionabilityRequirement,
     value_script: Option<&str>,
+    external: bool,
 ) -> String {
     let sampler = include_str!("actionabilityWait.js");
     let probe = actionable_probe_script(ref_id, "scroll", position);
@@ -5510,8 +5552,9 @@ fn actionable_attempt_script(
     let value_action = value_script
         .map(|script| format!("() => JSON.parse({script})"))
         .unwrap_or_else(|| "undefined".into());
+    let external = if external { ", true" } else { "" };
     format!(
-        "(() => {{ {sampler}\nreturn waitForActionableSample((scroll) => JSON.parse({probe}), '{requirement}', {scroll}, {value_action}, {on_ready}); }})()"
+        "(() => {{ {sampler}\nreturn waitForActionableSample((scroll) => JSON.parse({probe}), '{requirement}', {scroll}, {value_action}, {on_ready}{external}); }})()"
     )
 }
 
@@ -5655,10 +5698,19 @@ async fn wait_for_actionable_attempt(
         }
         _ => None,
     };
+    let external = matches!(webview, Webview::External { .. });
     let build = |scroll| match value_script {
-        Some(value_script) => {
-            actionable_attempt_script(ref_id, scroll, position, requirement, Some(value_script))
+        _ if external => {
+            actionable_attempt_script(ref_id, scroll, position, requirement, value_script, true)
         }
+        Some(value_script) => actionable_attempt_script(
+            ref_id,
+            scroll,
+            position,
+            requirement,
+            Some(value_script),
+            false,
+        ),
         None => actionability_wait_script(ref_id, scroll, position, requirement),
     };
     let initial_script = build(true);
@@ -5732,6 +5784,8 @@ async fn wait_for_actionable_attempt(
             }
             return Ok(ActionableElement {
                 value_result: parsed.get("valueActionResult").cloned(),
+                page_hidden: parsed.get("pageHidden").and_then(Value::as_bool) == Some(true),
+                no_frames: parsed.get("noFrames").and_then(Value::as_bool) == Some(true),
                 x: rect.0,
                 y: rect.1,
                 tag: parsed
@@ -6680,9 +6734,20 @@ async fn dispatch_mouse_click_profiled(
     timings: &mut ActionTimings,
 ) -> Result<(), (String, String)> {
     let (x, y) = (actionable.x, actionable.y);
-    dispatch_mouse_move_profiled(webview, x, y, timings)
-        .await
-        .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+    if actionable.page_hidden {
+        return Err((
+            error_codes::INPUT_NOT_READY.to_string(),
+            format!("{HIDDEN_TAB} No input was sent."),
+        ));
+    }
+    // A page that draws no frames answers a move only when it next draws, which
+    // a covered or locked browser may not do before the command expires and the
+    // tab is released. Mouse-down moves the pointer there itself.
+    if !actionable.no_frames {
+        dispatch_mouse_move_profiled(webview, x, y, timings)
+            .await
+            .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+    }
     for count in 1..=click_count.max(1) {
         let script = deep_ref_expression(
             ref_id,
@@ -9315,6 +9380,15 @@ mod tests {
     }
 
     #[test]
+    fn only_external_tabs_skip_waiting_for_frames_a_page_does_not_draw() {
+        let requirement = ActionabilityRequirement::Click;
+        let embedded = actionability_wait_script("g1-e1", true, None, requirement);
+        assert!(embedded.ends_with("'pointer', true, undefined, undefined); })()"));
+        let external = actionable_attempt_script("g1-e1", true, None, requirement, None, true);
+        assert!(external.ends_with("'pointer', true, undefined, undefined, true); })()"));
+    }
+
+    #[test]
     fn value_attempt_defers_one_guarded_mutation_until_readiness() {
         let value_script = deep_ref_expression("g1-e1", "return JSON.stringify({ok: true});");
         for (requirement, expected) in [
@@ -9328,6 +9402,7 @@ mod tests {
                     None,
                     requirement,
                     Some(&value_script),
+                    false,
                 );
                 let callback = format!(", () => JSON.parse({value_script})");
                 assert_eq!(script.matches(&callback).count(), 1);

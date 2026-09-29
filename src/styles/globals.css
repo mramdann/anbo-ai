@@ -232,26 +232,37 @@ html[data-window-presentation] #root::after {
   background: var(--background);
 }
 
+/* A docked Chrome/Edge page sits below Anbo and shows through the same way. */
 html[data-native-browser-live="true"] #root,
 html[data-native-browser-live="true"] .anbo-app-shell,
 html[data-native-browser-live="true"] .anbo-workspace-dockview,
 html[data-native-browser-live="true"] .dockview-theme-anbo-workspace .dv-groupview,
 html[data-native-browser-live="true"]
   .dockview-theme-anbo-workspace
+  .dv-content-container,
+html[data-native-dock-live="true"] #root,
+html[data-native-dock-live="true"] .anbo-app-shell,
+html[data-native-dock-live="true"] .anbo-workspace-dockview,
+html[data-native-dock-live="true"] .dockview-theme-anbo-workspace .dv-groupview,
+html[data-native-dock-live="true"]
+  .dockview-theme-anbo-workspace
   .dv-content-container {
   background: transparent !important;
 }
 
-html[data-native-browser-live="true"] #root {
+html[data-native-browser-live="true"] #root,
+html[data-native-dock-live="true"] #root {
   border-color: var(--background) !important;
 }
 
-html[data-native-browser-live="true"] .dockview-theme-anbo-workspace {
+html[data-native-browser-live="true"] .dockview-theme-anbo-workspace,
+html[data-native-dock-live="true"] .dockview-theme-anbo-workspace {
   --dv-group-view-background-color: transparent;
   --dv-sash-color: var(--border);
 }
 
-html[data-native-browser-live="true"] .anbo-bg-surface {
+html[data-native-browser-live="true"] .anbo-bg-surface,
+html[data-native-dock-live="true"] .anbo-bg-surface {
   display: none;
 }
 
@@ -260,11 +271,18 @@ html[data-native-browser-live="true"] [data-ai-input-bar],
 html[data-native-browser-live="true"] [data-ai-input-bar] > div > div,
 html[data-native-browser-live="true"] [data-slot="resizable-handle"],
 html[data-native-browser-live="true"] .dockview-theme-anbo-workspace .dv-sash,
-html[data-native-browser-live="true"] .dockview-theme-anbo-workspace .dv-tabs-and-actions-container {
+html[data-native-browser-live="true"] .dockview-theme-anbo-workspace .dv-tabs-and-actions-container,
+html[data-native-dock-live="true"] footer,
+html[data-native-dock-live="true"] [data-ai-input-bar],
+html[data-native-dock-live="true"] [data-ai-input-bar] > div > div,
+html[data-native-dock-live="true"] [data-slot="resizable-handle"],
+html[data-native-dock-live="true"] .dockview-theme-anbo-workspace .dv-sash,
+html[data-native-dock-live="true"] .dockview-theme-anbo-workspace .dv-tabs-and-actions-container {
   background-color: var(--card) !important;
 }
 
-html[data-native-browser-live="true"] footer {
+html[data-native-browser-live="true"] footer,
+html[data-native-dock-live="true"] footer {
   box-shadow: 0 10px 0 0 var(--card);
 }
 

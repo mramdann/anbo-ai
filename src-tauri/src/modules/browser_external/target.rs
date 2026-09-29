@@ -257,15 +257,17 @@ impl ExternalTarget {
             .map_err(|_| "browser disconnected")?
     }
 
+    /// The extension drops a tab whose command expires, so an effect waiting on
+    /// a page that is busy for a moment gets as long as any other command.
     pub fn eval(&self, script: String) -> Result<(), String> {
         let (guard, receiver) = self.queue(
             "Runtime.evaluate",
             json!({"expression":script,"returnByValue":true}),
-            Duration::from_secs(2),
+            REQUEST_TIMEOUT,
         )?;
         tauri::async_runtime::spawn(async move {
             let _guard = guard;
-            let _ = tokio::time::timeout(Duration::from_secs(2), receiver).await;
+            let _ = tokio::time::timeout(REQUEST_TIMEOUT, receiver).await;
         });
         Ok(())
     }
@@ -329,7 +331,7 @@ pub async fn browser_external_bind(
     Ok(())
 }
 
-pub(super) fn cleanup_retired() {
+pub(super) fn cleanup_retired(app: &AppHandle) {
     let (retired, navigated) = REGISTRY
         .lock()
         .map(|mut registry| {
@@ -344,7 +346,7 @@ pub(super) fn cleanup_retired() {
     }
     for tab_id in retired {
         super::dock::remove(tab_id);
-        activity::remove(tab_id);
+        activity::retire(app, tab_id);
         design::remove(tab_id);
         crate::modules::browser_automation::snapshot::invalidate_document(tab_id);
     }
@@ -393,7 +395,7 @@ pub async fn browser_external_unbind(
         )
     };
     {
-        activity::remove(tab_id);
+        activity::retire(tauri::Manager::app_handle(&webview), tab_id);
         design::remove(tab_id);
         let (_guard, receiver) = queued;
         tokio::time::timeout(REQUEST_TIMEOUT, receiver)

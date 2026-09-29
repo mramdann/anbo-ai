@@ -1,8 +1,9 @@
-function waitForActionableSample(probe, requirement, scroll, valueAction, onReady) {
+function waitForActionableSample(probe, requirement, scroll, valueAction, onReady, external) {
   return new Promise((resolve, reject) => {
     let frame = null;
     let timer = null;
     let finished = false;
+    let framed = false;
     let first;
     let firstAt = NaN;
     let previous;
@@ -45,6 +46,7 @@ function waitForActionableSample(probe, requirement, scroll, valueAction, onRead
     };
     const onFrame = () => {
       if (finished) return;
+      framed = true;
       frame = null;
       try {
         const quick = !previous && first.scrolled !== true && now() - firstAt >= quickSpanMs;
@@ -73,13 +75,22 @@ function waitForActionableSample(probe, requirement, scroll, valueAction, onRead
         finish(first, false);
         return;
       }
+      // A hidden page draws no frames and wakes its timers about once a second,
+      // and nothing on it moves meanwhile, so its first sample is the settled one.
+      if (external === true && document.visibilityState === 'hidden') {
+        finish({ ...first, pageHidden: true }, true);
+        return;
+      }
       // Suspended frames retain the original bounded 100 ms stability check.
       timer = setTimeout(() => {
         if (finished) return;
         timer = null;
         try {
           const current = sample(false);
-          if (current) finish(current, stable(first, current) && (!previous || stable(previous, current)));
+          // A page shown in a window nobody sees draws no frames either, and
+          // answers a pointer move only once it draws again.
+          const value = external === true && !framed ? { ...current, noFrames: true } : current;
+          if (current) finish(value, stable(first, current) && (!previous || stable(previous, current)));
         } catch (error) { fail(error); }
       }, 100);
       frame = requestAnimationFrame(onFrame);

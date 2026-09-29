@@ -682,9 +682,6 @@ fn emit(context: &Context, phase: &'static str, point: Option<Point>) {
 }
 
 fn render(webview: &Webview, tab_id: i64, event: &Activity) {
-    if crate::modules::browser_external::dock::contains(tab_id) {
-        return;
-    }
     if event.phase == "ended" {
         hide(webview);
         return;
@@ -1190,6 +1187,30 @@ pub fn remove(tab_id: i64) {
         if let Some(tabs) = guard.as_mut() {
             tabs.remove(&tab_id);
         }
+    }
+}
+
+/// For an external tab Anbo lost control of mid-action: its sessions are told
+/// they ended there, so the tab's header does not keep showing an action that
+/// will never report back.
+pub fn retire(app: &AppHandle, tab_id: i64) {
+    let unfinished: Vec<Activity> = TABS
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.as_mut()?.remove(&tab_id))
+        .map(|surface| {
+            surface
+                .members
+                .values()
+                .filter(|member| member.phase != "ended")
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    for mut event in unfinished {
+        event.phase = "ended";
+        event.sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        notify_activity(app, &event, true);
     }
 }
 

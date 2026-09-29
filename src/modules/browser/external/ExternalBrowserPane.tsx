@@ -46,6 +46,19 @@ const DesignSendDialog = lazy(
   () => import("@/modules/browser/design/DesignSendDialog"),
 );
 
+function dockNotice(reason: string | null, browser: string): string {
+  switch (reason) {
+    case "panel-too-narrow":
+      return `Make this panel wider to show the page. ${browser} does not allow a narrower window.`;
+    case "panel-outside-host":
+      return "Move this panel back inside the Anbo window to show the page.";
+    case "browser-fullscreen":
+      return `The page is full screen in ${browser}. Leave full screen to bring it back here.`;
+    default:
+      return `Placing the ${browser} window under this panel...`;
+  }
+}
+
 export default forwardRef<
   BrowserPaneHandle,
   { tab: BrowserTab; visible: boolean; workspaceRoot: string | null }
@@ -172,102 +185,109 @@ export default forwardRef<
   };
 
   return (
-    <div className="flex h-full flex-col bg-background">
-      <BrowserAddressBar
-        ref={address}
-        url={tab.url}
-        onSubmit={(url) => {
-          void run({ action: "navigate", url });
-        }}
-        onBack={() => {
-          void run({ action: "back" });
-        }}
-        onForward={() => {
-          void run({ action: "forward" });
-        }}
-        onReload={() => {
-          void run({ action: "reload" });
-        }}
-        deviceId={device}
-        onDevice={(id) => {
-          const preset = devicePreset(id);
-          void run({
-            action: "viewport",
-            width: preset.width,
-            height: preset.height,
-            scale: preset.scale,
-            mobile: preset.mobile,
-          }).then((result) => {
-            if (result) setDevice(id);
-          });
-        }}
-        effectsEnabled={effects}
-        onToggleEffects={() => setAutomationEffectsEnabled(!effects)}
-        designActive={design.active}
-        onToggleDesign={
-          external?.connected && !dock.dockId
-            ? () => {
+    <div
+      className={`flex h-full flex-col ${dock.live ? "bg-transparent" : "bg-background"}`}
+    >
+      <div className="shrink-0 bg-background">
+        <BrowserAddressBar
+          ref={address}
+          url={tab.url}
+          onSubmit={(url) => {
+            void run({ action: "navigate", url });
+          }}
+          onBack={() => {
+            void run({ action: "back" });
+          }}
+          onForward={() => {
+            void run({ action: "forward" });
+          }}
+          onReload={() => {
+            void run({ action: "reload" });
+          }}
+          deviceId={device}
+          onDevice={(id) => {
+            const preset = devicePreset(id);
+            void run({
+              action: "viewport",
+              width: preset.width,
+              height: preset.height,
+              scale: preset.scale,
+              mobile: preset.mobile,
+            }).then((result) => {
+              if (result) setDevice(id);
+            });
+          }}
+          effectsEnabled={effects}
+          onToggleEffects={() => setAutomationEffectsEnabled(!effects)}
+          designActive={design.active}
+          onToggleDesign={
+            external?.connected
+              ? () => {
+                  void toggleDesign();
+                }
+              : undefined
+          }
+        />
+        <div className="flex shrink-0 items-center gap-3 border-b px-3 py-1.5 text-xs">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!external?.connected || dock.busy}
+            onClick={() => void dock.toggle()}
+          >
+            {dock.busy
+              ? "Preparing..."
+              : dock.dockId
+                ? "Release to browser"
+                : "Dock in this panel (preview)"}
+          </Button>
+          <span className="text-muted-foreground">
+            {dock.dockId
+              ? `The real ${browser} page, seen through this panel. No streaming.`
+              : "One docked tab at a time. Requires browser extension 0.4.2 or newer."}
+          </span>
+        </div>
+        {dock.error ? (
+          <p role="alert" className="px-3 py-2 text-xs text-destructive">
+            {dock.error}
+          </p>
+        ) : null}
+        {design.active ? (
+          <Suspense fallback={null}>
+            <DesignToolbar
+              tabId={tab.id}
+              status={design}
+              onSend={() => setSendDesign(true)}
+              onExit={() => {
                 void toggleDesign();
-              }
-            : undefined
-        }
-      />
-      <div className="flex shrink-0 items-center gap-3 border-b px-3 py-1.5 text-xs">
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={!external?.connected || dock.busy || design.active}
-          onClick={() => void dock.toggle()}
-        >
-          {dock.busy
-            ? "Preparing..."
-            : dock.dockId
-              ? "Release to browser"
-              : "Dock in this panel (preview)"}
-        </Button>
-        <span className="text-muted-foreground">
-          {dock.dockId
-            ? "Native window, no streaming. Prototype: cursor/design overlays are not enabled."
-            : "One docked tab at a time. Requires browser extension 0.4.2 or newer."}
-        </span>
+              }}
+            />
+          </Suspense>
+        ) : null}
+        {sendDesign ? (
+          <Suspense fallback={null}>
+            <DesignSendDialog
+              open={sendDesign}
+              onOpenChange={setSendDesign}
+              tabId={tab.id}
+              workspaceRoot={workspaceRoot}
+              status={design}
+              preferredAgent={null}
+            />
+          </Suspense>
+        ) : null}
       </div>
-      {dock.error ? (
-        <p role="alert" className="px-3 py-2 text-xs text-destructive">
-          {dock.error}
-        </p>
-      ) : null}
-      {design.active ? (
-        <Suspense fallback={null}>
-          <DesignToolbar
-            tabId={tab.id}
-            status={design}
-            onSend={() => setSendDesign(true)}
-            onExit={() => {
-              void toggleDesign();
-            }}
-          />
-        </Suspense>
-      ) : null}
-      {sendDesign ? (
-        <Suspense fallback={null}>
-          <DesignSendDialog
-            open={sendDesign}
-            onOpenChange={setSendDesign}
-            tabId={tab.id}
-            workspaceRoot={workspaceRoot}
-            status={design}
-            preferredAgent={null}
-          />
-        </Suspense>
-      ) : null}
       <div
         ref={dock.surface}
-        className="relative flex min-h-0 flex-1 flex-col items-center gap-4 overflow-auto p-6"
+        className={
+          dock.live
+            ? "relative min-h-0 flex-1"
+            : "relative flex min-h-0 flex-1 flex-col items-center gap-4 overflow-auto bg-background p-6"
+        }
       >
-        {dock.dockId ? (
+        {dock.live ? null : dock.dockId ? (
           <p className="text-sm text-muted-foreground">
-            The real browser occupies this panel while Anbo is active. Minimum
-            panel size: 400 by 300 physical pixels.
+            {dockNotice(dock.reason, browser)}
           </p>
         ) : (
           <>
