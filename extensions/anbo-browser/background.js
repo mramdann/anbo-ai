@@ -86,7 +86,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 });
 chrome.tabs.onRemoved.addListener((tabId) => session?.tabs.removed(tabId));
 chrome.tabs.onUpdated.addListener((tabId, change, tab) => session?.tabs.updated(tabId, change, tab));
-chrome.tabs.onCreated.addListener((tab) => session?.tabs.dockTopology({ kind: "created", tabId: tab.id, windowId: tab.windowId }));
+chrome.tabs.onCreated.addListener((tab) => session?.tabs.dockTopology({ kind: "created", tabId: tab.id, windowId: tab.windowId, active: tab.active }));
 chrome.tabs.onDetached.addListener((tabId, info) => session?.tabs.dockTopology({ kind: "detached", tabId, windowId: info.oldWindowId }));
 chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
   const current = session;

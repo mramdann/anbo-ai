@@ -1,3 +1,11 @@
+// Where Anbo will show the page, so the window opens behind Anbo rather than
+// wherever the browser would place a new window.
+function openingBounds(bounds) {
+  const place = bounds && [bounds.left, bounds.top].every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 32_768);
+  const size = bounds && [bounds.width, bounds.height].every((value) => Number.isSafeInteger(value) && value >= 100 && value <= 16_384);
+  return place && size ? { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height } : { width: 900, height: 700 };
+}
+
 export function createDockManager(api, changed = () => {}) {
   const entries = new Map();
   let closed = false;
@@ -47,10 +55,10 @@ export function createDockManager(api, changed = () => {}) {
       if (source.type !== "normal" || source.incognito || original.pinned || (original.groupId != null && original.groupId !== -1) || (original.splitViewId != null && original.splitViewId !== -1)) throw new Error("Preview docking requires an unpinned, ungrouped tab outside split view in a normal browser window");
       check();
       const url = api.runtime.getURL(`dock.html#${token}`);
-      const window = await api.windows.create({ url, type: "normal", focused: false, width: 900, height: 700 });
+      const window = await api.windows.create({ url, type: "normal", focused: false, ...openingBounds(params.bounds) });
       const bootstrapId = window?.tabs?.[0]?.id;
       if (!Number.isSafeInteger(window?.id) || !Number.isSafeInteger(bootstrapId)) throw new Error("Browser did not identify the dock window");
-      const entry = { token, selectionId, windowId: window.id, bootstrapId, url, originalWindow: original.windowId, originalIndex: original.index ?? 0 };
+      const entry = { token, selectionId, windowId: window.id, bootstrapId, url, originalWindow: original.windowId, originalIndex: original.index ?? 0, moving: new Set() };
       entries.set(tabId, entry);
       try {
         check();
@@ -86,10 +94,29 @@ export function createDockManager(api, changed = () => {}) {
     } catch (error) { await releaseNow(tabId).catch(() => {}); throw error; }
   }
 
-  function topology({ kind, tabId, windowId }) {
+  // A link or shortcut opened a tab in the dock window. It joins the user's other
+  // tabs, so the docked page stays in Anbo and no unrelated page stays there.
+  async function moveOut(selected, entry, tabId, active) {
+    try {
+      const original = await api.windows.get(entry.originalWindow).catch(() => null);
+      if (original && !original.incognito) await api.tabs.move(tabId, { windowId: entry.originalWindow, index: -1 });
+      else await api.windows.create({ tabId, focused: false });
+      if (active) await api.tabs.update(tabId, { active: true });
+      if (entries.get(selected) === entry) await api.tabs.update(selected, { active: true });
+    } finally {
+      entry.moving.delete(tabId);
+    }
+  }
+
+  function topology({ kind, tabId, windowId, active }) {
     for (const [selected, entry] of entries) {
-      if (!entry.committed || entry.windowId !== windowId) continue;
-      if ((kind === "detached" && tabId === selected) || ((kind === "created" || kind === "activated") && tabId !== selected)) {
+      if (!entry.committed || entry.windowId !== windowId || entry.moving.has(tabId)) continue;
+      if (kind === "created" && tabId !== selected) {
+        entry.moving.add(tabId);
+        void moveOut(selected, entry, tabId, active).catch(() => {});
+        continue;
+      }
+      if ((kind === "detached" && tabId === selected) || (kind === "activated" && tabId !== selected)) {
         entry.committed = false;
         changed(selected, entry.selectionId, entry.token);
         void enqueue(() => releaseNow(selected, entry.token)).catch(() => {});

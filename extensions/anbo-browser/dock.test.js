@@ -18,7 +18,10 @@ function fixture() {
       remove: vi.fn(async (id) => { tabs.delete(id); }),
     },
     windows: {
-      create: vi.fn(async ({ url, type }) => { const tab = { id: next++, windowId: 40, url, index: 0 }; tabs.set(tab.id, tab); const window = { id: 40, type, incognito: false, tabs: [tab] }; windows.set(40, window); return window; }),
+      create: vi.fn(async ({ url, type, tabId }) => {
+        if (tabId) { windows.set(41, { id: 41, type: "normal", incognito: false }); tabs.get(tabId).windowId = 41; return windows.get(41); }
+        const tab = { id: next++, windowId: 40, url, index: 0 }; tabs.set(tab.id, tab); const window = { id: 40, type, incognito: false, tabs: [tab] }; windows.set(40, window); return window;
+      }),
       get: vi.fn(async (id) => { if (!windows.has(id)) throw new Error("closed"); return windows.get(id); }),
       update: vi.fn(async () => ({})),
     },
@@ -44,6 +47,17 @@ describe("dedicated native dock window", () => {
     expect(state.tabs.get(10)).toMatchObject({ windowId: 20, index: 1 });
     expect(state.api.tabs.remove).not.toHaveBeenCalledWith(10);
     expect(state.api.tabs.remove).not.toHaveBeenCalledWith(11);
+  });
+  it("opens the dock window where Anbo will show the page", async () => {
+    const state = fixture();
+    await state.run("Prepare", { params: { token, bounds: { left: 203, top: -3, width: 1724, height: 924 } } });
+    expect(state.api.windows.create).toHaveBeenCalledWith(expect.objectContaining({ left: 203, top: -3, width: 1724, height: 924, focused: false }));
+    for (const bounds of [null, { left: 1.5, top: 0, width: 800, height: 600 }, { left: 0, top: 0, width: 0, height: 600 }, { left: 0, top: 0, width: 800 }]) {
+      const other = fixture();
+      await other.run("Prepare", { params: { token, bounds } });
+      expect(other.api.windows.create).toHaveBeenCalledWith(expect.not.objectContaining({ left: expect.anything() }));
+      expect(other.api.windows.create).toHaveBeenCalledWith(expect.objectContaining({ width: 900, height: 700 }));
+    }
   });
   it("refuses a stale selection or different dock token", async () => {
     const state = fixture();
@@ -99,12 +113,37 @@ describe("dedicated native dock window", () => {
     expect(state.api.tabs.move).not.toHaveBeenCalled();
     expect(state.tabs.get(10).windowId).toBe(99);
   });
-  it("releases the dock when another tab is added instead of showing an unrelated page in Anbo", async () => {
+  it("moves a tab the docked page opened to the user's window and keeps the dock", async () => {
     const state = fixture();
     await state.run("Prepare");
     await state.run("Commit");
     state.tabs.set(50, { id: 50, windowId: 40, url: "https://user.example/" });
-    state.manager.topology({ kind: "created", tabId: 50, windowId: 40 });
+    state.manager.topology({ kind: "created", tabId: 50, windowId: 40, active: true });
+    state.manager.topology({ kind: "activated", tabId: 50, windowId: 40 });
+    await vi.waitFor(() => expect(state.tabs.get(50).windowId).toBe(20));
+    await vi.waitFor(() => expect(state.api.tabs.update).toHaveBeenCalledWith(10, { active: true }));
+    expect(state.api.tabs.update).toHaveBeenCalledWith(50, { active: true });
+    expect(state.changed).not.toHaveBeenCalled();
+    expect(state.tabs.get(10).windowId).toBe(40);
+  });
+  it("gives an opened tab its own window when the user's window is gone", async () => {
+    const state = fixture();
+    await state.run("Prepare");
+    await state.run("Commit");
+    state.windows.delete(20);
+    state.tabs.set(50, { id: 50, windowId: 40, url: "https://user.example/" });
+    state.manager.topology({ kind: "created", tabId: 50, windowId: 40, active: false });
+    await vi.waitFor(() => expect(state.tabs.get(50).windowId).toBe(41));
+    expect(state.api.windows.create).toHaveBeenCalledWith({ tabId: 50, focused: false });
+    expect(state.api.tabs.update).not.toHaveBeenCalledWith(50, { active: true });
+    expect(state.changed).not.toHaveBeenCalled();
+  });
+  it("releases the dock when another tab is shown in it instead of showing an unrelated page in Anbo", async () => {
+    const state = fixture();
+    await state.run("Prepare");
+    await state.run("Commit");
+    state.tabs.set(50, { id: 50, windowId: 40, url: "https://user.example/" });
+    state.manager.topology({ kind: "activated", tabId: 50, windowId: 40 });
     expect(state.changed).toHaveBeenCalledExactlyOnceWith(10, "lease", token);
     await state.manager.dispose();
     expect(state.tabs.get(10).windowId).toBe(20);
