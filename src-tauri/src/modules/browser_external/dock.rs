@@ -993,6 +993,7 @@ mod native {
     impl Drop for KeepInFront {
         fn drop(&mut self) {
             let window = HWND(self.0 as *mut _);
+            let browser = HWND(BROWSER.load(Ordering::Acquire) as *mut _);
             let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
             let process = |window: HWND| {
                 let mut process = 0;
@@ -1000,16 +1001,20 @@ mod native {
                 process
             };
             unsafe {
+                // A browser window that turned topmost below Anbo leaves first,
+                // so it is never left above Anbo.
+                if !browser.is_invalid() && topmost(browser) {
+                    let _ = SetWindowPos(browser, Some(HWND_NOTOPMOST), 0, 0, 0, 0, flags);
+                }
                 let _ = SetWindowPos(window, Some(HWND_NOTOPMOST), 0, 0, 0, 0, flags);
                 // The user may have switched to another app meanwhile; Anbo goes
                 // back below it. The browser's own windows never count, or Anbo
                 // could end up below one of them.
                 let front = GetForegroundWindow();
                 let owner = process(front);
-                let browser = BROWSER.load(Ordering::Acquire);
                 if owner != 0
                     && owner != process(window)
-                    && (browser == 0 || owner != process(HWND(browser as *mut _)))
+                    && (browser.is_invalid() || owner != process(browser))
                 {
                     let _ = SetWindowPos(window, Some(front), 0, 0, 0, 0, flags);
                 }
@@ -1163,7 +1168,9 @@ mod native {
                     flags |= SWP_NOMOVE | SWP_NOSIZE;
                 }
                 let after = if plan.restack {
-                    Some(host)
+                    // Placed right after a topmost Anbo, the browser would turn
+                    // topmost too; the top of the other windows is the same place.
+                    Some(if topmost(host) { HWND_TOP } else { host })
                 } else {
                     flags |= SWP_NOZORDER;
                     None
