@@ -38,11 +38,8 @@ impl Profile {
                     byte.is_ascii_hexdigit()
                 }
             });
-        if !valid_id
-            || self.name.trim().is_empty()
-            || self.name.chars().count() > 64
-            || self.name.chars().any(char::is_control)
-        {
+        // An empty name asks Anbo to name the profile.
+        if !valid_id || self.name.chars().count() > 64 || self.name.chars().any(char::is_control) {
             return Err("invalid external browser profile handshake".into());
         }
         Ok(())
@@ -144,6 +141,13 @@ mod tests {
             name: "Work".into(),
         };
         assert!(profile.validate().is_ok());
+        profile.name = String::new();
+        assert!(profile.validate().is_ok());
+        profile.name = "Bad\u{7}name".into();
+        assert!(profile.validate().is_err());
+        profile.name = "x".repeat(65);
+        assert!(profile.validate().is_err());
+        profile.name = "Work".into();
         profile.version = 1;
         assert!(profile
             .validate()

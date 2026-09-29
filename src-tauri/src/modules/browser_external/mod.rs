@@ -2,6 +2,7 @@ pub mod control;
 pub mod dock;
 #[cfg(windows)]
 pub mod dock_window;
+mod profile_label;
 mod protocol;
 pub mod setup;
 pub mod target;
@@ -287,6 +288,7 @@ pub async fn serve<R, W>(
     mut reader: R,
     mut writer: W,
     handshake: Value,
+    client: Option<u32>,
 ) -> Result<(), String>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -295,12 +297,32 @@ where
     if !cfg!(debug_assertions) {
         return Err("external browser preview is only available in development builds".into());
     }
-    let profile: Profile = serde_json::from_value(handshake).map_err(|error| error.to_string())?;
+    let mut profile: Profile =
+        serde_json::from_value(handshake).map_err(|error| error.to_string())?;
     if let Err(error) = profile.validate() {
         let bytes = serde_json::to_vec(&json!({"type":"error", "message":error}))
             .map_err(|cause| cause.to_string())?;
         wire::write_frame(&mut writer, &bytes, wire::TO_BROWSER_LIMIT).await?;
         return Err(error);
+    }
+    if profile.name.trim().is_empty() {
+        let taken: Vec<String> = REGISTRY
+            .lock()
+            .map_err(|_| "browser registry unavailable")?
+            .connections
+            .values()
+            .map(|connection| connection.profile.name.clone())
+            .collect();
+        let browser = profile.browser.clone();
+        profile.name = tauri::async_runtime::spawn_blocking(move || {
+            profile_label::resolve(&browser, client, &taken)
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+        // The extension shows the name Anbo chose.
+        let bytes = serde_json::to_vec(&json!({"type":"profile", "name":profile.name}))
+            .map_err(|cause| cause.to_string())?;
+        wire::write_frame(&mut writer, &bytes, wire::TO_BROWSER_LIMIT).await?;
     }
     let id = random_id()?;
     let (sender, mut commands) = mpsc::channel(MAX_PENDING);

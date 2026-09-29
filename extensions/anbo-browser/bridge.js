@@ -33,6 +33,13 @@ export function validateCommand(message, attached, now = Date.now()) {
   return message;
 }
 
+// An empty label lets Anbo name the profile the way the browser does.
+export function profileLabel(value) {
+  const label = String(value ?? "").trim();
+  if (label.length > 64 || /[\u0000-\u001f\u007f]/.test(label)) throw new Error("Use a profile label of up to 64 characters, or leave it empty");
+  return label;
+}
+
 export function tabInfo(tab) {
   const address = tab.url;
   if (tab.incognito || !Number.isSafeInteger(tab.id) || tab.id <= 0) {

@@ -249,6 +249,7 @@ async fn handle_client(
     expected_token: String,
 ) {
     let pty_id = super::peer::pipe_owner(app.clone(), &stream).await;
+    let client = super::peer::pipe_client(&stream);
     let (reader, mut writer) = tokio::io::split(stream);
     let mut buf_reader = BufReader::new(reader);
     loop {
@@ -322,8 +323,14 @@ async fn handle_client(
 
         if req.method == "external_browser_connect" {
             if let Err(error) =
-                crate::modules::browser_external::serve(app.clone(), buf_reader, writer, req.params)
-                    .await
+                crate::modules::browser_external::serve(
+                    app.clone(),
+                    buf_reader,
+                    writer,
+                    req.params,
+                    client,
+                )
+                .await
             {
                 log::debug!("external browser disconnected: {error}");
             }

@@ -1,4 +1,4 @@
-import { createDispatcher } from "./bridge.js";
+import { createDispatcher, profileLabel } from "./bridge.js";
 import { NATIVE_HOST } from "./host.js";
 import { createTabManager } from "./tabs.js";
 
@@ -28,8 +28,7 @@ async function disconnect() {
 
 async function connect(name) {
   if (session || connecting || closing) throw new Error("Wait for this profile to disconnect before reconnecting");
-  name = String(name ?? "").trim();
-  if (!name || name.length > 64 || /[\u0000-\u001f\u007f]/.test(name)) throw new Error("Enter a profile label (1-64 characters)");
+  name = profileLabel(name);
   connecting = true;
   try {
     error = "";
@@ -38,7 +37,7 @@ async function connect(name) {
     await chrome.storage.local.set({ profileId, profileName: name });
     const port = chrome.runtime.connectNative(NATIVE_HOST);
     const attached = new Map();
-    const current = { port, attached, approved: false, tabs: null };
+    const current = { port, attached, approved: false, tabs: null, label: name };
     const active = () => session === current && current.approved;
     current.tabs = createTabManager(chrome, attached, () => {
       if (active()) post({ type: "tabs", tabs: [...attached.values()] }, current);
@@ -50,6 +49,7 @@ async function connect(name) {
     port.onMessage.addListener((message) => {
       if (session !== current) return;
       if (message.type === "approved") current.approved = true;
+      else if (message.type === "profile") current.label = String(message.name ?? "").slice(0, 64);
       else if (message.type === "command") void dispatch(message);
       else if (message.type === "error") { error = String(message.message); void disconnect(); }
     });
@@ -102,7 +102,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     else if (message.type === "disconnect") await disconnect();
     else if (message.type !== "status") throw new Error("Choose tabs directly inside Anbo");
     const stored = await chrome.storage.local.get("profileName");
-    return { connected: Boolean(session), approved: session?.approved ?? false, busy: connecting || Boolean(closing), error, name: stored.profileName ?? "", selected: session?.attached.size ?? 0 };
+    return { connected: Boolean(session), approved: session?.approved ?? false, busy: connecting || Boolean(closing), error, name: stored.profileName ?? "", label: session?.label ?? "", selected: session?.attached.size ?? 0 };
   })().then((result) => respond({ ok: true, result }), (cause) => respond({ ok: false, error: String(cause.message ?? cause) }));
   return true;
 });

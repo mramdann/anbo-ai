@@ -12,9 +12,12 @@ async function run(type) {
     profile.disabled = result.connected;
     buttons.connect.disabled = result.connected || result.busy;
     buttons.disconnect.disabled = !result.connected;
+    const as = result.label ? ` as ${result.label}` : "";
     status.textContent = result.error || (result.approved
-      ? `Connected. ${result.selected} tab(s) selected. Choose or open tabs directly in Anbo; no sharing step is needed here.`
-      : result.connected ? "Waiting for approval in Anbo > New browser tab > Connect Chrome / Edge." : "Disconnected. Start the Anbo development build and connect this profile.");
+      ? `Connected${as}. ${result.selected} tab(s) selected. Choose or open tabs directly in Anbo; no sharing step is needed here.`
+      : result.connected ? `Waiting for approval${as} in Anbo > New browser tab > Connect Chrome / Edge.` : "Disconnected. Start the Anbo development build and connect this profile.");
+    // Anbo names an unlabelled profile a moment after it connects.
+    if (type === "connect" && result.connected && !result.label) setTimeout(() => void run("status"), 600);
   } catch (error) {
     status.textContent = String(error.message ?? error);
     buttons.connect.disabled = false;

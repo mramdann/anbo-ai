@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDispatcher, tabInfo, validateCommand } from "./bridge.js";
+import { createDispatcher, profileLabel, tabInfo, validateCommand } from "./bridge.js";
 
 function command(overrides = {}) {
   return { type: "command", id: 1, tabId: 10, selectionId: "lease", method: "Runtime.evaluate", params: {}, expiresAt: Date.now() + 10_000, ...overrides };
@@ -16,6 +16,19 @@ function harness(tabs = [10]) {
   let active = true;
   return { api, attached, replies, revoke: () => { active = false; }, dispatch: createDispatcher(api, attached, (reply) => replies.push(reply), () => active) };
 }
+
+describe("profile label", () => {
+  it("may be left empty so Anbo names the profile", () => {
+    expect(profileLabel("")).toBe("");
+    expect(profileLabel(undefined)).toBe("");
+    expect(profileLabel("  Work  ")).toBe("Work");
+  });
+  it("refuses control characters and long labels", () => {
+    expect(() => profileLabel("Work\u0007")).toThrow("up to 64 characters");
+    expect(() => profileLabel("x".repeat(65))).toThrow("up to 64 characters");
+    expect(profileLabel("x".repeat(64))).toHaveLength(64);
+  });
+});
 
 describe("external browser bridge", () => {
   it("rejects a stale selection lease before sending any input", async () => {
