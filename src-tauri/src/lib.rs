@@ -1,5 +1,11 @@
 pub mod modules;
 
+// The unit-test executable gets the Common Controls v6 manifest that tauri-build
+// links into binaries only (see build.rs); release builds never compile this.
+#[cfg(all(test, windows, target_env = "msvc"))]
+#[link(name = "resource", kind = "static")]
+extern "C" {}
+
 use modules::{
     agent, agent_cli, anbo, app_data, browser, browser_automation, fs, git, global_voice, history,
     lsp, net, proc, project_memory, pty, secrets, shell, voice_runtime, workspace,
