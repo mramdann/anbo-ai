@@ -6,6 +6,7 @@ import {
   shouldPersistSidebarCollapsed,
   shouldPersistSidebarWidth,
   shouldRestoreSidebar,
+  shouldRestoreSidebarWidth,
 } from "./useSidebarPanel";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -45,5 +46,38 @@ describe("shouldRestoreSidebar", () => {
   it("restores synchronously before the window presentation cover is removed", () => {
     expect(source).toContain("subscribeWindowPresentation");
     expect(source).toContain('if (next === "ready") restoreSidebarNow()');
+  });
+});
+
+describe("shouldRestoreSidebarWidth", () => {
+  it("gives back the chosen width after a minimize squeezed the panel", () => {
+    // Seen live: the stored width stayed 360.8 px while the panel kept 203 px.
+    expect(
+      shouldRestoreSidebarWidth(false, false, 203, 360.8, true, 1920),
+    ).toBe(true);
+    expect(source).toMatch(
+      /const restoreSidebarNow[\s\S]*?shouldRestoreSidebarWidth\([\s\S]*?panel\.resize/,
+    );
+  });
+
+  it("leaves a collapsed, hidden or already sized panel and narrow windows alone", () => {
+    expect(shouldRestoreSidebarWidth(true, false, 203, 360.8, true, 1920)).toBe(
+      false,
+    );
+    expect(shouldRestoreSidebarWidth(false, true, 0, 360.8, true, 1920)).toBe(
+      false,
+    );
+    expect(
+      shouldRestoreSidebarWidth(false, false, 360.8, 360.8, true, 1920),
+    ).toBe(false);
+    expect(
+      shouldRestoreSidebarWidth(false, false, 360.5, 360.8, true, 1920),
+    ).toBe(false);
+    expect(
+      shouldRestoreSidebarWidth(false, false, 203, 360.8, false, 1920),
+    ).toBe(false);
+    expect(shouldRestoreSidebarWidth(false, false, 203, 360.8, true, 500)).toBe(
+      false,
+    );
   });
 });

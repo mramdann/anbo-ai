@@ -44,6 +44,26 @@ export function shouldRestoreSidebar(
   );
 }
 
+// A minimize or restore can squeeze the expanded panel for a moment, and the
+// group then keeps that pixel width.
+export function shouldRestoreSidebarWidth(
+  intendedCollapsed: boolean,
+  panelCollapsed: boolean,
+  width: number,
+  intendedWidth: number,
+  documentVisible: boolean,
+  viewportWidth: number,
+): boolean {
+  return (
+    !intendedCollapsed &&
+    !panelCollapsed &&
+    documentVisible &&
+    width > 0 &&
+    intendedWidth - width >= 1 &&
+    viewportWidth >= SIDEBAR_MIN_WIDTH + 320
+  );
+}
+
 function clampSidebarWidth(width: number): number {
   return Math.min(
     SIDEBAR_MAX_WIDTH,
@@ -191,18 +211,29 @@ export function useSidebarPanel(
       sidebarRestoreTimerRef.current = 0;
     }
     const panel = sidebarRef.current;
+    if (!panel) return;
+    const visible = document.visibilityState === "visible";
     if (
-      !panel ||
-      !shouldRestoreSidebar(
+      shouldRestoreSidebar(
         collapsedRef.current,
         panel.isCollapsed(),
-        document.visibilityState === "visible",
+        visible,
         window.innerWidth,
       )
     ) {
-      return;
+      expandSidebar(panel, sidebarWidthRef.current);
+    } else if (
+      shouldRestoreSidebarWidth(
+        collapsedRef.current,
+        panel.isCollapsed(),
+        panel.getSize().inPixels,
+        sidebarWidthRef.current,
+        visible,
+        window.innerWidth,
+      )
+    ) {
+      panel.resize(`${sidebarWidthRef.current}px`);
     }
-    expandSidebar(panel, sidebarWidthRef.current);
   }, []);
 
   const scheduleSidebarRestore = useCallback(() => {
