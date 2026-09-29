@@ -7,14 +7,16 @@ export type BrowserSetupResult = {
   warning: string | null;
 };
 
+export type SetupCopy = "address" | "folder";
+
 export function BrowserSetupInstructions({
   setup,
   copied,
   onCopy,
 }: {
   setup: BrowserSetupResult;
-  copied: boolean;
-  onCopy: () => void;
+  copied: SetupCopy | null;
+  onCopy: (what: SetupCopy) => void;
 }) {
   const browser = setup.browser === "chrome" ? "Chrome" : "Edge";
   return (
@@ -23,15 +25,24 @@ export function BrowserSetupInstructions({
         {browser} bridge installed. Allow the extension next.
       </strong>
       <p className="text-muted-foreground">
-        In your chosen {browser} profile, open {setup.extensionsUrl}, enable
-        Developer mode, then choose Load unpacked and select this folder:
+        {browser} does not let other apps open {setup.extensionsUrl}, so paste
+        it into the address bar of the {browser} window Setup opened, in your
+        chosen profile. There, enable Developer mode, then choose Load unpacked
+        and select this folder:
       </p>
       <code className="select-text break-all rounded bg-muted p-2 text-[11px]">
         {setup.extensionPath}
       </code>
-      <Button variant="outline" size="sm" onClick={onCopy}>
-        {copied ? "Folder path copied" : "Copy extension folder"}
-      </Button>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" size="sm" onClick={() => onCopy("address")}>
+          {copied === "address"
+            ? "Address copied"
+            : `Copy ${setup.extensionsUrl}`}
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => onCopy("folder")}>
+          {copied === "folder" ? "Folder path copied" : "Copy extension folder"}
+        </Button>
+      </div>
       <ol className="list-decimal space-y-1 pl-4 text-muted-foreground">
         <li>
           Open the Anbo extension, enter a profile label, then Connect profile.

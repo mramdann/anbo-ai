@@ -210,19 +210,27 @@ fn open_extensions(browser: &Browser) -> Result<(), String> {
         .ok_or_else(|| {
             format!("Could not find {label}. Open {url} in your chosen browser profile.")
         })?;
-    let mut command = Command::new(executable);
-    hide_console(&mut command);
-    command
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let mut child = tokio::process::Command::from(command)
-        .spawn()
-        .map_err(|error| format!("Open {url} manually: {error}"))?;
-    tauri::async_runtime::spawn(async move {
-        let _ = child.wait().await;
-    });
+    // The shell starts the browser, so it inherits none of Anbo's handles. A
+    // browser started as Anbo's child keeps Anbo's MCP listening socket open
+    // after Anbo exits, and every later launch fails to bind that port.
+    use std::os::windows::ffi::OsStrExt;
+    let wide =
+        |value: &std::ffi::OsStr| -> Vec<u16> { value.encode_wide().chain(Some(0)).collect() };
+    let file = wide(executable.as_os_str());
+    let parameters = wide(std::ffi::OsStr::new(url));
+    let started = unsafe {
+        windows::Win32::UI::Shell::ShellExecuteW(
+            None,
+            windows::core::w!("open"),
+            windows::core::PCWSTR(file.as_ptr()),
+            windows::core::PCWSTR(parameters.as_ptr()),
+            windows::core::PCWSTR::null(),
+            windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+        )
+    };
+    if started.0 as isize <= 32 {
+        return Err(format!("Open {url} manually in {label}."));
+    }
     Ok(())
 }
 

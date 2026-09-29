@@ -14,11 +14,13 @@ describe("browser setup instructions", () => {
             extensionsUrl: `${browser}://extensions`,
             warning: null,
           }}
-          copied={false}
+          copied={null}
           onCopy={() => {}}
         />,
       );
       expect(markup).toContain(`${browser}://extensions`);
+      expect(markup).toContain("does not let other apps open");
+      expect(markup).toContain(`Copy ${browser}://extensions`);
       expect(markup).toContain("Load unpacked");
       expect(markup).toContain("Connect profile");
       expect(markup).toContain("approve that profile for your workspace");
@@ -38,11 +40,12 @@ describe("browser setup instructions", () => {
           extensionsUrl: "edge://extensions",
           warning: "Open Edge manually",
         }}
-        copied
+        copied="folder"
         onCopy={() => {}}
       />,
     );
     expect(markup).toContain("Folder path copied");
+    expect(markup).toContain("Copy edge://extensions");
     expect(markup).toContain("Open Edge manually");
     expect(markup).not.toContain("Profile connected");
   });

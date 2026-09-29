@@ -3,6 +3,7 @@ import { ExternalBrowserTabs } from "@/modules/browser/external/ExternalBrowserT
 import {
   BrowserSetupInstructions,
   type BrowserSetupResult,
+  type SetupCopy,
 } from "@/modules/browser/external/BrowserSetupInstructions";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -26,7 +27,7 @@ export default function ExternalBrowserConnections({
   const [inspection, setInspection] = useState<string | null>(null);
   const [setup, setSetup] = useState<BrowserSetupResult | null>(null);
   const [settingUp, setSettingUp] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<SetupCopy | null>(null);
   const sequence = useRef(0);
 
   const refresh = useCallback(async () => {
@@ -84,7 +85,7 @@ export default function ExternalBrowserConnections({
     setBusy(true);
     setSettingUp(true);
     setError(null);
-    setCopied(false);
+    setCopied(null);
     setSetup(null);
     try {
       setSetup(
@@ -98,14 +99,18 @@ export default function ExternalBrowserConnections({
     }
   };
 
-  const copyFolder = async () => {
+  const copy = async (what: SetupCopy) => {
     if (!setup) return;
     try {
-      await navigator.clipboard.writeText(setup.extensionPath);
-      setCopied(true);
+      await navigator.clipboard.writeText(
+        what === "address" ? setup.extensionsUrl : setup.extensionPath,
+      );
+      setCopied(what);
     } catch {
       setError(
-        "Could not copy the folder path. Select and copy the path shown above.",
+        what === "address"
+          ? `Could not copy the address. Type ${setup.extensionsUrl} into the address bar.`
+          : "Could not copy the folder path. Select and copy the path shown above.",
       );
     }
   };
@@ -161,7 +166,7 @@ export default function ExternalBrowserConnections({
         <BrowserSetupInstructions
           setup={setup}
           copied={copied}
-          onCopy={() => void copyFolder()}
+          onCopy={(what) => void copy(what)}
         />
       ) : null}
       {error ? (
