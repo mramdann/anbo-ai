@@ -29,6 +29,16 @@ export type AgentSession = {
   startedAt: number;
   lastActivityAt: number;
   attentionSince: number | null;
+  /** When the turn in progress began; null when the agent is not in a turn. */
+  turnStartedAt?: number | null;
+  /** Work left running while the agent waits, e.g. "1 shell". */
+  background?: string | null;
+};
+
+/** What a status change carries besides the status itself. */
+export type AgentStatusDetail = {
+  turnStartedAt?: number | null;
+  background?: string | null;
 };
 
 export type AgentNotification = {
@@ -41,6 +51,8 @@ export type AgentNotification = {
   kind: NotificationKind;
   at: number;
   read: boolean;
+  /** How long the finished turn took. */
+  durationMs?: number | null;
 };
 
 export type NotificationKind = "attention" | "finished" | "error";

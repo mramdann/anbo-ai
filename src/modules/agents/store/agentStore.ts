@@ -4,6 +4,7 @@ import type {
   AgentPhase,
   AgentSession,
   AgentStatus,
+  AgentStatusDetail,
   LocalAgentState,
 } from "../lib/types";
 
@@ -17,7 +18,12 @@ type AgentStoreState = {
   notifications: AgentNotification[];
   start: (leafId: number, tabId: number, agent: string, name: string) => void;
   setName: (leafId: number, name: string) => void;
-  setStatus: (leafId: number, status: AgentStatus, phase?: AgentPhase) => void;
+  setStatus: (
+    leafId: number,
+    status: AgentStatus,
+    phase?: AgentPhase,
+    detail?: AgentStatusDetail,
+  ) => void;
   finish: (leafId: number) => void;
   setLocalAgent: (state: LocalAgentState) => void;
   pushNotification: (n: Omit<AgentNotification, "id" | "at" | "read">) => void;
@@ -46,6 +52,8 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
             startedAt: now,
             lastActivityAt: now,
             attentionSince: null,
+            turnStartedAt: null,
+            background: null,
           },
         },
       };
@@ -63,12 +71,28 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
       };
     }),
 
-  setStatus: (leafId, status, requestedPhase) =>
+  setStatus: (leafId, status, requestedPhase, detail) =>
     set((s) => {
       const prev = s.sessions[leafId];
+      if (!prev) return s;
       const phase =
         requestedPhase ?? (status === "working" ? "working" : "attention");
-      if (!prev || (prev.status === status && prev.phase === phase)) return s;
+      const turnStartedAt =
+        detail?.turnStartedAt === undefined
+          ? (prev.turnStartedAt ?? null)
+          : detail.turnStartedAt;
+      const background =
+        detail?.background === undefined
+          ? (prev.background ?? null)
+          : detail.background;
+      const statusChanged = prev.status !== status || prev.phase !== phase;
+      if (
+        !statusChanged &&
+        turnStartedAt === (prev.turnStartedAt ?? null) &&
+        background === (prev.background ?? null)
+      ) {
+        return s;
+      }
       const now = Date.now();
       return {
         sessions: {
@@ -77,8 +101,14 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
             ...prev,
             status,
             phase,
-            lastActivityAt: now,
-            attentionSince: status === "waiting" ? now : null,
+            turnStartedAt,
+            background,
+            ...(statusChanged
+              ? {
+                  lastActivityAt: now,
+                  attentionSince: status === "waiting" ? now : null,
+                }
+              : {}),
           },
         },
       };
@@ -121,15 +151,20 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   clearNotifications: () => set({ notifications: [] }),
 }));
 
-/** The tab/leaf of the agent that most recently entered the waiting state, for
- *  the keyboard jump-to-attention shortcut. Null when none is waiting. */
+/** The tab/leaf for the keyboard jump-to-attention shortcut: an agent blocked
+ *  on the user first, otherwise the one that most recently started waiting.
+ *  Null when none is waiting. */
 export function nextAttentionTarget(): {
   tabId: number;
   leafId: number;
 } | null {
   const waiting = Object.values(useAgentStore.getState().sessions)
     .filter((s) => s.status === "waiting")
-    .sort((a, b) => (b.attentionSince ?? 0) - (a.attentionSince ?? 0));
+    .sort(
+      (a, b) =>
+        Number(b.phase === "attention") - Number(a.phase === "attention") ||
+        (b.attentionSince ?? 0) - (a.attentionSince ?? 0),
+    );
   const t = waiting[0];
   return t ? { tabId: t.tabId, leafId: t.leafId } : null;
 }

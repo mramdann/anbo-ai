@@ -11,8 +11,13 @@ import {
   Notification01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AgentIcon } from "../lib/agentIcon";
+import {
+  agentStatusLabel,
+  bellBadgeCount,
+  notificationLabel,
+} from "../lib/bell";
 import { displayAgentInstance } from "../lib/format";
 import type { AgentNotification, AgentPhase, AgentStatus } from "../lib/types";
 import { useAgentStore } from "../store/agentStore";
@@ -39,12 +44,17 @@ function StatusRow({
   name,
   status,
   phase,
+  workingForMs = null,
+  background,
   onClick,
 }: {
   agent: string;
   name?: string;
   status: AgentStatus;
   phase: AgentPhase;
+  /** How long the turn in progress has been running. */
+  workingForMs?: number | null;
+  background?: string | null;
   onClick: () => void;
 }) {
   // Waiting and blocked are not the same thing to the person reading this. One
@@ -85,17 +95,13 @@ function StatusRow({
             )}
           />
         ) : null}
-        {attention ? "needs you" : waiting ? "waiting" : "working"}
+        <span className="tabular-nums">
+          {agentStatusLabel({ status, phase, background }, workingForMs)}
+        </span>
       </span>
     </button>
   );
 }
-
-const NOTIF_LABEL: Record<AgentNotification["kind"], string> = {
-  attention: "needs input",
-  finished: "finished",
-  error: "failed",
-};
 
 function NotificationRow({
   n,
@@ -129,7 +135,7 @@ function NotificationRow({
       </span>
       <span className="min-w-0 flex-1 truncate text-xs text-foreground">
         {displayAgentInstance(n.agent, n.name)}{" "}
-        <span className="text-muted-foreground">{NOTIF_LABEL[n.kind]}</span>
+        <span className="text-muted-foreground">{notificationLabel(n)}</span>
       </span>
       <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
         {relativeTime(n.at)}
@@ -160,13 +166,19 @@ export function NotificationBell({
 
   const active = useMemo(() => Object.values(sessions), [sessions]);
   const activeCount = active.length + (localAgent ? 1 : 0);
-  const waitingCount =
-    active.filter((s) => s.status === "waiting").length +
-    (localAgent?.status === "waiting" ? 1 : 0);
-  // attention maps to an active waiting session, so only completed events add
-  // to the badge to avoid double-counting.
-  const unreadDone = history.filter((n) => !n.read).length;
-  const badge = waitingCount + unreadDone;
+  const badge = bellBadgeCount(active, localAgent, history);
+  // Working rows show how long their turn has run. The clock ticks only while
+  // the popover is open with an agent in a turn.
+  const ticking =
+    open &&
+    active.some((s) => s.status === "working" && s.turnStartedAt != null);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!ticking) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [ticking]);
   const onOpenChange = (next: boolean) => {
     setOpen(next);
     if (next) {
@@ -257,9 +269,10 @@ export function NotificationBell({
               <StatusRow
                 agent={localAgent.agent}
                 status={localAgent.status}
-                // The in-app agent has no prompt to be blocked at, so it only
-                // ever reads as working or waiting.
-                phase={localAgent.status === "waiting" ? "finished" : "working"}
+                // The in-app agent waits only when a tool needs approval.
+                phase={
+                  localAgent.status === "waiting" ? "attention" : "working"
+                }
                 onClick={activateLocal}
               />
             ) : null}
@@ -270,6 +283,12 @@ export function NotificationBell({
                 name={s.name}
                 status={s.status}
                 phase={s.phase}
+                workingForMs={
+                  s.status === "working" && s.turnStartedAt != null
+                    ? now - s.turnStartedAt
+                    : null
+                }
+                background={s.background}
                 onClick={() => activate(s.tabId, s.leafId)}
               />
             ))}

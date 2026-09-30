@@ -20,6 +20,8 @@ type RouteArgs = {
   allowToast: boolean;
   tabId?: number;
   leafId?: number;
+  /** How long the finished turn took, kept with the alert. */
+  durationMs?: number | null;
   onActivate: () => void;
 };
 
@@ -36,6 +38,7 @@ export function routeAgentNotification({
   allowToast,
   tabId = 0,
   leafId = 0,
+  durationMs = null,
   onActivate,
 }: RouteArgs): void {
   if (focused && visible) return;
@@ -53,6 +56,7 @@ export function routeAgentNotification({
         kind,
         tabId,
         leafId,
+        durationMs,
       });
     }
     if (allowToast) {

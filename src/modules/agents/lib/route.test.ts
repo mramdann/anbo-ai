@@ -113,4 +113,20 @@ describe("routeAgentNotification", () => {
     expect(showAgentToast).not.toHaveBeenCalled();
     expect(osNotify).toHaveBeenCalledOnce();
   });
+
+  it("keeps how long a finished turn took with the retained alert", () => {
+    routeAgentNotification({
+      ...base,
+      kind: "finished",
+      title: "Leander finished in 4m 12s",
+      durationMs: 252_000,
+    });
+
+    expect(pushNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "finished", durationMs: 252_000 }),
+    );
+    expect(showAgentToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Leander finished in 4m 12s" }),
+    );
+  });
 });

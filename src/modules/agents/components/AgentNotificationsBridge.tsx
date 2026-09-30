@@ -20,7 +20,7 @@ import { prepareAttentionSound } from "../lib/attentionSound";
 import { BrowserTurnObserver } from "../lib/browserTurnObserver";
 import { codexTurnEvidence } from "../lib/codexTurnEvidence";
 import type { CodexTurnWatch } from "../lib/codexTurnWatch";
-import { displayAgentInstance } from "../lib/format";
+import { displayAgentInstance, formatAgentDuration } from "../lib/format";
 import { maybeTriggerManagedReview } from "../lib/review";
 import { routeAgentNotification } from "../lib/route";
 import type { AgentSession, AgentSignal } from "../lib/types";
@@ -67,6 +67,7 @@ function route(
   session: AgentSession,
   kind: "attention" | "finished",
   ctx: Ctx,
+  durationMs: number | null = null,
 ): void {
   const info = tabInfo(ctx.tabs, session.leafId);
   const name = displayAgentInstance(session.agent, info?.name ?? session.name);
@@ -74,8 +75,14 @@ function route(
     ? ctx.spaces.find((space) => space.id === info.spaceId)?.name
     : undefined;
   const tabId = info?.tabId ?? session.tabId;
+  const took =
+    durationMs !== null && durationMs >= 1_000
+      ? ` in ${formatAgentDuration(durationMs)}`
+      : "";
   const heading =
-    kind === "attention" ? `${name} needs your input` : `${name} finished`;
+    kind === "attention"
+      ? `${name} needs your input`
+      : `${name} finished${took}`;
 
   routeAgentNotification({
     source: "terminal",
@@ -89,33 +96,41 @@ function route(
     allowToast: true,
     tabId,
     leafId: session.leafId,
+    durationMs,
     onActivate: () => ctx.onActivate(tabId, session.leafId),
   });
 }
 
 function applyObserved(sig: ObservedAgentSignal, ctx: Ctx): void {
   const store = useAgentStore.getState();
+  const detail = {
+    turnStartedAt: sig.turnStartedAt,
+    background: sig.background,
+  };
   switch (sig.kind) {
     case "working":
-      store.setStatus(sig.leafId, "working", "working");
+      store.setStatus(sig.leafId, "working", "working", detail);
       setAgentActivity(sig.ptyId, sig.agent, "working");
       return;
     case "ready":
-      store.setStatus(sig.leafId, "waiting", "finished");
+      store.setStatus(sig.leafId, "waiting", "finished", detail);
       setAgentActivity(sig.ptyId, sig.agent, "idle");
       return;
     case "attention": {
-      store.setStatus(sig.leafId, "waiting", "attention");
+      store.setStatus(sig.leafId, "waiting", "attention", detail);
       setAgentActivity(sig.ptyId, sig.agent, "attention");
       const session = store.sessions[sig.leafId];
       if (session) route(session, "attention", ctx);
       return;
     }
     case "finished": {
-      store.setStatus(sig.leafId, "waiting", "finished");
+      store.setStatus(sig.leafId, "waiting", "finished", {
+        ...detail,
+        turnStartedAt: null,
+      });
       setAgentActivity(sig.ptyId, sig.agent, "finished");
       const session = store.sessions[sig.leafId];
-      if (session) route(session, "finished", ctx);
+      if (session) route(session, "finished", ctx, sig.durationMs);
       maybeTriggerManagedReview(sig.leafId);
       ctx.onSettled(sig.leafId, sig.agent);
     }
