@@ -3,11 +3,15 @@ const UpdateButton = lazy(() =>
     default: m.UpdateButton,
   })),
 );
+const ExternalBrowserMenu = lazy(
+  () => import("@/modules/browser/external/ExternalBrowserMenu"),
+);
 import { Button } from "@/components/ui/button";
 import { WindowControls } from "@/components/WindowControls";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { NotificationBell } from "@/modules/agents";
+import { EXTERNAL_BROWSERS_ENABLED } from "@/modules/browser/external/store";
 import type { WorkspaceEnv } from "@/modules/workspace";
 import {
   AudioWaveformIcon,
@@ -45,6 +49,8 @@ type Props = {
   searchRef: RefObject<SearchInlineHandle | null>;
   workspaceRoot: string | null;
   workspace: WorkspaceEnv;
+  onShowBrowserTab: (tabId: number) => void;
+  onCloseBrowserTab: (tabId: number) => void;
 };
 
 const COMPACT_WIDTH = 720;
@@ -62,6 +68,8 @@ export function Header({
   searchRef,
   workspaceRoot,
   workspace,
+  onShowBrowserTab,
+  onCloseBrowserTab,
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [compact, setCompact] = useState(false);
@@ -211,6 +219,15 @@ export function Header({
               className="size-3.5"
             />
           </Button>
+          {EXTERNAL_BROWSERS_ENABLED ? (
+            <Suspense fallback={null}>
+              <ExternalBrowserMenu
+                workspaceRoot={workspaceRoot}
+                onShowTab={onShowBrowserTab}
+                onCloseTab={onCloseBrowserTab}
+              />
+            </Suspense>
+          ) : null}
           <NotificationBell
             onActivate={onActivateAgent}
             onActivateLocal={onActivateLocalAgent}

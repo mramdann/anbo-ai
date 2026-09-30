@@ -1,12 +1,4 @@
-import { useBrowserDock } from "@/modules/browser/external/docking";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   BrowserAddressBar,
   type BrowserAddressBarHandle,
@@ -22,6 +14,11 @@ import {
   useBrowserDesign,
 } from "@/modules/browser/design/designState";
 import { readDesignTheme } from "@/modules/browser/design/designTheme";
+import { useBrowserDock } from "@/modules/browser/external/docking";
+import {
+  browserName,
+  useExternalBrowsers,
+} from "@/modules/browser/external/store";
 import { browserDesignSet } from "@/modules/browser/native";
 import type { BrowserTab } from "@/modules/tabs";
 import { invoke } from "@tauri-apps/api/core";
@@ -36,9 +33,6 @@ import {
   useState,
 } from "react";
 
-const Connections = lazy(
-  () => import("@/modules/browser/external/ExternalBrowserConnections"),
-);
 const DesignToolbar = lazy(
   () => import("@/modules/browser/design/DesignToolbar"),
 );
@@ -46,7 +40,7 @@ const DesignSendDialog = lazy(
   () => import("@/modules/browser/design/DesignSendDialog"),
 );
 
-function dockNotice(reason: string | null, browser: string): string {
+export function dockNotice(reason: string | null, browser: string): string {
   switch (reason) {
     case "panel-too-narrow":
       return `Make this panel wider to show the page. ${browser} does not allow a narrower window.`;
@@ -54,9 +48,8 @@ function dockNotice(reason: string | null, browser: string): string {
       return "Move this panel back inside the Anbo window to show the page.";
     case "browser-fullscreen":
       return `The page is full screen in ${browser}. Leave full screen to bring it back here.`;
-    default:
-      return `Placing the ${browser} window under this panel...`;
   }
+  return `Opening the page from ${browser}...`;
 }
 
 export default forwardRef<
@@ -67,29 +60,15 @@ export default forwardRef<
   const dock = useBrowserDock(tab, visible);
   const address = useRef<BrowserAddressBarHandle>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [manage, setManage] = useState(false);
-  const [preview, setPreview] = useState<string | null>(null);
   const effects = useAutomationEffectsEnabled();
   const [device, setDevice] = useState("responsive");
   const [sendDesign, setSendDesign] = useState(false);
   const design = useBrowserDesign(tab.id);
-  const sequence = useRef(0);
-  const lastPage = useRef("");
-  const pageIdentity = `${tab.url}\n${external?.selectionId ?? ""}`;
-  const browser = external?.browser === "edge" ? "Edge" : "Chrome";
+  const browser = browserName(external?.browser ?? "chrome");
 
   useEffect(() => {
-    if (!visible || lastPage.current !== pageIdentity) {
-      sequence.current += 1;
-      setPreview(null);
-    }
-    lastPage.current = pageIdentity;
-    if (!visible) {
-      setManage(false);
-      setSendDesign(false);
-    }
-  }, [visible, pageIdentity]);
+    if (!visible) setSendDesign(false);
+  }, [visible]);
 
   useEffect(() => {
     if (!external?.connected) return;
@@ -113,7 +92,7 @@ export default forwardRef<
       try {
         if (!external?.connected)
           throw new Error(
-            "Reconnect this profile and select the tab in Browser connections.",
+            `Reconnect ${browser} from the browser menu at the top of Anbo.`,
           );
         return await invoke<{ data?: string; inserted?: boolean }>(
           "browser_external_control",
@@ -131,6 +110,7 @@ export default forwardRef<
     },
     [
       tab.id,
+      browser,
       external?.connected,
       external?.connectionId,
       external?.selectionId,
@@ -154,19 +134,6 @@ export default forwardRef<
     [run, tab.url],
   );
 
-  const capture = async () => {
-    const request = ++sequence.current;
-    setBusy(true);
-    const result = await run({ action: "capture" });
-    if (
-      request === sequence.current &&
-      result?.data &&
-      result.data.length <= 24 * 1024 * 1024
-    )
-      setPreview(`data:image/png;base64,${result.data}`);
-    setBusy(false);
-  };
-
   const toggleDesign = async () => {
     try {
       const active = !design.active;
@@ -184,6 +151,7 @@ export default forwardRef<
     }
   };
 
+  const problem = dock.error ?? error ?? external?.error ?? null;
   return (
     <div
       className={`flex h-full flex-col ${dock.live ? "bg-transparent" : "bg-background"}`}
@@ -228,29 +196,18 @@ export default forwardRef<
               : undefined
           }
         />
-        <div className="flex shrink-0 items-center gap-3 border-b px-3 py-1.5 text-xs">
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={!external?.connected || dock.busy}
-            onClick={() => void dock.toggle()}
+        {problem && external?.connected ? (
+          <div
+            role="alert"
+            className="flex items-center gap-2 border-b px-3 py-1.5 text-xs text-destructive"
           >
-            {dock.busy
-              ? "Preparing..."
-              : dock.dockId
-                ? "Release to browser"
-                : "Dock in this panel (preview)"}
-          </Button>
-          <span className="text-muted-foreground">
-            {dock.dockId
-              ? `The real ${browser} page, seen through this panel. No streaming.`
-              : "One docked tab at a time. Requires browser extension 0.4.2 or newer."}
-          </span>
-        </div>
-        {dock.error ? (
-          <p role="alert" className="px-3 py-2 text-xs text-destructive">
-            {dock.error}
-          </p>
+            <span className="min-w-0 flex-1 break-words">{problem}</span>
+            {dock.hold === "failed" ? (
+              <Button size="xs" variant="outline" onClick={dock.retry}>
+                Try again
+              </Button>
+            ) : null}
+          </div>
         ) : null}
         {design.active ? (
           <Suspense fallback={null}>
@@ -282,100 +239,66 @@ export default forwardRef<
         className={
           dock.live
             ? "relative min-h-0 flex-1"
-            : "relative flex min-h-0 flex-1 flex-col items-center gap-4 overflow-auto bg-background p-6"
+            : "relative flex min-h-0 flex-1 flex-col items-center justify-center gap-3 overflow-auto bg-background p-6 text-center"
         }
       >
-        {dock.live ? null : dock.dockId ? (
+        {dock.live ? null : !external?.connected ? (
+          <Disconnected
+            browser={browser}
+            name={external?.name ?? ""}
+            error={external?.error ?? null}
+          />
+        ) : dock.hold === "moved" ? (
+          <>
+            <p className="text-sm text-muted-foreground">
+              The page went back to {browser}.
+            </p>
+            <Button size="sm" variant="outline" onClick={dock.retry}>
+              Show it here
+            </Button>
+          </>
+        ) : dock.hold === "failed" ? (
+          <p className="text-sm text-muted-foreground">
+            The page could not be shown here.
+          </p>
+        ) : dock.waiting ? (
+          // A click brings Anbo to the front, which is all the dock waits for.
+          <Button size="sm" variant="outline" onClick={dock.retry}>
+            Show the page
+          </Button>
+        ) : (
           <p className="text-sm text-muted-foreground">
             {dockNotice(dock.reason, browser)}
           </p>
-        ) : (
-          <>
-            <div className="w-full max-w-2xl rounded-xl border bg-card p-5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <strong>
-                  {browser} / {external?.name}
-                </strong>
-                <span className="text-xs text-muted-foreground">
-                  {external?.connected ? "Connected" : "Disconnected"}
-                </span>
-              </div>
-              <p className="mt-2 text-sm text-muted-foreground">
-                The live page and your login stay in the original {browser}{" "}
-                window. Agents control this tab through Anbo, including when you
-                switch workspaces.
-              </p>
-              <p className="mt-2 text-xs text-muted-foreground">
-                Mouse effects and design annotations appear on the real page.
-                Previews below are manual snapshots, not a live video or an
-                interactive page.
-              </p>
-              <p className="mt-2 text-xs text-muted-foreground">
-                Closing this Anbo tab releases a tab you selected. Tabs opened
-                by Anbo are also closed in the browser.
-              </p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Button
-                  disabled={!external?.connected}
-                  onClick={() => {
-                    void run({ action: "focus" });
-                  }}
-                >
-                  Show in {browser}
-                </Button>
-                <Button
-                  variant="outline"
-                  disabled={busy || !external?.connected}
-                  onClick={() => {
-                    void capture();
-                  }}
-                >
-                  {busy ? "Capturing..." : "Preview page"}
-                </Button>
-                <Button variant="ghost" onClick={() => setManage(true)}>
-                  Browser connections
-                </Button>
-              </div>
-              {error || external?.error ? (
-                <p role="alert" className="mt-3 text-sm text-destructive">
-                  {error ?? external?.error}
-                </p>
-              ) : null}
-              {!external?.connected ? (
-                <p className="mt-3 text-xs text-muted-foreground">
-                  Reconnect the same profile and select the tab again. Anbo
-                  never opens this saved URL in another profile automatically.
-                </p>
-              ) : null}
-            </div>
-            {preview ? (
-              <div className="w-full max-w-5xl">
-                <p className="mb-2 text-xs text-muted-foreground">
-                  Snapshot. Click Preview page to update.
-                </p>
-                <img
-                  src={preview}
-                  alt={`Snapshot of ${tab.title}`}
-                  className="w-full rounded-lg border"
-                />
-              </div>
-            ) : null}
-          </>
         )}
       </div>
-      <Dialog open={manage} onOpenChange={setManage}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Chrome / Edge connections</DialogTitle>
-            <DialogDescription>
-              Connect a profile without copying its login data.
-            </DialogDescription>
-          </DialogHeader>
-          <Suspense fallback={<p>Loading connections...</p>}>
-            <Connections workspaceRoot={workspaceRoot} />
-          </Suspense>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 });
+
+function Disconnected({
+  browser,
+  name,
+  error,
+}: {
+  browser: string;
+  name: string;
+  error: string | null;
+}) {
+  const openMenu = useExternalBrowsers((state) => state.setMenuOpen);
+  return (
+    <div className="grid max-w-sm justify-items-center gap-2">
+      <p className="text-sm font-medium text-foreground">
+        {browser}
+        {name ? ` · ${name}` : ""} is not connected
+      </p>
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        {error ??
+          `Connect it from the ${browser} extension, then approve it in the browser menu at the top of Anbo. This tab comes back when the page is chosen again.`}
+      </p>
+      <Button size="sm" variant="outline" onClick={() => openMenu(true)}>
+        Open browser menu
+      </Button>
+    </div>
+  );
+}

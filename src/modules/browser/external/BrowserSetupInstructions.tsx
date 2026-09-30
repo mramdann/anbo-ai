@@ -45,12 +45,16 @@ export function BrowserSetupInstructions({
       </div>
       <ol className="list-decimal space-y-1 pl-4 text-muted-foreground">
         <li>
-          Open the Anbo extension, enter a profile label, then Connect profile.
+          Open the Anbo extension and choose Connect profile. A name is
+          optional; Anbo uses the browser's own profile name.
         </li>
-        <li>Return here and approve that profile for your workspace.</li>
         <li>
-          Choose an available tab or open a URL directly in Anbo. No Share step
-          is needed.
+          Approve it for your workspace in the browser menu at the top of Anbo;
+          a badge there shows the request.
+        </li>
+        <li>
+          Open its tabs from that menu, or open a new browser tab in Anbo: web
+          pages then open in that profile and show here by themselves.
         </li>
       </ol>
       <p className="text-muted-foreground">

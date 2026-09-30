@@ -1,4 +1,5 @@
 import {
+  type AutoDockState,
   createDockLayoutOwnership,
   createDockLayoutPublisher,
   type DockLayout,
@@ -6,8 +7,40 @@ import {
   dockMutationAffectsLayout,
   orderedLayout,
   panelLayout,
+  shouldAttachDock,
 } from "@/modules/browser/external/docking";
 import { describe, expect, it, vi } from "vitest";
+
+describe("automatic docking", () => {
+  const ready: AutoDockState = {
+    visible: true,
+    connected: true,
+    focused: true,
+    presented: true,
+    checked: true,
+    docked: false,
+    busy: false,
+    held: false,
+  };
+
+  it("docks a shown, connected tab by itself", () => {
+    expect(shouldAttachDock(ready)).toBe(true);
+  });
+
+  it.each([
+    ["hidden", { visible: false }],
+    ["disconnected", { connected: false }],
+    // A dock window opened while another app is in front would flash over it.
+    ["Anbo not in front", { focused: false }],
+    ["minimized or covered", { presented: false }],
+    ["status unknown", { checked: false }],
+    ["already docked", { docked: true }],
+    ["attaching", { busy: true }],
+    ["held after a failure or a move", { held: true }],
+  ] as const)("waits when %s", (_name, change) => {
+    expect(shouldAttachDock({ ...ready, ...change })).toBe(false);
+  });
+});
 
 describe("native dock panel layout", () => {
   it("prevents an old panel's late cleanup from hiding its active replacement", () => {

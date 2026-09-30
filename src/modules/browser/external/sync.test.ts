@@ -227,6 +227,8 @@ describe("external browser workspace synchronization", () => {
     const pending = deferred<ExternalConnection[]>();
     state.calls.mockImplementationOnce(() => pending.promise);
     const opening = state.service.open("https://example.org/", "D:/work");
+    // Opens are queued, so the read starts a moment later.
+    await vi.waitFor(() => expect(state.calls).toHaveBeenCalledTimes(1));
     state.service.stop();
     pending.resolve([connection()]);
     await expect(opening).rejects.toThrow("stopped");
@@ -521,5 +523,93 @@ describe("external browser workspace synchronization", () => {
     } finally {
       timer.mockRestore();
     }
+  });
+
+  it("turns a new tab page into the page it opens instead of adding a tab", async () => {
+    const state = harness([
+      { id: 7, kind: "browser", url: "", title: "New tab", spaceId: "work" },
+    ]);
+    let listed: ExternalConnection[] = [{ ...connection(), tabs: [] }];
+    const reply = deferred<ExternalConnection["tabs"][number]>();
+    state.calls.mockImplementation(async (command: string) => {
+      if (command === "browser_external_connections") return listed;
+      if (command === "browser_external_open_tab") return reply.promise;
+      return undefined;
+    });
+    const opening = state.service.openInto(
+      "https://example.com/",
+      "D:/work",
+      7,
+    );
+    await vi.waitFor(() =>
+      expect(state.calls).toHaveBeenCalledWith(
+        "browser_external_open_tab",
+        expect.objectContaining({ activate: false }),
+      ),
+    );
+    // The browser announces the selection before the open's reply arrives.
+    listed = [connection()];
+    await state.service.refresh();
+    expect(state.create).not.toHaveBeenCalled();
+    reply.resolve(connection().tabs[0]);
+    await expect(opening).resolves.toBe(7);
+    expect(state.create).not.toHaveBeenCalled();
+    expect(state.tabs()).toHaveLength(1);
+    expect(state.tabs()[0]).toMatchObject({
+      url: "https://example.com/",
+      external: { selectionId: "lease", connected: true },
+    });
+    expect(state.calls).toHaveBeenCalledWith("browser_external_bind", {
+      binding: expect.objectContaining({ tabId: 7, selectionId: "lease" }),
+    });
+  });
+
+  it("opens into a tab only with exactly one approved profile", async () => {
+    const state = harness([
+      { id: 7, kind: "browser", url: "", title: "New tab", spaceId: "work" },
+    ]);
+    state.connections([{ ...connection(), workspace: null }]);
+    await expect(
+      state.service.openInto("https://example.com/", "D:/work", 7),
+    ).rejects.toThrow("No browser profile");
+    expect(state.calls).not.toHaveBeenCalledWith(
+      "browser_external_open_tab",
+      expect.anything(),
+    );
+  });
+
+  it("brings a profile's existing tab into Anbo and names the Anbo tab", async () => {
+    const state = harness();
+    let listed: ExternalConnection[] = [{ ...connection(), tabs: [] }];
+    state.calls.mockImplementation(async (command: string) => {
+      if (command === "browser_external_connections") return listed;
+      if (command === "browser_external_select_tab") {
+        listed = [connection()];
+        return connection().tabs[0];
+      }
+      return undefined;
+    });
+    await expect(
+      state.service.select("session", 10, "https://example.com/"),
+    ).resolves.toBe(100);
+    expect(state.create).toHaveBeenCalledTimes(1);
+    expect(state.service.tabFor("session", "lease")).toBe(100);
+  });
+
+  it("publishes every connection list it reads", async () => {
+    const publish = vi.fn();
+    const service = createExternalBrowserSync(
+      {
+        tabs: () => [],
+        spaces: () => [],
+        create: vi.fn(),
+        update: vi.fn(),
+        warm: vi.fn(),
+        publish,
+      },
+      (async () => [connection()]) as unknown as typeof invoke,
+    );
+    await service.refresh();
+    expect(publish).toHaveBeenCalledWith([connection()]);
   });
 });

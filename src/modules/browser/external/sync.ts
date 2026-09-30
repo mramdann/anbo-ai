@@ -4,6 +4,7 @@ import {
   sameWorkspace,
   selectionKey,
 } from "@/modules/browser/external/model";
+import { useExternalBrowsers } from "@/modules/browser/external/store";
 import type { BrowserTab, Tab, TabPatch } from "@/modules/tabs/lib/useTabs";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -20,6 +21,8 @@ type Host = {
   ) => number;
   update: (id: number, patch: TabPatch) => void;
   warm: (id: number) => void;
+  /** Receives every connection list the service reads. */
+  publish?: (connections: ExternalConnection[]) => void;
 };
 type Binding = {
   id: number;
@@ -41,6 +44,20 @@ export function createExternalBrowserSync(
   let flight: Promise<void> | undefined;
   const bindings = new Map<string, Binding>();
   const released = new Set<string>();
+  // A selection that becomes an existing Anbo tab (a new tab page opening its
+  // first page in the browser) instead of a tab created for it.
+  const claims = new Map<string, number>();
+  // Until the claim exists, that profile's new selections wait, so the event
+  // that announces the selection cannot create a second tab for it.
+  const opening = new Set<string>();
+  // Opens and selections run one at a time, so a waiting selection is always
+  // the one being opened.
+  let queue: Promise<unknown> = Promise.resolve();
+  const exclusive = <T>(run: () => Promise<T>): Promise<T> => {
+    const next = queue.catch(() => {}).then(run);
+    queue = next;
+    return next;
+  };
   const externalTabs = (tabs: Tab[]) =>
     new Map(
       tabs.flatMap((tab) =>
@@ -149,6 +166,12 @@ export function createExternalBrowserSync(
           error: binding?.error,
         };
         if (!binding) {
+          const claimedTab = host
+            .tabs()
+            .find(
+              (tab) => tab.id === claims.get(key) && tab.spaceId === space.id,
+            );
+          if (!claimedTab && opening.has(connection.connectionId)) continue;
           const claimed = new Set(
             [...bindings.values()].map((binding) => binding.id),
           );
@@ -172,13 +195,15 @@ export function createExternalBrowserSync(
                 tab.external.selectionId === remote.selectionId,
             ) ?? (candidates.length === 1 ? candidates[0] : undefined);
           const id =
-            saved?.id ?? host.create(remote.url, false, space.id, external);
+            claimedTab?.id ??
+            saved?.id ??
+            host.create(remote.url, false, space.id, external);
           binding = {
             id,
             spaceId: space.id,
             connectionId: connection.connectionId,
             selectionId: remote.selectionId,
-            seen: Boolean(saved),
+            seen: Boolean(claimedTab ?? saved),
             ready: false,
           };
           bindings.set(key, binding);
@@ -235,7 +260,9 @@ export function createExternalBrowserSync(
         connections = await call<ExternalConnection[]>(
           "browser_external_connections",
         );
-        if (!stopped) await apply();
+        if (stopped) break;
+        host.publish?.(connections);
+        await apply();
       }
     })().finally(() => {
       flight = undefined;
@@ -244,16 +271,20 @@ export function createExternalBrowserSync(
     return flight;
   };
 
-  const open = async (
+  const ensureRunning = () => {
+    if (stopped)
+      throw new Error(
+        "Browser synchronization stopped; retry from the current workspace. Actions were not replayed.",
+      );
+  };
+
+  const open = (url: string, workspace: string) =>
+    exclusive(() => openNow(url, workspace));
+
+  const openNow = async (
     url: string,
     workspace: string,
   ): Promise<number | null> => {
-    const ensureRunning = () => {
-      if (stopped)
-        throw new Error(
-          "Browser synchronization stopped; retry from the current workspace. Actions were not replayed.",
-        );
-    };
     ensureRunning();
     await refresh();
     ensureRunning();
@@ -305,10 +336,81 @@ export function createExternalBrowserSync(
     return binding.id;
   };
 
+  /** Opens a page in the workspace's profile and turns this Anbo tab (a new
+   * tab page) into that page, rather than adding another tab. */
+  const openInto = (url: string, workspace: string, tabId: number) =>
+    exclusive(async () => {
+      ensureRunning();
+      await refresh();
+      ensureRunning();
+      const profiles = connections.filter(
+        (connection) =>
+          connection.workspace &&
+          sameWorkspace(connection.workspace, workspace),
+      );
+      if (profiles.length !== 1)
+        throw new Error(
+          profiles.length
+            ? "Several browser profiles are approved here. Disconnect the unused one from the browser menu."
+            : "No browser profile is approved for this workspace.",
+        );
+      const { connectionId } = profiles[0];
+      let key: string;
+      opening.add(connectionId);
+      try {
+        const remote = await call<{ selectionId: string }>(
+          "browser_external_open_tab",
+          { connectionId, url, activate: false },
+        );
+        key = selectionKey(connectionId, remote.selectionId);
+        claims.set(key, tabId);
+      } finally {
+        opening.delete(connectionId);
+      }
+      try {
+        ensureRunning();
+        await refresh();
+        ensureRunning();
+        const binding = bindings.get(key);
+        if (!binding?.ready || binding.id !== tabId)
+          throw new Error(
+            "The page opened in the browser but could not show in this tab. It is in the browser menu; the action was not replayed.",
+          );
+        return binding.id;
+      } finally {
+        claims.delete(key);
+      }
+    });
+
+  /** Brings a tab the profile already has into Anbo. */
+  const select = (connectionId: string, browserTabId: number, url: string) =>
+    exclusive(async () => {
+      ensureRunning();
+      const remote = await call<{ selectionId: string }>(
+        "browser_external_select_tab",
+        { connectionId, tabId: browserTabId, expectedUrl: url },
+      );
+      ensureRunning();
+      await refresh();
+      ensureRunning();
+      const binding = bindings.get(
+        selectionKey(connectionId, remote.selectionId),
+      );
+      if (!binding?.ready)
+        throw new Error(
+          "The tab connected but could not open in Anbo. Try again from the browser menu.",
+        );
+      return binding.id;
+    });
+
   return {
     refresh,
     reconcile,
     open,
+    openInto,
+    select,
+    tabFor: (connectionId: string, selectionId: string) =>
+      bindings.get(selectionKey(connectionId, selectionId))?.id,
     stop: () => {
       stopped = true;
     },
@@ -318,7 +420,11 @@ export function createExternalBrowserSync(
 let current: ReturnType<typeof createExternalBrowserSync> | undefined;
 
 export async function startExternalBrowserSync(host: Host) {
-  const service = createExternalBrowserSync(host);
+  const service = createExternalBrowserSync({
+    ...host,
+    publish: (connections) =>
+      useExternalBrowsers.getState().setConnections(connections),
+  });
   current = service;
   let stopListening: (() => void) | undefined;
   try {
@@ -335,17 +441,44 @@ export async function startExternalBrowserSync(host: Host) {
   return () => {
     stopListening?.();
     service.stop();
-    if (current === service) current = undefined;
+    if (current === service) {
+      current = undefined;
+      useExternalBrowsers.getState().setConnections([]);
+    }
   };
 }
 
 export function reconcileExternalBrowserTabs(tabs: Tab[]) {
   current?.reconcile(tabs);
 }
-export async function openExternalBrowser(url: string, workspace: string) {
+function running() {
   if (!current)
     throw new Error(
       "Browser connections are not ready; retry after Anbo finishes starting.",
     );
-  return current.open(url, workspace);
+  return current;
+}
+export async function openExternalBrowser(url: string, workspace: string) {
+  return running().open(url, workspace);
+}
+export async function openExternalBrowserInto(
+  url: string,
+  workspace: string,
+  tabId: number,
+) {
+  return running().openInto(url, workspace, tabId);
+}
+export async function selectExternalBrowserTab(
+  connectionId: string,
+  browserTabId: number,
+  url: string,
+) {
+  return running().select(connectionId, browserTabId, url);
+}
+/** The Anbo tab showing this selection, once it is bound. */
+export function externalBrowserTabId(
+  connectionId: string,
+  selectionId: string,
+): number | undefined {
+  return current?.tabFor(connectionId, selectionId);
 }

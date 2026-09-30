@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  BrowserIcon,
   Clock01Icon,
   Delete02Icon,
   FolderOpenIcon,
@@ -25,8 +26,11 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { isTauri } from "@tauri-apps/api/core";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
-import { IS_WINDOWS } from "@/lib/platform";
+import { useCallback, useEffect, useState } from "react";
+import {
+  EXTERNAL_BROWSERS_ENABLED,
+  useExternalBrowsers,
+} from "./external/store";
 import {
   BROWSER_HISTORY_EVENT,
   type BrowserHistoryEntry,
@@ -40,26 +44,30 @@ import {
   browserDataUsage,
 } from "./native";
 
+/** Where a web page opened from this tab goes when the workspace has an
+ * approved Chrome or Edge profile. */
+export type BrowserChoice = {
+  label: string;
+  inBrowser: boolean;
+  opening: boolean;
+  error: string | null;
+  onToggle: () => void;
+};
+
 type Props = {
   visible: boolean;
   onNavigate: (url: string) => void;
-  workspaceRoot?: string | null;
+  browserChoice?: BrowserChoice | null;
 };
 
 const EMPTY_USAGE: BrowserDataUsage = { bytes: 0, files: 0, complete: true };
-const ExternalBrowserConnections = lazy(
-  () => import("@/modules/browser/external/ExternalBrowserConnections"),
-);
 
 export function BrowserStartPage({
   visible,
   onNavigate,
-  workspaceRoot = null,
+  browserChoice = null,
 }: Props) {
-  const [connectionsOpen, setConnectionsOpen] = useState(false);
-  useEffect(() => {
-    if (!visible) setConnectionsOpen(false);
-  }, [visible]);
+  const openBrowserMenu = useExternalBrowsers((state) => state.setMenuOpen);
   const [history, setHistory] =
     useState<BrowserHistoryEntry[]>(readBrowserHistory);
   const [usage, setUsage] = useState<BrowserDataUsage | null>(null);
@@ -132,37 +140,17 @@ export function BrowserStartPage({
           </div>
         </div>
 
-        {import.meta.env.DEV && IS_WINDOWS && isTauri() ? (
-          <>
-            <Button
-              variant="outline"
-              className="self-start"
-              onClick={() => setConnectionsOpen(true)}
-            >
-              Connect Chrome / Edge (preview)
-            </Button>
-            <Dialog open={connectionsOpen} onOpenChange={setConnectionsOpen}>
-              <DialogContent className="max-h-[80vh] overflow-y-auto">
-                <DialogHeader>
-                  <DialogTitle>Chrome / Edge connections</DialogTitle>
-                  <DialogDescription>
-                    Pair a browser profile without copying its login data.
-                  </DialogDescription>
-                </DialogHeader>
-                {connectionsOpen ? (
-                  <Suspense
-                    fallback={
-                      <p className="text-xs text-muted-foreground">
-                        Loading connections...
-                      </p>
-                    }
-                  >
-                    <ExternalBrowserConnections workspaceRoot={workspaceRoot} />
-                  </Suspense>
-                ) : null}
-              </DialogContent>
-            </Dialog>
-          </>
+        {browserChoice ? (
+          <BrowserChoiceRow choice={browserChoice} />
+        ) : EXTERNAL_BROWSERS_ENABLED ? (
+          <button
+            type="button"
+            onClick={() => openBrowserMenu(true)}
+            className="flex items-center gap-2 self-start rounded-lg px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <HugeiconsIcon icon={BrowserIcon} size={14} strokeWidth={1.6} />
+            Use your Chrome or Edge logins here
+          </button>
         ) : null}
 
         <div className="grid gap-3 md:grid-cols-[minmax(0,1.35fr)_minmax(230px,0.65fr)]">
@@ -303,6 +291,44 @@ export function BrowserStartPage({
           </div>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function BrowserChoiceRow({ choice }: { choice: BrowserChoice }) {
+  return (
+    <div className="grid gap-1.5">
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/60 bg-card/80 px-3 py-2 shadow-sm">
+        <HugeiconsIcon
+          icon={BrowserIcon}
+          size={15}
+          strokeWidth={1.6}
+          className="shrink-0 text-muted-foreground"
+        />
+        <span className="min-w-0 flex-1 truncate text-xs text-foreground">
+          {choice.opening
+            ? `Opening in ${choice.label}...`
+            : choice.inBrowser
+              ? `Web pages open in ${choice.label}, with its logins`
+              : "Web pages open in Anbo's browser"}
+        </span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          disabled={choice.opening}
+          onClick={choice.onToggle}
+        >
+          {choice.inBrowser
+            ? "Use Anbo's browser"
+            : `Use ${choice.label.split(" · ")[0]}`}
+        </Button>
+      </div>
+      {choice.error ? (
+        <p role="alert" className="px-1 text-[11px] break-words text-destructive">
+          {choice.error}
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import {
   isWindowPresentationCovered,
   isWindowPresentationDocumentVisible,
+  subscribeWindowPresentation,
 } from "@/lib/windowPresentation";
 import { toPhysicalBounds } from "@/modules/browser/native";
 import {
@@ -12,7 +13,14 @@ import {
 import type { BrowserTab } from "@/modules/tabs";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 type Bounds = { x: number; y: number; width: number; height: number };
 export type DockLayout = Bounds & {
@@ -208,6 +216,101 @@ function syncLiveSurface(): void {
   else delete document.documentElement.dataset.nativeDockLive;
 }
 
+// Only one page can be docked at a time. The tab that shows next takes the
+// dock over, and the previous page goes back to its own browser window.
+type DockHolder = { tabId: number; release: () => Promise<void> };
+let holder: DockHolder | null = null;
+let dockQueue: Promise<unknown> = Promise.resolve();
+function exclusiveDock<T>(run: () => Promise<T>): Promise<T> {
+  const next = dockQueue.catch(() => {}).then(run);
+  dockQueue = next;
+  return next;
+}
+
+export type AutoDockState = {
+  visible: boolean;
+  connected: boolean;
+  focused: boolean;
+  presented: boolean;
+  checked: boolean;
+  docked: boolean;
+  busy: boolean;
+  held: boolean;
+};
+
+/** A shown, connected tab takes the dock by itself, but only while Anbo is in
+ * front: a browser window opened for a dock behind another app would flash
+ * over that app. A hold (a failure, or the page moved back to the browser)
+ * lasts until the tab is shown again or someone clicks. */
+export function shouldAttachDock(state: AutoDockState): boolean {
+  return (
+    state.visible &&
+    state.connected &&
+    state.focused &&
+    state.presented &&
+    state.checked &&
+    !state.docked &&
+    !state.busy &&
+    !state.held
+  );
+}
+
+// Whether Anbo's window is the foreground window, shared by every external
+// tab. The page's own focus is not enough (the window can be in front while
+// the page is not focused), and a window event alone can be missed, so any
+// focus change asks the window again.
+let anboFocused = typeof document === "undefined" ? true : document.hasFocus();
+const focusListeners = new Set<() => void>();
+let watchingFocus = false;
+function setAnboFocused(next: boolean) {
+  if (next === anboFocused) return;
+  anboFocused = next;
+  for (const notify of focusListeners) notify();
+}
+function syncAnboFocus() {
+  if (document.hasFocus()) setAnboFocused(true);
+  else
+    void getCurrentWindow()
+      .isFocused()
+      .then(setAnboFocused, () => {});
+}
+function subscribeAnboFocus(listener: () => void) {
+  focusListeners.add(listener);
+  if (!watchingFocus) {
+    watchingFocus = true;
+    window.addEventListener("focus", syncAnboFocus);
+    window.addEventListener("blur", syncAnboFocus);
+    void getCurrentWindow()
+      .onFocusChanged(({ payload }) => {
+        if (payload) setAnboFocused(true);
+        else syncAnboFocus();
+      })
+      .catch(() => {});
+  }
+  syncAnboFocus();
+  return () => {
+    focusListeners.delete(listener);
+  };
+}
+
+function presentedNow(): boolean {
+  return (
+    isWindowPresentationDocumentVisible(
+      document.visibilityState === "visible",
+    ) && !isWindowPresentationCovered()
+  );
+}
+function subscribePresented(listener: () => void) {
+  const unsubscribe = subscribeWindowPresentation(() => listener());
+  document.addEventListener("visibilitychange", listener);
+  return () => {
+    unsubscribe();
+    document.removeEventListener("visibilitychange", listener);
+  };
+}
+
+export type DockHold = "failed" | "moved";
+
 export function useBrowserDock(tab: BrowserTab, visible: boolean) {
   const surface = useRef<HTMLDivElement>(null);
   const [dockId, setDockId] = useState<string | null>(null);
@@ -215,6 +318,21 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
   const [reason, setReason] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The first status answer tells whether this tab already holds the dock.
+  const [checked, setChecked] = useState(false);
+  const [hold, setHold] = useState<DockHold | null>(null);
+  // A click on the panel asks for the page: Anbo is in front by definition.
+  const [asked, setAsked] = useState(false);
+  const focused = useSyncExternalStore(
+    subscribeAnboFocus,
+    () => anboFocused,
+    () => true,
+  );
+  const presented = useSyncExternalStore(
+    subscribePresented,
+    presentedNow,
+    () => true,
+  );
   // A dockview drag needs its drop targets over the page, like any overlay.
   const dragging = useNativeBrowserDragActive();
   const draggingRef = useRef(dragging);
@@ -222,7 +340,14 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
   const identity = `${tab.id}:${external?.connectionId}:${external?.selectionId}`;
   const latest = useRef(identity);
   const requestEpoch = useRef(0);
+  const mounted = useRef(true);
   latest.current = identity;
+  useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    [],
+  );
 
   const call = useCallback(
     (action: string, id: string | null, layout?: OrderedLayout) =>
@@ -285,14 +410,20 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     apply({ dockId: null, live: false, reason: null });
     setBusy(false);
     setError(null);
+    setHold(null);
+    setChecked(false);
     if (external?.connected)
       void call("status", null)
         .then((status) => {
-          if (!cancelled && requestEpoch.current === epoch) apply(status);
+          if (cancelled || requestEpoch.current !== epoch) return;
+          apply(status);
+          setChecked(true);
         })
         .catch((cause) => {
-          if (!cancelled && requestEpoch.current === epoch)
-            setError(String(cause));
+          if (cancelled || requestEpoch.current !== epoch) return;
+          setError(String(cause));
+          setHold("failed");
+          setChecked(true);
         });
     return () => {
       cancelled = true;
@@ -311,8 +442,12 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
             !cancelled &&
             payload.tabId === tab.id &&
             payload.dockId === dockId
-          )
+          ) {
             apply({ dockId: null, live: false, reason: null });
+            // The page left the dock in the browser; taking it straight back
+            // would fight whoever moved it.
+            setHold("moved");
+          }
         },
       ),
       listen<{
@@ -355,6 +490,23 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
         );
     };
   }, [dockId, tab.id, call, apply]);
+
+  // The tab holding the dock gives it up when another tab needs it.
+  useEffect(() => {
+    if (!dockId) return;
+    const entry: DockHolder = {
+      tabId: tab.id,
+      release: async () => {
+        await call("release", dockId);
+        if (mounted.current && latest.current === identity)
+          apply({ dockId: null, live: false, reason: null });
+      },
+    };
+    holder = entry;
+    return () => {
+      if (holder === entry) holder = null;
+    };
+  }, [dockId, tab.id, call, apply, identity]);
 
   const presenting = Boolean(dockId) && live && visible;
   useEffect(() => {
@@ -425,27 +577,95 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     };
   }, [dockId, external?.connected, measure, call, apply, visible]);
 
-  const toggle = async () => {
+  // Showing the tab again is the natural retry.
+  const shown = useRef(visible);
+  useEffect(() => {
+    if (visible && !shown.current) setHold(null);
+    shown.current = visible;
+  }, [visible]);
+
+  const attach = useCallback(async () => {
+    const started = latest.current;
+    const epoch = ++requestEpoch.current;
+    const current = () =>
+      mounted.current &&
+      latest.current === started &&
+      requestEpoch.current === epoch;
     setBusy(true);
     setError(null);
-    const started = identity;
-    const epoch = ++requestEpoch.current;
+    setAsked(false);
     try {
-      const result = await call(
-        dockId ? "release" : "attach",
-        dockId,
-        orderedLayout(measure()),
-      );
-      if (latest.current === started && requestEpoch.current === epoch)
-        apply(result);
+      const result = await exclusiveDock(async () => {
+        for (let attempt = 0; ; attempt++) {
+          if (holder && holder.tabId !== tab.id) {
+            const previous = holder;
+            holder = null;
+            await previous.release().catch(() => {});
+          }
+          if (!current()) return null;
+          try {
+            return await call("attach", null, orderedLayout(measure()));
+          } catch (cause) {
+            // A dock this window has not heard of yet, as right after a
+            // reload: its own tab reports it within a moment.
+            if (attempt > 0 || !/one docked tab/i.test(String(cause)))
+              throw cause;
+            await new Promise((resolve) => setTimeout(resolve, 400));
+          }
+        }
+      });
+      if (!result) return;
+      if (current()) apply(result);
+      else if (result.dockId)
+        void call("release", result.dockId).catch(() => {});
     } catch (cause) {
-      if (latest.current === started && requestEpoch.current === epoch)
+      if (current()) {
         setError(String(cause));
+        setHold("failed");
+      }
     } finally {
-      if (latest.current === started && requestEpoch.current === epoch)
-        setBusy(false);
+      if (current()) setBusy(false);
     }
-  };
+  }, [call, apply, measure, tab.id]);
 
-  return { surface, dockId, live: presenting, reason, busy, error, toggle };
+  const wanted = shouldAttachDock({
+    visible,
+    connected: Boolean(external?.connected),
+    focused: focused || asked,
+    presented,
+    checked,
+    docked: Boolean(dockId),
+    busy,
+    held: hold !== null,
+  });
+  const attachRef = useRef(attach);
+  attachRef.current = attach;
+  useEffect(() => {
+    if (wanted) void attachRef.current();
+  }, [wanted]);
+
+  const retry = useCallback(() => {
+    setError(null);
+    setHold(null);
+    setAsked(true);
+  }, []);
+
+  return {
+    surface,
+    dockId,
+    live: presenting,
+    reason,
+    busy,
+    error,
+    hold,
+    // Shown and connected, but Anbo is not in front yet.
+    waiting:
+      !dockId &&
+      !busy &&
+      hold === null &&
+      visible &&
+      Boolean(external?.connected) &&
+      (!focused || !presented),
+    retry,
+  };
 }

@@ -23,8 +23,9 @@ describe("browser setup instructions", () => {
       expect(markup).toContain(`Copy ${browser}://extensions`);
       expect(markup).toContain("Load unpacked");
       expect(markup).toContain("Connect profile");
-      expect(markup).toContain("approve that profile for your workspace");
-      expect(markup).toContain("open a URL directly in Anbo");
+      expect(markup).toContain("Approve it for your workspace");
+      expect(markup).toContain("browser menu at the top of");
+      expect(markup).toContain("open a new browser tab in Anbo");
       expect(markup).not.toContain("Share this tab");
       expect(markup).toContain("Setup does not grant tab control");
       expect(markup).not.toContain("PowerShell");

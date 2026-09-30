@@ -2088,6 +2088,20 @@ export default function App() {
     [setActiveId, warmTab, focusPane, focusAgentTerminal],
   );
 
+  // Show a browser tab from the header's browser menu, switching to its space
+  // first. The space switch keeps an active tab that already belongs to it.
+  const showBrowserTab = useCallback(
+    (tabId: number) => {
+      const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
+      if (tab?.kind !== "browser") return;
+      warmTab(tabId);
+      setActiveId(tabId);
+      if (tab.spaceId !== useSpaces.getState().activeId)
+        useSpaces.getState().setActive(tab.spaceId);
+    },
+    [setActiveId, warmTab],
+  );
+
   const shortcutHandlers = useMemo<ShortcutHandlers>(
     () => ({
       "commandPalette.open": () => openCommandPalette("commands"),
@@ -2825,6 +2839,8 @@ export default function App() {
                   workspace={workspaceForSpace(
                     activeSpaceId ?? DEFAULT_SPACE_ID,
                   )}
+                  onShowBrowserTab={showBrowserTab}
+                  onCloseBrowserTab={closeTab}
                 />
               )}
 
