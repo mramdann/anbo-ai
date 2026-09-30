@@ -13,8 +13,11 @@ export const EXTERNAL_BROWSERS_ENABLED =
 type ExternalBrowsersState = {
   connections: ExternalConnection[];
   menuOpen: boolean;
+  /** Profiles folded open or shut in the menu, by profile ID. */
+  expanded: Record<string, boolean>;
   setConnections: (connections: ExternalConnection[]) => void;
   setMenuOpen: (open: boolean) => void;
+  setExpanded: (profileId: string, open: boolean) => void;
 };
 
 export const useExternalBrowsers = create<ExternalBrowsersState>((set) => ({
@@ -28,6 +31,9 @@ export const useExternalBrowsers = create<ExternalBrowsersState>((set) => ({
         : { connections },
     ),
   setMenuOpen: (menuOpen) => set({ menuOpen }),
+  expanded: {},
+  setExpanded: (profileId, open) =>
+    set((state) => ({ expanded: { ...state.expanded, [profileId]: open } })),
 }));
 
 export function browserName(browser: "chrome" | "edge"): string {

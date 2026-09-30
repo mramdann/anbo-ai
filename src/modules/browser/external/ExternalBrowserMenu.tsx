@@ -4,6 +4,8 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
+import { BrowserLogo } from "@/modules/browser/external/BrowserLogo";
 import {
   BrowserSetupInstructions,
   type BrowserSetupResult,
@@ -24,8 +26,9 @@ import {
   selectExternalBrowserTab,
 } from "@/modules/browser/external/sync";
 import {
+  AiWebBrowsingIcon,
+  ArrowRight01Icon,
   ArrowUpRight01Icon,
-  BrowserIcon,
   Globe02Icon,
   Refresh01Icon,
 } from "@hugeicons/core-free-icons";
@@ -99,7 +102,7 @@ export default function ExternalBrowserMenu({
           aria-label={label}
         >
           <HugeiconsIcon
-            icon={BrowserIcon}
+            icon={AiWebBrowsingIcon}
             size={14}
             strokeWidth={1.75}
             className="size-3.5"
@@ -153,6 +156,8 @@ export function MenuBody({
 }: Props & { connections: ExternalConnection[] }) {
   const pending = connections.filter((connection) => !connection.workspace);
   const approved = connections.filter((connection) => connection.workspace);
+  const folded = useExternalBrowsers((state) => state.expanded);
+  const setFolded = useExternalBrowsers((state) => state.setExpanded);
   const [lists, setLists] = useState<Record<string, TabList>>({});
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -253,62 +258,71 @@ export function MenuBody({
             }
           />
         ))}
-        {approved.map((connection) => (
-          <ProfileSection
-            key={connection.connectionId}
-            connection={connection}
-            workspaceRoot={workspaceRoot}
-            list={lists[connection.connectionId]}
-            busy={busy}
-            onDisconnect={() =>
-              void act(`disconnect:${connection.connectionId}`, async () => {
-                await invoke("browser_external_disconnect", {
-                  connectionId: connection.connectionId,
-                });
-              })
-            }
-            onShow={(selectionId) => {
-              const id = externalBrowserTabId(
-                connection.connectionId,
-                selectionId,
-              );
-              if (id === undefined)
-                setError(
-                  "This tab is still connecting. Try again in a moment.",
-                );
-              else onShowTab(id);
-            }}
-            onReturn={(tab) =>
-              void act(`return:${tab.selectionId}`, async () => {
+        {approved.map((connection) => {
+          // One profile starts open; with several, each starts folded.
+          const expanded =
+            folded[connection.profile.profileId] ?? approved.length === 1;
+          return (
+            <ProfileSection
+              key={connection.connectionId}
+              connection={connection}
+              workspaceRoot={workspaceRoot}
+              list={lists[connection.connectionId]}
+              busy={busy}
+              expanded={expanded}
+              onToggle={() =>
+                setFolded(connection.profile.profileId, !expanded)
+              }
+              onDisconnect={() =>
+                void act(`disconnect:${connection.connectionId}`, async () => {
+                  await invoke("browser_external_disconnect", {
+                    connectionId: connection.connectionId,
+                  });
+                })
+              }
+              onShow={(selectionId) => {
                 const id = externalBrowserTabId(
                   connection.connectionId,
-                  tab.selectionId,
+                  selectionId,
                 );
-                // Released first, so closing the Anbo tab keeps the page
-                // open in the browser even when Anbo opened it.
-                await invoke("browser_external_release_tab", {
-                  connectionId: connection.connectionId,
-                  tabId: tab.id,
-                });
-                if (id !== undefined) onCloseTab(id);
-              })
-            }
-            onOpen={(tab) =>
-              void act(
-                `open:${connection.connectionId}:${tab.id}`,
-                async () => {
-                  onShowTab(
-                    await selectExternalBrowserTab(
-                      connection.connectionId,
-                      tab.id,
-                      tab.url,
-                    ),
+                if (id === undefined)
+                  setError(
+                    "This tab is still connecting. Try again in a moment.",
                   );
-                },
-              )
-            }
-          />
-        ))}
+                else onShowTab(id);
+              }}
+              onReturn={(tab) =>
+                void act(`return:${tab.selectionId}`, async () => {
+                  const id = externalBrowserTabId(
+                    connection.connectionId,
+                    tab.selectionId,
+                  );
+                  // Released first, so closing the Anbo tab keeps the page
+                  // open in the browser even when Anbo opened it.
+                  await invoke("browser_external_release_tab", {
+                    connectionId: connection.connectionId,
+                    tabId: tab.id,
+                  });
+                  if (id !== undefined) onCloseTab(id);
+                })
+              }
+              onOpen={(tab) =>
+                void act(
+                  `open:${connection.connectionId}:${tab.id}`,
+                  async () => {
+                    onShowTab(
+                      await selectExternalBrowserTab(
+                        connection.connectionId,
+                        tab.id,
+                        tab.url,
+                      ),
+                    );
+                  },
+                )
+              }
+            />
+          );
+        })}
         {connections.length === 0 ? (
           <p className="px-3 py-4 text-center text-[11px] leading-relaxed text-muted-foreground">
             Use your Chrome or Edge logins in Anbo. Pages stay in your browser;
@@ -324,7 +338,7 @@ export function MenuBody({
           {error}
         </p>
       ) : null}
-      <SetupSection initiallyOpen={connections.length === 0} />
+      <SetupSection connected={connections.length > 0} />
     </>
   );
 }
@@ -337,10 +351,10 @@ function Heading({ children }: { children: ReactNode }) {
   );
 }
 
-function ProfileMark() {
+function ProfileMark({ browser }: { browser: "chrome" | "edge" }) {
   return (
-    <span className="flex size-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background text-muted-foreground">
-      <HugeiconsIcon icon={BrowserIcon} size={13} strokeWidth={1.6} />
+    <span className="flex size-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background">
+      <BrowserLogo browser={browser} />
     </span>
   );
 }
@@ -362,13 +376,13 @@ function ApprovalCard({
   return (
     <div className="mx-0.5 mb-1 rounded-lg border border-primary/25 bg-primary/5 p-2.5">
       <div className="flex items-center gap-2">
-        <ProfileMark />
+        <ProfileMark browser={connection.profile.browser} />
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs font-medium text-foreground">
             {connection.profile.name}
           </p>
           <p className="text-[10.5px] text-muted-foreground">
-            {browser} wants to connect
+            Wants to connect
           </p>
         </div>
       </div>
@@ -402,6 +416,8 @@ function ProfileSection({
   workspaceRoot,
   list,
   busy,
+  expanded,
+  onToggle,
   onDisconnect,
   onShow,
   onReturn,
@@ -411,6 +427,8 @@ function ProfileSection({
   workspaceRoot: string | null;
   list: TabList | undefined;
   busy: string | null;
+  expanded: boolean;
+  onToggle: () => void;
   onDisconnect: () => void;
   onShow: (selectionId: string) => void;
   onReturn: (tab: ExternalConnection["tabs"][number]) => void;
@@ -422,102 +440,125 @@ function ProfileSection({
     (!workspaceRoot || !sameWorkspace(connection.workspace, workspaceRoot));
   const others = Array.isArray(list) ? otherTabs(connection, list) : [];
   return (
-    <section className="mb-1">
-      <div className="flex items-center gap-2 px-1.5 pt-1.5 pb-0.5">
-        <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" />
-        <span className="min-w-0 truncate text-xs font-medium text-foreground">
-          {connection.profile.name}
-        </span>
-        <span className="shrink-0 text-[10.5px] text-muted-foreground">
-          {browser}
-          {elsewhere && connection.workspace
-            ? ` · ${workspaceName(connection.workspace)}`
-            : ""}
-        </span>
+    <section className="mb-0.5">
+      {/* The lists show what the profile has, so the row keeps only its
+          name and Disconnect. */}
+      <div className="flex items-center rounded-md transition-colors hover:bg-accent">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={onToggle}
+          className="flex min-w-0 flex-1 items-center gap-2 px-1.5 py-1.5 text-left"
+        >
+          <HugeiconsIcon
+            icon={ArrowRight01Icon}
+            size={12}
+            strokeWidth={1.75}
+            className={cn(
+              "shrink-0 text-muted-foreground transition-transform",
+              expanded && "rotate-90",
+            )}
+          />
+          <BrowserLogo browser={connection.profile.browser} />
+          <span className="min-w-0 truncate text-xs font-medium text-foreground">
+            {connection.profile.name}
+          </span>
+          {elsewhere && connection.workspace ? (
+            <span className="shrink-0 text-[10.5px] text-muted-foreground">
+              {workspaceName(connection.workspace)}
+            </span>
+          ) : null}
+        </button>
         <button
           type="button"
           disabled={busy !== null}
           onClick={onDisconnect}
-          className="ml-auto shrink-0 rounded-md px-1.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+          className="mr-1 shrink-0 rounded-md px-1.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:opacity-50"
         >
           Disconnect
         </button>
       </div>
-      <Heading>In Anbo</Heading>
-      {connection.tabs.length === 0 ? (
-        <p className="px-1.5 pb-1 text-[11px] leading-relaxed text-muted-foreground">
-          Nothing yet. Open one of the tabs below, or a new browser tab in Anbo.
-        </p>
-      ) : (
-        connection.tabs.map((tab) => (
-          <TabRow
-            key={tab.selectionId}
-            title={tab.title}
-            url={tab.url}
-            label={`Show ${tab.title || host(tab.url)}`}
-            disabled={busy !== null}
-            onClick={() => onShow(tab.selectionId)}
-            action={
-              <button
-                type="button"
-                title={`Return to ${browser}`}
-                aria-label={`Return ${tab.title || host(tab.url)} to ${browser}`}
+      {expanded ? (
+        <div className="pb-1 pl-4">
+          <Heading>In Anbo</Heading>
+          {connection.tabs.length === 0 ? (
+            <p className="px-1.5 pb-1 text-[11px] leading-relaxed text-muted-foreground">
+              Nothing yet. Open one of the tabs below, or a new browser tab in
+              Anbo.
+            </p>
+          ) : (
+            connection.tabs.map((tab) => (
+              <TabRow
+                key={tab.selectionId}
+                title={tab.title}
+                url={tab.url}
+                label={`Show ${tab.title || host(tab.url)}`}
                 disabled={busy !== null}
-                onClick={() => onReturn(tab)}
-                className="mr-1 shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:bg-background hover:text-foreground focus-visible:opacity-100 disabled:opacity-40"
-              >
-                <HugeiconsIcon
-                  icon={ArrowUpRight01Icon}
-                  size={12}
-                  strokeWidth={1.75}
+                onClick={() => onShow(tab.selectionId)}
+                action={
+                  <button
+                    type="button"
+                    title={`Return to ${browser}`}
+                    aria-label={`Return ${tab.title || host(tab.url)} to ${browser}`}
+                    disabled={busy !== null}
+                    onClick={() => onReturn(tab)}
+                    className="mr-1 shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:bg-background hover:text-foreground focus-visible:opacity-100 disabled:opacity-40"
+                  >
+                    <HugeiconsIcon
+                      icon={ArrowUpRight01Icon}
+                      size={12}
+                      strokeWidth={1.75}
+                    />
+                  </button>
+                }
+              />
+            ))
+          )}
+          <Heading>Other tabs</Heading>
+          {list === undefined ? (
+            <p className="px-1.5 pb-1 text-[11px] text-muted-foreground">
+              Loading tabs...
+            </p>
+          ) : !Array.isArray(list) ? (
+            <p className="px-1.5 pb-1 text-[11px] break-words text-destructive">
+              {list.error}
+            </p>
+          ) : others.length === 0 ? (
+            <p className="px-1.5 pb-1 text-[11px] text-muted-foreground">
+              No other web tabs.
+            </p>
+          ) : (
+            <div className="max-h-44 overflow-y-auto">
+              {others.map((tab) => (
+                <TabRow
+                  key={tab.id}
+                  title={tab.title}
+                  url={tab.url}
+                  label={`Open ${tab.title || host(tab.url)} in Anbo`}
+                  disabled={busy !== null}
+                  onClick={() => onOpen(tab)}
+                  hint={
+                    busy === `open:${connection.connectionId}:${tab.id}`
+                      ? "Opening..."
+                      : "Open"
+                  }
                 />
-              </button>
-            }
-          />
-        ))
-      )}
-      <Heading>Other {browser} tabs</Heading>
-      {list === undefined ? (
-        <p className="px-1.5 pb-1 text-[11px] text-muted-foreground">
-          Loading tabs...
-        </p>
-      ) : !Array.isArray(list) ? (
-        <p className="px-1.5 pb-1 text-[11px] break-words text-destructive">
-          {list.error}
-        </p>
-      ) : others.length === 0 ? (
-        <p className="px-1.5 pb-1 text-[11px] text-muted-foreground">
-          No other web tabs.
-        </p>
-      ) : (
-        others.map((tab) => (
-          <TabRow
-            key={tab.id}
-            title={tab.title}
-            url={tab.url}
-            label={`Open ${tab.title || host(tab.url)} in Anbo`}
-            disabled={busy !== null}
-            onClick={() => onOpen(tab)}
-            action={
-              <span className="mr-2 shrink-0 text-[10.5px] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
-                {busy === `open:${connection.connectionId}:${tab.id}`
-                  ? "Opening..."
-                  : "Open"}
-              </span>
-            }
-          />
-        ))
-      )}
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }
 
-function TabRow({
+export function TabRow({
   title,
   url,
   label,
   disabled,
   onClick,
+  hint,
   action,
 }: {
   title: string;
@@ -525,7 +566,9 @@ function TabRow({
   label: string;
   disabled: boolean;
   onClick: () => void;
-  action: ReactNode;
+  /** Shown on hover inside the row's button, so it clicks like the row. */
+  hint?: string;
+  action?: ReactNode;
 }) {
   return (
     <div className="group flex items-center rounded-md transition-colors hover:bg-accent">
@@ -550,14 +593,20 @@ function TabRow({
             {host(url)}
           </span>
         </span>
+        {hint ? (
+          <span className="shrink-0 text-[10.5px] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
+            {hint}
+          </span>
+        ) : null}
       </button>
       {action}
     </div>
   );
 }
 
-function SetupSection({ initiallyOpen }: { initiallyOpen: boolean }) {
-  const [open, setOpen] = useState(initiallyOpen);
+function SetupSection({ connected }: { connected: boolean }) {
+  const [expanded, setOpen] = useState(false);
+  const open = expanded || !connected;
   const [installing, setInstalling] = useState<"chrome" | "edge" | null>(null);
   const [setup, setSetup] = useState<BrowserSetupResult | null>(null);
   const [copied, setCopied] = useState<SetupCopy | null>(null);

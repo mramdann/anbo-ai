@@ -1,6 +1,7 @@
 import {
   MenuBody,
   otherTabs,
+  TabRow,
 } from "@/modules/browser/external/ExternalBrowserMenu";
 import { dockNotice } from "@/modules/browser/external/ExternalBrowserPane";
 import type { ExternalConnection } from "@/modules/browser/external/model";
@@ -43,7 +44,8 @@ describe("browser menu", () => {
   it("puts a waiting profile first with approve and deny for this workspace", () => {
     const markup = body([connection("a", null)], "D:\\anbo-ai");
     expect(markup).toContain("Needs approval");
-    expect(markup).toContain("Chrome wants to connect");
+    expect(markup).toContain('src="/browser-icons/chrome.svg" alt="Chrome"');
+    expect(markup).toContain("Wants to connect");
     expect(markup).toContain("Approve for anbo-ai");
     expect(markup).toContain("Deny");
     expect(markup).toContain("Logins stay in Chrome");
@@ -65,7 +67,10 @@ describe("browser menu", () => {
     expect(markup).toContain("Pull requests");
     expect(markup).toContain("github.com");
     expect(markup).toContain("Return Pull requests to Chrome");
-    expect(markup).toContain("Other Chrome tabs");
+    // The logo names the browser, so the lists do not repeat it.
+    expect(markup).toContain('alt="Chrome"');
+    expect(markup).toContain("Other tabs");
+    expect(markup).not.toContain(">Chrome<");
     expect(markup).toContain("Loading tabs...");
     expect(markup).toContain("Disconnect");
     expect(markup).not.toContain("Needs approval");
@@ -73,9 +78,48 @@ describe("browser menu", () => {
   });
 
   it("names the workspace of a profile approved somewhere else", () => {
-    expect(body([connection("a", "D:/other-project")])).toContain(
-      "Chrome · other-project",
+    const markup = body([connection("a", "D:/other-project")]);
+    expect(markup).toContain('alt="Chrome"');
+    expect(markup).toContain(">other-project</span>");
+  });
+
+  it("folds each profile when several are connected", () => {
+    const edge = connection("a", "D:/anbo-ai");
+    const markup = body([
+      { ...edge, profile: { ...edge.profile, browser: "edge", name: "Work" } },
+      connection("b", "D:/anbo-ai", [
+        {
+          id: 10,
+          title: "Mail",
+          url: "https://mail.test/",
+          selectionId: "s",
+          loading: false,
+        },
+      ]),
+    ]);
+    expect(markup.match(/aria-expanded="false"/g)).toHaveLength(2);
+    // A folded profile keeps Disconnect in its row; the lists hold the rest.
+    expect(markup.match(/>Disconnect<\/button>/g)).toHaveLength(2);
+    expect(markup).not.toContain("1 in Anbo");
+    expect(markup).not.toContain("In Anbo</div>");
+    expect(markup).not.toContain("Mail");
+    // With profiles connected, setup folds into one line.
+    expect(markup).toContain("Connect Chrome or Edge");
+    expect(markup).not.toContain("Set up Chrome");
+  });
+
+  it("puts the Open hint inside the row's own button", () => {
+    const markup = renderToStaticMarkup(
+      <TabRow
+        title="Example Domain"
+        url="https://example.com/"
+        label="Open Example Domain in Anbo"
+        disabled={false}
+        onClick={noop}
+        hint="Open"
+      />,
     );
+    expect(markup).toMatch(/Open<\/span><\/button>/);
   });
 
   it("offers setup when nothing is connected", () => {
