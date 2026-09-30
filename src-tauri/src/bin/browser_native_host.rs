@@ -6,6 +6,15 @@ mod wire;
 mod dock_window;
 
 #[cfg(windows)]
+#[allow(dead_code)]
+#[path = "../modules/browser_external/browser_process.rs"]
+mod browser_process;
+
+#[cfg(windows)]
+#[path = "../modules/browser_external/extension_priority.rs"]
+mod extension_priority;
+
+#[cfg(windows)]
 #[derive(Default)]
 struct DockGuards(Vec<dock_window::Lease>);
 
@@ -49,6 +58,8 @@ async fn connect(origin: &str) -> Result<(), String> {
     if !valid_origin(origin) {
         return Err("invalid extension origin".into());
     }
+    // Started first, while the popup that asked for this connection is open.
+    let _priority = extension_priority::keep();
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let config_path = executable.with_file_name("anbo-browser-native-host.json");
     let read_bounded = |path: &std::path::Path| -> Result<String, String> {
