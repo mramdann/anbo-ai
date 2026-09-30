@@ -28,10 +28,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { isTauri } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import {
-  EXTERNAL_BROWSERS_ENABLED,
-  useExternalBrowsers,
-} from "./external/store";
-import {
   BROWSER_HISTORY_EVENT,
   type BrowserHistoryEntry,
   clearBrowserHistory,
@@ -67,7 +63,6 @@ export function BrowserStartPage({
   onNavigate,
   browserChoice = null,
 }: Props) {
-  const openBrowserMenu = useExternalBrowsers((state) => state.setMenuOpen);
   const [history, setHistory] =
     useState<BrowserHistoryEntry[]>(readBrowserHistory);
   const [usage, setUsage] = useState<BrowserDataUsage | null>(null);
@@ -140,18 +135,7 @@ export function BrowserStartPage({
           </div>
         </div>
 
-        {browserChoice ? (
-          <BrowserChoiceRow choice={browserChoice} />
-        ) : EXTERNAL_BROWSERS_ENABLED ? (
-          <button
-            type="button"
-            onClick={() => openBrowserMenu(true)}
-            className="flex items-center gap-2 self-start rounded-lg px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          >
-            <HugeiconsIcon icon={BrowserIcon} size={14} strokeWidth={1.6} />
-            Use your Chrome or Edge logins here
-          </button>
-        ) : null}
+        {browserChoice ? <BrowserChoiceRow choice={browserChoice} /> : null}
 
         <div className="grid gap-3 md:grid-cols-[minmax(0,1.35fr)_minmax(230px,0.65fr)]">
           <section className="overflow-hidden rounded-xl border border-border/60 bg-card/80 shadow-sm">
@@ -325,7 +309,10 @@ function BrowserChoiceRow({ choice }: { choice: BrowserChoice }) {
         </Button>
       </div>
       {choice.error ? (
-        <p role="alert" className="px-1 text-[11px] break-words text-destructive">
+        <p
+          role="alert"
+          className="px-1 text-[11px] break-words text-destructive"
+        >
           {choice.error}
         </p>
       ) : null}
