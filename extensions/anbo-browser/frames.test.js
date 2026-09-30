@@ -49,4 +49,22 @@ describe("selected-tab child frames", () => {
     first.transport.dispose();
     await expect(first.transport.command("Page.getFrameTree", {})).rejects.toThrow("detached");
   });
+
+  it("leaves out a child frame that does not answer instead of waiting on it", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = harness();
+      const answer = state.calls.getMockImplementation();
+      state.calls.mockImplementation((source, method, params) =>
+        source.sessionId === "stuck-session" && method === "Page.getFrameTree" ? new Promise(() => {}) : answer(source, method, params));
+      state.transport.event({ tabId: 10 }, "Target.attachedToTarget", { sessionId: "child-session", targetInfo: { type: "iframe" } });
+      state.transport.event({ tabId: 10 }, "Target.attachedToTarget", { sessionId: "stuck-session", targetInfo: { type: "iframe" } });
+      const pending = state.transport.command("Page.getFrameTree", {});
+      await vi.advanceTimersByTimeAsync(1000);
+      const tree = await pending;
+      expect(tree.frameTree.childFrames.map((frame) => frame.frame.id)).toEqual(["child"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

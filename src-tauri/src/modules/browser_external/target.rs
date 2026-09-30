@@ -217,7 +217,6 @@ impl ExternalTarget {
         &self,
         method: &str,
         params: Value,
-        timeout: Duration,
     ) -> Result<(RequestGuard, oneshot::Receiver<Result<Value, String>>), String> {
         let mut registry = REGISTRY
             .lock()
@@ -228,12 +227,16 @@ impl ExternalTarget {
             return Err("browser tab binding was released".into());
         }
         self.validate(&registry)?;
+        // The extension drops a tab whose command outlives its deadline, so it
+        // always gets the whole budget. A short timeout is only how long the
+        // caller listens (see `call`): a busy page then costs a retry, not the
+        // tab.
         let (request_id, receiver) = registry.queue_timed(
             &self.connection_id,
             self.browser_tab_id,
             method,
             params,
-            timeout,
+            REQUEST_TIMEOUT,
         )?;
         Ok((
             RequestGuard {
@@ -250,8 +253,15 @@ impl ExternalTarget {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, String> {
-        let (_guard, receiver) = self.queue(method, params, timeout)?;
-        tokio::time::timeout(timeout.min(REQUEST_TIMEOUT), receiver)
+        let (_guard, receiver) = self.queue(method, params)?;
+        // Input and navigation are waited for in full: giving up early would
+        // report an action as not done while it can still land.
+        let wait = if changes_page(method) {
+            REQUEST_TIMEOUT
+        } else {
+            timeout.min(REQUEST_TIMEOUT)
+        };
+        tokio::time::timeout(wait, receiver)
             .await
             .map_err(|_| "browser action timed out; it was not replayed")?
             .map_err(|_| "browser disconnected")?
@@ -263,7 +273,6 @@ impl ExternalTarget {
         let (guard, receiver) = self.queue(
             "Runtime.evaluate",
             json!({"expression":script,"returnByValue":true}),
-            REQUEST_TIMEOUT,
         )?;
         tauri::async_runtime::spawn(async move {
             let _guard = guard;
@@ -271,6 +280,15 @@ impl ExternalTarget {
         });
         Ok(())
     }
+}
+
+/// Whether a command acts on the page rather than reading it.
+fn changes_page(method: &str) -> bool {
+    method.starts_with("Input.")
+        || matches!(
+            method,
+            "Page.navigate" | "Page.reload" | "Page.navigateToHistoryEntry"
+        )
 }
 
 pub fn get(tab_id: i64) -> Option<ExternalTarget> {
@@ -651,5 +669,27 @@ mod tests {
         assert!(command["expiresAt"].as_u64().unwrap() <= now + 500);
         registry.remove("profile");
         assert!(registry.bindings.is_empty());
+    }
+
+    #[test]
+    fn page_actions_are_waited_for_and_reads_return_when_the_caller_stops() {
+        for method in [
+            "Input.dispatchMouseEvent",
+            "Input.insertText",
+            "Page.navigate",
+            "Page.reload",
+            "Page.navigateToHistoryEntry",
+        ] {
+            assert!(changes_page(method), "{method}");
+        }
+        for method in [
+            "Runtime.evaluate",
+            "DOM.getDocument",
+            "Accessibility.getFullAXTree",
+            "Page.captureScreenshot",
+            "Page.getNavigationHistory",
+        ] {
+            assert!(!changes_page(method), "{method}");
+        }
     }
 }

@@ -7425,10 +7425,13 @@ async fn open_browser(
         ));
     }
 
+    // A tab opened in a connected Chrome or Edge profile first waits for its
+    // page to commit (up to the bridge's 10 s) and for its debugger; the
+    // built-in browser answers in milliseconds either way.
     let received = timings
         .measure(
             "uiCreate",
-            tokio::time::timeout(Duration::from_secs(10), receiver),
+            tokio::time::timeout(Duration::from_secs(25), receiver),
         )
         .await;
     app.unlisten(listener_id);

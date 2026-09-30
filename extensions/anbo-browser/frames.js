@@ -1,6 +1,10 @@
 const MAX_SESSIONS = 64;
 const MAX_CONTEXTS = 256;
 const MAX_OBJECTS = 256;
+// A hidden cross-site iframe runs in a renderer the browser deprioritizes, and
+// on a busy machine it can take seconds to answer. The tree skips such a frame
+// rather than holding every later command for the tab.
+const CHILD_TREE_TIMEOUT = 1000;
 const AUTO_ATTACH = { autoAttach: true, waitForDebuggerOnStart: false, flatten: true, filter: [{ type: "iframe", exclude: false }, { exclude: true }] };
 
 export function createFrameTransport(api, tabId, changed) {
@@ -55,10 +59,12 @@ export function createFrameTransport(api, tabId, changed) {
     const children = [...sessions].filter(Boolean);
     for (let start = 0; start < children.length; start += 4) {
       await Promise.all(children.slice(start, start + 4).map(async (sessionId) => {
+        let timer;
         try {
-          const result = await raw(sessionId, "Page.getFrameTree");
+          const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Browser frame is not answering")), CHILD_TREE_TIMEOUT); });
+          const result = await Promise.race([raw(sessionId, "Page.getFrameTree"), late]);
           if (result.frameTree?.frame?.id) trees.set(result.frameTree.frame.id, { sessionId, tree: result.frameTree });
-        } catch {}
+        } catch {} finally { clearTimeout(timer); }
       }));
     }
     owners.clear();
