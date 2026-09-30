@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { agentStatusLabel, bellBadgeCount, notificationLabel } from "./bell";
+import {
+  agentStatusLabel,
+  bellBadgeCount,
+  nextDurationTickMs,
+  notificationLabel,
+} from "./bell";
 import type { AgentNotification, AgentSession } from "./types";
 
 function session(overrides: Partial<AgentSession>): AgentSession {
@@ -62,7 +67,8 @@ describe("bellBadgeCount", () => {
 describe("agentStatusLabel", () => {
   it("says how long a turn has been running", () => {
     const working = { status: "working", phase: "working" } as const;
-    expect(agentStatusLabel(working, 192_000)).toBe("working · 3m 12s");
+    expect(agentStatusLabel(working, 192_000)).toBe("working · 3m");
+    expect(agentStatusLabel(working, 12_000)).toBe("working · 12s");
     expect(agentStatusLabel(working, null)).toBe("working");
   });
 
@@ -85,7 +91,7 @@ describe("agentStatusLabel", () => {
 describe("notificationLabel", () => {
   it("adds how long a finished turn took", () => {
     expect(notificationLabel({ kind: "finished", durationMs: 252_000 })).toBe(
-      "finished · 4m 12s",
+      "finished · 4m",
     );
     expect(notificationLabel({ kind: "finished", durationMs: 400 })).toBe(
       "finished",
@@ -94,5 +100,20 @@ describe("notificationLabel", () => {
     expect(notificationLabel({ kind: "error", durationMs: 9_000 })).toBe(
       "failed",
     );
+  });
+});
+
+describe("nextDurationTickMs", () => {
+  it("wakes each second under a minute, then on the next whole minute", () => {
+    expect(nextDurationTickMs([], 10_000)).toBeNull();
+    expect(nextDurationTickMs([0], 12_300)).toBe(700);
+    expect(nextDurationTickMs([0], 59_500)).toBe(500);
+    expect(nextDurationTickMs([0], 60_000)).toBe(60_000);
+    expect(nextDurationTickMs([0], 185_000)).toBe(55_000);
+  });
+
+  it("follows whichever working row changes first", () => {
+    expect(nextDurationTickMs([0, 190_000], 200_000)).toBe(1_000);
+    expect(nextDurationTickMs([0, 20_000], 200_000)).toBe(40_000);
   });
 });

@@ -22,6 +22,25 @@ export function bellBadgeCount(
   return needsYou + unreadDone;
 }
 
+/**
+ * How long until a working row's label next changes: each second while its
+ * turn is under a minute, then at its next whole minute. The popover sleeps in
+ * between; null when no agent is working.
+ */
+export function nextDurationTickMs(
+  turnStarts: readonly number[],
+  now: number,
+): number | null {
+  let next: number | null = null;
+  for (const start of turnStarts) {
+    const elapsed = Math.max(0, now - start);
+    const step = elapsed < 60_000 ? 1_000 : 60_000;
+    const wait = step - (elapsed % step);
+    next = next === null ? wait : Math.min(next, wait);
+  }
+  return next;
+}
+
 /** The status word on an active-agent row, with how long a turn has run. */
 export function agentStatusLabel(
   session: Pick<AgentSession, "status" | "phase" | "background">,

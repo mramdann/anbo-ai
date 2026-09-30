@@ -16,6 +16,7 @@ import { AgentIcon } from "../lib/agentIcon";
 import {
   agentStatusLabel,
   bellBadgeCount,
+  nextDurationTickMs,
   notificationLabel,
 } from "../lib/bell";
 import { displayAgentInstance } from "../lib/format";
@@ -167,21 +168,32 @@ export function NotificationBell({
   const active = useMemo(() => Object.values(sessions), [sessions]);
   const activeCount = active.length + (localAgent ? 1 : 0);
   const badge = bellBadgeCount(active, localAgent, history);
-  // Working rows show how long their turn has run. The clock ticks only while
-  // the popover is open with an agent in a turn.
-  const ticking =
-    open &&
-    active.some((s) => s.status === "working" && s.turnStartedAt != null);
+  // Working rows show how long their turn has run. The popover only wakes
+  // when one of those labels changes, once a second under a minute and once a
+  // minute after, and never while it is closed.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!ticking) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [ticking]);
+    if (!open) return;
+    const starts = active.flatMap((s) =>
+      s.status === "working" && s.turnStartedAt != null
+        ? [s.turnStartedAt]
+        : [],
+    );
+    if (starts.length === 0) return;
+    let timer = 0;
+    const tick = () => {
+      const current = Date.now();
+      setNow(current);
+      const wait = nextDurationTickMs(starts, current);
+      if (wait !== null) timer = window.setTimeout(tick, wait + 15);
+    };
+    tick();
+    return () => window.clearTimeout(timer);
+  }, [open, active]);
   const onOpenChange = (next: boolean) => {
     setOpen(next);
     if (next) {
+      setNow(Date.now());
       markAllRead();
     }
   };
