@@ -35,7 +35,7 @@ export function createTabManager(api, attached, publish, dockChanged) {
     owned.delete(tabId);
   }
 
-  function waitForPage(tabId, url, expiresAt, check) {
+  function waitForPage(tabId, expiresAt, check) {
     return new Promise((resolve, reject) => {
       let settled = false;
       let timer;
@@ -53,13 +53,11 @@ export function createTabManager(api, attached, publish, dockChanged) {
         try {
           check();
           if (tab.incognito || disposed) throw new Error("Browser connection revoked");
-          if (!tab.url || tab.url === "about:blank") {
-            if (tab.pendingUrl && webUrl(tab.pendingUrl) !== url) throw new Error("The new tab redirected. Select it from Anbo's tab list.");
-            return;
-          }
-          const info = tabInfo(tab);
-          if (info.url !== url) throw new Error("The new tab redirected. Select it from Anbo's tab list.");
-          finish(null, info);
+          // Wait for the first committed page. A server redirect commits
+          // another address of this same new tab, which is still the page
+          // asked for; tabInfo refuses anything that is not HTTP(S).
+          if (!tab.url || tab.url === "about:blank") return;
+          finish(null, tabInfo(tab));
         } catch (error) { finish(error); }
       };
       const updated = (changedId, _change, tab) => { if (changedId === tabId) inspect(tab); };
@@ -68,7 +66,7 @@ export function createTabManager(api, attached, publish, dockChanged) {
       loading.add(cancel);
       api.tabs.onUpdated.addListener(updated);
       api.tabs.onRemoved.addListener(removed);
-      timer = setTimeout(() => finish(new Error("The new tab is still loading. Select it from Anbo's tab list when ready.")), Math.max(0, expiresAt - Date.now()));
+      timer = setTimeout(() => finish(new Error("The new tab is still loading. Open it from Anbo's browser menu when ready.")), Math.max(0, expiresAt - Date.now()));
       void api.tabs.get(tabId).then(inspect, (error) => finish(error));
     });
   }
@@ -188,8 +186,7 @@ export function createTabManager(api, attached, publish, dockChanged) {
         const activate = message.params.activate !== false;
         const tab = await api.tabs.create({ windowId: window.id, url, active: activate });
         check();
-        const info = await waitForPage(tab.id, url, message.expiresAt, check);
-        if (info.url !== url) throw new Error("The new tab redirected. Select it from Anbo's tab list.");
+        const info = await waitForPage(tab.id, message.expiresAt, check);
         const result = await select(info.id, info.url, reserve(info.id), check, true);
         check();
         if (activate) await api.windows.update(window.id, { focused: true });

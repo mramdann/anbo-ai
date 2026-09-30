@@ -15,47 +15,71 @@ use tokio::sync::Mutex;
 static INSTALLING: Mutex<()> = Mutex::const_new(());
 const MANIFEST: &str = include_str!("../../../../../extensions/anbo-browser/manifest.json");
 const INSTALLER: &str = include_str!("../../../../../scripts/install-browser-bridge.ps1");
-const ASSETS: &[(&str, &str)] = &[
-    ("manifest.json", MANIFEST),
+const ASSETS: &[(&str, &[u8])] = &[
+    ("manifest.json", MANIFEST.as_bytes()),
     (
         "dock.html",
-        include_str!("../../../../../extensions/anbo-browser/dock.html"),
+        include_bytes!("../../../../../extensions/anbo-browser/dock.html"),
     ),
     (
         "dock-page.js",
-        include_str!("../../../../../extensions/anbo-browser/dock-page.js"),
+        include_bytes!("../../../../../extensions/anbo-browser/dock-page.js"),
     ),
     (
         "dock.js",
-        include_str!("../../../../../extensions/anbo-browser/dock.js"),
+        include_bytes!("../../../../../extensions/anbo-browser/dock.js"),
     ),
     (
         "frames.js",
-        include_str!("../../../../../extensions/anbo-browser/frames.js"),
+        include_bytes!("../../../../../extensions/anbo-browser/frames.js"),
     ),
     (
         "background.js",
-        include_str!("../../../../../extensions/anbo-browser/background.js"),
+        include_bytes!("../../../../../extensions/anbo-browser/background.js"),
     ),
     (
         "bridge.js",
-        include_str!("../../../../../extensions/anbo-browser/bridge.js"),
+        include_bytes!("../../../../../extensions/anbo-browser/bridge.js"),
     ),
     (
         "tabs.js",
-        include_str!("../../../../../extensions/anbo-browser/tabs.js"),
+        include_bytes!("../../../../../extensions/anbo-browser/tabs.js"),
     ),
     (
         "popup.html",
-        include_str!("../../../../../extensions/anbo-browser/popup.html"),
+        include_bytes!("../../../../../extensions/anbo-browser/popup.html"),
     ),
     (
         "popup.css",
-        include_str!("../../../../../extensions/anbo-browser/popup.css"),
+        include_bytes!("../../../../../extensions/anbo-browser/popup.css"),
     ),
     (
         "popup.js",
-        include_str!("../../../../../extensions/anbo-browser/popup.js"),
+        include_bytes!("../../../../../extensions/anbo-browser/popup.js"),
+    ),
+    (
+        "popup-view.js",
+        include_bytes!("../../../../../extensions/anbo-browser/popup-view.js"),
+    ),
+    (
+        "icon-16.png",
+        include_bytes!("../../../../../extensions/anbo-browser/icon-16.png"),
+    ),
+    (
+        "icon-24.png",
+        include_bytes!("../../../../../extensions/anbo-browser/icon-24.png"),
+    ),
+    (
+        "icon-32.png",
+        include_bytes!("../../../../../extensions/anbo-browser/icon-32.png"),
+    ),
+    (
+        "icon-48.png",
+        include_bytes!("../../../../../extensions/anbo-browser/icon-48.png"),
+    ),
+    (
+        "icon-128.png",
+        include_bytes!("../../../../../extensions/anbo-browser/icon-128.png"),
     ),
 ];
 
@@ -102,16 +126,17 @@ fn reject_reparse_points(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn write_asset(path: &Path, content: &str) -> Result<(), String> {
+fn write_asset(path: &Path, content: impl AsRef<[u8]>) -> Result<(), String> {
+    let content = content.as_ref();
     reject_reparse_points(path)?;
-    if fs::read(path).is_ok_and(|existing| existing == content.as_bytes()) {
+    if fs::read(path).is_ok_and(|existing| existing == content) {
         return Ok(());
     }
     let mut temporary =
         tempfile::NamedTempFile::new_in(path.parent().ok_or("Missing setup directory")?)
             .map_err(|error| error.to_string())?;
     temporary
-        .write_all(content.as_bytes())
+        .write_all(content)
         .map_err(|error| error.to_string())?;
     temporary.persist(path).map_err(|error| error.to_string())?;
     Ok(())
@@ -127,7 +152,7 @@ fn prepare_assets(root: &Path, host: &str) -> Result<PathBuf, String> {
     }
     write_asset(
         &extension.join("host.js"),
-        &format!("export const NATIVE_HOST = {host:?};\n"),
+        format!("export const NATIVE_HOST = {host:?};\n"),
     )?;
     write_asset(&root.join("install.ps1"), INSTALLER)?;
     Ok(extension)
@@ -315,6 +340,38 @@ mod tests {
             fs::read_to_string(extension.join("manifest.json")).unwrap(),
             MANIFEST
         );
+    }
+
+    #[test]
+    fn setup_ships_every_extension_file_and_manifest_icon() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../extensions/anbo-browser");
+        for entry in fs::read_dir(source).unwrap() {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            if name == "host.js" || name.ends_with(".test.js") {
+                continue;
+            }
+            assert!(
+                ASSETS.iter().any(|(asset, _)| *asset == name),
+                "{name} is not extracted by browser setup"
+            );
+        }
+        let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
+        let icons = manifest["icons"].as_object().unwrap().values().chain(
+            manifest["action"]["default_icon"]
+                .as_object()
+                .unwrap()
+                .values(),
+        );
+        for icon in icons {
+            let (_, content) = ASSETS
+                .iter()
+                .find(|(asset, _)| Some(*asset) == icon.as_str())
+                .unwrap_or_else(|| panic!("{icon} is not extracted by browser setup"));
+            assert!(
+                content.starts_with(b"\x89PNG\r\n\x1a\n"),
+                "{icon} is not a PNG"
+            );
+        }
     }
 
     #[test]

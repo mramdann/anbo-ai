@@ -226,6 +226,41 @@ describe("tabs selected directly from Anbo", () => {
     expect(state.api.debugger.attach).toHaveBeenCalledTimes(1);
   });
 
+  it("follows a server redirect of the tab it opened to another web page", async () => {
+    const state = harness();
+    state.api.tabs.create.mockImplementationOnce(async ({ url, windowId }) => {
+      const tab = { id: 12, url: "", pendingUrl: url, windowId };
+      state.tabs.set(12, tab);
+      return tab;
+    });
+    const opening = state.run("anbo.openTab", 0, { url: "https://example.com/" });
+    await vi.waitFor(() => expect(state.api.tabs.onUpdated.listeners.size).toBe(1));
+    const landed = { id: 12, url: "https://www.example.com/", title: "Example", windowId: 20 };
+    state.tabs.set(12, landed);
+    state.api.tabs.onUpdated.emit(12, { url: landed.url }, landed);
+    const response = await opening;
+    expect(response.result.url).toBe("https://www.example.com/");
+    expect(response.result.createdByAnbo).toBe(true);
+    expect(state.api.debugger.attach).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a new tab that lands on a page that is not HTTP(S)", async () => {
+    const state = harness();
+    state.api.tabs.create.mockImplementationOnce(async ({ url, windowId }) => {
+      const tab = { id: 12, url: "", pendingUrl: url, windowId };
+      state.tabs.set(12, tab);
+      return tab;
+    });
+    const opening = state.run("anbo.openTab", 0, { url: "https://example.com/" });
+    await vi.waitFor(() => expect(state.api.tabs.onUpdated.listeners.size).toBe(1));
+    const landed = { id: 12, url: "file:///C:/Users/Test/notes.html", windowId: 20 };
+    state.tabs.set(12, landed);
+    state.api.tabs.onUpdated.emit(12, { url: landed.url }, landed);
+    expect((await opening).error).toContain("HTTP");
+    expect(state.api.debugger.attach).not.toHaveBeenCalled();
+    expect(state.api.tabs.onUpdated.listeners.size).toBe(0);
+  });
+
   it("cancels a loading tab on disconnect without closing it or attaching later", async () => {
     const state = harness();
     state.api.tabs.create.mockImplementationOnce(async ({ url }) => {

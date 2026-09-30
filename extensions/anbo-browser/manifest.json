@@ -1,12 +1,17 @@
 {
   "manifest_version": 3,
   "name": "Anbo Browser Bridge (Development Preview)",
-  "version": "0.4.6",
+  "version": "0.4.8",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1UV6bxEnNbYsUFm4yGxfbjBkujmnxy6p1DBvA64WzKMDsWYonrOPzL7UtG5URWqrFF3lpelc/7gamaFxIOoM7W8gG+A3FvmZKwCWfi94iUIAOCq4RGDAaeLP1P+KAH6kf2OatowZqlc33p+Z0qFODwxYtheJLdq5IM3sYWanglQBKTf4liJQsRjR1l/IkuDUD8Ysra3UOu8oYAJCsFSjj5LnOPufyc4QcGplGM1+R3sbyii70OxtpCkLGnG+bVfgygAmEmz9pTbaNZYWCxacLr3Aqp9q9tNVMmsAscwcnYzuTKXyhdPGhc+SjYttu26Va2LU82VrMlw2opH7D5YoPwIDAQAB",
   "description": "Explicitly connect a Chrome or Edge profile and selected tabs to Anbo.",
   "minimum_chrome_version": "125",
+  "icons": { "16": "icon-16.png", "32": "icon-32.png", "48": "icon-48.png", "128": "icon-128.png" },
   "permissions": ["debugger", "nativeMessaging", "storage", "tabs"],
   "incognito": "not_allowed",
   "background": { "service_worker": "background.js", "type": "module" },
-  "action": { "default_popup": "popup.html" }
+  "action": {
+    "default_title": "Anbo Browser Bridge",
+    "default_popup": "popup.html",
+    "default_icon": { "16": "icon-16.png", "24": "icon-24.png", "32": "icon-32.png" }
+  }
 }
