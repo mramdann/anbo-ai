@@ -572,8 +572,10 @@ async fn spawn_browser_child(
             };
             let kind = match payload.event() {
                 PageLoadEvent::Started => {
-                    crate::modules::browser_automation::activity::navigation(&webview);
-                    crate::modules::browser_automation::design::navigation(&webview);
+                    crate::modules::browser_automation::activity::navigation(
+                        &webview.clone().into(),
+                    );
+                    crate::modules::browser_automation::design::navigation(&webview.clone().into());
                     event_loading.store(true, Ordering::Release);
                     event_navigation_generation.fetch_add(1, Ordering::AcqRel);
                     crate::modules::browser_automation::snapshot::invalidate_document(tab_id);
@@ -583,9 +585,11 @@ async fn spawn_browser_child(
                     "navigated"
                 }
                 PageLoadEvent::Finished => {
-                    crate::modules::browser_automation::activity::navigation(&webview);
-                    crate::modules::browser_automation::activity::restore(&webview);
-                    crate::modules::browser_automation::design::restore(&webview);
+                    crate::modules::browser_automation::activity::navigation(
+                        &webview.clone().into(),
+                    );
+                    crate::modules::browser_automation::activity::restore(&webview.clone().into());
+                    crate::modules::browser_automation::design::restore(&webview.clone().into());
                     event_loading.store(false, Ordering::Release);
                     if let Ok(mut pending_url) = event_pending_url.lock() {
                         *pending_url = None;
@@ -723,7 +727,11 @@ fn keep_host_warm(window: &tauri::Window) {
             .focused(false)
             .data_directory(profile);
         let (x, y) = super::presentation::background_origin(64);
-        match window.add_child(builder, PhysicalPosition::new(x, y), PhysicalSize::new(64, 64)) {
+        match window.add_child(
+            builder,
+            PhysicalPosition::new(x, y),
+            PhysicalSize::new(64, 64),
+        ) {
             Ok(webview) => {
                 let _ = webview.hide();
                 super::host::adopt_from_webview(&webview);
@@ -742,7 +750,11 @@ fn keep_host_warm(window: &tauri::Window) {
         let mut idle = std::time::Duration::ZERO;
         loop {
             tokio::time::sleep(tick).await;
-            idle = if list_active_tab_ids().is_empty() { idle + tick } else { std::time::Duration::ZERO };
+            idle = if list_active_tab_ids().is_empty() {
+                idle + tick
+            } else {
+                std::time::Duration::ZERO
+            };
             if idle >= WARM_HOST_IDLE {
                 idle = std::time::Duration::ZERO;
                 if let Some(webview) = app.get_webview(WARM_HOST_LABEL) {
@@ -1109,7 +1121,7 @@ fn set_embed_presentation(webview: &tauri::Webview, visible: bool) -> Result<(),
     // controller is visible. Park it outside the parent's client area instead.
     webview.show().map_err(|error| error.to_string())?;
     set_embed_z_order(webview, visible)?;
-    crate::modules::browser_automation::activity::presentation(webview, visible);
+    crate::modules::browser_automation::activity::presentation(&webview.clone().into(), visible);
     Ok(())
 }
 
@@ -1407,7 +1419,7 @@ pub(crate) async fn apply_viewport(
             .to_string(),
         )
     };
-    call_devtools_protocol_method(webview, method, &params, CDP_TIMEOUT).await?;
+    call_devtools_protocol_method(&webview.clone().into(), method, &params, CDP_TIMEOUT).await?;
     // WebView2's own zoom control fights the fit: a Ctrl+scroll or Ctrl+minus
     // rewrites the zoom this function just set, and nothing re-asserts it until
     // the next resize or navigation. Take the control away while emulating and
@@ -1427,7 +1439,7 @@ pub(crate) async fn apply_viewport(
     })
     .to_string();
     let _ = call_devtools_protocol_method(
-        webview,
+        &webview.clone().into(),
         "Emulation.setTouchEmulationEnabled",
         &touch,
         CDP_TIMEOUT,
@@ -1880,29 +1892,8 @@ pub async fn browser_embed_insert_text(
     #[cfg(windows)]
     {
         let focused = crate::modules::browser_automation::cdp::execute_script_with_timeout(
-            &webview,
-            r#"(() => {
-                let doc = document;
-                let el = doc.activeElement;
-                if (!el) return "none";
-                while (el instanceof HTMLIFrameElement) {
-                    try {
-                        doc = el.contentDocument;
-                        if (!doc) return "frame";
-                        el = doc.activeElement;
-                        if (!el) return "none";
-                    } catch {
-                        return "frame";
-                    }
-                }
-                const tag = el.tagName?.toLowerCase();
-                if (tag === "input") {
-                    if (el.type === "password") return "password";
-                    return ["text", "search", "email", "url", "tel"].includes(el.type) ? "editable" : "none";
-                }
-                if (tag === "textarea" || el.isContentEditable) return "editable";
-                return "none";
-            })()"#,
+            &webview.clone().into(),
+            include_str!("focusedInput.js"),
             std::time::Duration::from_secs(2),
         )
         .await?;
@@ -1918,7 +1909,7 @@ pub async fn browser_embed_insert_text(
         webview.set_focus().map_err(|error| error.to_string())?;
         let params = serde_json::json!({ "text": text }).to_string();
         crate::modules::browser_automation::cdp::call_devtools_protocol_method(
-            &webview,
+            &webview.clone().into(),
             "Input.insertText",
             &params,
             std::time::Duration::from_secs(2),

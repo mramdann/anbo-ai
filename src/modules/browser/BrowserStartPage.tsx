@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  BrowserIcon,
   Clock01Icon,
   Delete02Icon,
   FolderOpenIcon,
@@ -39,14 +40,29 @@ import {
   browserDataUsage,
 } from "./native";
 
+/** Where a web page opened from this tab goes when the workspace has an
+ * approved Chrome or Edge profile. */
+export type BrowserChoice = {
+  label: string;
+  inBrowser: boolean;
+  opening: boolean;
+  error: string | null;
+  onToggle: () => void;
+};
+
 type Props = {
   visible: boolean;
   onNavigate: (url: string) => void;
+  browserChoice?: BrowserChoice | null;
 };
 
 const EMPTY_USAGE: BrowserDataUsage = { bytes: 0, files: 0, complete: true };
 
-export function BrowserStartPage({ visible, onNavigate }: Props) {
+export function BrowserStartPage({
+  visible,
+  onNavigate,
+  browserChoice = null,
+}: Props) {
   const [history, setHistory] =
     useState<BrowserHistoryEntry[]>(readBrowserHistory);
   const [usage, setUsage] = useState<BrowserDataUsage | null>(null);
@@ -118,6 +134,8 @@ export function BrowserStartPage({ visible, onNavigate }: Props) {
             </p>
           </div>
         </div>
+
+        {browserChoice ? <BrowserChoiceRow choice={browserChoice} /> : null}
 
         <div className="grid gap-3 md:grid-cols-[minmax(0,1.35fr)_minmax(230px,0.65fr)]">
           <section className="overflow-hidden rounded-xl border border-border/60 bg-card/80 shadow-sm">
@@ -257,6 +275,47 @@ export function BrowserStartPage({ visible, onNavigate }: Props) {
           </div>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function BrowserChoiceRow({ choice }: { choice: BrowserChoice }) {
+  return (
+    <div className="grid gap-1.5">
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/60 bg-card/80 px-3 py-2 shadow-sm">
+        <HugeiconsIcon
+          icon={BrowserIcon}
+          size={15}
+          strokeWidth={1.6}
+          className="shrink-0 text-muted-foreground"
+        />
+        <span className="min-w-0 flex-1 truncate text-xs text-foreground">
+          {choice.opening
+            ? `Opening in ${choice.label}...`
+            : choice.inBrowser
+              ? `Web pages open in ${choice.label}, with its logins`
+              : "Web pages open in Anbo's browser"}
+        </span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          disabled={choice.opening}
+          onClick={choice.onToggle}
+        >
+          {choice.inBrowser
+            ? "Use Anbo's browser"
+            : `Use ${choice.label.split(" · ")[0]}`}
+        </Button>
+      </div>
+      {choice.error ? (
+        <p
+          role="alert"
+          className="px-1 text-[11px] break-words text-destructive"
+        >
+          {choice.error}
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -29,16 +29,19 @@ pub async fn http_owner(
 }
 
 #[cfg(windows)]
+pub fn pipe_client(stream: &tokio::net::windows::named_pipe::NamedPipeServer) -> Option<u32> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
+    let mut pid = 0;
+    (unsafe { GetNamedPipeClientProcessId(stream.as_raw_handle(), &mut pid) } != 0).then_some(pid)
+}
+
+#[cfg(windows)]
 pub async fn pipe_owner(
     app: tauri::AppHandle,
     stream: &tokio::net::windows::named_pipe::NamedPipeServer,
 ) -> Option<u32> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
-    let mut pid = 0;
-    if unsafe { GetNamedPipeClientProcessId(stream.as_raw_handle(), &mut pid) } == 0 {
-        return None;
-    }
+    let pid = pipe_client(stream)?;
     tauri::async_runtime::spawn_blocking(move || {
         app.try_state::<crate::modules::pty::PtyState>()?
             .owner_of_process(pid)

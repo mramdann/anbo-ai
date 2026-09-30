@@ -3,6 +3,7 @@ import {
   normalizePersistedAgentResume,
   type PersistedAgentResume,
 } from "@/modules/agents/lib/resume";
+import { savedExternalBrowser, type ExternalBrowser } from "@/modules/browser/external/model";
 import {
   allocateAgentTabNames,
   normalizeAgentTabIdentity,
@@ -45,7 +46,7 @@ export type SerializedTab = SerializedTabKey &
         agent?: AgentTabIdentity;
       }
     | { kind: "editor"; path: string }
-    | { kind: "browser"; url: string }
+    | { kind: "browser"; url: string; external?: ExternalBrowser }
     | { kind: "markdown"; path: string }
   );
 
@@ -115,7 +116,7 @@ function serializeTab(tab: Tab): SerializedTab | null {
     case "editor":
       return { kind: "editor", key: tabLayoutKey(tab), path: tab.path };
     case "browser":
-      return { kind: "browser", key: tabLayoutKey(tab), url: tab.url };
+      return { kind: "browser", key: tabLayoutKey(tab), url: tab.url, ...(tab.external && { external: savedExternalBrowser(tab.external) ?? { browser: "chrome", profileId: "", name: "Reconnect profile" } }) };
     case "markdown":
       return { kind: "markdown", key: tabLayoutKey(tab), path: tab.path };
     default:
@@ -243,6 +244,7 @@ function hydrateTab(
         cold: true,
         title: titleFromUrl(s.url),
         url: s.url,
+        ...(s.external && { external: savedExternalBrowser(s.external) ?? { browser: "chrome", profileId: "", name: "Reconnect profile" }, loading: false }),
       } satisfies BrowserTab;
     case "markdown":
       return {

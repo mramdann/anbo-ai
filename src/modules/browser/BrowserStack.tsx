@@ -1,8 +1,11 @@
 import { cn } from "@/lib/utils";
 import type { BrowserTab, Tab } from "@/modules/tabs";
-import { useEffect, useRef } from "react";
+import { lazy, Suspense, useEffect, useRef } from "react";
 import { BrowserPane, type BrowserPaneHandle } from "./BrowserPane";
 import type { BrowserWorkspaceContext } from "./native";
+const ExternalBrowserPane = lazy(
+  () => import("@/modules/browser/external/ExternalBrowserPane"),
+);
 
 type Props = {
   tabs: Tab[];
@@ -161,19 +164,30 @@ export function BrowserStack({
             )}
             aria-hidden={!visible}
           >
-            <BrowserPane
-              ref={getRefCallback(t.id)}
-              id={t.id}
-              url={t.url}
-              visible={visible}
-              workspaceRoot={context.root}
-              workspace={context.workspace}
-              initialLoading={browserPaneInitialLoading(t)}
-              onUrlChange={getUrlCallback(t.id)}
-              onTitleChange={getTitleCallback(t.id)}
-              onLoadingChange={getLoadingCallback(t.id)}
-              onActivate={getActivateCallback(t.id)}
-            />
+            {t.external ? (
+              <Suspense fallback={null}>
+                <ExternalBrowserPane
+                  ref={getRefCallback(t.id)}
+                  tab={t}
+                  visible={visible}
+                  workspaceRoot={context.root}
+                />
+              </Suspense>
+            ) : (
+              <BrowserPane
+                ref={getRefCallback(t.id)}
+                id={t.id}
+                url={t.url}
+                visible={visible}
+                workspaceRoot={context.root}
+                workspace={context.workspace}
+                initialLoading={browserPaneInitialLoading(t)}
+                onUrlChange={getUrlCallback(t.id)}
+                onTitleChange={getTitleCallback(t.id)}
+                onLoadingChange={getLoadingCallback(t.id)}
+                onActivate={getActivateCallback(t.id)}
+              />
+            )}
           </div>
         );
       })}

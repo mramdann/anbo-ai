@@ -1,7 +1,20 @@
 fn main() {
     println!("cargo:rerun-if-changed=icons/icon.ico");
     ensure_browser_sidecar_placeholder();
-    tauri_build::build()
+    tauri_build::build();
+    expose_resource_to_lib_tests();
+}
+
+// tauri-build links its resource (icon, version and the Common Controls v6
+// manifest) into binaries only. The lib's unit-test executable needs that
+// manifest once its code reaches comctl32 v6 entry points, or Windows refuses
+// to start it (0xc0000139); lib.rs links the resource under cfg(test).
+fn expose_resource_to_lib_tests() {
+    let target = std::env::var("TARGET").expect("Cargo did not provide TARGET");
+    if target.ends_with("windows-msvc") {
+        let out = std::env::var("OUT_DIR").expect("Cargo did not provide OUT_DIR");
+        println!("cargo:rustc-link-search=native={out}");
+    }
 }
 
 fn ensure_browser_sidecar_placeholder() {

@@ -8,6 +8,9 @@ use std::process::exit;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+#[cfg(windows)]
+mod browser_native_host;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstanceDescriptor {
     pub version: u32,
@@ -83,9 +86,34 @@ fn read_descriptor() -> Result<InstanceDescriptor, (i32, String)> {
         .map_err(|e| (3, format!("invalid descriptor format: {e}")))
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let args: Vec<String> = env::args().collect();
+    if args
+        .get(1)
+        .is_some_and(|argument| argument == "--native-host-version")
+    {
+        println!("anbo-native-host-2");
+        return;
+    }
+    #[cfg(windows)]
+    if let Some(origin) = args
+        .get(1)
+        .filter(|value| value.starts_with("chrome-extension://"))
+    {
+        match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime.block_on(browser_native_host::run(origin)),
+            Err(error) => eprintln!("Native browser host runtime failed: {error}"),
+        }
+        return;
+    }
+    run_cli(args);
+}
+
+#[tokio::main]
+async fn run_cli(args: Vec<String>) {
     if args.len() < 2 {
         print_usage();
         exit(2);

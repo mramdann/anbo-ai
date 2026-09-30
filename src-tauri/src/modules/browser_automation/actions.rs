@@ -1,3 +1,4 @@
+use super::target::BrowserTarget as Webview;
 use base64::Engine;
 use futures_util::stream::{self, StreamExt};
 use serde_json::{json, Value};
@@ -9,14 +10,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
 use tauri::Emitter;
 use tauri::Listener;
-use tauri::Webview;
 
 use super::accessible_name::ACCESSIBLE_NAME_JS;
 use super::context_block::{Ancestors, CONTEXT_BLOCK_JS};
-use crate::modules::browser::embed::{
+use super::registry::{
     active_loading, active_local_root, active_navigation_generation, active_pending_url,
-    set_active_loading, set_active_pending_url, BROWSER_POPUP_REQUEST_EVENT,
+    set_active_loading, set_active_pending_url,
 };
+use crate::modules::browser::embed::BROWSER_POPUP_REQUEST_EVENT;
 use crate::modules::browser_automation::cdp::{
     call_devtools_protocol_method, capture_screenshot, execute_script, execute_script_with_timeout,
     read_url,
@@ -53,6 +54,8 @@ const VALUE_ACTION_JS: &str = include_str!("valueAction.js");
 /// purpose: while a tab is navigating, WebView2 drops the script callback, and a
 /// single dropped callback must not be allowed to eat the whole wait budget.
 const SCRIPT_POLL_TIMEOUT: Duration = Duration::from_secs(2);
+const HIDDEN_TAB: &str = "the tab is hidden in its browser window (another tab is in front, or the window is minimized), and the browser delivers no input to a hidden page. Dock the tab in Anbo or bring it to the front, then try again.";
+const UNDRAWN_TAB: &str = "the browser draws nothing for this tab while its window is not being shown, and a pointer move waits for a drawn frame. Dock the tab in Anbo or bring its browser window forward, then try again.";
 const MAX_TEXT_OUTPUT_CHARS: u64 = 16_000;
 /// The longest a wait may actually run.
 ///
@@ -242,7 +245,12 @@ pub async fn handle_action_as(
     // replies came back without hints, so the next call went to a find.
     let lands = LANDING_METHODS.contains(&method) || submits_type(method, &params);
     let search = submits_type(method, &params)
-        .then(|| params.get("text").and_then(Value::as_str).map(str::to_string))
+        .then(|| {
+            params
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .flatten();
     let before_url = match tab_id.filter(|_| lands) {
         Some(id) => match get_embed_webview(app, id) {
@@ -276,7 +284,10 @@ pub async fn handle_action_as(
         {
             super::activity::note_workspace(&actor, root);
         }
-    } else if let Some(root) = tab_id.filter(|_| result.is_ok()).and_then(active_local_root) {
+    } else if let Some(root) = tab_id
+        .filter(|_| result.is_ok())
+        .and_then(active_local_root)
+    {
         super::activity::touch_workspace(&actor, &root);
     }
     if let Ok(value) = &mut result {
@@ -295,8 +306,7 @@ pub async fn handle_action_as(
                 // search submit or a product click went to snapshot, find and
                 // get_text purely to learn what these hints carry.
                 let id = tab_id.unwrap_or_default();
-                let native = value.get("navigationObserved").and_then(Value::as_bool)
-                    == Some(true)
+                let native = value.get("navigationObserved").and_then(Value::as_bool) == Some(true)
                     || tab_id
                         .and_then(active_navigation_generation)
                         .zip(before_navigation)
@@ -407,7 +417,8 @@ pub(crate) const ELEMENT_PROPERTIES: [&str; 25] = [
 
 /// Whether browser_type was asked to press Enter after filling.
 fn submits_type(method: &str, params: &Value) -> bool {
-    matches!(method, "type" | "type_text") && params.get("submit").and_then(Value::as_bool) == Some(true)
+    matches!(method, "type" | "type_text")
+        && params.get("submit").and_then(Value::as_bool) == Some(true)
 }
 
 /// A committed URL that changed other than by its fragment: a single-page
@@ -681,7 +692,11 @@ async fn navigation_hints(webview: &Webview, tab_id: i64, query: Option<&str>) -
     let mut previous: Option<(Vec<String>, String, (String, String))> = None;
     loop {
         let last = tokio::time::Instant::now() + Duration::from_millis(250) >= deadline;
-        let gate = if last { HintsGate::Any } else { HintsGate::Results };
+        let gate = if last {
+            HintsGate::Any
+        } else {
+            HintsGate::Results
+        };
         match navigation_hints_once(webview, tab_id, &words, gate).await {
             Some(hints) => {
                 let titles = result_titles(&hints);
@@ -726,9 +741,7 @@ async fn routed_landing_hints(webview: &Webview, tab_id: i64) -> Option<Value> {
         if tokio::time::Instant::now() + Duration::from_millis(150) >= deadline {
             return navigation_hints_once(webview, tab_id, &[], HintsGate::Any).await;
         }
-        if let Some(hints) =
-            navigation_hints_once(webview, tab_id, &[], HintsGate::Heading).await
-        {
+        if let Some(hints) = navigation_hints_once(webview, tab_id, &[], HintsGate::Heading).await {
             return Some(hints);
         }
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -762,12 +775,8 @@ async fn navigation_hints_once(
     gate: HintsGate,
 ) -> Option<Value> {
     let scan = |generation: u64| async move {
-        let script = build_navigation_hints_js(
-            generation,
-            &format!("g{generation}-e"),
-            words,
-            gate,
-        );
+        let script =
+            build_navigation_hints_js(generation, &format!("g{generation}-e"), words, gate);
         let raw = tokio::time::timeout(
             Duration::from_millis(500),
             ref_context::execute_main(webview, &script),
@@ -922,6 +931,12 @@ async fn handle_action_inner(
             // which is what agents were actually doing.
             if let Some(object) = result.as_object_mut() {
                 let tab_id = object.get("tabId").and_then(Value::as_i64);
+                if let Some(target) = tab_id.and_then(crate::modules::browser_external::get_target)
+                {
+                    object.insert("backend".into(), json!("external"));
+                    object.insert("profile".into(), target.profile().unwrap_or(Value::Null));
+                    object.insert("managedDownloads".into(), json!(false));
+                }
                 if let Some(control_id) = super::activity::begin_session(app, tab_id, caller) {
                     object.insert("controlId".into(), control_id.into());
                 }
@@ -1028,6 +1043,21 @@ async fn handle_action_inner(
                     }));
                 }
             }
+            for item in &mut result {
+                if let Some(target) = item["tabId"]
+                    .as_i64()
+                    .and_then(crate::modules::browser_external::get_target)
+                {
+                    item["backend"] = json!("external");
+                    item["profile"] = target.profile().unwrap_or(Value::Null);
+                    item["managedDownloads"] = json!(false);
+                    if let Some(dock) =
+                        crate::modules::browser_external::dock::diagnostics(target.tab_id)
+                    {
+                        item["nativeDock"] = dock;
+                    }
+                }
+            }
             Ok(json!({
                 "tabs": result,
                 "activeTabId": active_tab_id,
@@ -1080,7 +1110,7 @@ async fn handle_action_inner(
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
             set_active_loading(tab_id, true);
             set_active_pending_url(tab_id, Some(target.to_string()));
-            if let Err(error) = webview.navigate(target) {
+            if let Err(error) = webview.navigate(target).await {
                 set_active_loading(tab_id, false);
                 return Err((
                     error_codes::NAVIGATION_FAILED.to_string(),
@@ -1343,7 +1373,9 @@ async fn handle_action_inner(
                 let target = get_ref_frame_target(tab_id, &ref_id);
                 let (dispatch, popup_url) =
                     click_ref_profiled(&webview, tab_id, &ref_id, click_count, timings).await?;
-                if let Some(url) = popup_url {
+                // Chrome and Edge open a new-tab link themselves; only the
+                // embedded browser leaves it to Anbo.
+                if let Some(url) = popup_url.filter(|_| webview.embedded().is_ok()) {
                     let _ = app.emit(
                         BROWSER_POPUP_REQUEST_EVENT,
                         json!({ "sourceTabId": tab_id, "url": url }),
@@ -1563,6 +1595,17 @@ async fn handle_action_inner(
                     "dom-frame"
                 }
             } else {
+                if source.page_hidden || source.no_frames {
+                    let reason = if source.page_hidden {
+                        HIDDEN_TAB
+                    } else {
+                        UNDRAWN_TAB
+                    };
+                    return Err((
+                        error_codes::INPUT_NOT_READY.to_string(),
+                        format!("{reason} No input was sent."),
+                    ));
+                }
                 let pair = wait_for_drag_pair(
                     &webview,
                     &source_ref,
@@ -1771,7 +1814,10 @@ async fn handle_action_inner(
                                 target.as_ref(),
                                 &ref_id,
                                 budget,
-                                RevealAfter::Fill { before, query: text },
+                                RevealAfter::Fill {
+                                    before,
+                                    query: text,
+                                },
                             ),
                         )
                         .await;
@@ -1845,11 +1891,17 @@ async fn handle_action_inner(
                     if let Some(expectation) = submit_expectation {
                         press["waitFor"] = expectation;
                     }
-                    let pressed = Box::pin(handle_action_inner(app, "press", press, timings, caller))
-                        .await
-                        .map_err(|(code, message)| {
-                            (code, format!("the text was typed, but Enter did not complete: {message}"))
-                        })?;
+                    let pressed =
+                        Box::pin(handle_action_inner(app, "press", press, timings, caller))
+                            .await
+                            .map_err(|(code, message)| {
+                                (
+                                    code,
+                                    format!(
+                                        "the text was typed, but Enter did not complete: {message}"
+                                    ),
+                                )
+                            })?;
                     result["submitted"] = json!(true);
                     for key in [
                         "postcondition",
@@ -2454,7 +2506,7 @@ async fn handle_action_inner(
             let _lock = tab_lock.lock().await;
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
-            crate::modules::browser::embed::apply_viewport(
+            super::registry::apply_viewport(
                 &webview,
                 width as u32,
                 height as u32,
@@ -2585,6 +2637,9 @@ async fn handle_action_inner(
 
         "download" => {
             let tab_id = extract_tab_id(&params)?;
+            if crate::modules::browser_external::get_target(tab_id).is_some() {
+                return Err((error_codes::INVALID_REQUEST.into(), "Managed downloads into an Anbo workspace are not supported by the external browser bridge yet. No click was sent. Use the browser's normal download UI.".into()));
+            }
             let ref_id = extract_ref(&params)?;
             let workspace_root = resolve_tab_workspace(tab_id, &params)?;
             let preferred_file_name = params
@@ -2779,6 +2834,23 @@ async fn handle_action_inner(
                 ActionabilityRequirement::Hover(position),
             )
             .await?;
+            if actionable.page_hidden || actionable.no_frames {
+                let _ = execute_ref_script(
+                    &webview,
+                    target.as_ref(),
+                    "globalThis.__anboHoverObservation?.stop()",
+                )
+                .await;
+                let reason = if actionable.page_hidden {
+                    HIDDEN_TAB
+                } else {
+                    UNDRAWN_TAB
+                };
+                return Err((
+                    error_codes::INPUT_NOT_READY.to_string(),
+                    format!("{reason} No input was sent."),
+                ));
+            }
             let main_document = target.as_ref().is_none_or(|target| target.is_main);
             if main_document {
                 if let Err(error) = dispatch_mouse_move(&webview, actionable.x, actionable.y).await
@@ -3985,6 +4057,9 @@ fn parse_console_entries(raw: &str, frame: &str) -> Vec<Value> {
 }
 
 async fn collect_console_logs(webview: &Webview) -> (Vec<Value>, usize, usize) {
+    if let Webview::External { target, .. } = webview {
+        return (target.console_logs(), 1, 0);
+    }
     const FRAME_LOG_EXPRESSION: &str =
         "document.documentElement?.getAttribute('data-anbo-console-logs') || '[]'";
     let (frame_ids, frame_limit_reached) = get_frame_ids(webview)
@@ -4214,7 +4289,10 @@ fn same_text_matches(scan: &CollectedLocatorMatches) -> bool {
         && !scan.truncated
         && !scan.node_limit_reached
         && scan.skipped_frames == 0
-        && scan.matches.iter().all(|item| normalize(&item.text) == first)
+        && scan
+            .matches
+            .iter()
+            .all(|item| normalize(&item.text) == first)
 }
 
 /// How many matches a text read collects, so the rule below can see them all.
@@ -4233,7 +4311,11 @@ fn only_informative_match(scan: &CollectedLocatorMatches) -> Option<usize> {
     {
         return None;
     }
-    let mut informative = scan.matches.iter().enumerate().filter(|(_, item)| !blank(item));
+    let mut informative = scan
+        .matches
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| !blank(item));
     let (index, _) = informative.next()?;
     informative.next().is_none().then_some(index)
 }
@@ -4560,26 +4642,59 @@ fn target_locator_timeout(
 /// Roles an agent writes as the locator type itself, habits from other tools:
 /// `{by:"combobox", name:"Search"}` means a role lookup, never a new strategy.
 const ROLE_AS_BY: [&str; 24] = [
-    "button", "link", "textbox", "searchbox", "combobox", "checkbox", "radio", "switch",
-    "slider", "spinbutton", "tab", "menuitem", "option", "listbox", "heading", "dialog",
-    "img", "list", "listitem", "row", "cell", "navigation", "main", "region",
+    "button",
+    "link",
+    "textbox",
+    "searchbox",
+    "combobox",
+    "checkbox",
+    "radio",
+    "switch",
+    "slider",
+    "spinbutton",
+    "tab",
+    "menuitem",
+    "option",
+    "listbox",
+    "heading",
+    "dialog",
+    "img",
+    "list",
+    "listitem",
+    "row",
+    "cell",
+    "navigation",
+    "main",
+    "region",
 ];
 
 /// A locator type that is not one of the strategies but says plainly what it
 /// means: `id` is an id selector, a role name is a role lookup whose value, if
 /// any, is the name. Anything else stays unsupported.
-fn alias_locator(by: &str, value: &str, name: Option<&str>) -> Option<(String, String, Option<String>)> {
+fn alias_locator(
+    by: &str,
+    value: &str,
+    name: Option<&str>,
+) -> Option<(String, String, Option<String>)> {
     if by == "id" {
         let value = value.trim().trim_start_matches('#');
         if value.is_empty() {
             return None;
         }
-        let plain = value.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-            && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        let plain = value
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
         let selector = if plain {
             format!("#{value}")
         } else {
-            format!("[id=\"{}\"]", value.replace('\\', "\\\\").replace('"', "\\\""))
+            format!(
+                "[id=\"{}\"]",
+                value.replace('\\', "\\\\").replace('"', "\\\"")
+            )
         };
         return Some(("css".into(), selector, name.map(str::to_string)));
     }
@@ -5267,6 +5382,11 @@ struct ActionableElement {
     draggable: bool,
     popup_url: Option<String>,
     value_result: Option<Value>,
+    /// Only an external tab reports these. The browser delivers no input to a
+    /// hidden page, and a page shown in a window nobody sees draws no frames,
+    /// so a pointer move waits for one that may never come.
+    page_hidden: bool,
+    no_frames: bool,
 }
 
 fn actionability_failure_reason(
@@ -5392,15 +5512,20 @@ fn actionability_wait_script(
     position: Option<(f64, f64)>,
     requirement: ActionabilityRequirement,
 ) -> String {
-    actionable_attempt_script(ref_id, scroll, position, requirement, None)
+    actionable_attempt_script(ref_id, scroll, position, requirement, None, false)
 }
 
+/// `external` lets a page that draws no frames answer from its first sample
+/// and say so. Only an external browser tab asks for it: an occluded Chrome
+/// window throttles its timers to once a second, which would hold every action
+/// that long, and a pointer move on such a page waits for a frame.
 fn actionable_attempt_script(
     ref_id: &str,
     scroll: bool,
     position: Option<(f64, f64)>,
     requirement: ActionabilityRequirement,
     value_script: Option<&str>,
+    external: bool,
 ) -> String {
     let sampler = include_str!("actionabilityWait.js");
     let probe = actionable_probe_script(ref_id, "scroll", position);
@@ -5427,8 +5552,9 @@ fn actionable_attempt_script(
     let value_action = value_script
         .map(|script| format!("() => JSON.parse({script})"))
         .unwrap_or_else(|| "undefined".into());
+    let external = if external { ", true" } else { "" };
     format!(
-        "(() => {{ {sampler}\nreturn waitForActionableSample((scroll) => JSON.parse({probe}), '{requirement}', {scroll}, {value_action}, {on_ready}); }})()"
+        "(() => {{ {sampler}\nreturn waitForActionableSample((scroll) => JSON.parse({probe}), '{requirement}', {scroll}, {value_action}, {on_ready}{external}); }})()"
     )
 }
 
@@ -5572,10 +5698,19 @@ async fn wait_for_actionable_attempt(
         }
         _ => None,
     };
+    let external = matches!(webview, Webview::External { .. });
     let build = |scroll| match value_script {
-        Some(value_script) => {
-            actionable_attempt_script(ref_id, scroll, position, requirement, Some(value_script))
+        _ if external => {
+            actionable_attempt_script(ref_id, scroll, position, requirement, value_script, true)
         }
+        Some(value_script) => actionable_attempt_script(
+            ref_id,
+            scroll,
+            position,
+            requirement,
+            Some(value_script),
+            false,
+        ),
         None => actionability_wait_script(ref_id, scroll, position, requirement),
     };
     let initial_script = build(true);
@@ -5649,6 +5784,8 @@ async fn wait_for_actionable_attempt(
             }
             return Ok(ActionableElement {
                 value_result: parsed.get("valueActionResult").cloned(),
+                page_hidden: parsed.get("pageHidden").and_then(Value::as_bool) == Some(true),
+                no_frames: parsed.get("noFrames").and_then(Value::as_bool) == Some(true),
                 x: rect.0,
                 y: rect.1,
                 tag: parsed
@@ -6597,9 +6734,20 @@ async fn dispatch_mouse_click_profiled(
     timings: &mut ActionTimings,
 ) -> Result<(), (String, String)> {
     let (x, y) = (actionable.x, actionable.y);
-    dispatch_mouse_move_profiled(webview, x, y, timings)
-        .await
-        .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+    if actionable.page_hidden {
+        return Err((
+            error_codes::INPUT_NOT_READY.to_string(),
+            format!("{HIDDEN_TAB} No input was sent."),
+        ));
+    }
+    // A page that draws no frames answers a move only when it next draws, which
+    // a covered or locked browser may not do before the command expires and the
+    // tab is released. Mouse-down moves the pointer there itself.
+    if !actionable.no_frames {
+        dispatch_mouse_move_profiled(webview, x, y, timings)
+            .await
+            .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+    }
     for count in 1..=click_count.max(1) {
         let script = deep_ref_expression(
             ref_id,
@@ -7277,8 +7425,14 @@ async fn open_browser(
         ));
     }
 
+    // A tab opened in a connected Chrome or Edge profile first waits for its
+    // page to commit (up to the bridge's 10 s) and for its debugger; the
+    // built-in browser answers in milliseconds either way.
     let received = timings
-        .measure("uiCreate", tokio::time::timeout(Duration::from_secs(10), receiver))
+        .measure(
+            "uiCreate",
+            tokio::time::timeout(Duration::from_secs(25), receiver),
+        )
         .await;
     app.unlisten(listener_id);
     let payload = received
@@ -8349,7 +8503,8 @@ mod tests {
         let script = deep_ref_expression("g1-e1", MEDIA_STATE_BODY);
         assert!(script.contains("node?.matches?.('video,audio')"));
         assert!(script.contains("depth < 8"));
-        assert!(script.contains("if (node === document.body || node === document.documentElement) break;"));
+        assert!(script
+            .contains("if (node === document.body || node === document.documentElement) break;"));
         assert!(script.contains("if (!media) return 'null';"));
         for field in ["paused:", "ended:", "muted:", "currentTime:", "duration:"] {
             assert!(script.contains(field), "{field}");
@@ -8359,21 +8514,44 @@ mod tests {
     #[test]
     fn habitual_locator_types_become_the_lookup_they_mean() {
         let id = extract_locator(&json!({ "by": "id", "value": "confirmButton" })).unwrap();
-        assert_eq!((id.by.as_str(), id.value.as_str()), ("css", "#confirmButton"));
+        assert_eq!(
+            (id.by.as_str(), id.value.as_str()),
+            ("css", "#confirmButton")
+        );
         let hashed = extract_locator(&json!({ "by": "id", "value": "#submit" })).unwrap();
         assert_eq!(hashed.value, "#submit");
         // An id no plain selector can hold is quoted as data.
         let odd = extract_locator(&json!({ "by": "id", "value": "a b\"c" })).unwrap();
         assert_eq!(odd.value, r#"[id="a b\"c"]"#);
-        let role = extract_locator(&json!({ "by": "combobox", "value": "", "name": "Search" })).unwrap();
-        assert_eq!((role.by.as_str(), role.value.as_str(), role.name.as_deref()), ("role", "combobox", Some("Search")));
+        let role =
+            extract_locator(&json!({ "by": "combobox", "value": "", "name": "Search" })).unwrap();
+        assert_eq!(
+            (role.by.as_str(), role.value.as_str(), role.name.as_deref()),
+            ("role", "combobox", Some("Search"))
+        );
         let named = extract_locator(&json!({ "by": "button", "value": "Submit" })).unwrap();
-        assert_eq!((named.by.as_str(), named.value.as_str(), named.name.as_deref()), ("role", "button", Some("Submit")));
-        for unsupported in [json!({ "by": "xpath", "value": "//a" }), json!({ "by": "id", "value": " " })] {
-            assert_eq!(extract_locator(&unsupported).unwrap_err().0, error_codes::INVALID_REQUEST, "{unsupported}");
+        assert_eq!(
+            (
+                named.by.as_str(),
+                named.value.as_str(),
+                named.name.as_deref()
+            ),
+            ("role", "button", Some("Submit"))
+        );
+        for unsupported in [
+            json!({ "by": "xpath", "value": "//a" }),
+            json!({ "by": "id", "value": " " }),
+        ] {
+            assert_eq!(
+                extract_locator(&unsupported).unwrap_err().0,
+                error_codes::INVALID_REQUEST,
+                "{unsupported}"
+            );
         }
         // A type nobody means is refused with the list and where a name goes.
-        let guessed = extract_locator(&json!({ "by": "xpath", "value": "//a" })).unwrap_err().1;
+        let guessed = extract_locator(&json!({ "by": "xpath", "value": "//a" }))
+            .unwrap_err()
+            .1;
         assert!(guessed.contains("use role, text, label, placeholder, testId, title, alt or css"));
         assert!(guessed.contains("name:'Search'"));
     }
@@ -8487,7 +8665,10 @@ mod tests {
             nearest: None,
         };
         // The YouTube title: an h1 and the yt-formatted-string inside it.
-        assert!(same_text_matches(&scan(&["lofi hip hop radio", "lofi  hip hop\nradio"])));
+        assert!(same_text_matches(&scan(&[
+            "lofi hip hop radio",
+            "lofi  hip hop\nradio"
+        ])));
         // One match is not an ambiguity, different texts are a real one, and
         // two empty canvases say nothing worth returning.
         assert!(!same_text_matches(&scan(&["only one"])));
@@ -8498,9 +8679,18 @@ mod tests {
         assert!(!same_text_matches(&scan(&full)));
         // Unread parts of the page leave the question open.
         for incomplete in [
-            CollectedLocatorMatches { truncated: true, ..scan(&["a", "a"]) },
-            CollectedLocatorMatches { node_limit_reached: true, ..scan(&["a", "a"]) },
-            CollectedLocatorMatches { skipped_frames: 1, ..scan(&["a", "a"]) },
+            CollectedLocatorMatches {
+                truncated: true,
+                ..scan(&["a", "a"])
+            },
+            CollectedLocatorMatches {
+                node_limit_reached: true,
+                ..scan(&["a", "a"])
+            },
+            CollectedLocatorMatches {
+                skipped_frames: 1,
+                ..scan(&["a", "a"])
+            },
         ] {
             assert!(!same_text_matches(&incomplete));
         }
@@ -8518,7 +8708,10 @@ mod tests {
         full[0] = "named";
         assert_eq!(only_informative_match(&scan(&full)), None);
         assert_eq!(
-            only_informative_match(&CollectedLocatorMatches { truncated: true, ..scan(&["", "a"]) }),
+            only_informative_match(&CollectedLocatorMatches {
+                truncated: true,
+                ..scan(&["", "a"])
+            }),
             None
         );
     }
@@ -8543,7 +8736,10 @@ mod tests {
             { "ref": "g7-e1", "name": "lofi hip hop radio" },
             { "ref": "g7-e2", "name": "lofi beats" }
         ] });
-        assert_eq!(result_titles(&hints), vec!["lofi hip hop radio", "lofi beats"]);
+        assert_eq!(
+            result_titles(&hints),
+            vec!["lofi hip hop radio", "lofi beats"]
+        );
         // Fresh refs for the same titles are the same list.
         let redrawn = json!({ "results": [
             { "ref": "g8-e1", "name": "lofi hip hop radio" },
@@ -8557,11 +8753,15 @@ mod tests {
     #[test]
     fn a_search_names_its_words_and_hints_wait_for_a_result_naming_one() {
         assert_eq!(query_words("usb c hub"), vec!["usb", "hub"]);
-        assert_eq!(query_words("Lofi  hip-hop radio lofi"), vec!["lofi", "hip", "hop", "radio"]);
+        assert_eq!(
+            query_words("Lofi  hip-hop radio lofi"),
+            vec!["lofi", "hip", "hop", "radio"]
+        );
         assert_eq!(query_words("Monas Jakarta"), vec!["monas", "jakarta"]);
         assert!(query_words("a b").is_empty());
         assert_eq!(query_words(&"word ".repeat(20)).len(), 1);
-        let script = build_navigation_hints_js(7, "g7-e", &query_words("usb c hub"), HintsGate::Results);
+        let script =
+            build_navigation_hints_js(7, "g7-e", &query_words("usb c hub"), HintsGate::Results);
         assert!(script.contains(r#"const queryWords = ["usb","hub"];"#));
         assert!(script.contains(r#"const gate = "results";"#));
         // Titles on screen before the search are never its results.
@@ -8572,7 +8772,9 @@ mod tests {
         assert!(PRE_SUBMIT_TITLES_JS.contains("globalThis.__anboBeforeSubmitHeading = heading;"));
         assert!(script.contains("&& !newHeading) return null;"));
         // Nothing is registered before the answer is kept.
-        let require = script.find("if (gate === 'results' && !found.length").unwrap();
+        let require = script
+            .find("if (gate === 'results' && !found.length")
+            .unwrap();
         let remember = script.find("refRegistry.remember(ref, el);").unwrap();
         assert!(require < remember);
     }
@@ -9181,6 +9383,15 @@ mod tests {
     }
 
     #[test]
+    fn only_external_tabs_skip_waiting_for_frames_a_page_does_not_draw() {
+        let requirement = ActionabilityRequirement::Click;
+        let embedded = actionability_wait_script("g1-e1", true, None, requirement);
+        assert!(embedded.ends_with("'pointer', true, undefined, undefined); })()"));
+        let external = actionable_attempt_script("g1-e1", true, None, requirement, None, true);
+        assert!(external.ends_with("'pointer', true, undefined, undefined, true); })()"));
+    }
+
+    #[test]
     fn value_attempt_defers_one_guarded_mutation_until_readiness() {
         let value_script = deep_ref_expression("g1-e1", "return JSON.stringify({ok: true});");
         for (requirement, expected) in [
@@ -9194,6 +9405,7 @@ mod tests {
                     None,
                     requirement,
                     Some(&value_script),
+                    false,
                 );
                 let callback = format!(", () => JSON.parse({value_script})");
                 assert_eq!(script.matches(&callback).count(), 1);

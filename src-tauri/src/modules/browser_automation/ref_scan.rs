@@ -1,9 +1,9 @@
 use std::future::Future;
 
 use super::protocol::error_codes;
+use super::registry::active_navigation_generation;
 use super::registry::get_tab_lock;
 use super::snapshot::{commit_generation, get_current_generation, peek_next_generation};
-use crate::modules::browser::embed::active_navigation_generation;
 
 /// Run one scan under the tab lock, publishing its generation only if it used
 /// it.

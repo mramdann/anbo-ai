@@ -1,3 +1,4 @@
+import { IS_WINDOWS } from "@/lib/platform";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -327,6 +328,30 @@ export default function App() {
   // (e.g. cdInNewTab) read the latest pane state instead of a stale closure.
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+  const externalSyncRef = useRef<((currentTabs: typeof tabs) => void) | undefined>(undefined);
+  useEffect(() => {
+    if (!import.meta.env.DEV || !IS_WINDOWS) return;
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void import("@/modules/browser/external/sync").then(async (service) => {
+      if (disposed) return;
+      const close = await service.startExternalBrowserSync({
+        tabs: () => tabsRef.current,
+        spaces: () => useSpaces.getState().spaces,
+        create: newBrowserTab,
+        update: updateTab,
+        warm: warmTab,
+      });
+      if (disposed) close();
+      else {
+        stop = close;
+        externalSyncRef.current = service.reconcileExternalBrowserTabs;
+      }
+    }).catch(() => {});
+    return () => { disposed = true; stop?.(); externalSyncRef.current = undefined; };
+  }, [newBrowserTab, updateTab, warmTab]);
+  useEffect(() => { externalSyncRef.current?.(tabs); }, [tabs]);
+
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
   const [automationTabSelection] = useState(createAutomationTabSelection);
@@ -1621,7 +1646,7 @@ export default function App() {
   }, [openBrowserTab]);
 
   useEffect(() => {
-    setBrowserOpenRequestHandler((payload) => {
+    setBrowserOpenRequestHandler(async (payload) => {
       const responseEvent = `${BROWSER_OPEN_RESPONSE_EVENT}:${payload.requestId}`;
       let protocol: string;
       try {
@@ -1641,7 +1666,7 @@ export default function App() {
       }
       const spaceId = resolved.space.id;
       const foregroundTabId = activeIdRef.current;
-      const placement = automationTabSelection.placement(
+      let placement = automationTabSelection.placement(
         spaceId,
         currentSpaceId,
         tabsRef.current,
@@ -1651,16 +1676,31 @@ export default function App() {
         tabsRef.current.some(
           (tab) => tab.id === foregroundTabId && tab.spaceId === spaceId,
         );
-      const tabId = openBrowserTab(
+      let externalTabId: number | null = null;
+      try {
+        if (import.meta.env.DEV && IS_WINDOWS && resolved.space.root) {
+          const service = await import("@/modules/browser/external/sync");
+          externalTabId = await service.openExternalBrowser(payload.url, resolved.space.root);
+        }
+      } catch (cause) {
+        void emit(responseEvent, { error: String(cause) });
+        return;
+      }
+      const tabId = externalTabId ?? openBrowserTab(
         payload.url,
         placement === "visible-first-tab",
         spaceId,
       );
+      if (externalTabId !== null) {
+        placement = automationTabSelection.placement(spaceId, useSpaces.getState().activeId, tabsRef.current.filter((tab) => tab.id !== tabId));
+        if (placement === "visible-first-tab") setActiveId(tabId);
+      }
       automationTabSelection.created(spaceId, tabId, placement);
       markBrowserAutomationActivity(tabId, "open", payload.actor ?? undefined);
       setActiveBrowserTabId(spaceId, tabId);
       if (preserveForeground) {
         const restoreForeground = () => {
+          if (useSpaces.getState().activeId !== spaceId) return;
           const current = activeIdRef.current;
           if (current === tabId || current === foregroundTabId) {
             setActiveId(foregroundTabId);
@@ -1684,7 +1724,7 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    setBrowserCloseRequestHandler((payload) => {
+    setBrowserCloseRequestHandler(async (payload) => {
       const responseEvent = `${BROWSER_CLOSE_RESPONSE_EVENT}:${payload.requestId}`;
       const { spaces } = useSpaces.getState();
       const resolved = resolveBrowserCloseTarget(
@@ -1696,6 +1736,11 @@ export default function App() {
       if (!resolved.ok) {
         void emit(responseEvent, { error: resolved.error });
         return;
+      }
+      const target = tabsRef.current.find((tab) => tab.id === payload.tabId);
+      if (target?.kind === "browser" && target.external?.connected) {
+        try { await invoke("browser_external_unbind", { tabId: payload.tabId, connectionId: target.external.connectionId, selectionId: target.external.selectionId }); }
+        catch (cause) { void emit(responseEvent, { error: String(cause) }); return; }
       }
       closeTab(payload.tabId);
       automationTabSelection.closed(payload.tabId);
@@ -2043,6 +2088,20 @@ export default function App() {
       focusAgentTerminal(leafId);
     },
     [setActiveId, warmTab, focusPane, focusAgentTerminal],
+  );
+
+  // Show a browser tab from the header's browser menu, switching to its space
+  // first. The space switch keeps an active tab that already belongs to it.
+  const showBrowserTab = useCallback(
+    (tabId: number) => {
+      const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
+      if (tab?.kind !== "browser") return;
+      warmTab(tabId);
+      setActiveId(tabId);
+      if (tab.spaceId !== useSpaces.getState().activeId)
+        useSpaces.getState().setActive(tab.spaceId);
+    },
+    [setActiveId, warmTab],
   );
 
   const shortcutHandlers = useMemo<ShortcutHandlers>(
@@ -2782,6 +2841,8 @@ export default function App() {
                   workspace={workspaceForSpace(
                     activeSpaceId ?? DEFAULT_SPACE_ID,
                   )}
+                  onShowBrowserTab={showBrowserTab}
+                  onCloseBrowserTab={closeTab}
                 />
               )}
 

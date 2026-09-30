@@ -1,4 +1,5 @@
 use super::caller::Caller;
+use super::target::BrowserTarget as Webview;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::future::Future;
@@ -6,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager, Webview};
+use tauri::{AppHandle, Emitter};
 
 #[path = "activity_icon.rs"]
 mod icon;
@@ -192,10 +193,8 @@ where
     }) else {
         return action.await;
     };
-    let live = crate::modules::browser::embed::active_navigation_generation(tab_id).is_some()
-        && app
-            .get_webview(&crate::modules::browser::embed::embed_label(tab_id))
-            .is_some();
+    let live = super::registry::active_navigation_generation(tab_id).is_some()
+        && super::registry::find_target(app, tab_id).is_some();
     let request_id = SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let control_id = TABS.lock().ok().and_then(|mut guard| {
         let tabs = guard.get_or_insert_with(HashMap::new);
@@ -217,8 +216,7 @@ where
     let context = Context {
         app: app.clone(),
         event,
-        navigation: crate::modules::browser::embed::active_navigation_generation(tab_id)
-            .unwrap_or(0),
+        navigation: super::registry::active_navigation_generation(tab_id).unwrap_or(0),
     };
     CURRENT
         .scope(context.clone(), async move {
@@ -466,7 +464,7 @@ fn blur_others(app: &AppHandle, control_id: u64, focused: i64) {
         })
         .unwrap_or_default();
     for tab in others {
-        if let Some(webview) = app.get_webview(&crate::modules::browser::embed::embed_label(tab)) {
+        if let Some(webview) = super::registry::find_target(app, tab) {
             hide(&webview);
         }
     }
@@ -634,7 +632,7 @@ fn accepts(previous: &Activity, next: &Activity) -> bool {
 fn emit(context: &Context, phase: &'static str, point: Option<Point>) {
     let mut event = context.event.clone();
     event.phase = phase;
-    event.point = if crate::modules::browser::embed::active_navigation_generation(event.tab_id)
+    event.point = if super::registry::active_navigation_generation(event.tab_id)
         == Some(context.navigation)
     {
         point
@@ -642,10 +640,7 @@ fn emit(context: &Context, phase: &'static str, point: Option<Point>) {
         None
     };
     event.sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let Some(webview) = context
-        .app
-        .get_webview(&crate::modules::browser::embed::embed_label(event.tab_id))
-    else {
+    let Some(webview) = super::registry::find_target(&context.app, event.tab_id) else {
         return;
     };
     let (accepted, notify, member_changed, evicted) = if let Ok(mut guard) = TABS.lock() {
@@ -809,8 +804,7 @@ pub fn set_enabled(app: &AppHandle, tab_id: i64, enabled: bool) {
         false
     };
     if changed {
-        if let Some(webview) = app.get_webview(&crate::modules::browser::embed::embed_label(tab_id))
-        {
+        if let Some(webview) = super::registry::find_target(app, tab_id) {
             if enabled {
                 restore(&webview);
             } else {
@@ -867,10 +861,8 @@ pub fn begin_session(app: &AppHandle, tab_id: Option<i64>, caller: &Caller) -> O
     let Some(tab_id) = tab_id else {
         return control_for(caller, request_id);
     };
-    let live = crate::modules::browser::embed::active_navigation_generation(tab_id).is_some()
-        && app
-            .get_webview(&crate::modules::browser::embed::embed_label(tab_id))
-            .is_some();
+    let live = super::registry::active_navigation_generation(tab_id).is_some()
+        && super::registry::find_target(app, tab_id).is_some();
     let control_id = TABS.lock().ok().and_then(|mut guard| {
         let tabs = guard.get_or_insert_with(HashMap::new);
         begin_tracking(tabs, tab_id, live, caller, request_id)
@@ -889,8 +881,7 @@ pub fn begin_session(app: &AppHandle, tab_id: Option<i64>, caller: &Caller) -> O
             phase: "queued",
             point: None,
         },
-        navigation: crate::modules::browser::embed::active_navigation_generation(tab_id)
-            .unwrap_or(0),
+        navigation: super::registry::active_navigation_generation(tab_id).unwrap_or(0),
     };
     // Two events, exactly as a tracked action does. A lone "done" is rejected by
     // accepts(): a completion whose request_id differs from the last event's is
@@ -920,9 +911,7 @@ pub fn end_session(app: &AppHandle, control_id: u64, caller: &Caller) -> bool {
 
 fn publish_end(app: &AppHandle, event: &Activity) {
     notify_frontend(app, event);
-    if let Some(webview) =
-        app.get_webview(&crate::modules::browser::embed::embed_label(event.tab_id))
-    {
+    if let Some(webview) = super::registry::find_target(app, event.tab_id) {
         // Send an ordered end event, so a delayed completion cannot recreate the surface.
         if let Ok(json) = serde_json::to_string(&event) {
             let _ = webview.eval(format!("window.dispatchEvent(new CustomEvent('anbo-automation-visual',{{detail:{json}}}));"));
@@ -1064,9 +1053,7 @@ fn sweep(app: &AppHandle) {
                 })
                 .unwrap_or(false);
             notify_activity(app, &event, !painted);
-            if let Some(webview) =
-                app.get_webview(&crate::modules::browser::embed::embed_label(event.tab_id))
-            {
+            if let Some(webview) = super::registry::find_target(app, event.tab_id) {
                 if painted {
                     render(&webview, event.tab_id, &event);
                 }
@@ -1203,6 +1190,30 @@ pub fn remove(tab_id: i64) {
     }
 }
 
+/// For an external tab Anbo lost control of mid-action: its sessions are told
+/// they ended there, so the tab's header does not keep showing an action that
+/// will never report back.
+pub fn retire(app: &AppHandle, tab_id: i64) {
+    let unfinished: Vec<Activity> = TABS
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.as_mut()?.remove(&tab_id))
+        .map(|surface| {
+            surface
+                .members
+                .values()
+                .filter(|member| member.phase != "ended")
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    for mut event in unfinished {
+        event.phase = "ended";
+        event.sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        notify_activity(app, &event, true);
+    }
+}
+
 pub fn clear() {
     super::artifacts::clear();
     if let Ok(mut guard) = TABS.lock() {
@@ -1298,7 +1309,11 @@ mod tests {
             Caller::from_client_info(&serde_json::json!({"name":"claude"})).with_pty(Some(pty))
         };
         let (owner, other, neighbour) = (claude(41), claude(42), claude(43));
-        let (tab, theirs, mine) = (9_001, PathBuf::from("D:/work/b"), PathBuf::from("D:/work/a"));
+        let (tab, theirs, mine) = (
+            9_001,
+            PathBuf::from("D:/work/b"),
+            PathBuf::from("D:/work/a"),
+        );
         let mut driving = event(71, "done", 1);
         driving.actor = owner.clone();
         driving.tab_id = tab;
@@ -1326,8 +1341,21 @@ mod tests {
         helper.actor = claude(44);
         helper.tab_id = tab;
         seed_control(72, &helper.actor, Duration::from_secs(1));
-        TABS.lock().unwrap().as_mut().unwrap().get_mut(&tab).unwrap().members.record(&helper);
-        TABS.lock().unwrap().as_mut().unwrap().get_mut(&tab).unwrap().finish(71, &owner, 3);
+        TABS.lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .get_mut(&tab)
+            .unwrap()
+            .members
+            .record(&helper);
+        TABS.lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .get_mut(&tab)
+            .unwrap()
+            .finish(71, &owner, 3);
         assert!(foreign_holder(tab, &theirs, &other).is_none());
 
         TABS.lock().unwrap().as_mut().unwrap().remove(&tab);

@@ -50,6 +50,11 @@ import {
   type BrowserAddressBarHandle,
 } from "./BrowserAddressBar";
 import { BrowserStartPage } from "./BrowserStartPage";
+import {
+  approvedBrowserLabel,
+  EXTERNAL_BROWSERS_ENABLED,
+  useExternalBrowsers,
+} from "./external/store";
 import { recordBrowserVisit } from "./history";
 import {
   BROWSER_FOCUS_EVENT,
@@ -801,6 +806,44 @@ export const BrowserPane = memo(
       [id, native, reportNativeError, syncBounds],
     );
 
+    // A new tab in a workspace with an approved Chrome or Edge profile opens
+    // its first web page there, with that profile's logins, unless it was
+    // switched to Anbo's own browser. The tab itself becomes that page.
+    const browserLabel = useExternalBrowsers((state) =>
+      EXTERNAL_BROWSERS_ENABLED
+        ? approvedBrowserLabel(state.connections, workspaceRoot)
+        : null,
+    );
+    const [ownBrowser, setOwnBrowser] = useState(false);
+    const [openingInBrowser, setOpeningInBrowser] = useState(false);
+    const [browserOpenError, setBrowserOpenError] = useState<string | null>(
+      null,
+    );
+    const openInBrowser = useCallback(
+      async (next: string) => {
+        if (!workspaceRoot) return;
+        setOpeningInBrowser(true);
+        setBrowserOpenError(null);
+        try {
+          const service = await import("./external/sync");
+          await service.openExternalBrowserInto(next, workspaceRoot, id);
+        } catch (cause) {
+          setBrowserOpenError(String(cause));
+          setOpeningInBrowser(false);
+        }
+      },
+      [id, workspaceRoot],
+    );
+    const go = useCallback(
+      (next: string) => {
+        if (openingInBrowser) return;
+        if (!url && browserLabel && !ownBrowser && /^https?:\/\//i.test(next))
+          void openInBrowser(next);
+        else navigate(next);
+      },
+      [url, browserLabel, ownBrowser, openingInBrowser, openInBrowser, navigate],
+    );
+
     const dispatch = useCallback(
       (action: "back" | "forward" | "reload") => {
         if (native) {
@@ -842,7 +885,7 @@ export const BrowserPane = memo(
         <BrowserAddressBar
           ref={addressRef}
           url={url}
-          onSubmit={navigate}
+          onSubmit={go}
           onBack={() => dispatch("back")}
           onForward={() => dispatch("forward")}
           onReload={() => dispatch("reload")}
@@ -931,7 +974,24 @@ export const BrowserPane = memo(
               />
             )
           ) : (
-            <BrowserStartPage visible={visible} onNavigate={navigate} />
+            <BrowserStartPage
+              visible={visible}
+              onNavigate={go}
+              browserChoice={
+                browserLabel
+                  ? {
+                      label: browserLabel,
+                      inBrowser: !ownBrowser,
+                      opening: openingInBrowser,
+                      error: browserOpenError,
+                      onToggle: () => {
+                        setOwnBrowser((own) => !own);
+                        setBrowserOpenError(null);
+                      },
+                    }
+                  : null
+              }
+            />
           )}
         </div>
       </div>
