@@ -18,7 +18,6 @@ import {
 } from "@/modules/voice/lib/useVoiceVisibility";
 import { resolveVoicePress } from "@/modules/voice/lib/voicePress";
 import { normalizeVoiceText } from "@/modules/voice/lib/voiceTarget";
-import { warn } from "@tauri-apps/plugin-log";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
@@ -218,9 +217,8 @@ export function GlobalVoiceApp() {
   const handleVoiceError = useCallback(
     (detail: string) => {
       setError(detail);
-      // Target and insert failures are logged where they happen, natively;
-      // recording and transcription only fail here.
-      void warn(`global voice transcription failed: ${detail}`).catch(() => {});
+      // Target and insert failures are logged natively where they happen, and
+      // recording and transcription failures by the recorder hook.
       settleTarget();
     },
     [settleTarget],

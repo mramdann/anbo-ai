@@ -3,6 +3,7 @@ import type { ProviderKeys } from "./keyring";
 const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
 const STT_TIMEOUT_GROQ_MS = 30_000;
 const STT_TIMEOUT_WHISPERCPP_MS = 180_000;
+const STT_NETWORK_RETRY_DELAY_MS = 300;
 
 async function fetchWithTimeout(
   input: RequestInfo | URL,
@@ -30,7 +31,46 @@ async function transcribeOpenAI(blob: Blob, apiKey: string): Promise<string> {
   return text;
 }
 
+/// An upload can go out on a pooled connection that died while it sat idle
+/// (a NAT, VPN or remote-desktop link drops it without a word), and the browser
+/// does not send a request body a second time by itself. The fetch then rejects
+/// with a bare TypeError, "Failed to fetch", before the service saw anything.
+/// The recording is still in memory, so one more attempt goes out on a fresh
+/// connection. HTTP errors and timeouts are answers, not lost requests, and are
+/// never retried.
+async function postTranscription(
+  service: string,
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  try {
+    try {
+      return await fetchWithTimeout(url, init, timeoutMs);
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      await new Promise((resolve) =>
+        setTimeout(resolve, STT_NETWORK_RETRY_DELAY_MS),
+      );
+      return await fetchWithTimeout(url, init, timeoutMs);
+    }
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error(
+        `Could not reach ${service} after two attempts (${error.message}). Check the connection and try again.`,
+      );
+    }
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(
+        `${service} did not answer within ${Math.round(timeoutMs / 1000)} s.`,
+      );
+    }
+    throw error;
+  }
+}
+
 async function transcribeViaRest(
+  service: string,
   baseURL: string,
   blob: Blob,
   apiKey: string | null,
@@ -44,11 +84,12 @@ async function transcribeViaRest(
   const headers: Record<string, string> = {};
   if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
-  const res = await fetchWithTimeout(`${baseURL}/audio/transcriptions`, {
-    method: "POST",
-    headers,
-    body: form,
-  }, STT_TIMEOUT_GROQ_MS);
+  const res = await postTranscription(
+    service,
+    `${baseURL}/audio/transcriptions`,
+    { method: "POST", headers, body: form },
+    STT_TIMEOUT_GROQ_MS,
+  );
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(
@@ -70,7 +111,8 @@ async function toWav(blob: Blob): Promise<Blob> {
     const view = new DataView(buffer);
 
     const writeStr = (offset: number, s: string) => {
-      for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+      for (let i = 0; i < s.length; i++)
+        view.setUint8(offset + i, s.charCodeAt(i));
     };
 
     writeStr(0, "RIFF");
@@ -90,7 +132,7 @@ async function toWav(blob: Blob): Promise<Blob> {
     let offset = 44;
     for (let i = 0; i < length; i++) {
       const s = Math.max(-1, Math.min(1, channel[i]));
-      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
       offset += 2;
     }
 
@@ -109,10 +151,14 @@ async function transcribeWhisperCpp(
   form.append("file", wav, "audio.wav");
   form.append("response_format", "text");
 
-  const res = await fetchWithTimeout(`${baseURL}/inference`, {
-    method: "POST",
-    body: form,
-  }, STT_TIMEOUT_WHISPERCPP_MS);
+  const res = await fetchWithTimeout(
+    `${baseURL}/inference`,
+    {
+      method: "POST",
+      body: form,
+    },
+    STT_TIMEOUT_WHISPERCPP_MS,
+  );
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(
@@ -179,11 +225,12 @@ export async function transcribeAudio(
       const key = apiKeys.groq;
       if (!key) throw new Error("Groq API key is not configured");
       const model = options.groqSttModel || "whisper-large-v3-turbo";
-      return transcribeViaRest(GROQ_BASE_URL, blob, key, model);
+      return transcribeViaRest("Groq", GROQ_BASE_URL, blob, key, model);
     }
     case "whispercpp": {
       const baseURL =
-        options.whispercppBaseURL?.replace(/\/+$/, "") || "http://127.0.0.1:8080";
+        options.whispercppBaseURL?.replace(/\/+$/, "") ||
+        "http://127.0.0.1:8080";
       assertLoopbackUrl(baseURL);
       return transcribeWhisperCpp(baseURL, blob);
     }

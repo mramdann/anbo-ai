@@ -23,6 +23,7 @@
     "dialog:default",
     "os:allow-platform",
     "notification:default",
+    "log:default",
     "store:default"
   ]
 }

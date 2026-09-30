@@ -1,4 +1,5 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { warn } from "@tauri-apps/plugin-log";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { type SttProvider, WHISPERCPP_DEFAULT_BASE_URL } from "../config";
@@ -24,6 +25,13 @@ function pickMime(): string | undefined {
     if (MediaRecorder.isTypeSupported(m)) return m;
   }
   return undefined;
+}
+
+/// Every surface that records voice fails through here. The in-app orb and the
+/// composer used to show only a toast, which left nothing to go on afterwards,
+/// so each failure is written to the app log too; the transcript never is.
+function logVoiceFailure(detail: string): void {
+  void warn(`voice input failed: ${detail}`).catch(() => {});
 }
 
 function providerNeedsKey(provider: SttProvider): boolean {
@@ -148,6 +156,7 @@ export function useWhisperRecording({
           whispercppBaseURL?.replace(/\/+$/, "") || WHISPERCPP_DEFAULT_BASE_URL;
         if (!(await whisperCppReachable(endpoint))) {
           activeRef.current = false;
+          logVoiceFailure(`whispercpp: no server at ${endpoint}`);
           errorRef.current?.(
             `No local Whisper server at ${endpoint}. Start it in Settings, under Models.`,
           );
@@ -190,6 +199,7 @@ export function useWhisperRecording({
         rec.onerror = () => {
           if (generationRef.current !== generation) return;
           cancelledRef.current = true;
+          logVoiceFailure("microphone recording failed");
           errorRef.current?.("Microphone recording failed");
           toast.error("Microphone recording failed");
           if (rec.state !== "inactive") rec.stop();
@@ -235,6 +245,7 @@ export function useWhisperRecording({
             console.error("stt.transcribe", e);
             const detail =
               e instanceof Error ? e.message : "Transcription failed";
+            logVoiceFailure(`${sttProvider}, ${blob.size} bytes: ${detail}`);
             errorRef.current?.(detail);
             toast.error(detail);
           } finally {
@@ -263,6 +274,9 @@ export function useWhisperRecording({
           return false;
         }
         console.error("stt.getUserMedia", e);
+        logVoiceFailure(
+          `microphone access failed: ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`,
+        );
         errorRef.current?.("Microphone access failed");
         toast.error("Microphone access failed");
         activeRef.current = false;
