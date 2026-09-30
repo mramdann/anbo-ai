@@ -1,3 +1,5 @@
+import type { TurnEvidence } from "./agentScreenClassifier";
+
 type Evidence = { since: number; started: number; finished: number };
 const entries = new Map<number, Evidence>();
 const inputs = new Map<number, number>();
@@ -43,12 +45,18 @@ export const codexTurnEvidence = {
       Number.isFinite(finished) && finished >= started ? finished : 0;
   },
   completed(leaf?: number) {
+    return this.state(leaf) === "complete";
+  },
+  /**
+   * What the rollout says about the turn since the last submitted input: still
+   * open, finished, or nothing yet (no watcher, or no turn recorded since).
+   */
+  state(leaf?: number): TurnEvidence {
     const entry = leaf === undefined ? undefined : entries.get(leaf);
-    return (
-      !!entry &&
-      entry.started >= entry.since &&
-      entry.finished >= entry.started &&
-      entry.finished > 0
-    );
+    if (!entry || entry.started <= 0 || entry.started < entry.since)
+      return null;
+    return entry.finished >= entry.started && entry.finished > 0
+      ? "complete"
+      : "running";
   },
 };

@@ -11,7 +11,7 @@ import type {
   AgentAutomationResponse,
 } from "./agentAutomationProtocol";
 import { agentIdFor } from "./agentIdentity";
-import { classifyAgentScreen } from "./agentScreenClassifier";
+import { readAgentScreen } from "./agentScreenClassifier";
 import { codexTurnEvidence } from "./codexTurnEvidence";
 
 export type {
@@ -71,6 +71,9 @@ type ServiceDependencies = {
   getSessions: () => Record<number, AgentSession>;
   getActiveTabId: () => number | null;
   getBuffer: (leafId: number) => string | null;
+  /** The terminal's bottom rows as drawn, for reading the agent's state.
+   * Falls back to getBuffer. */
+  getScreen?: (leafId: number) => string | null;
   prepare: (leafId: number) => boolean;
   write: (leafId: number, data: string) => boolean;
   spawn: (
@@ -257,12 +260,12 @@ export function isAgentTuiReady(
   ) {
     return true;
   }
+  // A screen that looks idle while its transcript ends mid-turn is not a
+  // prompt to type into, unless the rollout confirms the turn is over.
+  const evidence = codexTurnEvidence.state(leafId);
+  const screen = readAgentScreen(normalizedCli, buffer, evidence);
   return (
-    classifyAgentScreen(
-      normalizedCli,
-      buffer,
-      codexTurnEvidence.completed(leafId),
-    ) === "ready"
+    screen.state === "ready" && (!screen.settling || evidence === "complete")
   );
 }
 
@@ -813,6 +816,8 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     if (!current.ok) return current.response;
     const readPreparedBuffer = (leafId: number) =>
       deps.prepare(leafId) ? deps.getBuffer(leafId) : null;
+    const readPreparedScreen = (leafId: number) =>
+      deps.prepare(leafId) ? (deps.getScreen ?? deps.getBuffer)(leafId) : null;
     if (!deps.prepare(current.leafId)) {
       return error(
         "agent_not_ready",
@@ -828,7 +833,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         needsEchoedInput(normalizedCli) ||
         (!isAntigravity && message.message.length > INPUT_CHUNK_CHARS)) &&
       !(await waitForAgentTuiReady(
-        () => readPreparedBuffer(current.leafId),
+        () => readPreparedScreen(current.leafId),
         current.agent.cli,
         timeout,
         current.leafId,

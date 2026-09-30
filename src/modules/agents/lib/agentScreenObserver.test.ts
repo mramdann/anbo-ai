@@ -1,262 +1,236 @@
 import { describe, expect, it } from "vitest";
+import { agentScreens as screens } from "./agentScreen.fixtures";
+import type { TurnEvidence } from "./agentScreenClassifier";
 import {
-  AGENT_BROWSER_WORKING_MS,
   AgentScreenObserver,
+  type ObservedAgentSignal,
 } from "./agentScreenObserver";
 
-const ready = "OpenAI Codex\n› Ask Codex to do anything\ngpt-5.6-sol high";
+type Screen = keyof typeof screens;
+type Timed = ObservedAgentSignal & { at: number };
 
-describe("AgentScreenObserver", () => {
-  it("finishes Claude once after report prose and an accented completion", () => {
-    const observer = new AgentScreenObserver();
-    const idle = "Claude Code\n\u276f \n? for shortcuts";
-    const active = `${idle}\nThought for 9s\nesctointerrupt`;
-    const complete = [
-      "Claude Code",
-      "Thought for 9s",
-      "    loading/pendingUrl/committed URL terbedakan jelas.",
-      "\u273b Saut\u00e9ed for 13m 12s \u00b7 done 8:03 PM",
-      "\u276f ",
-      "bypass permissions on (shift+tab to cycle)",
-    ].join("\n");
-    observer.start(10, 20, "claude");
-    observer.poll(() => idle, 0);
-    observer.poll(() => idle, 200);
-    observer.input(10, "\r", 300);
-    observer.poll(() => active, 500);
-    observer.poll(() => active, 700);
-    expect(observer.poll(() => complete, 1_500)).toEqual([]);
-    expect(observer.poll(() => complete, 1_700)).toEqual([
-      expect.objectContaining({ kind: "finished", leafId: 10, ptyId: 20 }),
-    ]);
-    expect(observer.poll(() => complete, 60_000)).toEqual([]);
-    observer.input(10, "\r", 60_100);
-    observer.poll(() => `${complete}\nesctointerrupt`, 61_200);
-    expect(observer.poll(() => `${complete}\nesctointerrupt`, 61_400)).toEqual(
-      [],
-    );
-  });
+const screen = (name: Screen) => screens[name].join("\n");
 
-  it("does not call a Kimi turn finished while the answer is still arriving", () => {
-    // Kimi drops its spinner once the model starts streaming and keeps the
-    // composer mounted, so every frame below reads as an idle screen. Only the
-    // transcript growing says the turn is still running.
-    const observer = new AgentScreenObserver();
-    const box = "\n > \n Ask When Needed  GLM-5.3  context: 5% (41k/977k)";
-    const frame = (words: number) =>
-      `Welcome to Kimi Code!\n${"jawaban ".repeat(words)}${box}`;
-    observer.start(10, 20, "kimi");
-    observer.poll(() => frame(0), 0);
-    observer.poll(() => frame(0), 200);
-    observer.input(10, "\r", 400);
-
-    // Four seconds of streaming: each poll looks ready, none may report a
-    // finished turn, because each frame differs from the one before it.
-    const streamed: unknown[] = [];
-    for (let tick = 1; tick <= 20; tick += 1) {
-      streamed.push(...observer.poll(() => frame(tick), 1_400 + tick * 200));
+/** Polls every 200 ms over [from, to], as the bridge does. */
+function run(
+  observer: AgentScreenObserver,
+  read: string | null | ((now: number) => string | null),
+  from: number,
+  to: number,
+): Timed[] {
+  const out: Timed[] = [];
+  for (let now = from; now <= to; now += 200) {
+    const text = typeof read === "function" ? read(now) : read;
+    for (const signal of observer.poll(() => text, now)) {
+      out.push({ ...signal, at: now });
     }
-    expect(streamed).toEqual([]);
+  }
+  return out;
+}
 
-    // The answer stops growing. A turn that never looked busy still serves
-    // its existing grace period first, and then reports finished exactly once.
-    expect(observer.poll(() => frame(20), 5_600)).toEqual([]);
-    expect(observer.poll(() => frame(20), 6_800)).toEqual([]);
-    expect(observer.poll(() => frame(20), 7_200)).toEqual([
-      expect.objectContaining({ kind: "finished", leafId: 10, ptyId: 20 }),
+const kinds = (signals: readonly { kind: string }[]) =>
+  signals.map((signal) => signal.kind);
+
+function settled(agent: string, idle: Screen): AgentScreenObserver {
+  const observer = new AgentScreenObserver();
+  observer.start(1, 7, agent, 0);
+  expect(kinds(run(observer, screen(idle), 200, 1_000))).toEqual(["ready"]);
+  return observer;
+}
+
+describe("turns", () => {
+  it("settles startup without announcing a turn", () => {
+    const observer = new AgentScreenObserver();
+    expect(observer.start(1, 7, "claude", 0).kind).toBe("working");
+    expect(kinds(run(observer, screen("claudeIdleAuto"), 200, 5_000))).toEqual([
+      "ready",
     ]);
-    expect(observer.poll(() => frame(20), 7_400)).toEqual([]);
   });
 
-  it("settles startup without reporting a completed turn", () => {
+  it("announces a submitted turn once, with how long it took", () => {
+    const observer = settled("claude", "claudeIdleAuto");
+    expect(observer.input(1, "Jawab satu kata saja", 2_000)).toBeNull();
+    expect(observer.input(1, "\r", 2_000)?.kind).toBe("working");
+    expect(run(observer, screen("claudeThinking"), 2_200, 6_000)).toEqual([]);
+    const done = run(observer, screen("claudeFinishedShort"), 6_200, 12_000);
+    expect(kinds(done)).toEqual(["finished"]);
+    expect(done[0].durationMs).toBe(4_200);
+    expect(done[0].at).toBeGreaterThanOrEqual(7_200);
+  });
+
+  it("starts no turn for a slash command, an empty Enter or a menu key", () => {
+    const observer = settled("claude", "claudeIdleAuto");
+    expect(observer.input(1, "/clear\r", 2_000)).toBeNull();
+    expect(observer.input(1, "\r", 2_200)).toBeNull();
+    expect(observer.input(1, "\u001b[B", 2_400)).toBeNull();
+    expect(run(observer, screen("claudeCleared"), 2_600, 15_000)).toEqual([]);
+  });
+
+  it("lets an Enter that never became work go back to waiting quietly", () => {
+    // Kimi folds an Enter that arrives too soon into its box as a newline.
+    const observer = settled("kimi", "kimiIdle");
+    expect(observer.input(1, "halo\r", 2_000)?.kind).toBe("working");
+    const signals = run(observer, screen("kimiIdle"), 2_200, 12_000);
+    expect(kinds(signals)).toEqual(["ready"]);
+    expect(signals[0].at).toBeGreaterThanOrEqual(8_000);
+  });
+
+  it("keeps a prompt the agent blocks on inside the turn that asked it", () => {
+    const observer = settled("claude", "claudeIdleAuto");
+    observer.input(1, "Buat file catatan.txt\r", 2_000);
+    expect(
+      kinds(run(observer, screen("claudeCreateDialog"), 2_200, 4_000)),
+    ).toEqual(["attention"]);
+    // Claude takes the option's number without Enter.
+    expect(observer.input(1, "1", 4_100)).toBeNull();
+    expect(
+      kinds(run(observer, screen("claudeToolRunning"), 4_200, 6_000)),
+    ).toEqual(["working"]);
+    const done = run(observer, screen("claudeFinishedShort"), 6_200, 9_000);
+    expect(kinds(done)).toEqual(["finished"]);
+    expect(done[0].durationMs).toBe(4_200);
+  });
+
+  it("moves an answered prompt back to work at once on Enter", () => {
+    const observer = settled("claude", "claudeIdleAuto");
+    observer.input(1, "tanya saya\r", 2_000);
+    run(observer, screen("claudeQuestion"), 2_200, 3_000);
+    expect(observer.input(1, "\r", 3_100)?.kind).toBe("working");
+  });
+
+  it("does not make a turn of a prompt answered at startup", () => {
     const observer = new AgentScreenObserver();
-    expect(observer.start(10, 20, "codex").kind).toBe("working");
-    expect(observer.poll(() => ready, 0)).toEqual([]);
-    expect(observer.poll(() => ready, 100)).toEqual([
-      expect.objectContaining({ kind: "ready", leafId: 10, ptyId: 20 }),
+    observer.start(1, 7, "claude", 0);
+    expect(kinds(run(observer, screen("claudeTrust"), 200, 1_000))).toEqual([
+      "attention",
     ]);
+    expect(observer.input(1, "\u001b[B", 1_100)).toBeNull();
+    expect(observer.input(1, "\r", 1_200)).toBeNull();
+    expect(
+      kinds(run(observer, screen("claudeIdleAuto"), 1_400, 5_000)),
+    ).toEqual(["ready"]);
   });
 
-  it("tracks submit, permission attention, and completion without hooks", () => {
-    const observer = new AgentScreenObserver();
-    observer.start(10, 20, "codex");
-    observer.poll(() => ready, 0);
-    observer.poll(() => ready, 100);
-
-    expect(observer.input(10, "\r", 200)?.kind).toBe("working");
-    const approval =
-      "This command requires approval\n1. Yes\nPress enter to confirm";
-    expect(observer.poll(() => approval, 300)).toEqual([]);
-    expect(observer.poll(() => approval, 400)[0]?.kind).toBe("attention");
-    expect(observer.input(10, "\r", 500)?.kind).toBe("working");
-    observer.poll(() => ready, 1_600);
-    expect(observer.poll(() => ready, 1_700)[0]?.kind).toBe("finished");
+  it("announces work that started by itself, like a finished background task", () => {
+    const observer = settled("claude", "claudeIdleBypass");
+    const working = run(observer, screen("claudeThinking"), 2_000, 4_000);
+    expect(kinds(working)).toEqual(["working"]);
+    expect(working[0].turnStartedAt).toBe(2_000);
+    const done = run(observer, screen("claudeFinishedShort"), 4_200, 7_000);
+    expect(kinds(done)).toEqual(["finished"]);
   });
 
-  it("does not finish while the minimum working window is active", () => {
-    const observer = new AgentScreenObserver();
-    observer.start(10, 20, "codex");
-    observer.poll(() => ready, 0);
-    observer.poll(() => ready, 100);
-    observer.input(10, "\r", 200);
-    observer.poll(() => ready, 300);
-    expect(observer.poll(() => ready, 400)).toEqual([]);
-    expect(observer.poll(() => ready, 1_200)).toEqual([]);
-    expect(observer.poll(() => ready, 2_600)).toEqual([]);
-    expect(observer.poll(() => ready, 2_700)[0]?.kind).toBe("finished");
-  });
-
-  it("gives Antigravity time to start before treating its mounted prompt as finished", () => {
-    const observer = new AgentScreenObserver();
-    const antigravityReady =
-      "Antigravity CLI\n>\n? for shortcuts\nGemini 3.7 Flash · high";
-    observer.start(10, 20, "antigravity");
-    observer.poll(() => antigravityReady, 0);
-    observer.poll(() => antigravityReady, 100);
-    observer.input(10, "\r", 200);
-
-    observer.poll(() => antigravityReady, 300);
-    expect(observer.poll(() => antigravityReady, 400)).toEqual([]);
-    expect(observer.poll(() => antigravityReady, 1_300)).toEqual([]);
-    expect(observer.poll(() => antigravityReady, 11_200)).toEqual([]);
-    expect(observer.poll(() => antigravityReady, 11_300)[0]?.kind).toBe(
-      "finished",
-    );
-  });
-
-  it("does not let a persistent ready prompt overwrite a new working turn", () => {
-    const observer = new AgentScreenObserver();
-    observer.start(10, 20, "codex");
-    observer.poll(() => ready, 0);
-    observer.poll(() => ready, 100);
-
-    expect(observer.input(10, "\r", 200)?.kind).toBe("working");
-    expect(observer.poll(() => ready, 1_200)).toEqual([]);
-    expect(observer.poll(() => ready, 1_400)).toEqual([]);
-
-    const active =
-      "OpenAI Codex\n• Working (3s · esc to interrupt)\n› \ngpt-5.6-sol high";
-    expect(observer.poll(() => active, 1_600)).toEqual([]);
-    expect(observer.poll(() => active, 1_800)).toEqual([]);
-
-    expect(observer.poll(() => ready, 2_000)).toEqual([]);
-    expect(observer.poll(() => ready, 2_200)[0]?.kind).toBe("finished");
-  });
-
-  it("does not emit repeated Claude finishes while thought progress is live", () => {
-    const observer = new AgentScreenObserver();
-    const claudeReady =
-      "Claude Code\n\u276f \nmanual mode on Â· ? for shortcuts";
-    observer.start(10, 20, "claude");
-    observer.poll(() => claudeReady, 0);
-    observer.poll(() => claudeReady, 100);
-    observer.input(10, "\r", 200);
-
-    const active = [
-      "Claude Code",
-      "\u276f previous request",
-      "answer",
-      "Brewed for 4s",
-      "\u276f long running request",
-      "Thought for 6s",
-      "Web Search(latest information)",
-      "Thought for 9s",
-      "\u276f ",
-      "manual mode on Â· ? for shortcuts",
-    ].join("\n");
-    expect(observer.poll(() => active, 1_400)).toEqual([]);
-    expect(observer.poll(() => active, 1_600)).toEqual([]);
-    expect(observer.poll(() => active, 4_000)).toEqual([]);
-    expect(observer.poll(() => active, 6_000)).toEqual([]);
-
-    const settled = `${active}\nfinal answer\nBrewed for 10s`;
-    expect(observer.poll(() => settled, 6_200)).toEqual([]);
-    expect(observer.poll(() => settled, 6_400)[0]?.kind).toBe("finished");
-
-    // Repainting the same completed turn as active and settled again must not
-    // retain another finished notification without new terminal input.
-    expect(observer.poll(() => active, 6_600)).toEqual([]);
-    expect(observer.poll(() => active, 6_800)[0]?.kind).toBe("working");
-    expect(observer.poll(() => settled, 7_000)).toEqual([]);
-    expect(observer.poll(() => settled, 7_200)[0]?.kind).toBe("ready");
-    expect(observer.poll(() => settled, 8_800)).toEqual([]);
-  });
-
-  it("restores an idle Claude screen after a multi-minute Churned turn", () => {
-    const observer = new AgentScreenObserver();
-    const restored = [
-      "Claude Code v2.1.247",
-      "\u276f inspect this workspace",
-      "Thought for 6s",
-      "final answer",
-      "Churned for 1m 37s · done 1:01 PM",
-      "\u276f ",
-      "manual mode on · ? for shortcuts",
-    ].join("\n");
-
-    expect(observer.start(10, 20, "claude").kind).toBe("working");
-    expect(observer.poll(() => restored, 0)).toEqual([]);
-    expect(observer.poll(() => restored, 100)).toEqual([
-      expect.objectContaining({ kind: "ready", leafId: 10, ptyId: 20 }),
-    ]);
+  it("names the work left running when a turn ends, and when it stops", () => {
+    const observer = settled("claude", "claudeIdleBypass");
+    observer.input(1, "jalankan di background\r", 2_000);
+    run(observer, screen("claudeThinking"), 2_200, 3_000);
+    const done = run(observer, screen("claudeBackgroundShell"), 3_200, 6_000);
+    expect(done).toHaveLength(1);
+    expect(done[0]).toMatchObject({ kind: "finished", background: "1 shell" });
+    const cleared = run(observer, screen("claudeFinishedShort"), 6_200, 7_000);
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0]).toMatchObject({ kind: "ready", background: null });
   });
 });
 
-describe("browser work as evidence", () => {
-  it("reports the agent working from a served tool call, not just the screen", () => {
-    // Kimi keeps its composer mounted through a turn, so a screen read between
-    // two MCP calls looks settled. Anbo served those calls and is drawing a
-    // cursor for them on the tab, so it already knows better.
-    const idle = [
-      "Welcome to Kimi Code!",
-      "  > ",
-      "Never Ask  GLM-5.3  D:work   context: 4% (33k/977k)",
-    ].join("\n");
-    const observer = new AgentScreenObserver();
-    observer.start(7, 70, "kimi");
-    observer.poll(() => idle, 0);
-    expect(observer.poll(() => idle, 200)).toEqual([
-      { leafId: 7, ptyId: 70, agent: "kimi", kind: "ready" },
-    ]);
-
-    // A tool call lands while the screen still shows a settled composer.
-    expect(observer.activity(7, 1_000)).toEqual({
-      leafId: 7,
-      ptyId: 70,
-      agent: "kimi",
-      kind: "working",
-    });
-    // And the settled screen must not talk it back out of working while the
-    // call is in flight.
-    expect(observer.poll(() => idle, 1_200)).toEqual([]);
-    expect(observer.poll(() => idle, 1_400)).toEqual([]);
+describe("pauses inside a turn", () => {
+  it("holds Antigravity through the pause between a command and the model", () => {
+    const observer = settled("antigravity", "agyIdle");
+    observer.input(1, "jalankan perintah\r", 2_000);
+    run(observer, screen("agyGenerating"), 2_200, 4_000);
+    // Measured at 2.5 s in the capture.
+    expect(run(observer, screen("agyCommandGap"), 4_200, 6_800)).toEqual([]);
+    expect(run(observer, screen("agyGenerating"), 7_000, 8_000)).toEqual([]);
+    const done = run(observer, screen("agyIdle"), 8_200, 13_000);
+    expect(kinds(done)).toEqual(["finished"]);
+    expect(done[0].at).toBeGreaterThanOrEqual(11_700);
   });
 
-  it("does not announce a finish in the gap between two tool calls", () => {
-    // A model pauses for seconds between calls and some CLIs paint nothing in
-    // that gap. Announcing "finished" there fires a notification mid-turn and
-    // then has to take it back on the next call.
-    const idle = ["  > ", "Never Ask  GLM-5.3  context: 4%"].join("\n");
-    const observer = new AgentScreenObserver();
-    observer.start(9, 90, "kimi");
-    observer.activity(9, 0, AGENT_BROWSER_WORKING_MS);
-    for (const now of [1_500, 2_000, 3_000, 4_000, 5_000]) {
-      expect(observer.poll(() => idle, now)).toEqual([]);
-    }
-    // The next call arrives and the hold simply extends.
-    observer.activity(9, 5_500, AGENT_BROWSER_WORKING_MS);
-    expect(observer.poll(() => idle, 8_000)).toEqual([]);
+  it("does not end a turn while text is still arriving with no progress row", () => {
+    const observer = settled("kimi", "kimiIdle");
+    observer.input(1, "tulis panjang\r", 2_000);
+    run(observer, screen("kimiSpinner"), 2_200, 3_000);
+    const streaming = (now: number) =>
+      [`  paragraf ${Math.floor(now / 200)}`, ...screens.kimiIdle].join("\n");
+    expect(run(observer, streaming, 3_200, 8_000)).toEqual([]);
+    const done = run(observer, screen("kimiIdle"), 8_200, 11_000);
+    expect(kinds(done)).toEqual(["finished"]);
+    expect(done[0].at).toBeGreaterThanOrEqual(9_700);
   });
 
-  it("still finishes the turn once the calls stop and the screen settles", () => {
-    const idle = ["  > ", "Never Ask  GLM-5.3  context: 4%"].join("\n");
+  it("waits out Codex commentary that has no turn-end row yet", () => {
+    const observer = settled("codex", "codexIdle");
+    observer.input(1, "jalankan\r", 2_000);
+    run(observer, screen("codexWorking"), 2_200, 3_000);
+    expect(run(observer, screen("codexCommentary"), 3_200, 25_000)).toEqual([]);
+    const done = run(observer, screen("codexFinishedShort"), 25_200, 29_000);
+    expect(kinds(done)).toEqual(["finished"]);
+    expect(done[0].at).toBeGreaterThanOrEqual(27_700);
+  });
+
+  it("ends a Codex turn at once when its rollout records it finished", () => {
+    let evidence: TurnEvidence = "running";
+    const observer = new AgentScreenObserver({ evidence: () => evidence });
+    observer.start(1, 7, "codex", 0);
+    run(observer, screen("codexIdle"), 200, 1_000);
+    observer.input(1, "jalankan\r", 2_000);
+    expect(run(observer, screen("codexCommentary"), 2_200, 10_000)).toEqual([]);
+    evidence = "complete";
+    const done = run(observer, screen("codexCommentary"), 10_200, 11_000);
+    expect(kinds(done)).toEqual(["finished"]);
+    expect(done[0].at).toBe(10_400);
+  });
+
+  it("treats a tool call Anbo served as work until the calls stop", () => {
+    const observer = settled("claude", "claudeIdleBypass");
+    expect(observer.activity(1, 2_000, 6_000)?.kind).toBe("working");
+    expect(run(observer, screen("claudeIdleBypass"), 2_200, 7_800)).toEqual([]);
+    expect(observer.activity(1, 7_900, 6_000)).toBeNull();
+    const done = run(observer, screen("claudeIdleBypass"), 8_000, 16_000);
+    expect(kinds(done)).toEqual(["finished"]);
+    expect(done[0].at).toBeGreaterThanOrEqual(13_900);
+  });
+});
+
+describe("screens that say nothing", () => {
+  it("reads no buffer as no news", () => {
     const observer = new AgentScreenObserver();
-    observer.start(8, 80, "kimi");
-    observer.activity(8, 0, AGENT_BROWSER_WORKING_MS);
-    observer.poll(() => idle, 100);
-    const settled = observer.poll(() => idle, 7_000);
-    expect(settled).toEqual([
-      { leafId: 8, ptyId: 80, agent: "kimi", kind: "finished" },
-    ]);
+    observer.start(1, 7, "claude", 0);
+    expect(run(observer, null, 200, 30_000)).toEqual([]);
+  });
+
+  it("lets an unrecognised, motionless screen settle to waiting", () => {
+    const observer = new AgentScreenObserver();
+    observer.start(1, 7, "claude", 0);
+    const signals = run(observer, "PS D:\\work> claude --version", 200, 12_000);
+    expect(kinds(signals)).toEqual(["ready"]);
+    expect(signals[0].at).toBeGreaterThanOrEqual(10_000);
+  });
+
+  it("keeps the last phase when asked not to guess", () => {
+    const observer = new AgentScreenObserver({ settleUnknownMs: null });
+    observer.start(1, 7, "claude", 0);
+    expect(run(observer, "PS D:\\work>", 200, 30_000)).toEqual([]);
+  });
+});
+
+describe("what counts as a submitted message", () => {
+  it.each([
+    [
+      "a paste followed by Enter",
+      ["\u001b[200~dua baris\nteks\u001b[201~", "\r"],
+      true,
+    ],
+    ["text cleared with ctrl+u", ["halo", "\u0015", "\r"], false],
+    ["text erased with backspace", ["hi", "\u007f\u007f", "\r"], false],
+    ["text abandoned with Esc", ["halo", "\u001b", "\r"], false],
+    ["arrow keys only", ["\u001b[A", "\u001b[B", "\r"], false],
+    ["a slash command with arguments", ["/model sonnet", "\r"], false],
+  ])("%s", (_name, chunks, starts) => {
+    const observer = settled("claude", "claudeIdleAuto");
+    const signals = (chunks as string[])
+      .map((chunk, index) => observer.input(1, chunk, 2_000 + index))
+      .filter(Boolean);
+    expect(signals.length > 0).toBe(starts);
   });
 });

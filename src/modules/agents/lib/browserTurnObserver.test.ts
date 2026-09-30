@@ -74,7 +74,9 @@ describe("browser turn cleanup", () => {
   });
 
   it("separates a completed model turn from its background server", () => {
-    expect(classifyAgentScreen("antigravity", background)).toBe("working");
+    // A background command is not the model's turn: the agent waits, and the
+    // task shows as a marker next to that state.
+    expect(classifyAgentScreen("antigravity", background)).toBe("ready");
     expect(classifyAgentTurn("antigravity", background)).toBe("ready");
     expect(classifyAgentTurn("agy", working)).toBe("working");
     expect(
@@ -139,7 +141,7 @@ describe("browser turn cleanup", () => {
     observer.start(1, 1, "antigravity");
     observer.receive(event(2), 0);
     observer.poll(() => ready, 1000);
-    observer.input(1, "\r", 1100);
+    observer.input(1, "next task\r", 1100);
     expect(observer.poll(() => ready, 1200)).toEqual([]);
     observer.receive(event(4, "running", 1, 10, 3), 1300);
     observer.receive(event(5, "done", 1, 10, 1), 1400); // stale completion

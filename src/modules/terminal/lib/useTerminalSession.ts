@@ -227,6 +227,36 @@ export function readTerminalBuffer(
   return text;
 }
 
+/**
+ * The bottom of the terminal as the rows it draws, one per line.
+ *
+ * readTerminalBuffer joins a wrapped row onto the one above it, which is right
+ * for flowing shell output and wrong for a full-screen app: Claude Code and
+ * OpenCode pad every row to the full width, so the terminal marks the next row
+ * wrapped and the join glues a spinner onto the end of a prompt. Agent status
+ * reads these rows instead. A terminal without a live grid has no rows to
+ * offer, so its stripped output lines stand in.
+ */
+export function readTerminalScreen(
+  leafId: number,
+  maxRows = 64,
+): string | null {
+  if (!sessions.has(leafId)) return null;
+  const slot = getLiveSlotForLeaf(leafId);
+  if (!slot) return readTerminalBuffer(leafId, maxRows);
+  const buffer = slot.term.buffer.active;
+  const rows: string[] = [];
+  for (
+    let index = Math.max(0, buffer.length - maxRows);
+    index < buffer.length;
+    index++
+  ) {
+    rows.push(buffer.getLine(index)?.translateToString(true) ?? "");
+  }
+  while (rows.length && rows[rows.length - 1] === "") rows.pop();
+  return rows.join("\n");
+}
+
 // Block-overlay viewport listeners, keyed by leafId at module scope so the
 // overlay (a child) can subscribe before the parent effect creates the session.
 const blockViewportListeners = new Map<number, Set<() => void>>();

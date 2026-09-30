@@ -3,7 +3,7 @@ import {
   acceptsAutomationState,
   parseAutomationState,
 } from "@/modules/browser/automationState";
-import { classifyAgentTurn } from "./agentScreenClassifier";
+import { readAgentTurn } from "./agentScreenClassifier";
 import { AgentScreenObserver } from "./agentScreenObserver";
 
 export type BrowserTurnEnd = {
@@ -18,7 +18,14 @@ type Control = { state: AutomationState; ptyId: number | null };
  * status-store write. Transport ownership is supplied only by the backend.
  */
 export class BrowserTurnObserver {
-  private readonly observer = new AgentScreenObserver(classifyAgentTurn);
+  // A surface is freed as soon as the turn reads over; the hold that keeps a
+  // notification from firing in a pause is not needed to release a cursor.
+  // A screen it cannot read keeps the cursor rather than guessing it free.
+  private readonly observer = new AgentScreenObserver({
+    read: readAgentTurn,
+    readyHoldMs: () => 0,
+    settleUnknownMs: null,
+  });
   private readonly leaves = new Map<number, number>();
   private readonly controls = new Map<string, Control>();
 

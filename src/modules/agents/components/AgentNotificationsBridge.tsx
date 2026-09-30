@@ -4,7 +4,7 @@ import {
   hasLeaf,
   leafIdForPty,
   ptyIdForLeaf,
-  readTerminalBuffer,
+  readTerminalScreen,
   setAgentActivity,
   subscribeTerminalInput,
 } from "@/modules/terminal";
@@ -328,11 +328,11 @@ export function AgentNotificationsBridge({
       if (signal) applyObserved(signal, ctxRef.current);
     });
     const timer = window.setInterval(() => {
-      const buffers = new Map<number, string | null>();
+      const screens = new Map<number, string | null>();
       const read = (leafId: number) => {
-        if (!buffers.has(leafId))
-          buffers.set(leafId, readTerminalBuffer(leafId, 160));
-        return buffers.get(leafId) ?? null;
+        if (!screens.has(leafId))
+          screens.set(leafId, readTerminalScreen(leafId));
+        return screens.get(leafId) ?? null;
       };
       const signals = observerRef.current.poll(read);
       for (const signal of signals) applyObserved(signal, ctxRef.current);

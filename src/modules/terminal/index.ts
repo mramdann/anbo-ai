@@ -34,6 +34,7 @@ export {
   ptyIdForLeaf,
   prepareTerminalAutomationSession,
   readTerminalBuffer,
+  readTerminalScreen,
   getTerminalSessionState,
   type TerminalSessionState,
   respawnSession,

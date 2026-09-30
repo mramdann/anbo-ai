@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { codexTurnEvidence as evidence } from "./codexTurnEvidence";
-import { classifyAgentScreen } from "./agentScreenClassifier";
+import { classifyAgentScreen, readAgentScreen } from "./agentScreenClassifier";
 import { AgentScreenObserver } from "./agentScreenObserver";
 import { isAgentTuiReady } from "./agentAutomation";
 
@@ -27,14 +27,25 @@ describe("exact Codex turn evidence", () => {
     expect(evidence.completed(11)).toBe(false);
   });
   it("does not treat a commentary gap as completion", () => {
-    expect(classifyAgentScreen("codex", screen)).toBe("working");
-    expect(classifyAgentScreen("codex", screen, true)).toBe("ready");
+    // Commentary with no turn-end row looks idle but unfinished: not work on
+    // its own, and not a prompt to type into.
+    expect(readAgentScreen("codex", screen)).toMatchObject({
+      state: "ready",
+      settling: true,
+    });
+    expect(isAgentTuiReady("codex", screen)).toBe(false);
+    expect(readAgentScreen("codex", screen, "complete")).toMatchObject({
+      state: "ready",
+      settling: false,
+    });
+    expect(classifyAgentScreen("codex", screen, "running")).toBe("working");
     expect(
-      classifyAgentScreen("codex", `${screen}\nesc to interrupt`, true),
+      classifyAgentScreen(
+        "codex",
+        `${screen}\n• Working (3s • esc to interrupt)`,
+        "complete",
+      ),
     ).toBe("working");
-    expect(
-      classifyAgentScreen("codex", "OpenAI Codex\nrequires approval", true),
-    ).toBe("attention");
   });
   it("ignores old turns, new input, failed reads and another leaf", () => {
     evidence.start(11, 1000);
@@ -60,15 +71,18 @@ describe("exact Codex turn evidence", () => {
   });
   it("settles once through the shared observer and permits the verified composer", () => {
     const observer = new AgentScreenObserver();
-    observer.start(11, 2, "codex");
+    observer.start(11, 2, "codex", 0);
     evidence.start(11, 0);
-    observer.input(11, "\r", 1000);
+    evidence.input(11, "\r", false, 1000);
+    observer.input(11, "next\r", 1000);
     observer.poll(() => screen, 1500);
-    observer.poll(() => screen, 1700);
+    expect(observer.poll(() => screen, 1700)).toEqual([]);
     expect(isAgentTuiReady("codex", screen, 11)).toBe(false);
     evidence.receive(11, complete(1100, 2000));
-    observer.poll(() => screen, 2500);
-    expect(observer.poll(() => screen, 2700)[0]?.kind).toBe("finished");
+    // The rollout closed the turn: no hold, no thirty-second settling wait.
+    const signals = observer.poll(() => screen, 2500);
+    expect(signals.map((signal) => signal.kind)).toEqual(["finished"]);
+    expect(signals[0].durationMs).toBe(500);
     expect(observer.poll(() => screen, 3000)).toEqual([]);
     expect(isAgentTuiReady("codex", screen, 11)).toBe(true);
   });
