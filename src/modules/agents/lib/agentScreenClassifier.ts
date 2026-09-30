@@ -177,8 +177,9 @@ const CODEX_OPTION_CURSOR = /^\s*›\s*\d+\.\s/;
 const CODEX_MENU = /esc back|enter select/;
 // Transcript cells: the agent's "• …" and the user's own "› …" message.
 const CODEX_ACTIVITY = /^\s{0,2}[•›]\s+\S/;
+// 0.156 separates the time with "·", 0.159 with "•".
 const CODEX_TURN_END =
-  /^\s{0,2}(?:[─━-]+\s*)?Worked for (?:\d{1,4}h )?(?:\d{1,4}m )?\d{1,4}(?:\.\d{1,3})?s(?:\s*·\s*\d{1,2}:\d{2}(?:\s*[AP]M)?)?\s*[─━-]*\s*$|^\s{0,2}\d{1,2}:\d{2}(?:\s*[AP]M)?\s*$|^\s{0,2}■\s+Conversation interrupted/i;
+  /^\s{0,2}(?:[─━-]+\s*)?Worked for (?:\d{1,4}h )?(?:\d{1,4}m )?\d{1,4}(?:\.\d{1,3})?s(?:\s*[·•]\s*\d{1,2}:\d{2}(?:\s*[AP]M)?)?\s*[─━-]*\s*$|^\s{0,2}\d{1,2}:\d{2}(?:\s*[AP]M)?\s*$|^\s{0,2}■\s+Conversation interrupted/i;
 const CODEX_TERMINALS = /(\d+) background terminals? running/;
 
 function readCodex(rows: Rows, evidence: TurnEvidence): AgentScreenReading {
@@ -276,11 +277,12 @@ function readAntigravity(rows: Rows): AgentScreenReading {
   const tasks = AGY_TASKS.exec(footer.join("\n"));
   const background = tasks ? plural(tasks[1], "task") : null;
   const from = rows.length - 18;
+  // Typing "/" opens a command list whose footer also says "esc to cancel";
+  // there it closes the list and says nothing about work.
+  const autocomplete = any(last(rows, 18), AGY_AUTOCOMPLETE);
   // A question stays on screen for a moment after it is answered; progress
   // or the idle footer drawn below it says the answer went through.
-  const dialogAt = any(last(rows, 18), AGY_AUTOCOMPLETE)
-    ? -1
-    : lastIndex(rows, AGY_DIALOG, from);
+  const dialogAt = autocomplete ? -1 : lastIndex(rows, AGY_DIALOG, from);
   const liveAt = lastIndex(rows, AGY_LIVE, rows.length - 14);
   const idleAt = lastIndex(rows, AGY_FOOTER_IDLE, rows.length - 2);
   if (dialogAt >= 0 && dialogAt > liveAt && dialogAt > idleAt) {
@@ -289,7 +291,7 @@ function readAntigravity(rows: Rows): AgentScreenReading {
   if (
     any(footer, AGY_SUBAGENTS) ||
     liveAt > idleAt ||
-    any(footer, AGY_FOOTER_BUSY)
+    (!autocomplete && any(footer, AGY_FOOTER_BUSY))
   ) {
     return reading("working", background);
   }
@@ -317,11 +319,16 @@ const OPENCODE_LIVE = /esc (?:again to )?interrup/;
 const OPENCODE_DIALOG =
   /Allow once\s{2,}Allow always|⇆\s*select\s+enter confirm|select\s+enter submit\s+esc dismiss/i;
 const OPENCODE_COMPOSER = /^\s*╹▀{8,}|ctrl\+p(?:\s|$)|tab agents/;
+// The start screen centres the input box, so a tall terminal puts it twenty
+// rows or more above the footer. Its bottom border is drawn nowhere else.
+const OPENCODE_BOX_END = /^\s*╹▀{8,}/;
 
 function readOpenCode(rows: Rows): AgentScreenReading {
   if (any(last(rows, 24), OPENCODE_DIALOG)) return reading("attention");
   if (any(last(rows, 6), OPENCODE_LIVE)) return reading("working");
-  if (any(last(rows, 12), OPENCODE_COMPOSER)) return idle();
+  if (any(last(rows, 12), OPENCODE_COMPOSER) || any(rows, OPENCODE_BOX_END)) {
+    return idle();
+  }
   return reading(null);
 }
 

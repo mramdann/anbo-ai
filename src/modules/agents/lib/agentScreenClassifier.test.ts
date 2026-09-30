@@ -270,6 +270,8 @@ describe("codex", () => {
     "  19:43",
     "─ Worked for 6s ──────",
     "■ Conversation interrupted - tell the model what to do differently.",
+    // Codex 0.159.2, seen live on 2026-09-30.
+    "  Worked for 3s • 18:29",
   ])("recognises the turn-end row %s", (end) => {
     const screen = [
       "• The baseline is ready. I will open one background tab.",
@@ -360,6 +362,26 @@ describe("antigravity", () => {
       ),
     ).toBe("ready");
   });
+
+  it("does not take the slash-command list's esc to cancel for work", () => {
+    // Antigravity 1.2.13 with "/zz" typed, captured on 2026-09-30. Read as
+    // work, the idle agent turned working and then announced a finish.
+    const typing = [
+      "  ▄▀▀      ▀▀▄",
+      "",
+      rule,
+      "> /zz",
+      rule,
+      "   No matches",
+      "",
+      "  ↑/↓ Navigate · enter Select · tab Complete",
+      "esc to cancel                                              Gemini 3.1 Pro · high",
+    ].join("\n");
+    expect(classifyAgentScreen("antigravity", typing)).toBe("ready");
+    // The same footer over a progress row is still work.
+    const working = typing.replace("   No matches", "⡿  Generating...");
+    expect(classifyAgentScreen("antigravity", working)).toBe("working");
+  });
 });
 
 describe("opencode", () => {
@@ -379,6 +401,17 @@ describe("opencode", () => {
         "  ▣  Build · Muse Spark · 19.5s\n  D:\\work\\demo    10.6K (1% ctrl+p\n  scratchpad    commands",
       ),
     ).toBe("ready");
+  });
+
+  it("finds the centred start screen box in a tall terminal", () => {
+    // Dev's 48-row pane: the box ends twenty rows above the footer.
+    const home = [...screens.opencodeIdle];
+    const tip = home.findIndex((row) => row.includes("● Tip"));
+    home.splice(tip + 1, 0, ...Array<string>(9).fill(""));
+    home.unshift(...Array<string>(9).fill(""));
+    const bottom = home.length - home.findIndex((row) => /^\s*╹▀/.test(row));
+    expect(bottom).toBeGreaterThan(12);
+    expect(classifyAgentScreen("opencode", home.join("\n"))).toBe("ready");
   });
 });
 
