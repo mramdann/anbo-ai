@@ -149,6 +149,18 @@ describe("toasts that drop over an embedded page", () => {
     expect(overlay).not.toContain("toastsHoldPageBelow");
   });
 
+  it("cuts no toast that is still transparent", () => {
+    // A hidden toast coming back on screen waits out the hold at opacity 0;
+    // its cut would show the desktop until it appears.
+    const holes = source.slice(
+      source.indexOf("export function floatingSurfaceHoles"),
+      source.indexOf("export function hasNativeBrowserOverlay"),
+    );
+    expect(holes).toContain(
+      'if (toast && window.getComputedStyle(toast).opacity === "0") continue;',
+    );
+  });
+
   it("keeps a leaving toast cut until the stack drops over it", () => {
     // Closed at once, the page would cover the toast a frame before the page
     // sinks and Anbo draws it again.

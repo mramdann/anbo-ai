@@ -138,6 +138,11 @@ export function floatingSurfaceHoles(pane: Rect, dpr: number): PunchHole[] {
     if (holes.length >= MAX_FLOATING_SURFACES) break;
     const bounds = surface.getBoundingClientRect();
     if (!rectsIntersect(bounds, pane)) continue;
+    // A toast still transparent paints nothing yet: one not mounted, or one
+    // coming back on screen while the hold in globals.css keeps it unseen. Cut
+    // now, the desktop would show through until it appears.
+    const toast = surface.closest<HTMLElement>("[data-sonner-toast]");
+    if (toast && window.getComputedStyle(toast).opacity === "0") continue;
     const scale =
       surface.offsetWidth > 0 ? bounds.width / surface.offsetWidth : 1;
     const style = window.getComputedStyle(surface);
