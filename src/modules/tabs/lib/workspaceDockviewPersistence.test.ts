@@ -141,6 +141,37 @@ describe("workspace dockview persistence", () => {
     );
   });
 
+  it("keeps the last whole layout when handed one that lost its panels", () => {
+    const storage = memoryStorage();
+    writeWorkspaceDockviewLayout(
+      storage,
+      "space",
+      splitLayout([4], [9]),
+      tabs(4, 9),
+    );
+    // What a Dockview being torn down serializes: the groups, but no panels.
+    const torn = splitLayout([4], [9]);
+    torn.panels = {};
+    for (const node of torn.grid.root.data as { data: { views: string[] } }[]) {
+      node.data.views = [];
+    }
+    writeWorkspaceDockviewLayout(storage, "space", torn, tabs(4, 9));
+    // Nor is a snapshot written that is missing a tab the workspace has.
+    writeWorkspaceDockviewLayout(
+      storage,
+      "space",
+      workspaceTabsToDockviewLayout([4], 4),
+      tabs(4, 9),
+    );
+
+    expect(storage.setItem).toHaveBeenCalledTimes(1);
+    const restored = readWorkspaceDockviewLayout(storage, "space", tabs(4, 9));
+    expect(restored?.grid.root.data).toMatchObject([
+      { data: { views: ["tab:4"] } },
+      { data: { views: ["tab:9"] } },
+    ]);
+  });
+
   it("returns a partial layout when a tab is added while inactive", () => {
     let saved: string | null = null;
     const storage = {

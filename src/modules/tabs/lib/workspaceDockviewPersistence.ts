@@ -505,6 +505,11 @@ export function writeWorkspaceDockviewLayout(
 ): void {
   try {
     const tabIds = tabs.map((tab) => tab.id);
+    // A snapshot that does not hold exactly these tabs is refused on the next
+    // read, and the workspace falls back to one group holding every tab. A
+    // Dockview being torn down hands out such a snapshot, its groups already
+    // empty, so the last layout that was whole stays saved instead.
+    if (!isWorkspaceDockviewLayoutForTabs(layout, tabIds)) return;
     storage.setItem(
       workspaceDockviewLayoutKey(spaceId),
       JSON.stringify({

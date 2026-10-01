@@ -760,6 +760,8 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
   const handledExternalMoves = useRef(new Map<string, number>());
   const handledExternalSplits = useRef(new Map<string, number>());
   const loadedSpaceRef = useRef<string | null>(null);
+  // The Dockview the space was loaded into. A new one starts empty.
+  const loadedApiRef = useRef<DockviewApi | null>(null);
   const loadedTabsRef = useRef<readonly Tab[]>([]);
   // Tabs the workspace already had when its saved layout was applied; the
   // ones that layout could not place go beside their neighbours.
@@ -1190,13 +1192,19 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
   );
 
   // Save the outgoing space before replacing Dockview's complete grid state.
+  // A Dockview put up again under this component (a hot update recreates the
+  // context its subtree hangs from) starts empty, so it loads the space anew;
+  // the one before saved it on the way out.
   useLayoutEffect(() => {
-    if (!api || loadedSpaceRef.current === props.spaceId) return;
+    if (!api) return;
+    const sameDockview = loadedApiRef.current === api;
+    if (sameDockview && loadedSpaceRef.current === props.spaceId) return;
 
     cleanupDragRef.current?.();
-    if (loadedSpaceRef.current !== null) {
+    if (sameDockview && loadedSpaceRef.current !== null) {
       flushPersistedLayout(loadedSpaceRef.current, api);
     }
+    loadedApiRef.current = api;
     loadedSpaceRef.current = props.spaceId;
 
     const current = latest.current;
@@ -1312,14 +1320,16 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
     return () => {
       disposed = true;
       changed.dispose();
-      flushPersistedLayout(loadedSpaceRef.current, api);
     };
-  }, [
-    api,
-    flushPersistedLayout,
-    scheduleLayoutSettled,
-    schedulePersistedLayout,
-  ]);
+  }, [api, scheduleLayoutSettled, schedulePersistedLayout]);
+
+  // The last save on unmount runs as a layout cleanup: those run before
+  // Dockview's own passive cleanup disposes its panels, so the snapshot still
+  // holds them. Saved from a passive cleanup, it came out empty.
+  useLayoutEffect(() => {
+    if (!api) return;
+    return () => flushPersistedLayout(loadedSpaceRef.current, api);
+  }, [api, flushPersistedLayout]);
 
   // Incremental model sync keeps group membership and split geometry intact.
   // biome-ignore lint/correctness/useExhaustiveDependencies: layoutKey deliberately reruns ref-driven incremental sync.
