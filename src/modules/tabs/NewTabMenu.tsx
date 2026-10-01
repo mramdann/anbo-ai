@@ -10,9 +10,10 @@ import {
   PopoverAnchor,
   PopoverContent,
 } from "@/components/ui/popover";
-import { fmtShortcut, MOD_KEY, SHIFT_KEY } from "@/lib/platform";
+import { KEY_SEP } from "@/lib/platform";
 import { AgentLauncherPanel } from "@/modules/agents/components/AgentLauncherPanel";
 import type { AgentLaunchRequest } from "@/modules/agents/lib/launcher";
+import { useShortcutLabel } from "@/modules/shortcuts/lib/useShortcutLabel";
 import {
   AiBrowserIcon,
   ArrowRight01Icon,
@@ -49,6 +50,12 @@ export function NewTabMenu({
   const [launcherOpen, setLauncherOpen] = useState(false);
   const openLauncherAfterMenuClose = useRef(false);
   const openMenuAfterLauncherClose = useRef(false);
+  // The keys the user actually presses, rebound or not.
+  const kTerminal = useShortcutLabel("tab.new", KEY_SEP);
+  const kBlocks = useShortcutLabel("tab.newBlock", KEY_SEP);
+  const kPrivate = useShortcutLabel("tab.newPrivate", KEY_SEP);
+  const kEditor = useShortcutLabel("tab.newEditor", KEY_SEP);
+  const kBrowser = useShortcutLabel("tab.newBrowser", KEY_SEP);
 
   const onMenuOpenChange = (next: boolean) => {
     if (next) {
@@ -101,7 +108,7 @@ export function NewTabMenu({
                 />
                 <span className="flex-1">Terminal</span>
                 <span className="text-xs text-muted-foreground">
-                  {fmtShortcut(MOD_KEY, "T")}
+                  {kTerminal}
                 </span>
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={onNewBlock}>
@@ -111,9 +118,7 @@ export function NewTabMenu({
                   strokeWidth={1.75}
                 />
                 <span className="flex-1">Blocks</span>
-                <span className="text-xs text-muted-foreground">
-                  {fmtShortcut(MOD_KEY, SHIFT_KEY, "T")}
-                </span>
+                <span className="text-xs text-muted-foreground">{kBlocks}</span>
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={openLauncher}>
                 <HugeiconsIcon
@@ -137,7 +142,7 @@ export function NewTabMenu({
                 />
                 <span className="flex-1">Privacy</span>
                 <span className="text-xs text-muted-foreground">
-                  {fmtShortcut(MOD_KEY, "R")}
+                  {kPrivate}
                 </span>
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={onNewEditor}>
@@ -147,9 +152,7 @@ export function NewTabMenu({
                   strokeWidth={1.75}
                 />
                 <span className="flex-1">Editor</span>
-                <span className="text-xs text-muted-foreground">
-                  {fmtShortcut(MOD_KEY, "E")}
-                </span>
+                <span className="text-xs text-muted-foreground">{kEditor}</span>
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={onNewBrowser}>
                 <HugeiconsIcon
@@ -159,7 +162,7 @@ export function NewTabMenu({
                 />
                 <span className="flex-1">Browser</span>
                 <span className="text-xs text-muted-foreground">
-                  {fmtShortcut(MOD_KEY, "P")}
+                  {kBrowser}
                 </span>
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={onNewGitGraph}>
