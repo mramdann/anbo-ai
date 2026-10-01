@@ -160,6 +160,16 @@ export default forwardRef<
         <BrowserAddressBar
           ref={address}
           url={tab.url}
+          externalBrowser={
+            external
+              ? {
+                  browser: external.browser,
+                  label: external.name
+                    ? `${browser} · ${external.name}`
+                    : browser,
+                }
+              : undefined
+          }
           onSubmit={(url) => {
             void run({ action: "navigate", url });
           }}

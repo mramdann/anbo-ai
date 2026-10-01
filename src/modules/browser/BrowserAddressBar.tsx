@@ -19,6 +19,7 @@ import {
   PenTool03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { BrowserLogo } from "@/modules/browser/external/BrowserLogo";
 import { DEVICE_PRESETS, devicePreset, RESPONSIVE_DEVICE } from "./devices";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -77,6 +78,11 @@ type Props = {
   designActive?: boolean;
   /** Absent when this pane cannot host design mode (no native page). */
   onToggleDesign?: () => void;
+  /**
+   * The Chrome or Edge window this tab shows. Its logo takes the place of the
+   * dev-server ports menu, which belongs to Anbo's own browser.
+   */
+  externalBrowser?: { browser: "chrome" | "edge"; label: string };
 };
 
 export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
@@ -96,6 +102,7 @@ export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
       onToggleEffects,
       designActive,
       onToggleDesign,
+      externalBrowser,
     },
     ref,
   ) {
@@ -194,45 +201,58 @@ export const BrowserAddressBar = forwardRef<BrowserAddressBarHandle, Props>(
               strokeWidth={1.75}
             />
           </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                title="Common dev-server ports"
-                className="h-7 shrink-0 gap-1 rounded-md px-1.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                <HugeiconsIcon
-                  icon={Globe02Icon}
-                  size={13}
-                  strokeWidth={1.75}
-                />
-                <span className="hidden sm:inline">Ports</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="start"
-              className="max-h-80 min-w-56 overflow-y-auto"
+          {externalBrowser ? (
+            <span
+              className="flex size-7 shrink-0 items-center justify-center"
+              data-external-browser={externalBrowser.browser}
             >
-              {PORT_PRESETS.map((preset) => (
-                <DropdownMenuItem
-                  key={preset.port}
-                  onSelect={(event) => {
-                    event.preventDefault();
-                    void tryPort(preset.port);
-                  }}
+              <BrowserLogo
+                browser={externalBrowser.browser}
+                title={externalBrowser.label}
+                className="size-4"
+              />
+            </span>
+          ) : (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  title="Common dev-server ports"
+                  className="h-7 shrink-0 gap-1 rounded-md px-1.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
                 >
-                  <span className="flex-1">{preset.label}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {checkingPort === preset.port
-                      ? "checking..."
-                      : `:${preset.port}`}
-                  </span>
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
+                  <HugeiconsIcon
+                    icon={Globe02Icon}
+                    size={13}
+                    strokeWidth={1.75}
+                  />
+                  <span className="hidden sm:inline">Ports</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                className="max-h-80 min-w-56 overflow-y-auto"
+              >
+                {PORT_PRESETS.map((preset) => (
+                  <DropdownMenuItem
+                    key={preset.port}
+                    onSelect={(event) => {
+                      event.preventDefault();
+                      void tryPort(preset.port);
+                    }}
+                  >
+                    <span className="flex-1">{preset.label}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {checkingPort === preset.port
+                        ? "checking..."
+                        : `:${preset.port}`}
+                    </span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           <div className="relative flex flex-1 items-center">
             <Input
               ref={inputRef}
