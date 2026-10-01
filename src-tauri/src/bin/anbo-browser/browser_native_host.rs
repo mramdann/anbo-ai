@@ -1,17 +1,17 @@
-#[path = "../modules/browser_external/wire.rs"]
+#[path = "../../modules/browser_external/wire.rs"]
 mod wire;
 
 #[cfg(windows)]
-#[path = "../modules/browser_external/dock_window.rs"]
+#[path = "../../modules/browser_external/dock_window.rs"]
 mod dock_window;
 
 #[cfg(windows)]
 #[allow(dead_code)]
-#[path = "../modules/browser_external/browser_process.rs"]
+#[path = "../../modules/browser_external/browser_process.rs"]
 mod browser_process;
 
 #[cfg(windows)]
-#[path = "../modules/browser_external/extension_priority.rs"]
+#[path = "../../modules/browser_external/extension_priority.rs"]
 mod extension_priority;
 
 #[cfg(windows)]

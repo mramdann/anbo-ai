@@ -8,7 +8,10 @@ use std::process::exit;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+// Kept out of src/bin itself: the Tauri bundler takes every file there for a
+// binary of its own, whatever autobins says.
 #[cfg(windows)]
+#[path = "anbo-browser/browser_native_host.rs"]
 mod browser_native_host;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
