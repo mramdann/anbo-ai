@@ -20,7 +20,7 @@ import { cn } from "@/lib/utils";
 import { IS_WINDOWS } from "@/lib/platform";
 import {
   ATTENTION_SOUNDS,
-  playAttentionSound,
+  type AttentionSoundId,
 } from "@/modules/agents/lib/attentionSound";
 import { AGENT_ICONS } from "@/modules/ai/components/AgentSwitcher";
 import {
@@ -60,6 +60,14 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { SectionHeader } from "../components/SectionHeader";
+
+// The player loads with the first preview, so this window never carries the
+// sound recipes at startup.
+function previewAttentionSound(sound: AttentionSoundId) {
+  void import("@/modules/agents/lib/attentionSoundPlayer")
+    .then(({ playAttentionSound }) => playAttentionSound(sound))
+    .catch(() => {});
+}
 
 const ICON_OPTIONS: AgentIconId[] = [
   "coder",
@@ -135,7 +143,7 @@ export function AgentsSection() {
               disabled={
                 !agentInAppNotifications || agentAttentionSound === "none"
               }
-              onClick={() => playAttentionSound(agentAttentionSound)}
+              onClick={() => previewAttentionSound(agentAttentionSound)}
             >
               <HugeiconsIcon
                 icon={VolumeHighIcon}
@@ -148,7 +156,7 @@ export function AgentsSection() {
               disabled={!agentInAppNotifications}
               onValueChange={(value) => {
                 const sound = coerceAttentionSound(value);
-                playAttentionSound(sound);
+                previewAttentionSound(sound);
                 void setAgentAttentionSound(sound);
               }}
             >

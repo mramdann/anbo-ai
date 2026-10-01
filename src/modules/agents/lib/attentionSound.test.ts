@@ -51,7 +51,7 @@ describe("attentionSound", () => {
     }
 
     vi.stubGlobal("AudioContext", AudioContextMock);
-    const { playAttentionSound } = await import("./attentionSound");
+    const { playAttentionSound } = await import("./attentionSoundPlayer");
     playAttentionSound();
 
     expect(start).not.toHaveBeenCalled();
@@ -93,9 +93,8 @@ describe("attentionSound", () => {
     }
 
     vi.stubGlobal("AudioContext", AudioContextMock);
-    const { ATTENTION_SOUNDS, playAttentionSound } = await import(
-      "./attentionSound"
-    );
+    const { ATTENTION_SOUNDS } = await import("./attentionSound");
+    const { playAttentionSound } = await import("./attentionSoundPlayer");
     for (const sound of ATTENTION_SOUNDS) {
       oscillators = 0;
       stops = 0;

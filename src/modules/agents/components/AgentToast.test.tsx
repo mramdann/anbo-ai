@@ -8,7 +8,7 @@ const { toast, shortcutLabel, playAttentionSound } = vi.hoisted(() => ({
 
 vi.mock("sonner", () => ({ toast }));
 vi.mock("@/modules/shortcuts", () => ({ shortcutLabel }));
-vi.mock("../lib/attentionSound", () => ({ playAttentionSound }));
+vi.mock("../lib/attentionSoundPlayer", () => ({ playAttentionSound }));
 
 import { renderToStaticMarkup } from "react-dom/server";
 import { showAgentToast } from "./AgentToast";

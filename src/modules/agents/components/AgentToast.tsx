@@ -26,7 +26,7 @@ export function showAgentToast({
   const detail = [displayAgent(agent), workspace, body]
     .filter(Boolean)
     .join(" · ");
-  void import("../lib/attentionSound")
+  void import("../lib/attentionSoundPlayer")
     .then(({ playAttentionSound }) => playAttentionSound(sound))
     .catch(() => {});
   toast(title, {
