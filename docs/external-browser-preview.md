@@ -107,6 +107,10 @@ background. Multiple approved profiles require explicit disambiguation. A worksp
 with disconnected external tabs fails instead of falling back to WebView2 or another
 login. Selected tabs remain live across workspace switches, not cross-workspace moves.
 
+A tab the user opens from the + menu or Ctrl+P is Anbo's own browser. New tab on a
+profile in the header menu starts a new tab page whose first web page opens in that
+profile while it stays approved for the workspace; no other profile is substituted.
+
 Queues, frames and retained data are bounded: 64 bound Anbo tabs, 64 child debugger
 sessions and 256 execution contexts/objects per selected page, and 128 console rows
 or 128 KiB per bound tab. Captures are requested on demand, not while idle.

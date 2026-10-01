@@ -38,6 +38,7 @@ function body(connections: ExternalConnection[], workspaceRoot = "D:/anbo-ai") {
       workspaceRoot={workspaceRoot}
       onShowTab={noop}
       onCloseTab={noop}
+      onNewTab={() => 1}
     />,
   );
 }
@@ -81,12 +82,19 @@ describe("browser menu", () => {
     expect(markup).not.toContain("Needs approval");
     expect(markup).not.toContain("Dock");
     expect(markup).toContain(">1 profile connected</span>");
+    // A new tab for this profile sits on the Other tabs row.
+    expect(markup).toMatch(
+      /Other tabs<\/div><button[^>]*title="Open a new tab with Your Chrome/,
+    );
+    expect(markup).toContain("New tab</button>");
   });
 
   it("names the workspace of a profile approved somewhere else", () => {
     const markup = body([connection("a", "D:/other-project")]);
     expect(markup).toContain('alt="Chrome"');
     expect(markup).toContain(">other-project</span>");
+    // Its pages would land in that workspace, not this one.
+    expect(markup).not.toContain("New tab</button>");
   });
 
   it("folds each profile when several are connected", () => {

@@ -336,25 +336,31 @@ export function createExternalBrowserSync(
     return binding.id;
   };
 
-  /** Opens a page in the workspace's profile and turns this Anbo tab (a new
-   * tab page) into that page, rather than adding another tab. */
-  const openInto = (url: string, workspace: string, tabId: number) =>
+  /** Opens a page in a profile approved for the workspace and turns this Anbo
+   * tab (a new tab page started from that profile) into that page, rather
+   * than adding another tab. */
+  const openInto = (
+    url: string,
+    workspace: string,
+    tabId: number,
+    profile: ExternalConnection["profile"],
+  ) =>
     exclusive(async () => {
       ensureRunning();
       await refresh();
       ensureRunning();
-      const profiles = connections.filter(
+      const connection = connections.find(
         (connection) =>
           connection.workspace &&
-          sameWorkspace(connection.workspace, workspace),
+          sameWorkspace(connection.workspace, workspace) &&
+          connection.profile.browser === profile.browser &&
+          connection.profile.profileId === profile.profileId,
       );
-      if (profiles.length !== 1)
+      if (!connection)
         throw new Error(
-          profiles.length
-            ? "Several browser profiles are approved here. Disconnect the unused one from the browser menu."
-            : "No browser profile is approved for this workspace.",
+          "This profile is not connected to this workspace. Reconnect it from the browser menu, or use Anbo's browser.",
         );
-      const { connectionId } = profiles[0];
+      const { connectionId } = connection;
       let key: string;
       opening.add(connectionId);
       try {
@@ -465,8 +471,9 @@ export async function openExternalBrowserInto(
   url: string,
   workspace: string,
   tabId: number,
+  profile: ExternalConnection["profile"],
 ) {
-  return running().openInto(url, workspace, tabId);
+  return running().openInto(url, workspace, tabId, profile);
 }
 export async function selectExternalBrowserTab(
   connectionId: string,

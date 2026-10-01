@@ -16,6 +16,7 @@ import {
   sameWorkspace,
 } from "@/modules/browser/external/model";
 import {
+  approvedHere,
   browserName,
   pendingConnections,
   useExternalBrowsers,
@@ -26,6 +27,7 @@ import {
   selectExternalBrowserTab,
 } from "@/modules/browser/external/sync";
 import {
+  Add01Icon,
   AiWebBrowsingIcon,
   ArrowRight01Icon,
   ArrowUpRight01Icon,
@@ -46,6 +48,8 @@ type Props = {
   workspaceRoot: string | null;
   onShowTab: (tabId: number) => void;
   onCloseTab: (tabId: number) => void;
+  /** Opens an empty browser tab in this workspace and returns its ID. */
+  onNewTab: () => number;
 };
 
 type BrowserTabInfo = { id: number; title: string; url: string };
@@ -93,6 +97,7 @@ export default function ExternalBrowserMenu({
   workspaceRoot,
   onShowTab,
   onCloseTab,
+  onNewTab,
 }: Props) {
   const open = useExternalBrowsers((state) => state.menuOpen);
   const setOpen = useExternalBrowsers((state) => state.setMenuOpen);
@@ -110,6 +115,9 @@ export default function ExternalBrowserMenu({
       ),
   );
   const label = menuLabel(total - waiting, waiting);
+  // A new tab takes the focus for its address bar; closing the menu must not
+  // hand it back to this button.
+  const focusMoved = useRef(false);
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -145,6 +153,11 @@ export default function ExternalBrowserMenu({
         align="end"
         sideOffset={8}
         className="w-80 gap-0 overflow-hidden rounded-xl p-0 [zoom:var(--app-zoom)]"
+        onCloseAutoFocus={(event) => {
+          if (!focusMoved.current) return;
+          focusMoved.current = false;
+          event.preventDefault();
+        }}
       >
         {open ? (
           <OpenMenu
@@ -154,6 +167,12 @@ export default function ExternalBrowserMenu({
               setOpen(false);
             }}
             onCloseTab={onCloseTab}
+            onNewTab={() => {
+              focusMoved.current = true;
+              const id = onNewTab();
+              setOpen(false);
+              return id;
+            }}
           />
         ) : null}
       </PopoverContent>
@@ -172,6 +191,7 @@ export function MenuBody({
   workspaceRoot,
   onShowTab,
   onCloseTab,
+  onNewTab,
 }: Props & { connections: ExternalConnection[] }) {
   const pending = connections.filter((connection) => !connection.workspace);
   const approved = connections.filter((connection) => connection.workspace);
@@ -294,6 +314,16 @@ export function MenuBody({
               expanded={expanded}
               onToggle={() =>
                 setFolded(connection.profile.profileId, !expanded)
+              }
+              // A page opened here lands only in the workspace the profile is
+              // approved for.
+              onNewTab={
+                approvedHere(connection, workspaceRoot)
+                  ? () =>
+                      useExternalBrowsers
+                        .getState()
+                        .setNewTabProfile(onNewTab(), connection.profile)
+                  : undefined
               }
               onDisconnect={() =>
                 void act(`disconnect:${connection.connectionId}`, async () => {
@@ -440,6 +470,7 @@ function ProfileSection({
   busy,
   expanded,
   onToggle,
+  onNewTab,
   onDisconnect,
   onShow,
   onReturn,
@@ -451,6 +482,8 @@ function ProfileSection({
   busy: string | null;
   expanded: boolean;
   onToggle: () => void;
+  /** Absent when the profile is approved for another workspace. */
+  onNewTab?: () => void;
   onDisconnect: () => void;
   onShow: (selectionId: string) => void;
   onReturn: (tab: ExternalConnection["tabs"][number]) => void;
@@ -505,8 +538,7 @@ function ProfileSection({
           <Heading>In Anbo</Heading>
           {connection.tabs.length === 0 ? (
             <p className="px-1.5 pb-1 text-[11px] leading-relaxed text-muted-foreground">
-              Nothing yet. Open one of the tabs below, or a new browser tab in
-              Anbo.
+              Nothing yet. Open one of the tabs below, or a new tab.
             </p>
           ) : (
             connection.tabs.map((tab) => (
@@ -536,7 +568,21 @@ function ProfileSection({
               />
             ))
           )}
-          <Heading>Other tabs</Heading>
+          <div className="flex items-end justify-between">
+            <Heading>Other tabs</Heading>
+            {onNewTab ? (
+              <button
+                type="button"
+                title={`Open a new tab with ${connection.profile.name}'s logins`}
+                disabled={busy !== null}
+                onClick={onNewTab}
+                className="mr-1 flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+              >
+                <HugeiconsIcon icon={Add01Icon} size={11} strokeWidth={1.75} />
+                New tab
+              </button>
+            ) : null}
+          </div>
           {list === undefined ? (
             <p className="px-1.5 pb-1 text-[11px] text-muted-foreground">
               Loading tabs...

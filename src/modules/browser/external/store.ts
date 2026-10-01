@@ -10,14 +10,20 @@ import { create } from "zustand";
 export const EXTERNAL_BROWSERS_ENABLED =
   import.meta.env.DEV && IS_WINDOWS && isTauri();
 
+export type BrowserProfile = ExternalConnection["profile"];
+
 type ExternalBrowsersState = {
   connections: ExternalConnection[];
   menuOpen: boolean;
   /** Profiles folded open or shut in the menu, by profile ID. */
   expanded: Record<string, boolean>;
+  /** New tab pages started from a profile in the menu, by Anbo tab ID. Their
+   * first web page opens in that profile; every other new tab is Anbo's. */
+  newTabProfiles: Record<number, BrowserProfile>;
   setConnections: (connections: ExternalConnection[]) => void;
   setMenuOpen: (open: boolean) => void;
   setExpanded: (profileId: string, open: boolean) => void;
+  setNewTabProfile: (tabId: number, profile: BrowserProfile | null) => void;
 };
 
 export const useExternalBrowsers = create<ExternalBrowsersState>((set) => ({
@@ -34,6 +40,15 @@ export const useExternalBrowsers = create<ExternalBrowsersState>((set) => ({
   expanded: {},
   setExpanded: (profileId, open) =>
     set((state) => ({ expanded: { ...state.expanded, [profileId]: open } })),
+  newTabProfiles: {},
+  setNewTabProfile: (tabId, profile) =>
+    set((state) => {
+      if (!profile && state.newTabProfiles[tabId] === undefined) return state;
+      const next = { ...state.newTabProfiles };
+      if (profile) next[tabId] = profile;
+      else delete next[tabId];
+      return { newTabProfiles: next };
+    }),
 }));
 
 export function browserName(browser: "chrome" | "edge"): string {
@@ -47,30 +62,22 @@ export function pendingConnections(
   return connections.filter((connection) => !connection.workspace);
 }
 
-/** The profile approved for this workspace. With none or several there is no
- * default, the same rule agents follow when they open a page. */
-export function approvedConnection(
-  connections: ExternalConnection[],
+/** Whether the profile is approved for this workspace, so a page it opens
+ * lands here. */
+export function approvedHere(
+  connection: ExternalConnection,
   workspaceRoot: string | null,
-): ExternalConnection | null {
-  if (!workspaceRoot) return null;
-  const approved = connections.filter(
-    (connection) =>
-      connection.workspace !== null &&
-      sameWorkspace(connection.workspace, workspaceRoot),
+): boolean {
+  return (
+    workspaceRoot !== null &&
+    connection.workspace !== null &&
+    sameWorkspace(connection.workspace, workspaceRoot)
   );
-  return approved.length === 1 ? approved[0] : null;
 }
 
-/** "Chrome · Work" for the workspace's profile, or null. */
-export function approvedBrowserLabel(
-  connections: ExternalConnection[],
-  workspaceRoot: string | null,
-): string | null {
-  const connection = approvedConnection(connections, workspaceRoot);
-  return connection
-    ? `${browserName(connection.profile.browser)} · ${connection.profile.name}`
-    : null;
+/** "Chrome · Work". */
+export function profileLabel(profile: BrowserProfile): string {
+  return `${browserName(profile.browser)} · ${profile.name}`;
 }
 
 export function workspaceName(path: string): string {

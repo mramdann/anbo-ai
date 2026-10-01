@@ -40,8 +40,8 @@ import {
   browserDataUsage,
 } from "./native";
 
-/** Where a web page opened from this tab goes when the workspace has an
- * approved Chrome or Edge profile. */
+/** Where a web page opened from this tab goes when the tab was started from a
+ * Chrome or Edge profile in the browser menu. */
 export type BrowserChoice = {
   label: string;
   inBrowser: boolean;

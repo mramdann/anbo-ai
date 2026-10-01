@@ -540,6 +540,7 @@ describe("external browser workspace synchronization", () => {
       "https://example.com/",
       "D:/work",
       7,
+      profile,
     );
     await vi.waitFor(() =>
       expect(state.calls).toHaveBeenCalledWith(
@@ -564,18 +565,57 @@ describe("external browser workspace synchronization", () => {
     });
   });
 
-  it("opens into a tab only with exactly one approved profile", async () => {
+  it("opens into a tab only with its profile approved for the workspace", async () => {
     const state = harness([
       { id: 7, kind: "browser", url: "", title: "New tab", spaceId: "work" },
     ]);
     state.connections([{ ...connection(), workspace: null }]);
     await expect(
-      state.service.openInto("https://example.com/", "D:/work", 7),
-    ).rejects.toThrow("No browser profile");
+      state.service.openInto("https://example.com/", "D:/work", 7, profile),
+    ).rejects.toThrow("not connected to this workspace");
+    state.connections([{ ...connection(), workspace: "D:/other" }]);
+    await expect(
+      state.service.openInto("https://example.com/", "D:/work", 7, profile),
+    ).rejects.toThrow("not connected to this workspace");
     expect(state.calls).not.toHaveBeenCalledWith(
       "browser_external_open_tab",
       expect.anything(),
     );
+  });
+
+  it("opens into a tab with the profile it was started from among several", async () => {
+    const state = harness([
+      { id: 7, kind: "browser", url: "", title: "New tab", spaceId: "work" },
+    ]);
+    const personal = {
+      ...profile,
+      profileId: "ffeeddcc-bbaa-9988-7766-554433221100",
+      name: "Personal",
+    };
+    const listed: ExternalConnection[] = [
+      { ...connection(), tabs: [] },
+      {
+        ...connection(),
+        connectionId: "personal",
+        profile: personal,
+        tabs: [],
+      },
+    ];
+    state.calls.mockImplementation(async (command: string) => {
+      if (command === "browser_external_connections") return listed;
+      // Refused, so the test stops at which profile was asked.
+      if (command === "browser_external_open_tab")
+        throw new Error("browser closed");
+      return undefined;
+    });
+    await expect(
+      state.service.openInto("https://example.com/", "D:/work", 7, personal),
+    ).rejects.toThrow("browser closed");
+    expect(state.calls).toHaveBeenCalledWith("browser_external_open_tab", {
+      connectionId: "personal",
+      url: "https://example.com/",
+      activate: false,
+    });
   });
 
   it("brings a profile's existing tab into Anbo and names the Anbo tab", async () => {

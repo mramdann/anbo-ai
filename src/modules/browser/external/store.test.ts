@@ -1,8 +1,8 @@
 import type { ExternalConnection } from "@/modules/browser/external/model";
 import {
-  approvedBrowserLabel,
-  approvedConnection,
+  approvedHere,
   pendingConnections,
+  profileLabel,
   useExternalBrowsers,
   workspaceName,
 } from "@/modules/browser/external/store";
@@ -34,17 +34,27 @@ describe("external browser store", () => {
     ).toEqual(["a", "c"]);
   });
 
-  it("picks the workspace's profile only when exactly one is approved there", () => {
+  it("knows which workspace a profile's pages land in", () => {
     const work = connection("a", "D:/work");
-    expect(approvedConnection([work], "d:\\work\\")).toBe(work);
-    expect(
-      approvedConnection([work, connection("b", "D:/work")], "D:/work"),
-    ).toBeNull();
-    expect(approvedConnection([work], "D:/other")).toBeNull();
-    expect(approvedConnection([work], null)).toBeNull();
-    expect(
-      approvedBrowserLabel([connection("a", "D:/work", "edge")], "D:/work"),
-    ).toBe("Edge · Work");
+    expect(approvedHere(work, "d:\\work\\")).toBe(true);
+    expect(approvedHere(work, "D:/other")).toBe(false);
+    expect(approvedHere(work, null)).toBe(false);
+    expect(approvedHere(connection("b", null), "D:/work")).toBe(false);
+    expect(profileLabel(connection("a", "D:/work", "edge").profile)).toBe(
+      "Edge · Work",
+    );
+  });
+
+  it("remembers which new tabs were started from a profile", () => {
+    const { profile } = connection("a", "D:/work");
+    const store = useExternalBrowsers.getState();
+    store.setNewTabProfile(7, profile);
+    expect(useExternalBrowsers.getState().newTabProfiles[7]).toBe(profile);
+    const before = useExternalBrowsers.getState();
+    store.setNewTabProfile(8, null);
+    expect(useExternalBrowsers.getState()).toBe(before);
+    store.setNewTabProfile(7, null);
+    expect(useExternalBrowsers.getState().newTabProfiles).toEqual({});
   });
 
   it("keeps the same list when the browser reports nothing new", () => {

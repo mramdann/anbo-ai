@@ -1617,6 +1617,11 @@ export default function App() {
     [newBrowserTab],
   );
 
+  const newBlankBrowserTab = useCallback(
+    () => openBrowserTab(""),
+    [openBrowserTab],
+  );
+
   const openFileInAnboBrowser = useCallback(
     (path: string) => {
       const url = filePathToBrowserUrl(path);
@@ -2843,6 +2848,7 @@ export default function App() {
                   )}
                   onShowBrowserTab={showBrowserTab}
                   onCloseBrowserTab={closeTab}
+                  onNewBrowserTab={newBlankBrowserTab}
                 />
               )}
 

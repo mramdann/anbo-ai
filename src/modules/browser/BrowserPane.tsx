@@ -52,8 +52,9 @@ import {
 } from "./BrowserAddressBar";
 import { BrowserStartPage } from "./BrowserStartPage";
 import {
-  approvedBrowserLabel,
+  type BrowserProfile,
   EXTERNAL_BROWSERS_ENABLED,
+  profileLabel,
   useExternalBrowsers,
 } from "./external/store";
 import { recordBrowserVisit } from "./history";
@@ -860,27 +861,33 @@ export const BrowserPane = memo(
       [id, native, reportNativeError, syncBounds],
     );
 
-    // A new tab in a workspace with an approved Chrome or Edge profile opens
-    // its first web page there, with that profile's logins, unless it was
-    // switched to Anbo's own browser. The tab itself becomes that page.
-    const browserLabel = useExternalBrowsers((state) =>
-      EXTERNAL_BROWSERS_ENABLED
-        ? approvedBrowserLabel(state.connections, workspaceRoot)
-        : null,
+    // A new tab started from a Chrome or Edge profile in the browser menu
+    // opens its first web page there, with that profile's logins, unless it
+    // was switched to Anbo's own browser. The tab itself becomes that page.
+    // Every other new tab is Anbo's browser.
+    const browserProfile = useExternalBrowsers((state) =>
+      EXTERNAL_BROWSERS_ENABLED ? state.newTabProfiles[id] : undefined,
     );
+    const browserLabel = browserProfile ? profileLabel(browserProfile) : null;
     const [ownBrowser, setOwnBrowser] = useState(false);
     const [openingInBrowser, setOpeningInBrowser] = useState(false);
     const [browserOpenError, setBrowserOpenError] = useState<string | null>(
       null,
     );
     const openInBrowser = useCallback(
-      async (next: string) => {
+      async (next: string, profile: BrowserProfile) => {
         if (!workspaceRoot) return;
         setOpeningInBrowser(true);
         setBrowserOpenError(null);
         try {
           const service = await import("./external/sync");
-          await service.openExternalBrowserInto(next, workspaceRoot, id);
+          await service.openExternalBrowserInto(
+            next,
+            workspaceRoot,
+            id,
+            profile,
+          );
+          useExternalBrowsers.getState().setNewTabProfile(id, null);
         } catch (cause) {
           setBrowserOpenError(String(cause));
           setOpeningInBrowser(false);
@@ -891,11 +898,23 @@ export const BrowserPane = memo(
     const go = useCallback(
       (next: string) => {
         if (openingInBrowser) return;
-        if (!url && browserLabel && !ownBrowser && /^https?:\/\//i.test(next))
-          void openInBrowser(next);
+        if (
+          !url &&
+          browserProfile &&
+          !ownBrowser &&
+          /^https?:\/\//i.test(next)
+        )
+          void openInBrowser(next, browserProfile);
         else navigate(next);
       },
-      [url, browserLabel, ownBrowser, openingInBrowser, openInBrowser, navigate],
+      [
+        url,
+        browserProfile,
+        ownBrowser,
+        openingInBrowser,
+        openInBrowser,
+        navigate,
+      ],
     );
 
     const dispatch = useCallback(

@@ -51,6 +51,7 @@ type Props = {
   workspace: WorkspaceEnv;
   onShowBrowserTab: (tabId: number) => void;
   onCloseBrowserTab: (tabId: number) => void;
+  onNewBrowserTab: () => number;
 };
 
 const COMPACT_WIDTH = 720;
@@ -70,6 +71,7 @@ export function Header({
   workspace,
   onShowBrowserTab,
   onCloseBrowserTab,
+  onNewBrowserTab,
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [compact, setCompact] = useState(false);
@@ -225,6 +227,7 @@ export function Header({
                 workspaceRoot={workspaceRoot}
                 onShowTab={onShowBrowserTab}
                 onCloseTab={onCloseBrowserTab}
+                onNewTab={onNewBrowserTab}
               />
             </Suspense>
           ) : null}
