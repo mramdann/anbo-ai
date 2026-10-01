@@ -89,6 +89,7 @@ import {
   toPhysicalBounds,
 } from "./native";
 import {
+  floatingSurfaceHoles,
   notifyNativeBrowserLayout,
   subscribeNativeBrowserLayout,
   useNativeBrowserDragActive,
@@ -266,8 +267,29 @@ export const BrowserPane = memo(
     const [loading, setLoading] = useState(initialLoading);
     const onLoadingChangeRef = useRef(onLoadingChange);
     const lastHoleRef = useRef("");
+    const desiredHolesRef = useRef<{ key: string; holes: PunchHole[] } | null>(
+      null,
+    );
+    const holesInFlightRef = useRef(false);
     const retryAttemptRef = useRef(0);
     const urlError = browserUrlError(url);
+
+    // One hole request at a time, the newest winning. Dragging the mini window
+    // updates the holes every frame, and overlapping requests could reach the
+    // webview out of order and leave an old cut in place.
+    const sendHoles = useCallback(() => {
+      const desired = desiredHolesRef.current;
+      if (holesInFlightRef.current || !desired) return;
+      if (desired.key === lastHoleRef.current) return;
+      lastHoleRef.current = desired.key;
+      holesInFlightRef.current = true;
+      void browserEmbedSetPunchHole(id, ownerIdRef.current, desired.holes)
+        .catch(() => {})
+        .finally(() => {
+          holesInFlightRef.current = false;
+          sendHoles();
+        });
+    }, [id]);
 
     /**
      * Push the current device and fit to the tab, skipping the call when
@@ -393,9 +415,10 @@ export const BrowserPane = memo(
         .then(() => {
           if (disposedRef.current) return;
           if (IS_WINDOWS && desired.visible && lastHoleRef.current !== "none") {
-            // Restoring the native paint region also resets any AI mini-window
-            // punch hole. Recompute it only after the visible bounds update has
-            // completed so the final region cannot be overwritten by a race.
+            // Restoring the native paint region also clears every punch hole
+            // (the mini window's, the voice orb's, the toasts'). Recompute them
+            // only after the visible bounds update has completed so the final
+            // region cannot be overwritten by a race.
             // Only when a hole was actually applied: re-sending an empty list
             // repeats what the bounds update just did, on every single update.
             lastHoleRef.current = "";
@@ -447,14 +470,25 @@ export const BrowserPane = memo(
       };
     }, [id, native, url, urlError, visible]);
 
+    // Toasts sink and raise the page on every pass of the pointer, so each
+    // change goes out once: when an overlay closes, the cleanup of the run that
+    // sank the page has raised it already. The first run always says where the
+    // page stands, as a pane that mounted again owns it from then on.
+    const sunkRef = useRef<boolean | null>(null);
     useEffect(() => {
       overlayOpenRef.current = overlayOpen;
       if (!native || !IS_WINDOWS || !visible || !url) return;
-      void browserEmbedSetUiOverlay(id, ownerIdRef.current, overlayOpen).catch(
-        reportNativeError,
-      );
+      if (overlayOpen !== sunkRef.current) {
+        sunkRef.current = overlayOpen;
+        void browserEmbedSetUiOverlay(
+          id,
+          ownerIdRef.current,
+          overlayOpen,
+        ).catch(reportNativeError);
+      }
       return () => {
-        if (overlayOpen) {
+        if (sunkRef.current) {
+          sunkRef.current = false;
           void browserEmbedSetUiOverlay(id, ownerIdRef.current, false).catch(
             () => {},
           );
@@ -516,43 +550,23 @@ export const BrowserPane = memo(
       };
       sendDesiredBounds();
 
-      // Keep persistent floating surfaces interactive without sinking the
-      // complete native browser behind the main webview.
+      // Keep floating surfaces (the AI mini window, the voice orb, toasts)
+      // visible and usable over the page without sinking the complete native
+      // browser behind the main webview.
       if (IS_WINDOWS && shouldShow) {
-        const surfaces = document.querySelectorAll<HTMLElement>(
-          '[data-ai-mini-window][data-state="open"], [data-anbo-voice-overlay]',
-        );
-        const holes: PunchHole[] = [];
-        if (rect) {
-          for (const surface of surfaces) {
-            const floating = surface.getBoundingClientRect();
-            const ix = Math.max(rect.left, floating.left);
-            const iy = Math.max(rect.top, floating.top);
-            const ir = Math.min(rect.right, floating.right);
-            const ib = Math.min(rect.bottom, floating.bottom);
-            if (ir <= ix || ib <= iy) continue;
-            if (holes.length >= 8) break;
-            holes.push({
-              x: Math.round((ix - rect.left) * dpr),
-              y: Math.round((iy - rect.top) * dpr),
-              width: Math.round((ir - ix) * dpr),
-              height: Math.round((ib - iy) * dpr),
-            });
-          }
-        }
+        const holes = rect ? floatingSurfaceHoles(rect, dpr) : [];
         const key = holes.length
           ? holes
-              .map((hole) => `${hole.x},${hole.y},${hole.width},${hole.height}`)
+              .map(
+                (hole) =>
+                  `${hole.x},${hole.y},${hole.width},${hole.height},${hole.radius}`,
+              )
               .join(";")
           : "none";
-        if (key !== lastHoleRef.current) {
-          lastHoleRef.current = key;
-          void browserEmbedSetPunchHole(id, ownerIdRef.current, holes).catch(
-            () => {},
-          );
-        }
+        desiredHolesRef.current = { key, holes };
+        sendHoles();
       }
-    }, [id, native, sendDesiredBounds, effectsEnabled]);
+    }, [id, native, sendDesiredBounds, sendHoles, effectsEnabled]);
 
     useLayoutEffect(() => {
       if (!native) return;
@@ -572,7 +586,11 @@ export const BrowserPane = memo(
       const element = contentRef.current;
       const resizeObserver = new ResizeObserver(scheduleBounds);
       if (element) resizeObserver.observe(element);
-      const unsubscribeLayout = subscribeNativeBrowserLayout(scheduleBounds);
+      // Layout signals arrive already gathered into an animation frame, so the
+      // sync runs right there rather than a frame later. A hole then moves in
+      // the frame its surface moves: when a dismissed toast lets the stack
+      // drop, the hole it leaves must not show the desktop for a frame.
+      const unsubscribeLayout = subscribeNativeBrowserLayout(syncBounds);
       // Minimize can suspend animation frames before a queued layout callback
       // runs. Apply presentation transitions immediately so the native child
       // surface is parked before Windows starts composing the restore frame.

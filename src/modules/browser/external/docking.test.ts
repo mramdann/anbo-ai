@@ -145,14 +145,15 @@ describe("native dock panel layout", () => {
       1,
       true,
       false,
-      Array.from({ length: 12 }, (_, index) => ({
+      Array.from({ length: 20 }, (_, index) => ({
         x: index * 10,
         y: 0,
         width: 5,
         height: 5,
       })),
     );
-    expect(many.cutouts).toHaveLength(8);
+    // Four toasts with their close buttons, the mini window and the voice orb.
+    expect(many.cutouts).toHaveLength(16);
   });
   it("rejects invalid or escaping geometry", () => {
     for (const ratio of [NaN, Infinity, 0, 9])

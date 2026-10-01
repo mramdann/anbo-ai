@@ -481,12 +481,17 @@ export async function browserEmbedSetViewport(
   });
 }
 
-/** A rectangular hole in physical pixels relative to the browser webview. */
+/**
+ * A hole cut out of the browser for a floating surface, in physical pixels
+ * relative to the browser webview, with the corner radius the surface is drawn
+ * with. It may reach past the webview; the part outside is ignored.
+ */
 export type PunchHole = {
   x: number;
   y: number;
   width: number;
   height: number;
+  radius: number;
 };
 
 export async function browserEmbedSetPunchHole(

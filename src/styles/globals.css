@@ -286,6 +286,51 @@ html[data-native-dock-live="true"] footer {
   box-shadow: 0 10px 0 0 var(--card);
 }
 
+/* A native page, embedded or docked, is cut around each toast
+ * (FLOATING_SURFACE_SELECTOR), and a cut reaches the screen a frame or two
+ * after the toast it follows: beside a sliding or fading toast, whatever lies
+ * behind Anbo's transparent window would show. Toasts there appear and move in
+ * one step, as Sonner's own reduced motion rule has them. A toast that leaves,
+ * or drops past visibleToasts, holds its place and stays opaque for 200 ms
+ * (Sonner unmounts a leaving toast after as long), beneath any toast that
+ * takes its place, while its cut closes and the page covers it. */
+:is(html[data-native-browser-live="true"], html[data-native-dock-live="true"])
+  [data-sonner-toast],
+:is(html[data-native-browser-live="true"], html[data-native-dock-live="true"])
+  [data-sonner-toast]
+  > * {
+  transition: none !important;
+  animation: none !important;
+}
+
+:is(html[data-native-browser-live="true"], html[data-native-dock-live="true"])
+  [data-sonner-toast]:is([data-removed="true"], [data-visible="false"]) {
+  transition:
+    transform 0s linear 200ms,
+    opacity 0s linear 200ms !important;
+}
+
+:is(html[data-native-browser-live="true"], html[data-native-dock-live="true"])
+  [data-sonner-toast][data-removed="true"] {
+  z-index: 0 !important;
+}
+
+/* Over an embedded page, a settled toast that moves (the stack drops into a
+ * leaving toast's gap, or brings one back on screen) waits 100 ms
+ * (TOAST_DROP_HOLD_MS in nativeVisibility.ts) unless the pointer is over the
+ * toasts. A drop sinks the page below Anbo first, so the slot it vacates cannot
+ * show the desktop through a cut that is still open; under the pointer the page
+ * has sunk already. */
+html[data-native-browser-live="true"]
+  [data-sonner-toaster]:not(:hover)
+  [data-sonner-toast][data-anbo-settled]:not([data-removed="true"]):not(
+    [data-visible="false"]
+  ) {
+  transition:
+    transform 0s linear 100ms,
+    opacity 0s linear 100ms !important;
+}
+
 /*
  * xterm.js overrides — kept outside @layer so they win against the addon's
  * own stylesheet, which is not in any layer either.

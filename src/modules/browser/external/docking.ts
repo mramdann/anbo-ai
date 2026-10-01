@@ -5,7 +5,9 @@ import {
 } from "@/lib/windowPresentation";
 import { toPhysicalBounds } from "@/modules/browser/native";
 import {
+  FLOATING_SURFACE_SELECTOR,
   hasNativeBrowserOverlay,
+  MAX_FLOATING_SURFACES,
   notifyNativeBrowserLayout,
   subscribeNativeBrowserLayout,
   useNativeBrowserDragActive,
@@ -59,11 +61,12 @@ export function createDockLayoutOwnership() {
 }
 
 const layoutOwnership = createDockLayoutOwnership();
-// Anbo surfaces that float over the page and must stay interactive there.
-const floatingSurfaces =
-  '[data-ai-mini-window][data-state="open"], [data-anbo-voice-overlay]';
-const overlays = `[role="dialog"], [role="alertdialog"], [role="menu"], [role="tooltip"], [data-radix-popper-content-wrapper], .fixed, ${floatingSurfaces}`;
-const MAX_CUTOUTS = 8;
+// Anbo menus, and the surfaces that float over the page and must stay
+// interactive there: the same ones the embedded browser is cut around, toasts
+// among them. A cutout stays rectangular: the docked browser's region is not
+// cut there, so around a rounded surface Anbo's transparent pixels show the
+// page below.
+const overlays = `[role="dialog"], [role="alertdialog"], [role="menu"], [role="tooltip"], [data-radix-popper-content-wrapper], .fixed, ${FLOATING_SURFACE_SELECTOR}`;
 
 export function dockMutationAffectsLayout(
   records: MutationRecord[],
@@ -192,7 +195,8 @@ export function panelLayout(
     const y = Math.max(top, surface.y);
     const right = Math.min(left + rect.width, surface.x + surface.width);
     const bottom = Math.min(top + rect.height, surface.y + surface.height);
-    if (right <= x || bottom <= y || cutouts.length >= MAX_CUTOUTS) continue;
+    if (right <= x || bottom <= y || cutouts.length >= MAX_FLOATING_SURFACES)
+      continue;
     const cutout = toPhysicalBounds(
       { left: x, top: y, width: right - x, height: bottom - y },
       ratio,
@@ -374,7 +378,7 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     const rect = surface.current?.getBoundingClientRect();
     if (!rect) return hiddenLayout;
     const floating = [
-      ...document.querySelectorAll<HTMLElement>(floatingSurfaces),
+      ...document.querySelectorAll<HTMLElement>(FLOATING_SURFACE_SELECTOR),
     ].map((element) => {
       const bounds = element.getBoundingClientRect();
       return {

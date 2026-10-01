@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Webview};
 
 const LIMIT: i32 = 16_384;
-const MAX_CUTOUTS: usize = 8;
+// Matches MAX_FLOATING_SURFACES in nativeVisibility.ts.
+const MAX_CUTOUTS: usize = 16;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -175,10 +176,11 @@ enum BrowserRegion {
     Full,
     /// Invisible and click-through.
     Empty,
-    Clip {
-        keep: Rect,
-        cut: Vec<Rect>,
-    },
+    /// Only `keep` stays. Anbo's floating surfaces over the page are kept in
+    /// Anbo's own region and not cut from this one: where such a surface is
+    /// transparent, at a rounded corner or while it moves, the page shows
+    /// rather than whatever lies behind both windows.
+    Clip { keep: Rect },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -336,7 +338,6 @@ fn plan(scene: &Scene) -> Plan {
                 bounds,
                 BrowserRegion::Clip {
                     keep: to_browser(visible),
-                    cut: cutouts.iter().map(|cutout| to_browser(*cutout)).collect(),
                 },
             ),
             host_region: if scene.layout.covered {
@@ -365,10 +366,7 @@ fn plan(scene: &Scene) -> Plan {
             bounds,
             content
                 .intersect(behind_host)
-                .map_or(BrowserRegion::Empty, |keep| BrowserRegion::Clip {
-                    keep,
-                    cut: Vec::new(),
-                }),
+                .map_or(BrowserRegion::Empty, |keep| BrowserRegion::Clip { keep }),
         ),
         host_region: HostRegion::Notch,
         restack: true,
@@ -870,18 +868,7 @@ mod native {
         match region {
             BrowserRegion::Full => set_region(window, None),
             BrowserRegion::Empty => set_region(window, Some(rectangle(Rect::default()))),
-            BrowserRegion::Clip { keep, cut } => {
-                let value = rectangle(*keep);
-                for part in cut {
-                    if let Err(error) = combine(value, *part, RGN_DIFF) {
-                        unsafe {
-                            let _ = DeleteObject(value.into());
-                        }
-                        return Err(error);
-                    }
-                }
-                set_region(window, Some(value))
-            }
+            BrowserRegion::Clip { keep } => set_region(window, Some(rectangle(*keep))),
         }
     }
 
@@ -933,7 +920,7 @@ mod native {
         match region {
             BrowserRegion::Full => kind == RGN_ERROR,
             BrowserRegion::Empty => kind == NULLREGION,
-            BrowserRegion::Clip { keep, .. } => kind != RGN_ERROR && rect(value) == *keep,
+            BrowserRegion::Clip { keep } => kind != RGN_ERROR && rect(value) == *keep,
         }
     }
 
@@ -1776,9 +1763,30 @@ mod tests {
                     width: 900,
                     height: 700,
                 },
-                cut: Vec::new(),
             }
         );
+    }
+
+    #[test]
+    fn floating_anbo_panels_leave_a_clipped_browser_its_whole_page() {
+        let mut state = scene();
+        state.layout.y = 20;
+        let bare = plan(&state).browser_region;
+        state.layout.cutouts = vec![Rect {
+            x: 700,
+            y: 300,
+            width: 300,
+            height: 100,
+        }];
+        let plan = plan(&state);
+        // Anbo keeps the panel in its own region, above the page...
+        let HostRegion::Hole { keep, .. } = plan.host_region else {
+            panic!("expected a hole");
+        };
+        assert_eq!(keep.len(), 1);
+        // ...and the page below stays whole, so a transparent corner of the
+        // panel shows the page, not whatever lies behind both windows.
+        assert_eq!(plan.browser_region, bare);
     }
 
     #[test]
@@ -2000,7 +2008,7 @@ mod tests {
             panic!("expected a hole");
         };
         assert_eq!(hole.width, 1000);
-        let BrowserRegion::Clip { keep, .. } = plan.browser_region else {
+        let BrowserRegion::Clip { keep } = plan.browser_region else {
             panic!("expected a clip");
         };
         assert_eq!(keep.width, 1000);

@@ -94,9 +94,18 @@ describe("BrowserPane native layering", () => {
     expect(src).not.toContain("refreshFreezeFrame");
   });
 
+  it("sinks and raises the page once per change", () => {
+    // Toasts sink the page on every pass of the pointer; the cleanup of the
+    // sinking run raises it, and the next run must not raise it again.
+    expect(src).toContain("if (overlayOpen !== sunkRef.current) {");
+    expect(src).toContain("if (sunkRef.current) {");
+    // A pane that mounted again says where the page stands on its first run.
+    expect(src).toContain("useRef<boolean | null>(null)");
+  });
+
   it("syncs geometry from layout events without a permanent frame loop", () => {
     expect(src).toContain("new ResizeObserver(scheduleBounds)");
-    expect(src).toContain("subscribeNativeBrowserLayout(scheduleBounds)");
+    expect(src).toContain("subscribeNativeBrowserLayout(syncBounds)");
     expect(src).not.toContain("now - lastSync >= 40");
     expect(src).not.toContain("requestAnimationFrame(tick)");
   });
@@ -118,11 +127,11 @@ describe("BrowserPane native layering", () => {
     expect(src).not.toContain("scheduleNativeBrowserPresentationSync");
   });
 
-  it("punches bounded holes for persistent floating surfaces", () => {
-    expect(src).toContain("[data-anbo-voice-overlay]");
-    expect(src).toContain("if (holes.length >= 8) break");
+  it("punches holes for floating surfaces, one request at a time", () => {
+    expect(src).toContain("floatingSurfaceHoles(rect, dpr)");
+    expect(src).toContain("if (holesInFlightRef.current || !desired) return;");
     expect(src).toContain(
-      "browserEmbedSetPunchHole(id, ownerIdRef.current, holes)",
+      "browserEmbedSetPunchHole(id, ownerIdRef.current, desired.holes)",
     );
   });
 });

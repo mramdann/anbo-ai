@@ -25,7 +25,10 @@ use webview2_com::{
 #[cfg(windows)]
 use windows::Win32::{
     Foundation::{HGLOBAL, RECT},
-    Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_DIFF, RGN_ERROR},
+    Graphics::Gdi::{
+        CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn, HRGN, RGN_DIFF,
+        RGN_ERROR,
+    },
     System::Com::{
         IStream, StructuredStorage::CreateStreamOnHGlobal, STREAM_SEEK_END, STREAM_SEEK_SET,
     },
@@ -47,7 +50,10 @@ const MAX_ACTIVE_EMBEDS: usize = 256;
 const MAX_CLOSED_EMBEDS: usize = 16 * 1024;
 const MAX_RELEASED_OWNERS: usize = 32 * 1024;
 const MAX_VOICE_TEXT_BYTES: usize = 32 * 1024;
-const MAX_PUNCH_HOLES: usize = 8;
+// Matches MAX_FLOATING_SURFACES in nativeVisibility.ts.
+const MAX_PUNCH_HOLES: usize = 16;
+/// No surface Anbo draws reaches this far past its browser, in physical pixels.
+const PUNCH_HOLE_LIMIT: i32 = 1 << 15;
 
 #[cfg(any(target_os = "linux", test))]
 const fn browser_child_transparent() -> bool {
@@ -90,17 +96,48 @@ pub struct EmbedBounds {
     height: f64,
 }
 
-/// A rectangular "hole" to punch out of the embedded browser's window region,
-/// in physical pixels relative to the webview's own top-left corner. `None`
-/// restores the full window region. Used to let a floating HTML panel (the AI
-/// mini window) show through and remain interactive over the browser without
-/// sinking the whole webview behind the app layer.
-#[derive(serde::Deserialize, Clone, Copy)]
+/// A hole to punch out of the embedded browser's window region for a floating
+/// HTML surface (the AI mini window, the voice orb, a toast), in physical
+/// pixels relative to the webview's own top-left corner. It may reach past the
+/// webview; that part is ignored. `radius` is the surface's corner radius, so
+/// a rounded surface does not open its unpainted corners onto whatever lies
+/// under Anbo's transparent window. Holes let such surfaces show through and
+/// remain interactive over the browser without sinking the whole webview
+/// behind the app layer; an empty list restores the full window region.
+#[derive(serde::Deserialize, Clone, Copy, Debug)]
 pub struct PunchHole {
     x: i32,
     y: i32,
     width: i32,
     height: i32,
+    #[serde(default)]
+    radius: i32,
+}
+
+/// Where a tab's browser stands among Anbo's own surfaces, as the frontend last
+/// asked. While an overlay covers the page the browser is sunk below the main
+/// webview, and a sunk browser carries no punch holes: Anbo draws above all of
+/// it then, and a hole cut for a surface that has since moved would open onto
+/// the desktop behind Anbo's transparent window. Holes asked for meanwhile are
+/// kept for the raise.
+#[cfg(windows)]
+#[derive(Default)]
+struct Layering {
+    /// The main webview's host window the browser sits right below, if sunk.
+    sunk_below: Option<isize>,
+    holes: Vec<PunchHole>,
+}
+
+#[cfg(windows)]
+impl Layering {
+    /// The holes the browser is cut around now: none while it is sunk.
+    fn cut(&self) -> &[PunchHole] {
+        if self.sunk_below.is_some() {
+            &[]
+        } else {
+            &self.holes
+        }
+    }
 }
 
 type EmbedKey = (i64, String);
@@ -109,6 +146,8 @@ type EmbedKey = (i64, String);
 struct ActiveEmbed {
     #[cfg(windows)]
     network: Arc<crate::modules::browser_automation::network::NetworkState>,
+    #[cfg(windows)]
+    layering: Arc<Mutex<Layering>>,
     instance_id: String,
     owner_id: String,
     local_root: Arc<Mutex<Option<PathBuf>>>,
@@ -174,11 +213,22 @@ fn validate_voice_text(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_punch_hole_count(count: usize) -> Result<(), String> {
-    if count > MAX_PUNCH_HOLES {
+fn validate_punch_holes(holes: &[PunchHole]) -> Result<(), String> {
+    if holes.len() > MAX_PUNCH_HOLES {
         return Err(format!(
             "browser punch-hole count exceeds {MAX_PUNCH_HOLES}"
         ));
+    }
+    let offset = -PUNCH_HOLE_LIMIT..=PUNCH_HOLE_LIMIT;
+    let size = 0..=PUNCH_HOLE_LIMIT;
+    if holes.iter().any(|hole| {
+        !offset.contains(&hole.x)
+            || !offset.contains(&hole.y)
+            || !size.contains(&hole.width)
+            || !size.contains(&hole.height)
+            || !size.contains(&hole.radius)
+    }) {
+        return Err("browser punch-hole geometry is out of range".to_string());
     }
     Ok(())
 }
@@ -238,6 +288,17 @@ pub(crate) fn active_network(
         .ok()?
         .get(&tab_id)
         .map(|entry| entry.network.clone())
+}
+
+/// A live tab's layering, or a fresh one (on top, uncut) for a tab the
+/// registry no longer knows.
+#[cfg(windows)]
+fn tab_layering(tab_id: i64) -> Arc<Mutex<Layering>> {
+    active_embeds()
+        .lock()
+        .ok()
+        .and_then(|active| active.get(&tab_id).map(|entry| entry.layering.clone()))
+        .unwrap_or_default()
 }
 
 pub fn active_pending_url(tab_id: i64) -> Option<String> {
@@ -1014,8 +1075,13 @@ fn set_ui_overlay_z_order(
     webview: &tauri::Webview,
     main_webview: &tauri::Webview,
     active: bool,
+    layering: Arc<Mutex<Layering>>,
 ) -> Result<(), String> {
-    let insert_after = overlay_insert_after(active, webview_parent_hwnd(main_webview)?);
+    let main = webview_parent_hwnd(main_webview)?;
+    layering
+        .lock()
+        .map_err(|_| "browser layering state is unavailable".to_string())?
+        .sunk_below = active.then_some(main);
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     webview
         .with_webview(move |platform| {
@@ -1023,24 +1089,44 @@ fn set_ui_overlay_z_order(
                 let controller = platform.controller();
                 let mut hwnd = windows::Win32::Foundation::HWND::default();
                 unsafe { controller.ParentWindow(&mut hwnd) }.map_err(|error| error.to_string())?;
-                unsafe {
-                    SetWindowPos(
-                        hwnd,
-                        Some(windows::Win32::Foundation::HWND(
-                            insert_after as *mut std::ffi::c_void,
-                        )),
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_ASYNCWINDOWPOS
-                            | SWP_NOACTIVATE
-                            | SWP_NOMOVE
-                            | SWP_NOOWNERZORDER
-                            | SWP_NOSIZE,
-                    )
+                // Whatever is wanted by the time this runs: a later call may
+                // already have changed it.
+                let state = layering
+                    .lock()
+                    .map_err(|_| "browser layering state is unavailable".to_string())?;
+                let sunk = state.sunk_below.is_some();
+                let insert_after = overlay_insert_after(sunk, main);
+                let place = || {
+                    unsafe {
+                        SetWindowPos(
+                            hwnd,
+                            Some(windows::Win32::Foundation::HWND(
+                                insert_after as *mut std::ffi::c_void,
+                            )),
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_ASYNCWINDOWPOS
+                                | SWP_NOACTIVATE
+                                | SWP_NOMOVE
+                                | SWP_NOOWNERZORDER
+                                | SWP_NOSIZE,
+                        )
+                    }
+                    .map_err(|error| error.to_string())
+                };
+                // Windows may compose a frame between the two steps, so each
+                // order leaves one Anbo can show: sunk while the old holes are
+                // still cut, where Anbo draws every surface they were cut for,
+                // or cut for the current surfaces while still below.
+                if sunk {
+                    place()?;
+                    set_browser_region(hwnd, state.cut())
+                } else {
+                    set_browser_region(hwnd, state.cut())?;
+                    place()
                 }
-                .map_err(|error| error.to_string())
             })();
             let _ = sender.send(result);
         })
@@ -1050,12 +1136,17 @@ fn set_ui_overlay_z_order(
         .map_err(|_| "timed out updating browser z-order".to_string())?
 }
 
+/// Where a presented browser goes in the z-order: on top, or right below the
+/// main webview while an overlay has it sunk. A parked one goes to the bottom.
 #[cfg(windows)]
-fn embed_insert_after(visible: bool) -> windows::Win32::Foundation::HWND {
-    if visible {
-        HWND_TOP
-    } else {
-        HWND_BOTTOM
+fn embed_insert_after(
+    visible: bool,
+    sunk_below: Option<isize>,
+) -> windows::Win32::Foundation::HWND {
+    match (visible, sunk_below) {
+        (false, _) => HWND_BOTTOM,
+        (true, Some(main)) => windows::Win32::Foundation::HWND(main as *mut std::ffi::c_void),
+        (true, None) => HWND_TOP,
     }
 }
 
@@ -1071,6 +1162,7 @@ fn embed_window_pos_flags(visible: bool) -> SET_WINDOW_POS_FLAGS {
 
 #[cfg(windows)]
 fn set_embed_z_order(webview: &tauri::Webview, visible: bool) -> Result<(), String> {
+    let layering = parse_embed_label(webview.label()).map(tab_layering);
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     webview
         .with_webview(move |platform| {
@@ -1078,6 +1170,19 @@ fn set_embed_z_order(webview: &tauri::Webview, visible: bool) -> Result<(), Stri
                 let controller = platform.controller();
                 let mut hwnd = windows::Win32::Foundation::HWND::default();
                 unsafe { controller.ParentWindow(&mut hwnd) }.map_err(|error| error.to_string())?;
+                // The region is made whole below. Holes cut before were
+                // measured for bounds this update may change, so they go too;
+                // the frontend sends fresh ones once it completes.
+                let sunk_below = match &layering {
+                    Some(layering) => {
+                        let mut state = layering
+                            .lock()
+                            .map_err(|_| "browser layering state is unavailable".to_string())?;
+                        state.holes.clear();
+                        state.sunk_below
+                    }
+                    None => None,
+                };
                 let (x, y) = if visible {
                     (0, 0)
                 } else {
@@ -1089,7 +1194,7 @@ fn set_embed_z_order(webview: &tauri::Webview, visible: bool) -> Result<(), Stri
                 unsafe {
                     SetWindowPos(
                         hwnd,
-                        Some(embed_insert_after(visible)),
+                        Some(embed_insert_after(visible, sunk_below)),
                         x,
                         y,
                         0,
@@ -1151,11 +1256,99 @@ fn set_embed_presentation(webview: &tauri::Webview, visible: bool) -> Result<(),
     }
 }
 
+/// The browser's window region: its client area minus every hole. A rounded
+/// hole is cut as a rounded rectangle. GDI keeps that curve inside the true
+/// circle, so no corner pixel the surface leaves unpainted opens, and it leaves
+/// out the last column and row of the rectangle it is given, hence the extra
+/// pixel.
+#[cfg(windows)]
+fn punched_region(width: i32, height: i32, holes: &[PunchHole]) -> Result<HRGN, String> {
+    let full = unsafe { CreateRectRgn(0, 0, width, height) };
+    if full.is_invalid() {
+        return Err("failed to create the browser region".to_string());
+    }
+    for hole in holes {
+        if hole.width <= 0 || hole.height <= 0 {
+            continue;
+        }
+        let right = hole.x + hole.width;
+        let bottom = hole.y + hole.height;
+        let radius = hole.radius.min(hole.width / 2).min(hole.height / 2);
+        let cut = if radius > 0 {
+            unsafe {
+                CreateRoundRectRgn(
+                    hole.x,
+                    hole.y,
+                    right + 1,
+                    bottom + 1,
+                    radius * 2,
+                    radius * 2,
+                )
+            }
+        } else {
+            unsafe { CreateRectRgn(hole.x, hole.y, right, bottom) }
+        };
+        let kind = if cut.is_invalid() {
+            RGN_ERROR
+        } else {
+            let kind = unsafe { CombineRgn(Some(full), Some(full), Some(cut), RGN_DIFF) };
+            let _ = unsafe { DeleteObject(cut.into()) };
+            kind
+        };
+        if kind == RGN_ERROR {
+            let _ = unsafe { DeleteObject(full.into()) };
+            return Err("failed to compute browser punch-hole region".to_string());
+        }
+    }
+    Ok(full)
+}
+
+/// Cuts the browser's host window around `holes`, or makes it whole again
+/// when there are none.
+#[cfg(windows)]
+fn set_browser_region(
+    hwnd: windows::Win32::Foundation::HWND,
+    holes: &[PunchHole],
+) -> Result<(), String> {
+    let region = if holes.is_empty() {
+        None
+    } else {
+        let mut client = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut client) }.map_err(|e| e.to_string())?;
+        Some(punched_region(client.right, client.bottom, holes)?)
+    };
+
+    // SetWindowRgn returns nonzero on success and then takes ownership of
+    // the region. On failure we still own it and must free it ourselves.
+    // No redraw: the page and Anbo under a hole both draw through
+    // DirectComposition, so the next composed frame shows the new clip
+    // by itself. A redraw sends synchronous paint messages into the
+    // browser's own process, and a hole then reached the screen two or
+    // three frames after the toast it follows had moved.
+    let ok = unsafe { SetWindowRgn(hwnd, region, false) };
+    if ok == 0 {
+        if let Some(r) = region {
+            let _ = unsafe { DeleteObject(r.into()) };
+        }
+        return Err("SetWindowRgn rejected the browser punch-hole region".to_string());
+    }
+    Ok(())
+}
+
 /// Clips the embedded browser's window region around floating HTML surfaces.
 /// Hole coordinates use physical pixels relative to the webview's origin. An
-/// empty list restores the complete browser region.
+/// empty list restores the complete browser region. A sunk browser only keeps
+/// them for its raise.
 #[cfg(windows)]
-async fn apply_punch_holes(webview: &tauri::Webview, holes: Vec<PunchHole>) -> Result<(), String> {
+async fn apply_punch_holes(
+    webview: &tauri::Webview,
+    holes: Vec<PunchHole>,
+    layering: Arc<Mutex<Layering>>,
+) -> Result<(), String> {
+    layering
+        .lock()
+        .map_err(|_| "browser layering state is unavailable".to_string())?
+        .holes = holes;
     // Await the webview-thread result on a tokio oneshot instead of blocking a
     // worker thread with a synchronous mpsc recv. This command runs per-frame
     // while a floating surface is dragged, so it must not stall the runtime.
@@ -1166,43 +1359,11 @@ async fn apply_punch_holes(webview: &tauri::Webview, holes: Vec<PunchHole>) -> R
                 let controller = platform.controller();
                 let mut hwnd = windows::Win32::Foundation::HWND::default();
                 unsafe { controller.ParentWindow(&mut hwnd) }.map_err(|e| e.to_string())?;
-
-                let region = if holes.is_empty() {
-                    None
-                } else {
-                    let mut client = RECT::default();
-                    unsafe { GetClientRect(hwnd, &mut client) }.map_err(|e| e.to_string())?;
-                    let full = unsafe { CreateRectRgn(0, 0, client.right, client.bottom) };
-                    for h in holes {
-                        let left = h.x.max(0);
-                        let top = h.y.max(0);
-                        let right = (h.x + h.width).min(client.right).max(left);
-                        let bottom = (h.y + h.height).min(client.bottom).max(top);
-                        if right <= left || bottom <= top {
-                            continue;
-                        }
-                        let hole = unsafe { CreateRectRgn(left, top, right, bottom) };
-                        let kind =
-                            unsafe { CombineRgn(Some(full), Some(full), Some(hole), RGN_DIFF) };
-                        let _ = unsafe { DeleteObject(hole.into()) };
-                        if kind == RGN_ERROR {
-                            let _ = unsafe { DeleteObject(full.into()) };
-                            return Err("failed to compute browser punch-hole region".to_string());
-                        }
-                    }
-                    Some(full)
-                };
-
-                // SetWindowRgn returns nonzero on success and then takes ownership of
-                // the region. On failure we still own it and must free it ourselves.
-                let ok = unsafe { SetWindowRgn(hwnd, region, true) };
-                if ok == 0 {
-                    if let Some(r) = region {
-                        let _ = unsafe { DeleteObject(r.into()) };
-                    }
-                    return Err("SetWindowRgn rejected the browser punch-hole region".to_string());
-                }
-                Ok(())
+                // The newest holes, whichever request stored them.
+                let state = layering
+                    .lock()
+                    .map_err(|_| "browser layering state is unavailable".to_string())?;
+                set_browser_region(hwnd, state.cut())
             })();
             let _ = tx.send(result);
         })
@@ -1244,7 +1405,7 @@ pub async fn browser_embed_set_ui_overlay(
         let main_webview = app
             .get_webview(window.label())
             .ok_or_else(|| "main webview is unavailable".to_string())?;
-        set_ui_overlay_z_order(&webview, &main_webview, active)
+        set_ui_overlay_z_order(&webview, &main_webview, active, tab_layering(tab_id))
     }
 
     #[cfg(not(windows))]
@@ -1267,7 +1428,7 @@ pub async fn browser_embed_set_punch_hole(
     validate_tab_id(tab_id)?;
     validate_token(&instance_id)?;
     validate_token(&owner_id)?;
-    validate_punch_hole_count(holes.len())?;
+    validate_punch_holes(&holes)?;
     let webview = {
         let _lifecycle = LIFECYCLE_LOCK.lock().await;
         ensure_current_instance(&instance_id)?;
@@ -1281,15 +1442,11 @@ pub async fn browser_embed_set_punch_hole(
     };
 
     #[cfg(windows)]
-    return apply_punch_holes(&webview, holes).await;
+    return apply_punch_holes(&webview, holes, tab_layering(tab_id)).await;
 
     #[cfg(not(windows))]
     {
-        let _ = webview;
-        let _ = holes
-            .into_iter()
-            .map(|hole| (hole.x, hole.y, hole.width, hole.height))
-            .collect::<Vec<_>>();
+        let _ = (webview, holes);
         Ok(())
     }
 }
@@ -1557,6 +1714,16 @@ fn prepare_active_embed(
         .filter(mine)
         .map(|entry| entry.network.clone())
         .unwrap_or_default();
+    // A pane that mounted again starts its browser on top and uncut. Whatever
+    // the old one left sunk it can no longer undo: its calls stop counting
+    // once this update records the new owner.
+    #[cfg(windows)]
+    let layering = active
+        .get(&tab_id)
+        .filter(mine)
+        .filter(|entry| entry.owner_id == owner_id)
+        .map(|entry| entry.layering.clone())
+        .unwrap_or_default();
     // Release the registry before writing the local-file policy. Holding both
     // is the lock-order inversion that hung a local preview: the page-load
     // callback takes the policy lock first and the registry second. The caller
@@ -1575,6 +1742,8 @@ fn prepare_active_embed(
             ActiveEmbed {
                 #[cfg(windows)]
                 network,
+                #[cfg(windows)]
+                layering,
                 instance_id: instance_id.to_string(),
                 owner_id: owner_id.to_string(),
                 local_root: local_root.clone(),
@@ -2370,8 +2539,8 @@ pub async fn browser_embed_close(
 mod tests {
     use super::{
         bounded_insert, browser_child_transparent, navigation_allowed, parse_pane_url,
-        physical_rect, should_process_update, validate_punch_hole_count, validate_voice_text,
-        EmbedBounds, MAX_PUNCH_HOLES, MAX_VOICE_TEXT_BYTES,
+        physical_rect, should_process_update, validate_punch_holes, validate_voice_text,
+        EmbedBounds, PunchHole, MAX_PUNCH_HOLES, MAX_VOICE_TEXT_BYTES, PUNCH_HOLE_LIMIT,
     };
     use std::collections::HashSet;
     use url::Url;
@@ -2400,6 +2569,23 @@ mod tests {
         assert_eq!(next.3.load(Ordering::Acquire), 123);
         let fresh = super::prepare_active_embed(id, "new-instance", "new-owner", None).unwrap();
         assert!(!Arc::ptr_eq(&first.3, &fresh.3));
+        super::active_embeds().lock().unwrap().remove(&id);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_new_owner_starts_its_browser_on_top_and_uncut() {
+        use std::sync::Arc;
+        let id = 991_341;
+        super::prepare_active_embed(id, "same-instance", "old-owner", None).unwrap();
+        let old = super::tab_layering(id);
+        old.lock().unwrap().sunk_below = Some(42);
+        super::prepare_active_embed(id, "same-instance", "old-owner", None).unwrap();
+        assert!(Arc::ptr_eq(&old, &super::tab_layering(id)));
+        super::prepare_active_embed(id, "same-instance", "new-owner", None).unwrap();
+        let new = super::tab_layering(id);
+        assert!(!Arc::ptr_eq(&old, &new));
+        assert!(new.lock().unwrap().sunk_below.is_none());
         super::active_embeds().lock().unwrap().remove(&id);
     }
 
@@ -2545,8 +2731,101 @@ mod tests {
 
     #[test]
     fn browser_punch_holes_are_bounded() {
-        assert!(validate_punch_hole_count(MAX_PUNCH_HOLES).is_ok());
-        assert!(validate_punch_hole_count(MAX_PUNCH_HOLES + 1).is_err());
+        let hole = PunchHole {
+            x: -20,
+            y: 10,
+            width: 40,
+            height: 30,
+            radius: 12,
+        };
+        assert!(validate_punch_holes(&vec![hole; MAX_PUNCH_HOLES]).is_ok());
+        assert!(validate_punch_holes(&vec![hole; MAX_PUNCH_HOLES + 1]).is_err());
+        for bad in [
+            PunchHole {
+                x: PUNCH_HOLE_LIMIT + 1,
+                ..hole
+            },
+            PunchHole { width: -1, ..hole },
+            PunchHole { radius: -1, ..hole },
+        ] {
+            assert!(validate_punch_holes(&[bad]).is_err());
+        }
+    }
+
+    #[test]
+    fn a_hole_sent_without_a_radius_is_square() {
+        let hole: PunchHole =
+            serde_json::from_str(r#"{"x":1,"y":2,"width":3,"height":4}"#).unwrap();
+        assert_eq!(hole.radius, 0);
+    }
+
+    /// Whether the pixel at (x, y) has its center inside the rounded surface.
+    #[cfg(windows)]
+    fn paints(hole: PunchHole, x: i32, y: i32) -> bool {
+        let radius = f64::from(hole.radius);
+        let (px, py) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+        let (left, top) = (f64::from(hole.x), f64::from(hole.y));
+        let right = left + f64::from(hole.width);
+        let bottom = top + f64::from(hole.height);
+        if px < left || px > right || py < top || py > bottom {
+            return false;
+        }
+        let cx = px.clamp(left + radius, right - radius);
+        let cy = py.clamp(top + radius, bottom - radius);
+        (px - cx).powi(2) + (py - cy).powi(2) <= radius * radius
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_rounded_hole_opens_only_what_its_surface_paints() {
+        use windows::Win32::Graphics::Gdi::{DeleteObject, PtInRegion};
+
+        // A toast, the round close button, the mini window and a square panel.
+        for (width, height, radius) in [(356, 64, 10), (20, 20, 10), (120, 40, 16), (30, 30, 0)] {
+            let hole = PunchHole {
+                x: 7,
+                y: 5,
+                width,
+                height,
+                radius,
+            };
+            let region = super::punched_region(400, 100, &[hole]).unwrap();
+            let open = |x: i32, y: i32| !unsafe { PtInRegion(region, x, y) }.as_bool();
+            // The straight edges open exactly the surface, not the pixel beside it.
+            let (mid_x, mid_y) = (hole.x + width / 2, hole.y + height / 2);
+            assert!(open(hole.x, mid_y) && open(hole.x + width - 1, mid_y));
+            assert!(!open(hole.x - 1, mid_y) && !open(hole.x + width, mid_y));
+            assert!(open(mid_x, hole.y) && open(mid_x, hole.y + height - 1));
+            assert!(!open(mid_x, hole.y - 1) && !open(mid_x, hole.y + height));
+            for y in hole.y - 2..hole.y + height + 2 {
+                for x in hole.x - 2..hole.x + width + 2 {
+                    assert!(
+                        !open(x, y) || paints(hole, x, y),
+                        "({x}, {y}) opens outside {hole:?}"
+                    );
+                }
+            }
+            let _ = unsafe { DeleteObject(region.into()) };
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_hole_reaching_past_the_browser_cuts_only_what_is_inside() {
+        use windows::Win32::Graphics::Gdi::{DeleteObject, PtInRegion};
+
+        let hole = PunchHole {
+            x: -30,
+            y: 80,
+            width: 60,
+            height: 40,
+            radius: 10,
+        };
+        let region = super::punched_region(400, 100, &[hole]).unwrap();
+        let open = |x: i32, y: i32| !unsafe { PtInRegion(region, x, y) }.as_bool();
+        assert!(open(0, 90) && open(29, 99));
+        assert!(!open(30, 90) && !open(0, 79));
+        let _ = unsafe { DeleteObject(region.into()) };
     }
 
     #[test]
@@ -2578,13 +2857,49 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn a_sunk_browser_stays_below_anbo_uncut_and_keeps_its_holes_for_the_raise() {
+        use windows::Win32::UI::WindowsAndMessaging::HWND_BOTTOM;
+
+        let hole = PunchHole {
+            x: 1,
+            y: 2,
+            width: 30,
+            height: 40,
+            radius: 4,
+        };
+        let mut layering = super::Layering {
+            holes: vec![hole],
+            ..Default::default()
+        };
+        assert_eq!(layering.cut().len(), 1);
+
+        layering.sunk_below = Some(42);
+        assert!(layering.cut().is_empty());
+        // A presentation update while sunk keeps it right below the main webview.
+        assert_eq!(
+            super::embed_insert_after(true, layering.sunk_below).0 as isize,
+            42
+        );
+        assert_eq!(
+            super::embed_insert_after(false, layering.sunk_below),
+            HWND_BOTTOM
+        );
+
+        layering.holes = vec![hole, PunchHole { x: 50, ..hole }];
+        assert!(layering.cut().is_empty());
+        layering.sunk_below = None;
+        assert_eq!(layering.cut().len(), 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn background_embed_is_parked_without_activation_or_resize() {
         use windows::Win32::UI::WindowsAndMessaging::{
             HWND_BOTTOM, HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
         };
 
-        assert_eq!(super::embed_insert_after(false), HWND_BOTTOM);
-        assert_eq!(super::embed_insert_after(true), HWND_TOP);
+        assert_eq!(super::embed_insert_after(false, None), HWND_BOTTOM);
+        assert_eq!(super::embed_insert_after(true, None), HWND_TOP);
         for visible in [false, true] {
             let flags = super::embed_window_pos_flags(visible).0;
             assert_eq!(flags & SWP_ASYNCWINDOWPOS.0, 0);
