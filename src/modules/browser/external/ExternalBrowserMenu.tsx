@@ -68,6 +68,27 @@ export function otherTabs(
   return list.filter((tab) => !inAnbo.has(tab.id));
 }
 
+/** The header's few words on the profiles: how many are connected, and how
+ * many wait for approval. */
+export function profileSummary(connected: number, waiting: number): string {
+  const parts: string[] = [];
+  if (connected > 0)
+    parts.push(
+      `${connected} ${connected === 1 ? "profile" : "profiles"} connected`,
+    );
+  if (waiting > 0) parts.push(`${waiting} waiting`);
+  return parts.length > 0 ? parts.join(" · ") : "Not connected";
+}
+
+/** The header button's name, which also says why its badge is up. */
+export function menuLabel(connected: number, waiting: number): string {
+  if (waiting > 0)
+    return `External browsers: ${waiting === 1 ? "a profile is" : `${waiting} profiles are`} waiting for approval`;
+  return connected > 0
+    ? `External browsers: ${profileSummary(connected, 0)}`
+    : "External browsers: connect Chrome or Edge";
+}
+
 export default function ExternalBrowserMenu({
   workspaceRoot,
   onShowTab,
@@ -75,6 +96,7 @@ export default function ExternalBrowserMenu({
 }: Props) {
   const open = useExternalBrowsers((state) => state.menuOpen);
   const setOpen = useExternalBrowsers((state) => state.setMenuOpen);
+  const total = useExternalBrowsers((state) => state.connections.length);
   const waiting = useExternalBrowsers(
     (state) => pendingConnections(state.connections).length,
   );
@@ -87,10 +109,7 @@ export default function ExternalBrowserMenu({
           sameWorkspace(connection.workspace, workspaceRoot),
       ),
   );
-  const label =
-    waiting > 0
-      ? `Chrome and Edge: ${waiting === 1 ? "a profile is" : `${waiting} profiles are`} waiting for approval`
-      : "Chrome and Edge";
+  const label = menuLabel(total - waiting, waiting);
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -218,8 +237,11 @@ export function MenuBody({
   return (
     <>
       <div className="flex h-8 items-center gap-2 px-2.5">
-        <span className="text-xs font-medium text-foreground">
-          Chrome and Edge
+        <span className="shrink-0 text-xs font-medium text-foreground">
+          External browsers
+        </span>
+        <span className="min-w-0 truncate text-[10.5px] text-muted-foreground">
+          {profileSummary(approved.length, pending.length)}
         </span>
         {approved.length > 0 ? (
           <button

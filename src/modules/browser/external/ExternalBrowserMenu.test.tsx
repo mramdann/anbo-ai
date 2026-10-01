@@ -1,6 +1,8 @@
 import {
   MenuBody,
+  menuLabel,
   otherTabs,
+  profileSummary,
   TabRow,
 } from "@/modules/browser/external/ExternalBrowserMenu";
 import { dockNotice } from "@/modules/browser/external/ExternalBrowserPane";
@@ -49,6 +51,9 @@ describe("browser menu", () => {
     expect(markup).toContain("Approve for anbo-ai");
     expect(markup).toContain("Deny");
     expect(markup).toContain("Logins stay in Chrome");
+    expect(markup).toContain(">External browsers</span>");
+    expect(markup).toContain(">1 waiting</span>");
+    expect(markup).not.toContain("Chrome and Edge");
   });
 
   it("lists what a connected profile shows in Anbo and what else it has", () => {
@@ -75,6 +80,7 @@ describe("browser menu", () => {
     expect(markup).toContain("Disconnect");
     expect(markup).not.toContain("Needs approval");
     expect(markup).not.toContain("Dock");
+    expect(markup).toContain(">1 profile connected</span>");
   });
 
   it("names the workspace of a profile approved somewhere else", () => {
@@ -106,6 +112,7 @@ describe("browser menu", () => {
     // With profiles connected, setup folds into one line.
     expect(markup).toContain("Connect Chrome or Edge");
     expect(markup).not.toContain("Set up Chrome");
+    expect(markup).toContain(">2 profiles connected</span>");
   });
 
   it("puts the Open hint inside the row's own button", () => {
@@ -127,6 +134,19 @@ describe("browser menu", () => {
     expect(markup).toContain("Use your Chrome or Edge logins in Anbo");
     expect(markup).toContain("Set up Chrome");
     expect(markup).toContain("Set up Edge");
+    expect(markup).toContain(">Not connected</span>");
+  });
+
+  it("names the header button after what its badge or dot is for", () => {
+    expect(menuLabel(0, 0)).toBe("External browsers: connect Chrome or Edge");
+    expect(menuLabel(1, 0)).toBe("External browsers: 1 profile connected");
+    expect(menuLabel(2, 1)).toBe(
+      "External browsers: a profile is waiting for approval",
+    );
+    expect(menuLabel(0, 3)).toBe(
+      "External browsers: 3 profiles are waiting for approval",
+    );
+    expect(profileSummary(2, 1)).toBe("2 profiles connected · 1 waiting");
   });
 
   it("offers only the tabs that are not in Anbo yet", () => {
