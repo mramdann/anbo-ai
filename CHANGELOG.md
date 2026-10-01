@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.33.1](https://github.com/mramdann/anbo-ai/compare/v0.33.0...v0.33.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **agents:** read Kimi's trust chooser when its MCP list pushes the title away ([2e7d859](https://github.com/mramdann/anbo-ai/commit/2e7d8592ef5f95fcda537481d065d187fb962fb8))
+* **tabs:** show the + menu's real shortcuts ([c2c83e7](https://github.com/mramdann/anbo-ai/commit/c2c83e707560dc8c62634d3feb8a548af471c2d1))
+
 ## [0.33.0](https://github.com/mramdann/anbo-ai/compare/v0.32.0...v0.33.0) (2026-10-01)
 
 
