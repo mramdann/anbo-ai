@@ -647,7 +647,17 @@ export const BrowserPane = memo(
         reading = true;
         void browserEmbedUrl(id, ownerIdRef.current)
           .then((liveUrl) => {
-            if (!alive || !liveUrl || liveUrl === currentUrlRef.current) return;
+            // A page just created reads about:blank until its first navigation
+            // commits. Taken up, that hid the page behind a URL error until
+            // the next read, so this takes only what navigation events take.
+            if (
+              !alive ||
+              !liveUrl ||
+              liveUrl === currentUrlRef.current ||
+              !isReportableBrowserNavUrl(liveUrl)
+            ) {
+              return;
+            }
             currentUrlRef.current = liveUrl;
             if (liveUrl !== urlPropRef.current) {
               onUrlChangeRef.current(liveUrl);

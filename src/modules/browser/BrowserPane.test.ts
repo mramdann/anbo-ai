@@ -127,6 +127,14 @@ describe("BrowserPane native layering", () => {
     expect(src).not.toContain("scheduleNativeBrowserPresentationSync");
   });
 
+  it("takes up a live URL only when a navigation event would", () => {
+    // A page just created reads about:blank before its first navigation
+    // commits; written into the tab, that hid the page behind a URL error.
+    expect(src).toMatch(
+      /browserEmbedUrl\(id, ownerIdRef\.current\)[\s\S]{0,700}!isReportableBrowserNavUrl\(liveUrl\)/,
+    );
+  });
+
   it("punches holes for floating surfaces, one request at a time", () => {
     expect(src).toContain("floatingSurfaceHoles(rect, dpr)");
     expect(src).toContain("if (holesInFlightRef.current || !desired) return;");
