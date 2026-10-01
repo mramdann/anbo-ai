@@ -1,3 +1,4 @@
+import { afterPageWork } from "@/lib/nativeWorkOrder";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { setGlobalVoiceRuntimeEnabled } from "@/modules/voice/lib/globalVoice";
 import { useEffect, useRef } from "react";
@@ -70,10 +71,23 @@ export function GlobalVoiceBridge({ configured }: { configured: boolean }) {
   useEffect(() => {
     if (!hydrated || appliedRef.current === runtimeEnabled) return;
     appliedRef.current = runtimeEnabled;
-    void setGlobalVoiceRuntimeEnabled(runtimeEnabled).catch((error) => {
-      appliedRef.current = !runtimeEnabled;
-      console.error("global AnboVoice lifecycle failed", error);
-    });
+    let cancelled = false;
+    // The orb is a webview window of its own, and the shell builds one native
+    // view at a time: built at launch, it kept a restored browser page off
+    // screen for seconds. Turning it on waits for the pages; off does not.
+    const turn = runtimeEnabled ? afterPageWork() : Promise.resolve();
+    void turn
+      .then(() => {
+        if (cancelled) return;
+        return setGlobalVoiceRuntimeEnabled(runtimeEnabled);
+      })
+      .catch((error) => {
+        appliedRef.current = !runtimeEnabled;
+        console.error("global AnboVoice lifecycle failed", error);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [hydrated, runtimeEnabled]);
 
   return null;

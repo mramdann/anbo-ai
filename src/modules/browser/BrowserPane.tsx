@@ -1,3 +1,4 @@
+import { beginPageWork } from "@/lib/nativeWorkOrder";
 import { IS_WINDOWS } from "@/lib/platform";
 import type { WorkspaceEnv } from "@/modules/workspace";
 import {
@@ -424,6 +425,9 @@ export const BrowserPane = memo(
       if (!desired || desired.key === sentKeyRef.current) return;
       sentKeyRef.current = desired.key;
       inFlightRef.current = true;
+      // Native work that can wait, such as building the voice orb, holds back
+      // until pages going up are done; the first one creates the webview.
+      const pageWorkDone = beginPageWork();
       void browserEmbedUpdate(
         id,
         ownerIdRef.current,
@@ -478,6 +482,7 @@ export const BrowserPane = memo(
           }, delay);
         })
         .finally(() => {
+          pageWorkDone();
           inFlightRef.current = false;
           sendDesiredBounds();
         });

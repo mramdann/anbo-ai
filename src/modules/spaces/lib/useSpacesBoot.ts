@@ -1,3 +1,4 @@
+import { markWorkspaceRestored } from "@/lib/nativeWorkOrder";
 import { native } from "@/modules/ai/lib/native";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { Tab } from "@/modules/tabs";
@@ -158,6 +159,8 @@ export function useSpacesBoot({
         console.error("[anbo] spaces boot failed:", e);
       } finally {
         if (!landed) markBooted();
+        // Native work that can wait starts behind the pages this restore puts up.
+        markWorkspaceRestored();
       }
     })();
   }, [
