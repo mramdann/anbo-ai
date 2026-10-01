@@ -119,7 +119,7 @@ pub(crate) fn reserve(workload: Workload) -> Result<Reservation, String> {
     let now = Instant::now();
     admissions.check(memory, workload.bytes(), now)?;
     let id = NEXT_RESERVATION
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
         .map_err(|_| "resource reservation ids exhausted".to_string())?;
     admissions
         .0

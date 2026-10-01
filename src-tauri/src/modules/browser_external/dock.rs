@@ -1,3 +1,7 @@
+// Only the Windows dock places a browser window; other platforms build the
+// layout planning for its tests and the shared commands.
+#![cfg_attr(not(windows), allow(dead_code))]
+
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Webview};
 

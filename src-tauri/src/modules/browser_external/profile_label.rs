@@ -1,6 +1,9 @@
 //! Names a connecting profile the way its browser does, read from the browser's
 //! own `Local State`, when the extension leaves the label empty. Extensions have
 //! no API for their profile's name.
+// Only Windows reads the browser's process; other platforms build the parsing
+// for its tests.
+#![cfg_attr(not(windows), allow(dead_code))]
 
 #[cfg(windows)]
 use super::browser_process as native;
@@ -179,6 +182,8 @@ mod tests {
         assert_eq!(resolve(&Browser::Edge, None, &taken), "Edge");
     }
 
+    // Windows paths: elsewhere a backslash is not a separator.
+    #[cfg(windows)]
     #[test]
     fn the_profile_folder_follows_the_command_line_or_the_install() {
         let local = Path::new(r"C:\Users\Someone\AppData\Local");
