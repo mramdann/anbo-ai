@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.33.0](https://github.com/mramdann/anbo-ai/compare/v0.32.0...v0.33.0) (2026-10-01)
+
+
+### Features
+
+* **agents:** choose the sound that plays with an agent alert ([8b74570](https://github.com/mramdann/anbo-ai/commit/8b74570edf6ac7329a3533d917e49b0fd7f7b472))
+* **agents:** show how long a turn runs and count only what needs you ([1d7cd0b](https://github.com/mramdann/anbo-ai/commit/1d7cd0bb44fc6169a3a94909dc068f9e771a3526))
+* **browser:** dock external Chrome and Edge tabs under Anbo ([68bcd1a](https://github.com/mramdann/anbo-ai/commit/68bcd1a8508b9549110398d2794c972d543c8a94))
+* **browser:** fold profiles in the browser menu and show browser logos ([3d3a630](https://github.com/mramdann/anbo-ai/commit/3d3a630f5f67f6742f453e91867de43995dc3fdf))
+* **browser:** keep new tabs in Anbo's browser and give each profile a New tab ([b6ed038](https://github.com/mramdann/anbo-ai/commit/b6ed0382822542cc03225549be2743ab0f23873e))
+* **browser:** name a connecting profile the way its browser does ([614b19a](https://github.com/mramdann/anbo-ai/commit/614b19a5570691099d51dd8e7d1367bdf22b7433))
+* **browser:** name the external browser menu by what it holds ([4b135ea](https://github.com/mramdann/anbo-ai/commit/4b135ea9079d823d71410912fa38a618669ee07d))
+* **browser:** show connected Chrome and Edge pages by themselves ([1fe2499](https://github.com/mramdann/anbo-ai/commit/1fe2499665ceb442d2f14d60824b035d869a2e7b))
+* **browser:** show the browser's logo in place of Ports in an external tab ([d62404c](https://github.com/mramdann/anbo-ai/commit/d62404c7431b8ce5e81ecf7935af77757a072ad9))
+* **extension:** Anbo icons, a clearer popup, and redirects on open ([2878300](https://github.com/mramdann/anbo-ai/commit/2878300bacc30e8f7c03391ca2c42cbf56931e92))
+* **extension:** keep a docked page in Anbo when it opens a tab ([bb5023a](https://github.com/mramdann/anbo-ai/commit/bb5023adda8f1e538910e8b8a0b8c0f2e4388d81))
+
+
+### Bug Fixes
+
+* **agents:** read agent status from the rows the terminal draws ([6cef98e](https://github.com/mramdann/anbo-ai/commit/6cef98e032aba007f182035fabe4f01241699608))
+* **agents:** read Codex 0.159, agy's command list and OpenCode's start screen ([deb043a](https://github.com/mramdann/anbo-ai/commit/deb043afd9c9d00e1dea100ca4c95bce9c2470f1))
+* **agents:** show turn time in one unit ([f74a7ba](https://github.com/mramdann/anbo-ai/commit/f74a7ba7c4aea0f2e8581ddcb6f7e2e85afed956))
+* **browser:** cut no hole for a toast that is still transparent ([cd27f7e](https://github.com/mramdann/anbo-ai/commit/cd27f7eb5940275ddaacc80b2899a7edc77cf304))
+* **browser:** drop the Chrome or Edge link from the start page ([200a9c5](https://github.com/mramdann/anbo-ai/commit/200a9c5bd722224aff0d9a2fce7813f0b6309ba0))
+* **browser:** keep a connected browser's extension process scheduled ([a0647b9](https://github.com/mramdann/anbo-ai/commit/a0647b9bd4beb9f33bd8703f69a878de71606cf4))
+* **browser:** keep a new page's about:blank out of its tab ([ec588e2](https://github.com/mramdann/anbo-ai/commit/ec588e2f0f1fe99f589ae89cf2f879f85f8f8670))
+* **browser:** keep the dock window out of the topmost band during attach ([4e3810b](https://github.com/mramdann/anbo-ai/commit/4e3810b34636e3170c203a63e33bf2e32ebf58b4))
+* **browser:** keep the external browser's Windows-only code from failing other platforms ([e085412](https://github.com/mramdann/anbo-ai/commit/e08541272fd84d48bdbbeb7a393a3faa5877c042))
+* **browser:** keep the native host module out of the bundler's binaries ([1e96a36](https://github.com/mramdann/anbo-ai/commit/1e96a3640146389e6f5e40dfae3d2cc5d8368d89))
+* **browser:** keep the page through a hot update of the browser pane ([6986431](https://github.com/mramdann/anbo-ai/commit/698643177d68e1c42f6db37239a983abdb997b5d))
+* **browser:** put a reopened workspace's pages up before the voice orb ([0faaed6](https://github.com/mramdann/anbo-ai/commit/0faaed632dfdcf07da76bc3c0e323323d6b3fc7c))
+* **browser:** show toasts over the native browser without flashes ([27347d5](https://github.com/mramdann/anbo-ai/commit/27347d5e17e4ba5a09b08f6bce0d4de4c1883534))
+* **browser:** start the setup browser through the shell and explain extension pages ([e9f743b](https://github.com/mramdann/anbo-ai/commit/e9f743b5e9489caf1e0fa0317c1207f53bc230b3))
+* **browser:** stop losing Chrome and Edge tabs to slow commands ([bfc7058](https://github.com/mramdann/anbo-ai/commit/bfc70587c94b01dc60651e6182a3f4a5ed465591))
+* **sidebar:** give the sidebar its width back after a minimize squeezes it ([478aa57](https://github.com/mramdann/anbo-ai/commit/478aa57139ac310aad4d6bdff335142a89fa2708))
+* **tabs:** keep a workspace's split when its Dockview is put up again ([1af0881](https://github.com/mramdann/anbo-ai/commit/1af0881204e098e3e160ecbed3afc572f874b084))
+* **voice:** retry a Groq upload lost to a dead connection and log every failure ([6ed324d](https://github.com/mramdann/anbo-ai/commit/6ed324d8f4688062e37c92c30a574c19bdd83538))
+
+
+### Performance Improvements
+
+* **agents:** load the alert sounds with the first alert or preview ([db58c4a](https://github.com/mramdann/anbo-ai/commit/db58c4a94de3500095fe44fe5e6cf5ddf4af8238))
+
 ## [0.32.0](https://github.com/mramdann/anbo-ai/compare/v0.31.0...v0.32.0) (2026-09-26)
 
 
