@@ -1,6 +1,7 @@
 import { shortcutLabel } from "@/modules/shortcuts";
 import { toast } from "sonner";
 import { AgentIcon } from "../lib/agentIcon";
+import type { AttentionSoundId } from "../lib/attentionSound";
 import { displayAgent } from "../lib/format";
 
 type AgentToastArgs = {
@@ -8,6 +9,8 @@ type AgentToastArgs = {
   title: string;
   body?: string;
   workspace?: string;
+  /** The alert sound picked in Settings; the default chirp when absent. */
+  sound?: AttentionSoundId;
   onActivate: () => void;
 };
 
@@ -16,6 +19,7 @@ export function showAgentToast({
   title,
   body,
   workspace,
+  sound,
   onActivate,
 }: AgentToastArgs) {
   const hint = shortcutLabel("agent.focusAttention");
@@ -23,7 +27,7 @@ export function showAgentToast({
     .filter(Boolean)
     .join(" · ");
   void import("../lib/attentionSound")
-    .then(({ playAttentionSound }) => playAttentionSound())
+    .then(({ playAttentionSound }) => playAttentionSound(sound))
     .catch(() => {});
   toast(title, {
     description: detail ? (

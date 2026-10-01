@@ -27,8 +27,19 @@ describe("showAgentToast", () => {
 
     const description = toast.mock.calls[0]?.[1]?.description;
     expect(renderToStaticMarkup(description)).toContain("Claude Code");
+    await vi.waitFor(() => expect(playAttentionSound).toHaveBeenCalledTimes(1));
+  });
+
+  it("plays the alert sound it is given", async () => {
+    showAgentToast({
+      agent: "claude",
+      title: "Aurelia needs your input",
+      sound: "pop",
+      onActivate: vi.fn(),
+    });
+
     await vi.waitFor(() =>
-      expect(playAttentionSound).toHaveBeenCalledTimes(1),
+      expect(playAttentionSound).toHaveBeenCalledWith("pop"),
     );
   });
 

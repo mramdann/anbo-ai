@@ -60,7 +60,14 @@ export function routeAgentNotification({
       });
     }
     if (allowToast) {
-      showAgentToast({ agent, title, body, workspace, onActivate });
+      showAgentToast({
+        agent,
+        title,
+        body,
+        workspace,
+        sound: preferences.agentAttentionSound,
+        onActivate,
+      });
     }
   }
 

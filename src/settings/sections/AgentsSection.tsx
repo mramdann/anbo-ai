@@ -7,10 +7,21 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { IS_WINDOWS } from "@/lib/platform";
+import {
+  ATTENTION_SOUNDS,
+  playAttentionSound,
+} from "@/modules/agents/lib/attentionSound";
 import { AGENT_ICONS } from "@/modules/ai/components/AgentSwitcher";
 import {
   type Agent,
@@ -29,6 +40,8 @@ import {
 } from "@/modules/ai/store/snippetsStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
+  coerceAttentionSound,
+  setAgentAttentionSound,
   setAgentInAppNotifications,
   setAgentSystemNotifications,
   setBrowserAutomationEnabled,
@@ -42,6 +55,7 @@ import {
   Delete02Icon,
   Edit02Icon,
   SparklesIcon,
+  VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
@@ -64,6 +78,7 @@ export function AgentsSection() {
   const agentSystemNotifications = usePreferencesStore(
     (s) => s.agentSystemNotifications,
   );
+  const agentAttentionSound = usePreferencesStore((s) => s.agentAttentionSound);
   const browserAutomationEnabled = usePreferencesStore(
     (s) => s.browserAutomationEnabled,
   );
@@ -104,6 +119,55 @@ export function AgentsSection() {
             checked={agentInAppNotifications}
             onCheckedChange={(value) => void setAgentInAppNotifications(value)}
           />
+        </SettingRow>
+        <SettingRow
+          title="Alert sound"
+          description="Plays with in-app agent alerts. Choosing a sound plays it once."
+        >
+          <div className="flex items-center gap-1">
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="size-8 text-muted-foreground hover:text-foreground"
+              title="Play alert sound"
+              aria-label="Play alert sound"
+              disabled={
+                !agentInAppNotifications || agentAttentionSound === "none"
+              }
+              onClick={() => playAttentionSound(agentAttentionSound)}
+            >
+              <HugeiconsIcon
+                icon={VolumeHighIcon}
+                size={14}
+                strokeWidth={1.75}
+              />
+            </Button>
+            <Select
+              value={agentAttentionSound}
+              disabled={!agentInAppNotifications}
+              onValueChange={(value) => {
+                const sound = coerceAttentionSound(value);
+                playAttentionSound(sound);
+                void setAgentAttentionSound(sound);
+              }}
+            >
+              <SelectTrigger size="sm" className="h-8 w-28 text-[12px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ATTENTION_SOUNDS.map((sound) => (
+                  <SelectItem
+                    key={sound.id}
+                    value={sound.id}
+                    className="text-[12px]"
+                  >
+                    {sound.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </SettingRow>
         <SettingRow
           title={IS_WINDOWS ? "Windows notifications" : "System notifications"}

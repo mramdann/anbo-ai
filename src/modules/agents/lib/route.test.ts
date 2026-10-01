@@ -5,6 +5,7 @@ const { preferences, pushNotification, osNotify, showAgentToast } = vi.hoisted(
     preferences: {
       agentInAppNotifications: true,
       agentSystemNotifications: true,
+      agentAttentionSound: "ding",
     },
     pushNotification: vi.fn(),
     osNotify: vi.fn(),
@@ -71,6 +72,14 @@ describe("routeAgentNotification", () => {
         title: "Leander needs your input",
         workspace: "notaris-surat",
       }),
+    );
+  });
+
+  it("gives the toast the alert sound picked in Settings", () => {
+    routeAgentNotification({ ...base, kind: "attention" });
+
+    expect(showAgentToast).toHaveBeenCalledWith(
+      expect.objectContaining({ sound: "ding" }),
     );
   });
 

@@ -5,6 +5,11 @@ import {
   normalizeAgentMcpEnabled,
 } from "@/modules/agents/lib/agentMcp";
 import {
+  type AttentionSoundId,
+  DEFAULT_ATTENTION_SOUND,
+  isAttentionSoundId,
+} from "@/modules/agents/lib/attentionSound";
+import {
   type AgentLaunchCommands,
   type CustomCliAgent,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
@@ -189,6 +194,8 @@ export type Preferences = {
   zoomLevel: number;
   agentInAppNotifications: boolean;
   agentSystemNotifications: boolean;
+  /** Played with in-app agent alerts. */
+  agentAttentionSound: AttentionSoundId;
   agentMcpEnabled: AgentMcpEnabled;
   agentLaunchCommands: AgentLaunchCommands;
   customCliAgents: CustomCliAgent[];
@@ -292,6 +299,7 @@ const KEY_ZOOM_LEVEL = "zoomLevel";
 const KEY_AGENT_NOTIFICATIONS = "agentNotifications";
 const KEY_AGENT_IN_APP_NOTIFICATIONS = "agentInAppNotifications";
 const KEY_AGENT_SYSTEM_NOTIFICATIONS = "agentSystemNotifications";
+const KEY_AGENT_ATTENTION_SOUND = "agentAttentionSound";
 const KEY_AGENT_MCP_ENABLED = "agentMcpEnabled";
 const KEY_AGENT_LAUNCH_COMMANDS = "agentLaunchCommands";
 const KEY_CUSTOM_CLI_AGENTS = "customCliAgents";
@@ -384,6 +392,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   zoomLevel: 1.0,
   agentInAppNotifications: true,
   agentSystemNotifications: true,
+  agentAttentionSound: DEFAULT_ATTENTION_SOUND,
   agentMcpEnabled: DEFAULT_AGENT_MCP_ENABLED,
   agentLaunchCommands: DEFAULT_AGENT_LAUNCH_COMMANDS,
   customCliAgents: [],
@@ -592,6 +601,9 @@ export async function loadPreferences(): Promise<Preferences> {
       get<boolean>(KEY_AGENT_SYSTEM_NOTIFICATIONS) ??
       legacyAgentNotifications ??
       DEFAULT_PREFERENCES.agentSystemNotifications,
+    agentAttentionSound: coerceAttentionSound(
+      get<unknown>(KEY_AGENT_ATTENTION_SOUND),
+    ),
     agentMcpEnabled: normalizeAgentMcpEnabled(
       get<unknown>(KEY_AGENT_MCP_ENABLED),
     ),
@@ -990,6 +1002,16 @@ export async function setAgentSystemNotifications(
   await writePref(KEY_AGENT_SYSTEM_NOTIFICATIONS, value);
 }
 
+export function coerceAttentionSound(value: unknown): AttentionSoundId {
+  return isAttentionSoundId(value)
+    ? value
+    : DEFAULT_PREFERENCES.agentAttentionSound;
+}
+
+export async function setAgentAttentionSound(value: unknown): Promise<void> {
+  await writePref(KEY_AGENT_ATTENTION_SOUND, coerceAttentionSound(value));
+}
+
 export async function setAgentMcpEnabled(
   value: AgentMcpEnabled,
 ): Promise<void> {
@@ -1086,6 +1108,7 @@ export async function onPreferencesChange(
     [KEY_ZOOM_LEVEL]: "zoomLevel",
     [KEY_AGENT_IN_APP_NOTIFICATIONS]: "agentInAppNotifications",
     [KEY_AGENT_SYSTEM_NOTIFICATIONS]: "agentSystemNotifications",
+    [KEY_AGENT_ATTENTION_SOUND]: "agentAttentionSound",
     [KEY_AGENT_MCP_ENABLED]: "agentMcpEnabled",
     [KEY_AGENT_LAUNCH_COMMANDS]: "agentLaunchCommands",
     [KEY_CUSTOM_CLI_AGENTS]: "customCliAgents",
