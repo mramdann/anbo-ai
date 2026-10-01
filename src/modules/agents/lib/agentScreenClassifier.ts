@@ -232,12 +232,18 @@ const KIMI_LIVE = /^\s*[⠀-⣿](?:\s|$)|^\s*[\u{1F311}-\u{1F318}](?:\s|$)/u;
 const KIMI_QUEUED = /ctrl-s\s+to\s+steer/i;
 const KIMI_DIALOG =
   /↑\s*\/?\s*↓\s*(?:navigate|select)|Trust this folder\?|Approve once|1\/2\/3\/4 choose/i;
+// The trust chooser's own option rows. A folder with project MCP targets lists
+// them in the chooser, and in a narrow pane its title and key legend end up
+// above the rows read here.
+const KIMI_TRUST_OPTION = /^\s*(?:❯\s+)?(?:Trust this folder|Don't trust)\s*$/;
 const KIMI_BARE_PROMPT = /^\s*>(?:\s|$)/;
 
 function readKimi(rows: Rows): AgentScreenReading {
   const tail = last(rows, 16);
   const box = lastIndex(rows, KIMI_BOX_PROMPT, rows.length - 8);
-  if (box < 0 && any(tail, KIMI_DIALOG)) return reading("attention");
+  if (box < 0 && (any(tail, KIMI_DIALOG) || any(tail, KIMI_TRUST_OPTION))) {
+    return reading("attention");
+  }
   const liveEnd = box < 0 ? rows.length : box;
   const live = rows.slice(Math.max(0, liveEnd - 12), liveEnd);
   if (any(live, KIMI_LIVE) || any(live, KIMI_QUEUED)) return reading("working");

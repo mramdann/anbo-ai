@@ -736,6 +736,32 @@ export const kimiTrust: readonly string[] = [
   " ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
 ];
 
+/** trust prompt listing project MCP targets, in an 80-column background pane
+ * (captured 2026-10-02 in a folder with an .mcp.json) */
+export const kimiTrustProjectMcp: readonly string[] = [
+  "PS D:\\work\\bench> kimi --auto",
+  " ──────────────────────────────────────────────────────────────────────────────",
+  "  Trust this folder?",
+  "  ↑↓ navigate · Enter select · Esc exit",
+  "",
+  "  D:\\work\\bench",
+  "",
+  "  Project-level MCP servers are disabled until you explicitly choose Trust. Trust",
+  "  starts the listed project MCP targets and remembers this folder.",
+  "  Project MCP targets:",
+  "    anbomcp (http): url=http://127.0.0.1:7331/mcp",
+  '    playwright (stdio): command=npx args=["@playwright/mcp@latest"]',
+  "    cwd=D:/work/bench",
+  "",
+  "   ❯ Trust this folder",
+  "     Enable project MCP servers. Remembered for this folder.",
+  "",
+  "     Don't trust",
+  "     Exit Kimi Code. Asked again next launch.",
+  "",
+  " ──────────────────────────────────────────────────────────────────────────────",
+];
+
 /** idle composer */
 export const kimiIdle: readonly string[] = [
   "imi --auto",
@@ -1325,6 +1351,7 @@ export const agentScreens = {
   codexPermissionsMenu,
   codexInterrupted,
   kimiTrust,
+  kimiTrustProjectMcp,
   kimiIdle,
   kimiMoon,
   kimiSpinner,

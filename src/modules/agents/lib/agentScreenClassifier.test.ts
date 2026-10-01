@@ -47,6 +47,7 @@ describe("real screens, captured 2026-09-28", () => {
     ["codex", "codexApproval", "attention"],
     ["codex", "codexInterrupted", "ready"],
     ["kimi", "kimiTrust", "attention"],
+    ["kimi", "kimiTrustProjectMcp", "attention"],
     ["kimi", "kimiIdle", "ready"],
     ["kimi", "kimiMoon", "working"],
     ["kimi", "kimiSpinner", "working"],
@@ -476,6 +477,14 @@ describe("kimi screens", () => {
 
   it("holds the turn open while the trust chooser is up", () => {
     expect(classifyAgentScreen("kimi", trustPrompt)).toBe("attention");
+  });
+
+  it("does not take a quoted trust option above a live composer for the chooser", () => {
+    const quoted = withTranscript("kimiIdle", /No session yet/, [
+      "   Don't trust",
+      "   Trust this folder",
+    ]);
+    expect(classifyAgentScreen("kimi", quoted)).toBe("ready");
   });
 });
 
