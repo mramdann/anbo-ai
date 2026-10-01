@@ -118,7 +118,7 @@ describe("BrowserPane native layering", () => {
   });
 
   it("demotes hidden browsers immediately and preserves their visible bounds across hosts", () => {
-    expect(src).toContain("const lastVisibleBrowserBounds = new Map");
+    expect(src).toContain("lastVisibleBrowserBounds: new Map()");
     expect(src).toContain("lastVisibleBrowserBounds.get(id) ?? null");
     expect(src).toContain("lastVisibleBrowserBounds.set(id, bounds)");
     expect(src).toMatch(
@@ -133,6 +133,16 @@ describe("BrowserPane native layering", () => {
     expect(src).toMatch(
       /browserEmbedUrl\(id, ownerIdRef\.current\)[\s\S]{0,700}!isReportableBrowserNavUrl\(liveUrl\)/,
     );
+  });
+
+  it("keeps which panes hold a browser through a hot update", () => {
+    // A hot update re-runs every pane's effects; the release the old cleanup
+    // queued is called off only if the new mount finds it in the same map.
+    expect(src).toContain("import.meta.hot?.data.paneRegistry ??");
+    expect(src).toContain(
+      "if (import.meta.hot) import.meta.hot.data.paneRegistry = paneRegistry;",
+    );
+    expect(src).toContain("const pending = pendingReleases.get(id);");
   });
 
   it("punches holes for floating surfaces, one request at a time", () => {

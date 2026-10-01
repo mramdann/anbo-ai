@@ -131,10 +131,31 @@ const DesignToolbar = lazy(() => import("./design/DesignToolbar"));
 const DesignSendDialog = lazy(() => import("./design/DesignSendDialog"));
 
 const EMPTY_BOUNDS = { x: 0, y: 0, width: 0, height: 0 };
-const mountedOwnerCounts = new Map<number, number>();
-const pendingReleases = new Map<number, ReturnType<typeof setTimeout>>();
-const visibleNativeBrowserOwners = new Map<number, number>();
-const lastVisibleBrowserBounds = new Map<number, DesiredBounds["bounds"]>();
+
+// Which panes hold each native browser, and the releases their unmounts queued.
+// A hot update in Dev runs this module again and re-runs every pane's effects:
+// the old cleanup queues a release in these maps, so the new mount has to find
+// it in the same maps to call it off. Kept in the module's hot data for that;
+// production evaluates the module once.
+type PaneRegistry = {
+  mountedOwnerCounts: Map<number, number>;
+  pendingReleases: Map<number, ReturnType<typeof setTimeout>>;
+  visibleNativeBrowserOwners: Map<number, number>;
+  lastVisibleBrowserBounds: Map<number, DesiredBounds["bounds"]>;
+};
+const paneRegistry: PaneRegistry = import.meta.hot?.data.paneRegistry ?? {
+  mountedOwnerCounts: new Map(),
+  pendingReleases: new Map(),
+  visibleNativeBrowserOwners: new Map(),
+  lastVisibleBrowserBounds: new Map(),
+};
+if (import.meta.hot) import.meta.hot.data.paneRegistry = paneRegistry;
+const {
+  mountedOwnerCounts,
+  pendingReleases,
+  visibleNativeBrowserOwners,
+  lastVisibleBrowserBounds,
+} = paneRegistry;
 
 function syncNativeBrowserSurface(): void {
   if (visibleNativeBrowserOwners.size > 0) {
