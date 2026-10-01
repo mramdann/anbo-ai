@@ -21,11 +21,13 @@ export const STARTUP_BUDGETS = [
   {
     name: "settings window",
     html: "settings.html",
-    // 310 since 0.29.0: the window landed at 306.6 KiB after the design-mode,
-    // agent-resume and browser-automation work grew the shared workspace
-    // chunk it imports; nothing new is loaded eagerly here, so the tripwire
-    // moves by 5 KiB and stays tight.
-    gzipLimitBytes: 310 * KIB,
+    // 315 since 0.33.0: the window landed at 311.5 KiB. The external-browser
+    // preview, voice failure logging and turn-status work grew the shared
+    // chunks it imports by 1.7 KiB, and the alert-sound picker added 1.5 KiB
+    // (its sounds load with the first preview, not here). 310 since 0.29.0,
+    // when design mode, agent resume and browser automation landed it at
+    // 306.6 KiB. Each move keeps the tripwire about 3.5 KiB above the window.
+    gzipLimitBytes: 315 * KIB,
   },
 ];
 
