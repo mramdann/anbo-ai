@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.33.3](https://github.com/mramdann/anbo-ai/compare/v0.33.2...v0.33.3) (2026-10-02)
+
+
+### Bug Fixes
+
+* **browser:** keep text a slot does not render out of the snapshot ([b3c628a](https://github.com/mramdann/anbo-ai/commit/b3c628aa71e94aa5669e5c71ced4a091fd464e54))
+* **browser:** wait out a timeout the caller wrote before giving up ([46c57bd](https://github.com/mramdann/anbo-ai/commit/46c57bdd0cd4b854bc7c1c1ec1cc5eba5ea3cb3a))
+
 ## [0.33.2](https://github.com/mramdann/anbo-ai/compare/v0.33.1...v0.33.2) (2026-10-02)
 
 
