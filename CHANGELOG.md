@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.33.2](https://github.com/mramdann/anbo-ai/compare/v0.33.1...v0.33.2) (2026-10-02)
+
+
+### Bug Fixes
+
+* **agents:** stop counting Antigravity's sign-in as a turn ([bb8cfbe](https://github.com/mramdann/anbo-ai/commit/bb8cfbe19c6017e3ab6b7f2319eaeb3c6f1f28a5))
+* **browser:** describe press, type and session ending the way they work ([093112f](https://github.com/mramdann/anbo-ai/commit/093112f84f6d96c5443df946145b1c7b9a1f9737))
+
 ## [0.33.1](https://github.com/mramdann/anbo-ai/compare/v0.33.0...v0.33.1) (2026-10-01)
 
 
