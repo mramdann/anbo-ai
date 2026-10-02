@@ -947,6 +947,21 @@ export const agyTrust: readonly string[] = [
   "                                                                                                   Gemini 3.1 Pro · high",
 ];
 
+/** signing in at launch (captured 2026-10-02, Antigravity CLI 1.2.14) */
+export const agySigningIn: readonly string[] = [
+  "PS D:\\work\\demo> agy --dangerously-skip-permissions",
+  "",
+  "     ▄▀▀▄",
+  "    ▀▀▀▀▀▀",
+  "   ▀▀▀▀▀▀▀▀",
+  "  ▄▀▀    ▀▀▄",
+  " ▄▀▀      ▀▀▄",
+  "",
+  " Welcome to the Antigravity CLI. You are currently not signed in.",
+  "",
+  " ⣾  Signing in...",
+];
+
 /** idle composer */
 export const agyIdle: readonly string[] = [
   "PS D:\\work\\demo a",
@@ -1359,6 +1374,7 @@ export const agentScreens = {
   kimiFinished,
   kimiInterrupted,
   agyTrust,
+  agySigningIn,
   agyIdle,
   agyGenerating,
   agyApproval,

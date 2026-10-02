@@ -47,6 +47,23 @@ describe("turns", () => {
     ]);
   });
 
+  it("settles an Antigravity sign-in at launch without announcing a turn", () => {
+    // In prod a background agy that had to sign in again was announced as
+    // "finished · 3s" before anyone had asked it anything.
+    const observer = new AgentScreenObserver();
+    observer.start(1, 7, "antigravity", 0);
+    const frames = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
+    const signingIn = (now: number) =>
+      screen("agySigningIn").replace(
+        "⣾",
+        frames[Math.floor(now / 100) % frames.length],
+      );
+    expect(run(observer, signingIn, 200, 3_000)).toEqual([]);
+    expect(kinds(run(observer, screen("agyIdle"), 3_200, 10_000))).toEqual([
+      "ready",
+    ]);
+  });
+
   it("announces a submitted turn once, with how long it took", () => {
     const observer = settled("claude", "claudeIdleAuto");
     expect(observer.input(1, "Jawab satu kata saja", 2_000)).toBeNull();

@@ -55,6 +55,7 @@ describe("real screens, captured 2026-09-28", () => {
     ["kimi", "kimiFinished", "ready"],
     ["kimi", "kimiInterrupted", "ready"],
     ["antigravity", "agyTrust", "attention"],
+    ["antigravity", "agySigningIn", null],
     ["antigravity", "agyIdle", "ready"],
     ["agy", "agyGenerating", "working"],
     ["antigravity", "agyApproval", "attention"],

@@ -270,7 +270,11 @@ function readKimi(rows: Rows): AgentScreenReading {
 const AGY_FOOTER_IDLE = /^\s*\? for shortcuts/;
 const AGY_FOOTER_BUSY = /^\s*esc to cancel/;
 const AGY_LIVE =
-  /^\s*(?:[⠀-⣿]\s+)?(?:Generating|Working|Loading|Waiting|Thinking|Signing in)\.\.\./;
+  /^\s*(?:[⠀-⣿]\s+)?(?:Generating|Working|Loading|Waiting|Thinking)\.\.\./;
+// Signing in at launch is neither work nor a prompt to type into: read as
+// work it made a turn of its own, announced as finished once the composer
+// came up; read as ready it would take a message the login screen drops.
+const AGY_SIGNING_IN = /^\s*(?:[⠀-⣿]\s+)?Signing in\.\.\./;
 const AGY_DIALOG =
   /↑\/↓ Navigate · (?:enter Confirm|tab Amend|enter Select)|enter Select\s*[·-]\s*esc Skip|Run this command\?|Question \d+\/\d+|Do you trust the contents|press enter to confirm/i;
 const AGY_AUTOCOMPLETE = /tab Complete/;
@@ -293,6 +297,10 @@ function readAntigravity(rows: Rows): AgentScreenReading {
   const idleAt = lastIndex(rows, AGY_FOOTER_IDLE, rows.length - 2);
   if (dialogAt >= 0 && dialogAt > liveAt && dialogAt > idleAt) {
     return reading("attention", background);
+  }
+  const signingInAt = lastIndex(rows, AGY_SIGNING_IN, rows.length - 14);
+  if (signingInAt >= 0 && signingInAt > liveAt && signingInAt > idleAt) {
+    return reading(null, background);
   }
   if (
     any(footer, AGY_SUBAGENTS) ||
