@@ -241,15 +241,38 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                 }}
                 return el || null;
             }}
+            // A shadow host's children render where their slot sits in the
+            // shadow tree, not under the host: a button slotted into an
+            // opacity:0 wrapper is invisible while the host the run lives in
+            // is not, and the run read its text anyway. A child no slot takes
+            // is not rendered at all. Only a shadow host's children pay for
+            // this; a slot has no box, so its first ancestor with one answers.
+            const slotRenders = slot => {{
+                for (let el = slot, depth = 0; el && depth <= 32; depth++) {{
+                    let display = '';
+                    try {{ display = String(getComputedStyle(el).display || ''); }} catch (error) {{ return true; }}
+                    if (display !== 'contents') return isVisible(el);
+                    el = el.parentElement || el.getRootNode?.().host || null;
+                }}
+                return true;
+            }};
+            const slotHides = node => {{
+                if (!node.parentNode?.shadowRoot) return false;
+                const slot = node.assignedSlot;
+                return !slot || !slotRenders(slot);
+            }};
             function inlineRunText(host) {{
                 let out = '';
                 const walk = (node, depth) => {{
                     if (!node || depth > 32 || out.length > 4096) return;
-                    if (node.nodeType === 3) {{ out += node.textContent || ''; return; }}
+                    if (node.nodeType === 3) {{
+                        if (!slotHides(node)) out += node.textContent || '';
+                        return;
+                    }}
                     if (node.nodeType !== 1) return;
                     const tag = node.tagName.toLowerCase();
                     if (['script', 'style', 'noscript', 'template'].includes(tag)) return;
-                    if (node !== host && !isInlineBox(node)) return;
+                    if (node !== host && (!isInlineBox(node) || slotHides(node))) return;
                     for (const child of node.childNodes) walk(child, depth + 1);
                 }};
                 walk(host, 0);
