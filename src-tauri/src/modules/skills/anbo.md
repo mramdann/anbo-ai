@@ -117,9 +117,8 @@ minutes of silence or when your terminal turn ends, and a new task starts a
 new session by itself. Another agent acting on your tab takes it over: the
 tab follows whoever acted last.
 
-Postconditions: `browser_press` reports `observationPerformed: false` when
-`waitFor` replaces the legacy Enter observation window; read
-`postcondition.matched` then. A failed postcondition does not undo a click or
+Postconditions: with `waitFor`, `browser_press` returns only `postcondition`,
+without the Enter observation flags; read `postcondition.matched`. A failed postcondition does not undo a click or
 submit. Check `browser_tabs` for a newly opened background tab before clicking
 an equivalent link: a popup does not navigate the source tab. A target that
 moves, hides, disables or gets covered after pointer movement returns

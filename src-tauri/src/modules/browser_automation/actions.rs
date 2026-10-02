@@ -854,7 +854,7 @@ async fn handle_action_inner(
         if super::activity::begin_session(app, None, caller).is_none() {
             return Err((
                 error_codes::INVALID_REQUEST.into(),
-                "too many open control sessions; end one with browser_end_session first".into(),
+                "too many open control sessions; end one with endSession:true on its last call first".into(),
             ));
         }
     }
