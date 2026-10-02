@@ -1218,7 +1218,15 @@ async fn handle_action_inner(
             let mut quiet_waits = 0usize;
             let mut backoff_ms = LOCATOR_RETRY_MS;
             // Early absence requires another complete scan after settling.
-            let mut clock = MissClock::default();
+            // browser_open's read fills in a timeout either way and says
+            // whether it was the caller's.
+            let mut clock = MissClock {
+                patient: params
+                    .get("callerTimeout")
+                    .and_then(Value::as_bool)
+                    .unwrap_or_else(|| params.get("timeout").is_some()),
+                ..MissClock::default()
+            };
             let mut recoveries = 0usize;
             loop {
                 let now = tokio::time::Instant::now();
@@ -4353,6 +4361,11 @@ struct MissClock {
     // Revision-independent on purpose: a page that mutates constantly (live
     // charts) would otherwise never let a genuinely not-rendered match settle.
     hidden_since: Option<tokio::time::Instant>,
+    // The caller wrote its own timeout, which is a promise to wait: absence
+    // then never ends early (a label that turned up at 1.8 s under a 4 s
+    // timeout was given up on at 1.5 s). A hidden-only miss still does; the
+    // default timeout keeps the early answer agents need for wrong guesses.
+    patient: bool,
 }
 
 impl MissClock {
@@ -4384,9 +4397,10 @@ impl MissClock {
     }
 
     fn absence_settled(&self, now: tokio::time::Instant, timeout_ms: u64) -> bool {
-        self.absent_since.is_some_and(|since| {
-            now.saturating_duration_since(since) >= absence_settle(timeout_ms, self.absent_live)
-        })
+        !self.patient
+            && self.absent_since.is_some_and(|since| {
+                now.saturating_duration_since(since) >= absence_settle(timeout_ms, self.absent_live)
+            })
     }
 
     /// Records a scan that matched nothing usable; true when the miss is final.
@@ -4899,7 +4913,10 @@ async fn resolve_target_locator(
     // 8 s for the error find gives in one. A wait for a state is asked to
     // outlast exactly that, so it keeps its whole timeout.
     let settles = state.is_none();
-    let mut clock = MissClock::default();
+    let mut clock = MissClock {
+        patient: target.get("timeout").is_some(),
+        ..MissClock::default()
+    };
     loop {
         let now = tokio::time::Instant::now();
         if now >= deadline {
@@ -7208,6 +7225,10 @@ fn open_read_request(params: &Value) -> Result<Option<(&'static str, Value)>, (S
         }
         extract_locator(find)?;
         let mut find = find.clone();
+        // The read always hands its find a timeout, what is left of its own
+        // budget, so it says whether the caller wrote one: only then does the
+        // find wait out a settled absence.
+        find["callerTimeout"] = json!(find.get("timeout").is_some());
         find["timeout"] = json!(find
             .get("timeout")
             .and_then(as_count)
@@ -8918,6 +8939,23 @@ mod tests {
             assert!(!clock.missed(&scan(0), Some(&page(-1, 1_000)), at(ms), 5_000, false));
             assert!(!clock.missed(&scan(1), None, at(ms), 5_000, false));
         }
+
+        // A timeout the caller wrote: absence waits it out, quiet page or
+        // live, while a hidden-only miss still ends early.
+        let mut clock = MissClock {
+            patient: true,
+            ..MissClock::default()
+        };
+        for ms in [0, 1_500, 3_000, 3_900] {
+            assert!(!clock.missed(&scan(0), Some(&page(1, 1_000)), at(ms), 4_000, false));
+            assert!(!clock.absence_settled(at(ms), 4_000));
+        }
+        let mut clock = MissClock {
+            patient: true,
+            ..MissClock::default()
+        };
+        assert!(!clock.missed(&scan(1), Some(&page(1, 1_000)), at(0), 5_000, false));
+        assert!(clock.missed(&scan(1), Some(&page(1, 1_000)), at(1_000), 5_000, false));
     }
 
     #[test]
@@ -8955,6 +8993,12 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(query["timeout"], 10000);
+        assert_eq!(query["callerTimeout"], true);
+        let (_, query) = open_read_request(&json!({"find":{"by":"text","value":"India"}}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(query["timeout"], 5000);
+        assert_eq!(query["callerTimeout"], false);
         for params in [
             json!({"closeTab":true}),
             json!({"snapshot":"true"}),
