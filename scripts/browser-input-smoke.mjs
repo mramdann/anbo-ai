@@ -18,13 +18,24 @@ if (endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1" || endpoi
 if (!Number.isInteger(repeats) || repeats < 1 || repeats > 30) throw new Error("Use 1-30 repeats");
 
 const calls = [], checks = [], owned = new Set();
-let sequence = 0;
+let sequence = 0, session;
+// Every tools/call needs the session initialize hands out (0.28.0).
+async function initialize() {
+  const response = await fetch(endpoint, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: ++sequence, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "anbo-browser-input-smoke", version: "1" } } }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  session = response.headers.get("mcp-session-id");
+  await response.json();
+  if (!session) throw new Error("MCP initialize returned no session");
+}
 async function call(name, args) {
   const started = performance.now();
   let result, error;
   try {
     const response = await fetch(endpoint, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json", ...(session ? { "Mcp-Session-Id": session } : {}) },
       body: JSON.stringify({ jsonrpc: "2.0", id: ++sequence, method: "tools/call", params: { name, arguments: args } }),
       signal: AbortSignal.timeout(30_000),
     });
@@ -46,7 +57,7 @@ async function ok(name, args) {
   return sample.result;
 }
 function check(mode, round, passed, details = {}) {
-  const entry = { mode, round, passed: Boolean(passed), ...details };
+  const entry = { name: round ? `${mode} ${round}` : mode, mode, round, passed: Boolean(passed), ...details };
   checks.push(entry);
   console.log(JSON.stringify(entry));
 }
@@ -72,6 +83,7 @@ async function closeOwned(tabId) {
   owned.delete(tabId);
 }
 try {
+  await initialize();
   before = await ok("browser_tabs", {});
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   origin = `http://127.0.0.1:${server.address().port}`;

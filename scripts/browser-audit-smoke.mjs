@@ -89,8 +89,8 @@ async function closeOwned(tabId) {
   if (tab && ![tab.url, tab.pendingUrl].some(url => url?.startsWith(`${origin}/`))) throw Error(`Refusing to close changed tab ${tabId}`);
   if (tab) {
     const controlId = [...calls].reverse().find(item => item.value?.tabId === tabId && item.value?.controlId)?.value.controlId;
-    if (controlId) await ok('browser_end_session', {tabId, controlId});
-    await ok('browser_close', { workspace, tabId });
+    // browser_end_session is gone (0.30.0); the closing call ends the session.
+    await ok('browser_close', { workspace, tabId, ...(controlId ? { endSession: true } : {}) });
   }
   owned.delete(tabId);
 }
@@ -132,7 +132,8 @@ try {
   const offscreen = await call('browser_click', { tabId, ref: offscreenRef });
   check('offscreen error is not reported as covered', Boolean(offscreen.error) && /outside.*viewport|out of.*viewport/i.test(String(offscreen.error)), offscreen);
   const missing = await call('browser_find', { tabId, by: 'css', value: '#does-not-exist', timeout: 800 });
-  check('empty locator explains no matching element', Boolean(missing.error) && /no matching|no .*matches|no element/i.test(String(missing.error)), missing);
+  // Since 0.30.0 a fully scanned page says so, and a partial scan says it is not a confirmed absence.
+  check('empty locator explains no matching element', Boolean(missing.error) && /confirmed absence/i.test(String(missing.error)) && !/not a confirmed absence/i.test(String(missing.error)), missing);
   const logs = await ok('browser_console_logs', { tabId });
   for (const level of ['log','info','warn','error','debug','trace','assert']) {
     check(`console ${level} captured with its level`, logs.logs.some(entry => entry.level === level && entry.msg.includes(`COORD_LEVEL_${level}`)));

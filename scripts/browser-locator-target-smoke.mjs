@@ -20,7 +20,8 @@ async function call(name,args={}){
 async function ok(name,args){const r=await call(name,args);if(r.error)throw Error(JSON.stringify(r));return r.result}
 function check(name,passed,detail){checks.push({name,passed:!!passed,detail});console.log(JSON.stringify(checks.at(-1)));if(!passed)throw Error(name)}
 async function open(mode){const r=await ok('browser_open',{workspace,url:origin+'/'+mode});owned.add(r.tabId);await ok('browser_wait',{tabId:r.tabId,condition:'load',loadState:'complete',timeout:10000});return r.tabId}
-async function close(tabId){if(controls.has(tabId))await ok('browser_end_session',{tabId,controlId:controls.get(tabId)});await ok('browser_close',{tabId,workspace});owned.delete(tabId)}
+// browser_end_session is gone (0.30.0); the closing call ends the session.
+async function close(tabId){await ok('browser_close',{tabId,workspace,...(controls.has(tabId)?{endSession:true}:{})});owned.delete(tabId)}
 const css=value=>({by:'css',value,exact:true});
 async function text(tabId,value){return ok('browser_get_text',{tabId,locator:css(value),maxLength:1000})}
 function fixture(mode){
@@ -59,7 +60,8 @@ try{
  check('locator type verifies its value',typed.ok&&typed.valueVerified,typed);
  const pressed=await ok('browser_press',{tabId,locator:css('#name'),key:'Enter',expectedValue:'Locator input',waitFor:{text:'Submitted 1',timeout:2000}});
  check('locator press retains input guard and postcondition',pressed.ok&&(await text(tabId,'#submitted')).text==='Submitted 1',pressed);
- check('press distinguishes skipped observation from verified postcondition',pressed.observationPerformed===false&&pressed.postcondition?.matched===true,pressed);
+ // With waitFor, press answers with the postcondition alone (0.29.0): no observation flags beside it.
+ check('press distinguishes skipped observation from verified postcondition',!('observationPerformed' in pressed)&&!('submissionObserved' in pressed)&&pressed.postcondition?.matched===true,pressed);
  const metadata=await ok('browser_find',{tabId,by:'css',value:'#name,#readonly,#password,#offscreen',includeHidden:true,limit:5});
  check('find exposes editable/readonly/viewport metadata',metadata.matches[0].editable&&!metadata.matches[0].readOnly&&metadata.matches[0].inViewport&&metadata.matches[1].readOnly&&!metadata.matches[1].editable&&!metadata.matches[3].inViewport&&metadata.matches[0].bounds.width>0,metadata);
  check('password remains redacted in richer metadata',metadata.matches[2].value==='[REDACTED]'&&!JSON.stringify(metadata).includes('fixture-secret'));

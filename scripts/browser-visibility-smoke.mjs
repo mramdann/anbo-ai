@@ -11,9 +11,16 @@ const workspace = argument("workspace"), output = argument("output");
 const endpoint = new URL(argument("mcp-url"));
 if (!process.argv.includes("--workspace") || !process.argv.includes("--output") || endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1" || endpoint.pathname !== "/mcp") throw Error("Pass explicit loopback --mcp-url, --workspace and --output");
 const calls = [], checks = [], owned = new Set();
-let sequence = 0, before, after;
+let sequence = 0, before, after, session;
+// Every tools/call needs the session initialize hands out (0.28.0).
+async function initialize() {
+  const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: ++sequence, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "anbo-browser-visibility-smoke", version: "1" } } }), signal: AbortSignal.timeout(30_000) });
+  session = response.headers.get("mcp-session-id");
+  await response.json();
+  if (!session) throw Error("MCP initialize returned no session");
+}
 async function call(name, args) {
-  const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: ++sequence, method: "tools/call", params: { name, arguments: args } }), signal: AbortSignal.timeout(20000) });
+  const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", ...(session ? { "Mcp-Session-Id": session } : {}) }, body: JSON.stringify({ jsonrpc: "2.0", id: ++sequence, method: "tools/call", params: { name, arguments: args } }), signal: AbortSignal.timeout(20000) });
   const envelope = await response.json();
   const content = envelope.result?.content?.find(item => item.type === "text")?.text;
   let result;
@@ -42,6 +49,7 @@ async function close(tabId) {
   await call("browser_close", { tabId, workspace }); owned.delete(tabId);
 }
 try {
+  await initialize();
   before = await call("browser_tabs", {});
   for (const kind of ["ancestor", "shadow", "slot"]) {
     let tabId;

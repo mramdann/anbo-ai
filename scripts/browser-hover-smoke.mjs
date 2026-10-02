@@ -27,12 +27,13 @@ async function call(name, args = {}) {
 async function ok(name, args) { const r = await call(name, args); if (r.error) throw Error(JSON.stringify(r)); return r.result; }
 function check(name, passed, detail) { checks.push({ name, passed: !!passed, detail }); console.log(JSON.stringify(checks.at(-1))); }
 async function close(tabId) {
-  if (controls.has(tabId)) await ok('browser_end_session', { tabId, controlId: controls.get(tabId) });
-  await ok('browser_close', { tabId, workspace }); owned.delete(tabId);
+  // browser_end_session is gone (0.30.0); the closing call ends the session.
+  await ok('browser_close', { tabId, workspace, ...(controls.has(tabId) ? { endSession: true } : {}) }); owned.delete(tabId);
 }
 async function scenario(name, fn) {
   try { await fn(); } catch (cause) { check(name, false, String(cause)); }
-  finally { for (const tabId of [...owned]) await close(tabId); }
+  // One failed close must not skip the scenarios after it.
+  finally { for (const tabId of [...owned]) try { await close(tabId); } catch (cause) { check('cleanup ' + tabId, false, String(cause)); } }
 }
 function fixture(mode) {
   if (mode === 'frame') return '<!doctype html><title>Hover frame</title><iframe style="border:0;width:400px;height:280px" src="/inner"></iframe>';
@@ -128,7 +129,8 @@ try {
     }
     benchmark=Object.fromEntries(Object.entries(groups).map(([name,rows])=>[name,{native:stats(rows.map(r=>r.result.durationMs)),wall:stats(rows.map(r=>r.wallMs))}]));
     const total=await read(f);check('one move per successful hover, no mouse down',total.moves===51&&total.downs===0&&total.trusted,{total,benchmark});
-    await ok('browser_find',{tabId,by:'css',value:'#surface',limit:1});
+    // A ref outlives the next eight scans (0.30.0); the ninth leaves it stale.
+    for(let i=0;i<9;i++)await ok('browser_find',{tabId,by:'css',value:'#surface',limit:1});
     const stale=await call('browser_hover',{tabId,ref:f.surface,position:{x:.6,y:.5}});
     check('positions retain stale-ref rejection',/stale_ref/.test(JSON.stringify(stale.error)),stale.error);
   });

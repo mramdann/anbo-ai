@@ -84,7 +84,8 @@ try {
   check('direct-action error reports observed local name', baseline || (message(wrong).includes('Telusuri Google Maps') && message(wrong).includes('no input dispatched') && message(wrong).includes('not verified unique')), { baseline, observed: message(wrong).includes('Telusuri Google Maps') });
   const discovery = await ok('browser_find', { tabId, by: 'role', value: 'combobox', exact: true });
   check('only the observed local name matches', discovery.count === 1 && discovery.matches[0].name === 'Telusuri Google Maps', discovery.matches);
-  await ok('browser_type', { tabId, locator: role('combobox', discovery.matches[0].name), text: 'Monas Jakarta' });
+  // This combobox opens nothing, which since 0.32.0 earns a key-by-key re-type; reveal: 0 asks for the one fill.
+  await ok('browser_type', { tabId, locator: role('combobox', discovery.matches[0].name), text: 'Monas Jakarta', reveal: 0 });
   check('recovery with observed locator dispatches once', (await state(tabId)).inputEvents === 1 && (await state(tabId)).value === 'Monas Jakarta');
   const ambiguous = await call('browser_type', { tabId, locator: role('textbox', 'Duplicate'), text: 'forbidden' });
   check('duplicate target is still rejected', ambiguous.error && message(ambiguous).includes('ambiguous_target'), ambiguous);
@@ -103,7 +104,7 @@ try {
   for (let i = 0; i < 25; i++) {
     for (const [scenario, name, args] of [
       ['find role/name, full scan', 'browser_find', { tabId, by: 'role', value: 'button', name: 'Jalankan', exact: true, limit: 20 }],
-      ['type with direct locator', 'browser_type', { tabId, locator: role('combobox', 'Telusuri Google Maps'), text: 'value-' + i }],
+      ['type with direct locator', 'browser_type', { tabId, locator: role('combobox', 'Telusuri Google Maps'), text: 'value-' + i, reveal: 0 }],
       ['click with direct locator', 'browser_click', { tabId, locator: role('button', 'Jalankan') }],
     ]) {
       const r = await call(name, args);
