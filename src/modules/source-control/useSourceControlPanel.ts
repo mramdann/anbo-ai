@@ -5,6 +5,7 @@ import {
   type GitRepoInfo,
   type GitStatusSnapshot,
 } from "@/modules/ai/lib/native";
+import { currentLocalProviderConfig } from "@/modules/ai/lib/localProviderConfig";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import {
   modelSupportsTemperature,
@@ -858,22 +859,10 @@ export function useSourceControlPanel(
           native.gitDiff(repo.repoRoot, null, true),
         ]);
       const { text: diffText, truncated } = truncateDiff(diff.diffText);
-      const chatState = useChatStore.getState();
-      const prefs = usePreferencesStore.getState();
       const model = await buildConfiguredLanguageModel(
         selectedModelId,
-        chatState.apiKeys,
-        {
-          lmstudioBaseURL: prefs.lmstudioBaseURL,
-          lmstudioModelId,
-          mlxBaseURL: prefs.mlxBaseURL,
-          mlxModelId,
-          ollamaBaseURL: prefs.ollamaBaseURL,
-          ollamaModelId,
-          openaiCompatibleBaseURL,
-          openaiCompatibleModelId,
-          openrouterModelId,
-        },
+        useChatStore.getState().apiKeys,
+        currentLocalProviderConfig(),
       );
       const result = await generateText({
         model,
@@ -908,12 +897,6 @@ export function useSourceControlPanel(
   }, [
     aiUnavailableReason,
     aiBusy,
-    lmstudioModelId,
-    mlxModelId,
-    ollamaModelId,
-    openaiCompatibleBaseURL,
-    openaiCompatibleModelId,
-    openrouterModelId,
     repo,
     selectedModelId,
     selectedModelSupportsTemperature,
