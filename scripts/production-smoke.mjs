@@ -175,18 +175,25 @@ try {
     `${url}?anbo-production-editor-smoke=1`,
     "editor",
   );
+  // How many 100 ms looks the editor needed, so a CI log shows how close the
+  // page came to its deadline.
+  const looks = editor.stdout.match(/data-anbo-editor-smoke-looks="(\d+)"/)?.[1];
+  const firstLook = editor.stdout.match(/data-anbo-editor-smoke-first-look="([^"]*)"/)?.[1];
+  if (firstLook) console.log(`editor smoke, first look: ${firstLook}`);
   if (!editor.stdout.includes('data-anbo-editor-smoke="pass"')) {
     const detail = editor.stdout.match(
       /data-anbo-editor-smoke-error="([^"]*)"/,
     )?.[1];
     throw new Error(
-      `production editor layout smoke failed${detail ? `: ${detail}` : ""}\n${editor.stderr.slice(-4000)}`,
+      `production editor layout smoke failed${detail ? `: ${detail}` : ""}${looks ? ` (after ${looks} looks)` : ""}\n${editor.stderr.slice(-4000)}`,
     );
   }
 
   const icons = await dumpPage(`${url}__anbo-icon-smoke`, "local icon assets");
   if (!icons.stdout.includes('data-anbo-icons="')) throw new Error("local icon decoding failed");
-  console.log("Production bundle, editor layout, and local icon decoding smoke tests passed");
+  console.log(
+    `Production bundle, editor layout (ready after ${looks ?? "?"} looks), and local icon decoding smoke tests passed`,
+  );
 } finally {
   await new Promise((resolveClose) => server.close(resolveClose));
 }

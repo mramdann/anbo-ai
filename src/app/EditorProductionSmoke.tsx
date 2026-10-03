@@ -6,7 +6,28 @@ import { useEffect } from "react";
 
 const EXPECTED_TEXT = '<main data-theme="dark">Anbo</main>';
 
-function reportEditorLayout(): void {
+// Headless Chrome dumps the DOM once its virtual-time budget (5 s in
+// scripts/production-smoke.mjs) runs out. One look at 150 ms sometimes came
+// before CodeMirror had drawn every part, and CI failed with "did not mount"
+// for an editor that was fine (main on Sept 13, Oct 1 and Oct 3). The smoke
+// looks again until the editor passes and reports a failure only at the
+// deadline, well inside the budget.
+const LOOK_EVERY_MS = 100;
+const DEADLINE_MS = 3_000;
+
+/** True once the editor passes; a failure is written only on the final look. */
+function inspectEditorLayout(final: boolean, looks: number): boolean {
+  const root = document.documentElement.dataset;
+  const fail = (reason: string): false => {
+    // What the first look was still waiting for, kept for the log.
+    if (looks === 1) root.anboEditorSmokeFirstLook = reason.slice(0, 300);
+    if (final) {
+      root.anboEditorSmoke = "fail";
+      root.anboEditorSmokeError = reason;
+      root.anboEditorSmokeLooks = String(looks);
+    }
+    return false;
+  };
   const editor = document.querySelector<HTMLElement>(".cm-editor");
   const scroller = document.querySelector<HTMLElement>(".cm-scroller");
   const content = document.querySelector<HTMLElement>(".cm-content");
@@ -25,6 +46,21 @@ function reportEditorLayout(): void {
     ".cm-selectionBackground",
   );
   const result = document.getElementById("editor-production-smoke");
+  const parts = {
+    editor,
+    scroller,
+    content,
+    gutters,
+    firstLine,
+    gutterNumber,
+    syntaxToken,
+    selectionLayer,
+    selectionMarker,
+    result,
+  };
+  const missing = Object.entries(parts)
+    .filter(([, element]) => !element)
+    .map(([name]) => name);
   if (
     !editor ||
     !scroller ||
@@ -37,10 +73,9 @@ function reportEditorLayout(): void {
     !selectionMarker ||
     !result
   ) {
-    document.documentElement.dataset.anboEditorSmoke = "fail";
-    document.documentElement.dataset.anboEditorSmokeError =
-      "CodeMirror layout or stable syntax token did not mount";
-    return;
+    return fail(
+      `CodeMirror layout or stable syntax token did not mount; missing: ${missing.join(", ")}`,
+    );
   }
 
   const scrollerRect = scroller.getBoundingClientRect();
@@ -102,10 +137,17 @@ function reportEditorLayout(): void {
     nativeSelectionSuppressed &&
     selectionLayered;
 
-  document.documentElement.dataset.anboEditorSmoke = passed ? "pass" : "fail";
-  result.dataset.result = passed ? "pass" : "fail";
-  if (!passed) {
-    document.documentElement.dataset.anboEditorSmokeError = JSON.stringify({
+  if (passed) {
+    root.anboEditorSmoke = "pass";
+    root.anboEditorSmokeLooks = String(looks);
+    result.dataset.result = "pass";
+    return true;
+  }
+  if (final) {
+    result.dataset.result = "fail";
+  }
+  return fail(
+    JSON.stringify({
       textMatches,
       scrollerDisplay: scrollerStyle.display,
       lineInsideScroller,
@@ -153,13 +195,22 @@ function reportEditorLayout(): void {
         right: firstLineRect.right,
         bottom: firstLineRect.bottom,
       },
-    });
-  }
+    }),
+  );
 }
 
 export default function EditorProductionSmoke() {
   useEffect(() => {
-    const timer = window.setTimeout(reportEditorLayout, 150);
+    const started = performance.now();
+    let looks = 0;
+    let timer = 0;
+    const look = () => {
+      looks += 1;
+      const final = performance.now() - started >= DEADLINE_MS;
+      if (inspectEditorLayout(final, looks) || final) return;
+      timer = window.setTimeout(look, LOOK_EVERY_MS);
+    };
+    timer = window.setTimeout(look, LOOK_EVERY_MS);
     return () => window.clearTimeout(timer);
   }, []);
 
