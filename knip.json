@@ -1,8 +1,6 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
-    "src/settings/main.tsx",
-    "src/voice/main.tsx",
     "src/modules/lsp/lib/protocolShim.ts",
     "scripts/*.mjs",
     "src/styles/globals.css"
