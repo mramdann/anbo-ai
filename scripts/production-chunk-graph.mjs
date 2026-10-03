@@ -1,24 +1,27 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, normalize } from "node:path/posix";
-import ts from "typescript";
+import { parseSync } from "oxc-parser";
+
+// TypeScript 7 no longer ships the compiler API this used to parse with, so
+// chunks go through oxc, whose ESTree AST names the same three statements.
+const STATIC_MODULE_STATEMENTS = new Set([
+  "ImportDeclaration",
+  "ExportNamedDeclaration",
+  "ExportAllDeclaration",
+]);
 
 export function staticChunkImports(source) {
-  const file = ts.createSourceFile(
-    "chunk.js",
-    source,
-    ts.ScriptTarget.Latest,
-    false,
-    ts.ScriptKind.JS,
-  );
+  const { program, errors } = parseSync("chunk.js", source, {
+    lang: "js",
+    sourceType: "module",
+  });
+  if (errors.length > 0) {
+    throw new Error(`a production chunk does not parse: ${errors[0].message}`);
+  }
   const imports = [];
-  for (const statement of file.statements) {
-    if (
-      (ts.isImportDeclaration(statement) ||
-        ts.isExportDeclaration(statement)) &&
-      statement.moduleSpecifier &&
-      ts.isStringLiteral(statement.moduleSpecifier)
-    ) {
-      imports.push(statement.moduleSpecifier.text);
+  for (const statement of program.body) {
+    if (STATIC_MODULE_STATEMENTS.has(statement.type) && statement.source) {
+      imports.push(statement.source.value);
     }
   }
   return imports;
