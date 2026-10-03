@@ -39,3 +39,4 @@ src-tauri/binaries/
 /.codex/config.toml
 /.opencode/anbo-mcp.json
 /.kimi-code/mcp.json
+.vitest/
