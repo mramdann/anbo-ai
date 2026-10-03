@@ -14,7 +14,7 @@ function tailLines(text: string, n: number): string {
 }
 
 export function buildManagedAgentTools(ctx: ToolContext) {
-  return {
+  const tools = {
     spawn_coding_agent: tool({
       description:
         "Delegate to a new Claude Code terminal after user approval of a self-contained prompt. Only when requested and this session has no active agent; otherwise use send_to_agent.",
@@ -26,7 +26,6 @@ export function buildManagedAgentTools(ctx: ToolContext) {
             "The full, self-contained task prompt for the Claude Code agent.",
           ),
       }),
-      needsApproval: true,
       execute: async ({ prompt }) => {
         const sessionId = ctx.getSessionId();
         if (!sessionId) return { error: "no active chat session" };
@@ -57,7 +56,6 @@ export function buildManagedAgentTools(ctx: ToolContext) {
             "One clear, self-contained instruction for the agent. No control characters.",
           ),
       }),
-      needsApproval: true,
       execute: async ({ instruction }) => {
         const sessionId = ctx.getSessionId();
         const store = useManagedAgentsStore.getState();
@@ -128,4 +126,11 @@ export function buildManagedAgentTools(ctx: ToolContext) {
       },
     }),
   } as const;
+  return {
+    tools,
+    approval: {
+      spawn_coding_agent: "user-approval",
+      send_to_agent: "user-approval",
+    } as const,
+  };
 }

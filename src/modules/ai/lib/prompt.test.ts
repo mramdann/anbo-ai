@@ -1,5 +1,5 @@
 import { streamText, type ModelMessage } from "ai";
-import { MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
 import { prepareAgentPrompt } from "./prompt";
 
@@ -50,7 +50,7 @@ describe("prepareAgentPrompt", () => {
 
   it("does not trigger the SDK system-message warning", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const model = new MockLanguageModelV3({
+    const model = new MockLanguageModelV4({
       doStream: {
         stream: new ReadableStream({
           start(controller) {
@@ -70,7 +70,7 @@ describe("prepareAgentPrompt", () => {
     try {
       const result = streamText({
         model,
-        system: prompt.system,
+        instructions: prompt.system,
         messages: prompt.messages,
         allowSystemInMessages: false,
         onError: () => {},

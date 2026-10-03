@@ -16,14 +16,13 @@ export function buildTerminalTools(ctx: ToolContext) {
       },
     });
 
-  return {
+  const tools = {
     terminal_open: tool({
       description:
         "Open a shared terminal in this run's workspace with a purpose-specific title. Selects the first tab only in an empty active workspace. Wait for idle, then terminal_execute using terminalId.",
       inputSchema: z.object({
         title: z.string().trim().min(1).max(64),
       }),
-      needsApproval: true,
       execute: async ({ title }) =>
         sharedTerminalRequest("terminal_open", { title }),
     }),
@@ -32,7 +31,6 @@ export function buildTerminalTools(ctx: ToolContext) {
       description:
         "Close an idle terminal_open terminal from this app session. Refuses user/agent terminals, pending input, and foreground jobs.",
       inputSchema: z.object({ terminalId: z.string().min(1) }),
-      needsApproval: true,
       execute: async ({ terminalId }) =>
         sharedTerminalRequest("terminal_close", { terminalId }),
     }),
@@ -85,7 +83,6 @@ export function buildTerminalTools(ctx: ToolContext) {
         terminalId: z.string().min(1),
         executionId: z.string().min(1).max(128).optional(),
       }),
-      needsApproval: true,
       execute: async ({ terminalId, executionId }) =>
         sharedTerminalRequest("terminal_interrupt", {
           terminalId,
@@ -100,7 +97,6 @@ export function buildTerminalTools(ctx: ToolContext) {
         terminalId: z.string().min(1),
         text: z.string().min(1).max(8_000),
       }),
-      needsApproval: true,
       execute: async ({ terminalId, text }) =>
         sharedTerminalRequest("terminal_insert", { terminalId, text }),
     }),
@@ -112,7 +108,6 @@ export function buildTerminalTools(ctx: ToolContext) {
         terminalId: z.string().min(1),
         text: z.string().min(1).max(8_000),
       }),
-      needsApproval: true,
       execute: async ({ terminalId, text }) => {
         const safety = checkShellCommand(text);
         if (!safety.ok) return { error: safety.reason };
@@ -222,4 +217,14 @@ export function buildTerminalTools(ctx: ToolContext) {
       },
     }),
   } as const;
+  return {
+    tools,
+    approval: {
+      terminal_open: "user-approval",
+      terminal_close: "user-approval",
+      terminal_interrupt: "user-approval",
+      terminal_insert: "user-approval",
+      terminal_execute: "user-approval",
+    } as const,
+  };
 }

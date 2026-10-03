@@ -24,7 +24,7 @@ async function transcribeOpenAI(blob: Blob, apiKey: string): Promise<string> {
   // SDK; a bare import("ai") keeps every export it has.
   const [{ createOpenAI }, transcribe] = await Promise.all([
     import("@ai-sdk/openai"),
-    import("ai").then(({ experimental_transcribe }) => experimental_transcribe),
+    import("ai").then(({ transcribe }) => transcribe),
   ]);
   const openai = createOpenAI({ apiKey });
   const buf = new Uint8Array(await blob.arrayBuffer());

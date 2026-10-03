@@ -1,4 +1,3 @@
-import type { ToolExecutionOptions } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "./context";
 
@@ -10,52 +9,37 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 
 import type { z } from "zod";
 import { buildBrowserTools } from "./browser";
-
-const toolOptions: ToolExecutionOptions = {
-  toolCallId: "tool-call",
-  messages: [],
-};
+import { makeToolContext, toolOptions } from "./tools.fixtures";
 
 function makeContext(
   tabId: number | null,
-  browser: {
-    navigateBrowser?: (url: string) => boolean;
-    openBrowser?: (url: string) => boolean;
-    switchBrowserTab?: (tabId: number) => boolean;
-    closeBrowserTab?: (tabId: number) => boolean;
-  } = {},
+  browser: Partial<
+    Pick<
+      ToolContext,
+      "navigateBrowser" | "openBrowser" | "switchBrowserTab" | "closeBrowserTab"
+    >
+  > = {},
 ): ToolContext {
-  return {
+  return makeToolContext({
     getCwd: () => null,
     getWorkspaceRoot: () => null,
-    getWorkspaceEnv: () => ({ kind: "local" }),
-    getTerminalContext: () => null,
-    isActiveTerminalPrivate: () => false,
-    injectIntoActivePty: () => false,
-    openBrowser: browser.openBrowser ?? (() => false),
-    navigateBrowser: browser.navigateBrowser ?? (() => false),
-    switchBrowserTab: browser.switchBrowserTab ?? (() => false),
-    closeBrowserTab: browser.closeBrowserTab ?? (() => false),
     getActiveBrowserTabId: () => tabId,
-    spawnAgent: () => null,
-    readAgentOutput: () => null,
-    readCache: new Map(),
-    getSessionId: () => "session",
-  };
+    ...browser,
+  });
 }
 
 async function run(
-  toolName: keyof ReturnType<typeof buildBrowserTools>,
+  toolName: keyof ReturnType<typeof buildBrowserTools>["tools"],
   input: Record<string, unknown>,
 ) {
-  const execute = buildBrowserTools(makeContext(42))[toolName].execute;
+  const execute = buildBrowserTools(makeContext(42)).tools[toolName].execute;
   if (!execute) throw new Error(`${toolName} has no execute`);
   return execute(input as never, toolOptions);
 }
 
 describe("AI browser tools", () => {
   it("omits workflow tools while keeping standard browser operations", () => {
-    const browser = buildBrowserTools(makeContext(42));
+    const browser = buildBrowserTools(makeContext(42)).tools;
     expect(browser).not.toHaveProperty("browser_workflow");
     expect(browser).not.toHaveProperty("browser_workflow_control");
     expect(browser.browser_type.execute).toBeTypeOf("function");
@@ -80,7 +64,7 @@ describe("AI browser tools", () => {
   });
 
   it("describes observed targets without making discovery mandatory", () => {
-    const click = buildBrowserTools(makeContext(42)).browser_click
+    const click = buildBrowserTools(makeContext(42)).tools.browser_click
       .inputSchema as z.ZodObject;
     const description = click.shape.locator.unwrap().description;
     expect(description).toContain("Observed unique target, no find needed");
@@ -91,7 +75,7 @@ describe("AI browser tools", () => {
   });
 
   it("requires one target for an action while retaining optional text/keyboard targets", () => {
-    const browser = buildBrowserTools(makeContext(42));
+    const browser = buildBrowserTools(makeContext(42)).tools;
     const click = browser.browser_click.inputSchema as z.ZodType;
     expect(click.safeParse({}).success).toBe(false);
     expect(
@@ -146,7 +130,7 @@ describe("AI browser tools", () => {
     let active = 42;
     const ctx = makeContext(42);
     ctx.getActiveBrowserTabId = () => active;
-    const execute = buildBrowserTools(ctx).browser_hover.execute;
+    const execute = buildBrowserTools(ctx).tools.browser_hover.execute;
     if (!execute) throw new Error("browser_hover has no execute");
     active = 99;
     await execute({ ref: "g2-e1" }, toolOptions);
@@ -353,7 +337,7 @@ describe("AI browser tools", () => {
   });
 
   it("does not invoke the backend without an active browser tab", async () => {
-    const execute = buildBrowserTools(makeContext(null)).browser_snapshot
+    const execute = buildBrowserTools(makeContext(null)).tools.browser_snapshot
       .execute;
     if (!execute) throw new Error("browser_snapshot has no execute");
 
@@ -367,7 +351,7 @@ describe("AI browser tools", () => {
   it("routes external navigation through the browser lifecycle", async () => {
     const navigateBrowser = vi.fn(() => true);
     const execute = buildBrowserTools(makeContext(null, { navigateBrowser }))
-      .browser_navigate.execute;
+      .tools.browser_navigate.execute;
     if (!execute) throw new Error("browser_navigate has no execute");
 
     await expect(
@@ -589,7 +573,7 @@ describe("AI browser tools", () => {
 
   it("opens a new browser tab via the browser lifecycle", async () => {
     const openBrowser = vi.fn(() => true);
-    const execute = buildBrowserTools(makeContext(null, { openBrowser }))
+    const execute = buildBrowserTools(makeContext(null, { openBrowser })).tools
       .browser_new_tab.execute;
     if (!execute) throw new Error("browser_new_tab has no execute");
 
@@ -607,7 +591,7 @@ describe("AI browser tools", () => {
   it("switches the active browser tab by id", async () => {
     const switchBrowserTab = vi.fn(() => true);
     const execute = buildBrowserTools(makeContext(42, { switchBrowserTab }))
-      .browser_switch_tab.execute;
+      .tools.browser_switch_tab.execute;
     if (!execute) throw new Error("browser_switch_tab has no execute");
 
     await expect(execute({ tabId: 7 }, toolOptions)).resolves.toEqual({
@@ -621,7 +605,7 @@ describe("AI browser tools", () => {
   it("closes a browser tab by id", async () => {
     const closeBrowserTab = vi.fn(() => true);
     const execute = buildBrowserTools(makeContext(42, { closeBrowserTab }))
-      .browser_close_tab.execute;
+      .tools.browser_close_tab.execute;
     if (!execute) throw new Error("browser_close_tab has no execute");
 
     await expect(execute({ tabId: 9 }, toolOptions)).resolves.toEqual({

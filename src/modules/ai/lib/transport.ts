@@ -1,6 +1,7 @@
 import type { UIMessage } from "@ai-sdk/react";
+import { toUIMessageStream } from "ai";
 import type { CustomEndpoint } from "../config";
-import { runAgentStream, type AgentUsageDelta } from "./agent";
+import { runAgentStream, type RunAgentOptions } from "./agent";
 import type { ProviderKeys, CustomEndpointKeys } from "./keyring";
 import { formatAiError } from "./errors";
 import { native } from "./native";
@@ -30,7 +31,10 @@ async function readAnboMd(
   }
 }
 
-type Deps = {
+type Deps = Pick<
+  RunAgentOptions,
+  "onStep" | "onUsage" | "onCompact" | "onFinishMeta"
+> & {
   getKeys: () => ProviderKeys;
   getToolContext: (
     live: LiveSnapshot,
@@ -52,10 +56,6 @@ type Deps = {
   getOpenrouterModelId?: () => string | undefined;
   getCustomEndpoints?: () => readonly CustomEndpoint[];
   getCustomEndpointKeys?: () => CustomEndpointKeys;
-  onStep?: (step: string | null) => void;
-  onUsage?: (delta: AgentUsageDelta) => void;
-  onCompact?: (info: { droppedCount: number }) => void;
-  onFinishMeta?: (info: { hitStepCap: boolean; finishReason: string }) => void;
   getPlanMode?: () => boolean;
 };
 
@@ -109,7 +109,8 @@ export function createContextAwareTransport(deps: Deps) {
       uiMessages: messagesForRun,
       abortSignal: options.abortSignal,
     });
-    return result.toUIMessageStream({
+    return toUIMessageStream({
+      stream: result.stream,
       originalMessages: options.messages,
       onError: formatAiError,
     });

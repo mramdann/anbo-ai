@@ -1,32 +1,16 @@
 import { useManagedAgentsStore } from "@/modules/agents/store/managedAgentsStore";
-import type { ToolExecutionOptions } from "ai";
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildManagedAgentTools } from "./agent";
 import type { ToolContext } from "./context";
-
-const toolOptions: ToolExecutionOptions = {
-  toolCallId: "tool-call",
-  messages: [],
-};
+import { makeToolContext, toolOptions } from "./tools.fixtures";
 
 function makeContext(): ToolContext {
-  return {
+  return makeToolContext({
     getCwd: () => "C:/workspace",
     getWorkspaceRoot: () => "C:/workspace",
-    getWorkspaceEnv: () => ({ kind: "local" }),
-    getTerminalContext: () => null,
-    isActiveTerminalPrivate: () => false,
-    injectIntoActivePty: () => false,
-    openBrowser: () => false,
-    navigateBrowser: () => false,
-    getActiveBrowserTabId: () => null,
-    switchBrowserTab: () => false,
-    closeBrowserTab: () => false,
-    spawnAgent: () => null,
     readAgentOutput: () => "Claude Code is waiting for workspace trust",
-    readCache: new Map(),
     getSessionId: () => "session-1",
-  };
+  });
 }
 
 beforeEach(() => {
@@ -45,8 +29,8 @@ describe("managed Claude Code tools", () => {
     });
     store.setPhase(7, "attention");
 
-    const execute = buildManagedAgentTools(makeContext()).read_agent_output
-      .execute;
+    const execute = buildManagedAgentTools(makeContext()).tools
+      .read_agent_output.execute;
     if (!execute) throw new Error("read_agent_output has no execute");
     const result = (await execute({}, toolOptions)) as Record<string, unknown>;
 

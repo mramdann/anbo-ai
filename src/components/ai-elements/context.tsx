@@ -8,7 +8,6 @@ import {
 } from "@/components/ui/hover-card";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
-import type { LanguageModelUsage } from "ai";
 import type { ComponentProps } from "react";
 import { createContext, useContext, useMemo } from "react";
 
@@ -21,7 +20,6 @@ const ICON_STROKE_WIDTH = 2;
 interface ContextSchema {
   usedTokens: number;
   maxTokens: number;
-  usage?: LanguageModelUsage;
 }
 
 const ContextContext = createContext<ContextSchema | null>(null);
@@ -41,12 +39,11 @@ export type ContextProps = ComponentProps<typeof HoverCard> & ContextSchema;
 export const Context = ({
   usedTokens,
   maxTokens,
-  usage,
   ...props
 }: ContextProps) => {
   const contextValue = useMemo(
-    () => ({ maxTokens, usage, usedTokens }),
-    [maxTokens, usage, usedTokens]
+    () => ({ maxTokens, usedTokens }),
+    [maxTokens, usedTokens]
   );
 
   return (
@@ -201,103 +198,3 @@ export const ContextContentFooter = ({
     {children}
   </div>
 );
-
-const formatTokenCount = (tokens?: number) =>
-  tokens === undefined
-    ? "—"
-    : new Intl.NumberFormat("en-US", { notation: "compact" }).format(tokens);
-
-const UsageRow = ({
-  label,
-  tokens,
-  className,
-  ...props
-}: ComponentProps<"div"> & { label: string; tokens: number }) => (
-  <div
-    className={cn("flex items-center justify-between text-xs", className)}
-    {...props}
-  >
-    <span className="text-muted-foreground">{label}</span>
-    <span>{formatTokenCount(tokens)}</span>
-  </div>
-);
-
-export type ContextInputUsageProps = ComponentProps<"div">;
-
-export const ContextInputUsage = ({
-  children,
-  ...props
-}: ContextInputUsageProps) => {
-  const { usage } = useContextValue();
-  const inputTokens = usage?.inputTokens ?? 0;
-
-  if (children) {
-    return children;
-  }
-
-  if (!inputTokens) {
-    return null;
-  }
-
-  return <UsageRow label="Input" tokens={inputTokens} {...props} />;
-};
-
-export type ContextOutputUsageProps = ComponentProps<"div">;
-
-export const ContextOutputUsage = ({
-  children,
-  ...props
-}: ContextOutputUsageProps) => {
-  const { usage } = useContextValue();
-  const outputTokens = usage?.outputTokens ?? 0;
-
-  if (children) {
-    return children;
-  }
-
-  if (!outputTokens) {
-    return null;
-  }
-
-  return <UsageRow label="Output" tokens={outputTokens} {...props} />;
-};
-
-export type ContextReasoningUsageProps = ComponentProps<"div">;
-
-export const ContextReasoningUsage = ({
-  children,
-  ...props
-}: ContextReasoningUsageProps) => {
-  const { usage } = useContextValue();
-  const reasoningTokens = usage?.reasoningTokens ?? 0;
-
-  if (children) {
-    return children;
-  }
-
-  if (!reasoningTokens) {
-    return null;
-  }
-
-  return <UsageRow label="Reasoning" tokens={reasoningTokens} {...props} />;
-};
-
-export type ContextCacheUsageProps = ComponentProps<"div">;
-
-export const ContextCacheUsage = ({
-  children,
-  ...props
-}: ContextCacheUsageProps) => {
-  const { usage } = useContextValue();
-  const cacheTokens = usage?.cachedInputTokens ?? 0;
-
-  if (children) {
-    return children;
-  }
-
-  if (!cacheTokens) {
-    return null;
-  }
-
-  return <UsageRow label="Cache" tokens={cacheTokens} {...props} />;
-};

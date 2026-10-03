@@ -124,7 +124,7 @@ export function buildBrowserTools(ctx: ToolContext) {
       return { status: "error", error: String(error) };
     }
   };
-  return {
+  const tools = {
     browser_end_session: tool({
       description:
         "End visual control on completion, failure, or handoff: once per used tab with its controlId, not between steps. Leaves tabs and terminals open.",
@@ -609,7 +609,6 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_close_tab: tool({
       description: "Close a browser_list_tabs ID.",
-      needsApproval: true,
       inputSchema: z.object({
         tabId: z.number().describe("Browser tab id from browser_list_tabs."),
       }),
@@ -620,5 +619,11 @@ export function buildBrowserTools(ctx: ToolContext) {
           : { status: "error", error: `no tab with id ${tabId}` };
       },
     }),
+  };
+  return {
+    tools,
+    approval: {
+      browser_close_tab: "user-approval",
+    } as const,
   };
 }

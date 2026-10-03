@@ -1,40 +1,22 @@
-import type { ToolExecutionOptions } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "./context";
 import { buildTerminalTools } from "./terminal";
-
-const toolOptions: ToolExecutionOptions = {
-  toolCallId: "tool-call",
-  messages: [],
-};
+import { makeToolContext, toolOptions } from "./tools.fixtures";
 
 function context(
   sharedTerminalRequest: NonNullable<ToolContext["sharedTerminalRequest"]>,
 ): ToolContext {
-  return {
+  return makeToolContext({
     getCwd: () => "C:/workspace",
     getWorkspaceRoot: () => "C:/workspace",
-    getWorkspaceEnv: () => ({ kind: "local" }),
-    getTerminalContext: () => null,
-    isActiveTerminalPrivate: () => false,
-    injectIntoActivePty: () => false,
     sharedTerminalRequest,
-    openBrowser: () => false,
-    navigateBrowser: () => false,
-    getActiveBrowserTabId: () => null,
-    switchBrowserTab: () => false,
-    closeBrowserTab: () => false,
-    spawnAgent: () => null,
-    readAgentOutput: () => null,
-    readCache: new Map(),
-    getSessionId: () => "session",
-  };
+  });
 }
 
 describe("AI shared terminal tools", () => {
   it("routes list and read through the workspace-frozen terminal bridge", async () => {
     const request = vi.fn(async () => ({ result: { ok: true } }));
-    const tools = buildTerminalTools(context(request));
+    const tools = buildTerminalTools(context(request)).tools;
     if (
       !tools.terminal_list.execute ||
       !tools.terminal_read.execute ||
@@ -99,17 +81,19 @@ describe("AI shared terminal tools", () => {
   });
 
   it("marks visible insert and execute operations for approval", () => {
-    const tools = buildTerminalTools(context(vi.fn()));
-    expect(tools.terminal_insert.needsApproval).toBe(true);
-    expect(tools.terminal_open.needsApproval).toBe(true);
-    expect(tools.terminal_close.needsApproval).toBe(true);
-    expect(tools.terminal_execute.needsApproval).toBe(true);
-    expect(tools.terminal_interrupt.needsApproval).toBe(true);
+    const { approval } = buildTerminalTools(context(vi.fn()));
+    expect(approval).toEqual({
+      terminal_open: "user-approval",
+      terminal_close: "user-approval",
+      terminal_interrupt: "user-approval",
+      terminal_insert: "user-approval",
+      terminal_execute: "user-approval",
+    });
   });
 
   it("rejects a dangerous command before it reaches the shared terminal", async () => {
     const request = vi.fn(async () => ({ result: { ok: true } }));
-    const execute = buildTerminalTools(context(request)).terminal_execute
+    const execute = buildTerminalTools(context(request)).tools.terminal_execute
       .execute;
     if (!execute) throw new Error("terminal_execute has no execute handler");
 

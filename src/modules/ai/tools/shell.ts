@@ -23,7 +23,7 @@ function workspaceSessionKey(
 }
 
 export function buildShellTools(ctx: ToolContext) {
-  return {
+  const tools = {
     bash_run: tool({
       description:
         "Run a foreground shell command in this session's persistent agent shell. cwd persists across calls (so `cd foo` then `bash_run pwd` works). Use for short-lived commands (lint, test, search, build). For long-running or daemon processes (dev servers, watch tasks), use `bash_background`. NEVER invoke interactive tools (vim, less, top) — they will hang. Asks for user approval.",
@@ -31,7 +31,6 @@ export function buildShellTools(ctx: ToolContext) {
         command: z.string(),
         timeout_secs: z.number().int().min(1).max(300).optional(),
       }),
-      needsApproval: true,
       execute: async ({ command, timeout_secs }) => {
         const safety = checkShellCommand(command);
         if (!safety.ok) return { error: safety.reason };
@@ -74,7 +73,6 @@ export function buildShellTools(ctx: ToolContext) {
         command: z.string(),
         cwd: z.string().nullable().optional(),
       }),
-      needsApproval: true,
       execute: async ({ command, cwd }) => {
         const safety = checkShellCommand(command);
         if (!safety.ok) return { error: safety.reason };
@@ -137,4 +135,11 @@ export function buildShellTools(ctx: ToolContext) {
       },
     }),
   } as const;
+  return {
+    tools,
+    approval: {
+      bash_run: "user-approval",
+      bash_background: "user-approval",
+    } as const,
+  };
 }

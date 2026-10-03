@@ -40,6 +40,13 @@ export type ToolContext = {
   getAbortSignal?: () => AbortSignal | undefined;
 };
 
+/** Fingerprint of a file's content, as `readCache` records it. */
+export function djb2(s: string): number {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return h >>> 0;
+}
+
 export function resolvePath(rawPath: string, cwd: string | null): string {
   if (rawPath.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(rawPath))
     return rawPath;

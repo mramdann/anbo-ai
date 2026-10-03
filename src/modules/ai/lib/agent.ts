@@ -1,7 +1,7 @@
 import {
   convertToModelMessages,
+  isStepCount,
   pruneMessages,
-  stepCountIs,
   streamText,
   type LanguageModel,
   type UIMessage,
@@ -114,8 +114,8 @@ export async function buildLanguageModel(
       break;
     }
     case "google": {
-      const { createGoogleGenerativeAI } = await import("@ai-sdk/google");
-      built = createGoogleGenerativeAI({ apiKey: key })(resolvedModelId);
+      const { createGoogle } = await import("@ai-sdk/google");
+      built = createGoogle({ apiKey: key })(resolvedModelId);
       break;
     }
     case "xai": {
@@ -353,7 +353,7 @@ export type RunAgentOptions = {
   onStep?: (step: string | null) => void;
   onUsage?: (delta: AgentUsageDelta) => void;
   onCompact?: (info: { droppedCount: number }) => void;
-  onFinishMeta?: (info: { hitStepCap: boolean; finishReason: string }) => void;
+  onFinishMeta?: (info: { hitStepCap: boolean }) => void;
   lmstudioBaseURL?: string;
   lmstudioModelId?: string;
   mlxBaseURL?: string;
@@ -445,16 +445,18 @@ export async function runAgentStream(opts: RunAgentOptions) {
   );
 
   let stepsSeen = 0;
+  const { tools, approval } = buildTools(opts.toolContext);
   return streamText({
     model,
     maxOutputTokens: budget.outputTokens,
-    system: prompt.system,
+    instructions: prompt.system,
     messages: prompt.messages,
     allowSystemInMessages: false,
-    tools: buildTools(opts.toolContext),
-    stopWhen: stepCountIs(MAX_AGENT_STEPS),
+    tools,
+    toolApproval: approval,
+    stopWhen: isStepCount(MAX_AGENT_STEPS),
     abortSignal: opts.abortSignal,
-    onStepFinish: (step) => {
+    onStepEnd: (step) => {
       stepsSeen++;
       if (opts.onStep) {
         const last = step.toolCalls?.[step.toolCalls.length - 1];
@@ -482,14 +484,9 @@ export async function runAgentStream(opts: RunAgentOptions) {
         });
       }
     },
-    onFinish: (result) => {
+    onEnd: () => {
       opts.onStep?.(null);
-      const finishReason =
-        (result as { finishReason?: string } | undefined)?.finishReason ?? "";
-      opts.onFinishMeta?.({
-        hitStepCap: stepsSeen >= MAX_AGENT_STEPS,
-        finishReason,
-      });
+      opts.onFinishMeta?.({ hitStepCap: stepsSeen >= MAX_AGENT_STEPS });
     },
   });
 }
