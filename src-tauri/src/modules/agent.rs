@@ -1020,22 +1020,6 @@ fn disable_json_mcp_at(agent: &str, path: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-fn json_mcp_status_at(agent: &str, path: &Path) -> bool {
-    let Ok((container_key, _)) = expected_json_mcp(agent) else {
-        return false;
-    };
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
-        .and_then(|root| {
-            root.get(container_key)
-                .and_then(Value::as_object)
-                .and_then(|container| container.get(ANBO_MCP_NAME))
-                .cloned()
-        })
-        .is_some_and(|entry| json_mcp_matches(agent, &entry))
-}
-
 fn remove_legacy_claude_mcp_at(path: &Path) -> Result<bool, String> {
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
@@ -1195,33 +1179,6 @@ pub fn agent_configure_mcp(
         configured,
         config_path: relative.to_string(),
     })
-}
-
-#[tauri::command]
-pub fn agent_mcp_status(
-    agent: String,
-    workspace_root: String,
-    workspace: Option<WorkspaceEnv>,
-    registry: tauri::State<'_, WorkspaceRegistry>,
-) -> bool {
-    let workspace = WorkspaceEnv::from_option(workspace);
-    let Ok(root) = authorize_project_root(&registry, &workspace_root, &workspace) else {
-        return false;
-    };
-    let Ok(relative) = mcp_project_file(&agent) else {
-        return false;
-    };
-    let Ok(path) = project_file_path(&root, relative, false) else {
-        return false;
-    };
-    if agent == "codex" {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|contents| contents.parse::<DocumentMut>().ok())
-            .is_some_and(|document| codex_mcp_matches(&document))
-    } else {
-        json_mcp_status_at(&agent, &path)
-    }
 }
 
 #[cfg(test)]

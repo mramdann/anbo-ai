@@ -2144,33 +2144,6 @@ pub async fn browser_embed_snapshot(
 }
 
 #[tauri::command]
-pub async fn browser_embed_suspend(
-    app: tauri::AppHandle,
-    window: tauri::Window,
-    tab_id: i64,
-    instance_id: String,
-    owner_id: String,
-) -> Result<(), String> {
-    ensure_main_window(&window)?;
-    validate_tab_id(tab_id)?;
-    validate_token(&instance_id)?;
-    validate_token(&owner_id)?;
-    let tab_lock = get_tab_lock(tab_id);
-    let _tab_lock = tab_lock.lock().await;
-    let webview = {
-        let _lifecycle = LIFECYCLE_LOCK.lock().await;
-        ensure_current_instance(&instance_id)?;
-        is_active(tab_id, &instance_id, Some(&owner_id))
-            .then(|| app.get_webview(&embed_label(tab_id)))
-            .flatten()
-    };
-    if let Some(webview) = webview {
-        set_embed_presentation(&webview, false)?;
-    }
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn browser_embed_suspend_all_presentations(
     app: tauri::AppHandle,
     window: tauri::Window,

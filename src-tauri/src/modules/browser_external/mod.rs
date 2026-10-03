@@ -463,26 +463,6 @@ pub fn browser_external_disconnect(
 }
 
 #[tauri::command]
-pub async fn browser_external_inspect(
-    webview: Webview,
-    connection_id: String,
-    tab_id: i64,
-) -> Result<Value, String> {
-    ensure_main(&webview)?;
-    request(&connection_id, tab_id, "Runtime.evaluate", json!({"expression":"JSON.stringify({title:document.title,url:location.href,readyState:document.readyState})", "returnByValue":true})).await
-}
-
-#[tauri::command]
-pub async fn browser_external_focus(
-    webview: Webview,
-    connection_id: String,
-    tab_id: i64,
-) -> Result<Value, String> {
-    ensure_main(&webview)?;
-    request(&connection_id, tab_id, "anbo.focusTab", json!({})).await
-}
-
-#[tauri::command]
 pub async fn browser_external_list_tabs(
     webview: Webview,
     connection_id: String,

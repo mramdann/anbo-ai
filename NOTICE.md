@@ -21,7 +21,7 @@ separately.
 - `src-tauri/src/modules/anbo/` — **added**. anbo resume-strategy (session-id
   discovery for CLI agents) + Telegram bridge + multi-agent orchestration.
 - `src-tauri/src/modules/mod.rs` — modified (registered `anbo` module).
-- `src-tauri/src/lib.rs` — modified (registered `anbo_find_claude_session`
+- `src-tauri/src/lib.rs` — modified (registered the `anbo_find_agent_session`
   Tauri command).
 - `src-tauri/tauri.conf.json` — modified (productName/identifier → anbo).
 - `src-tauri/Cargo.toml` — modified (description).
