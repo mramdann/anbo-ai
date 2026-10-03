@@ -44,7 +44,7 @@ This is the allow side of the file-system boundary. Any new feature that spawns 
 In `src/modules/ai/tools/tools.ts`:
 
 - Read-only tools (`read_file`, `list_directory`, `grep`, `glob`) auto-execute after passing the deny-list.
-- Mutating tools (`write_file`, `edit`, `multi_edit`, `create_directory`, `run_command`, `shell_session_run`, `shell_bg_spawn`) set `needsApproval: true`. The AI SDK pauses and surfaces a `tool-approval-request` part rendered as a confirmation card.
+- Mutating tools (`write_file`, `create_directory`, `edit`, `multi_edit`, `bash_run`, `bash_background`, the terminal tools that open, close, interrupt or type into a terminal, `spawn_coding_agent`, `send_to_agent` and `browser_close_tab`) are named in their builder's `approval` map; `buildTools` merges the maps and `runAgentStream` passes them as `toolApproval`, so the AI SDK pauses on the call and surfaces a `tool-approval-request` part rendered as a confirmation card.
 - `edit` / `multi_edit` enforce a read-before-edit invariant: the model must have read the file earlier in the session.
 
 Auto-send after approval uses `lastAssistantMessageIsCompleteWithApprovalResponses`.
