@@ -30,7 +30,6 @@ import {
 import {
   type CustomEndpoint,
   compatModelIdForEndpoint,
-  DEFAULT_MODEL_ID,
   getAutocompleteEligibleModels,
   getCompatModelInfo,
   getModel,
@@ -54,7 +53,7 @@ import {
   setCustomEndpointKey,
   setKey,
 } from "@/modules/ai/lib/keyring";
-import { useChatStore } from "@/modules/ai/store/chatStore";
+import { dropRemovedEndpointModels } from "@/modules/ai/lib/endpointModels";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   type AutocompleteTrigger,
@@ -65,7 +64,6 @@ import {
   setAutocompleteTrigger,
   setCustomEndpoints,
   setDefaultModel,
-  setFavoriteModelIds,
   setGroqSttModel,
   setLmstudioBaseURL,
   setLmstudioModelId,
@@ -77,7 +75,6 @@ import {
   setOpenaiCompatibleContextLimit,
   setOpenaiCompatibleModelId,
   setOpenrouterModelId,
-  setRecentModelIds,
   setSttProvider,
 } from "@/modules/settings/store";
 // Imported by file rather than through the module barrel: the barrel also
@@ -246,33 +243,10 @@ export function ModelsSection() {
       delete next[id];
       return next;
     });
-
-    // Drop the now-dead model id from favorites/recents before touching the
-    // selection, so the recents push from a selection reset can't race it.
-    const deadModelId = compatModelIdForEndpoint(id);
-    const { favoriteModelIds, recentModelIds } = usePreferencesStore.getState();
-    if (favoriteModelIds.includes(deadModelId)) {
-      await setFavoriteModelIds(
-        favoriteModelIds.filter((m) => m !== deadModelId),
-      );
-    }
-    if (recentModelIds.includes(deadModelId)) {
-      await setRecentModelIds(recentModelIds.filter((m) => m !== deadModelId));
-    }
-
-    // If the deleted endpoint was the active model, the selection would dangle
-    // and the next send throws "Custom endpoint not found". Fall back to another
-    // endpoint when one remains, else the default model.
     const remaining = customEndpoints.filter((e) => e.id !== id);
-    const { selectedModelId, setSelectedModelId } = useChatStore.getState();
-    if (selectedModelId === deadModelId) {
-      setSelectedModelId(
-        remaining[0]
-          ? compatModelIdForEndpoint(remaining[0].id)
-          : DEFAULT_MODEL_ID,
-      );
-    }
-
+    // The lists first: the main window lets go of the endpoint when the new
+    // list reaches it, and finds nothing left to drop.
+    await dropRemovedEndpointModels(remaining);
     await setCustomEndpoints(remaining);
   };
 
@@ -1336,55 +1310,57 @@ function CustomEndpointCard({
 
   return (
     <div className="flex flex-col rounded-lg border border-border/60 bg-card/60">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="flex items-center gap-2 px-3 py-2 text-left"
-      >
-        <HugeiconsIcon
-          icon={ChevronDown}
-          size={12}
-          strokeWidth={2}
-          className={cn(
-            "shrink-0 text-muted-foreground/60 transition-transform",
-            !expanded && "-rotate-90",
-          )}
-        />
-        <ProviderIcon provider="openai-compatible" size={15} />
-        <span className="text-[12.5px] font-medium truncate">
-          {endpoint.name || "OpenAI Compatible"}
-        </span>
-        {endpoint.modelId.trim() && (
-          <span className="text-[10.5px] text-muted-foreground truncate font-mono">
-            {endpoint.modelId}
+      {/* Two sibling buttons: a button inside the toggle is invalid HTML. The
+          toggle reaches into the row's padding so its hit area stays the row. */}
+      <div className="flex items-center gap-2 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="-my-2 -ml-3 flex min-w-0 flex-1 items-center gap-2 py-2 pl-3 text-left"
+        >
+          <HugeiconsIcon
+            icon={ChevronDown}
+            size={12}
+            strokeWidth={2}
+            className={cn(
+              "shrink-0 text-muted-foreground/60 transition-transform",
+              !expanded && "-rotate-90",
+            )}
+          />
+          <ProviderIcon provider="openai-compatible" size={15} />
+          <span className="text-[12.5px] font-medium truncate">
+            {endpoint.name || "OpenAI Compatible"}
           </span>
-        )}
-        {configured ? (
-          <Badge
-            variant="outline"
-            className="ml-1 h-4 gap-1 border-border/60 bg-muted/40 px-1.5 text-[10px] font-normal text-muted-foreground"
-          >
-            <HugeiconsIcon
-              icon={CheckmarkCircle02Icon}
-              size={9}
-              strokeWidth={2}
-            />
-            Connected
-          </Badge>
-        ) : null}
+          {endpoint.modelId.trim() && (
+            <span className="text-[10.5px] text-muted-foreground truncate font-mono">
+              {endpoint.modelId}
+            </span>
+          )}
+          {configured ? (
+            <Badge
+              variant="outline"
+              className="ml-1 h-4 gap-1 border-border/60 bg-muted/40 px-1.5 text-[10px] font-normal text-muted-foreground"
+            >
+              <HugeiconsIcon
+                icon={CheckmarkCircle02Icon}
+                size={9}
+                strokeWidth={2}
+              />
+              Connected
+            </Badge>
+          ) : null}
+        </button>
         <Button
           size="icon"
           variant="ghost"
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove();
-          }}
+          onClick={onRemove}
           title="Remove endpoint"
-          className="ml-auto size-7 text-muted-foreground hover:text-destructive"
+          className="size-7 text-muted-foreground hover:text-destructive"
         >
           <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
         </Button>
-      </button>
+      </div>
 
       {expanded && (
         <div className="flex flex-col gap-2.5 border-t border-border/40 px-3 py-2.5">

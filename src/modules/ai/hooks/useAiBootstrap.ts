@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { firePendingReviewForSession } from "@/modules/agents/lib/review";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { onKeysChanged } from "@/modules/settings/store";
+import { dropRemovedEndpointModels } from "../lib/endpointModels";
 import {
   getAllCustomEndpointKeys,
   getAllKeys,
@@ -95,6 +96,13 @@ export function useAiBootstrap(): {
     if (!prefsHydrated) return;
     setSelectedModelId(prefDefaultModel);
   }, [prefsHydrated, prefDefaultModel, setSelectedModelId]);
+
+  // Custom endpoints are removed in the Settings window; the selection and the
+  // model lists here have to let go of them too.
+  useEffect(() => {
+    if (!prefsHydrated) return;
+    void dropRemovedEndpointModels(customEndpoints);
+  }, [prefsHydrated, customEndpoints]);
 
   useEffect(() => {
     void hydrateSessions();
