@@ -1,11 +1,9 @@
 export { newSpaceDefaults } from "./lib/activeSpace";
 export { authorizeWorkspaceRoot } from "./lib/workspaceAuthorization";
-export type { SpaceMeta } from "./lib/store";
 export {
   flushSpacePersistenceNow,
   useSpacePersistence,
 } from "./lib/useSpacePersistence";
 export { useSpaces } from "./lib/useSpaces";
 export { useSpacesBoot } from "./lib/useSpacesBoot";
-export { SpaceAvatar } from "./SpaceAvatar";
 export { SpaceSwitcher } from "./SpaceSwitcher";

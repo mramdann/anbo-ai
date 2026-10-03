@@ -1,4 +1,4 @@
-export type AudioMeterFrame = Readonly<{
+type AudioMeterFrame = Readonly<{
   level: number;
   bands: readonly [number, number, number, number, number];
 }>;

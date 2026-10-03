@@ -1,6 +1,6 @@
 export type VoiceInsertResult = { ok: true } | { ok: false; message: string };
 
-export type VoiceTargetKind =
+type VoiceTargetKind =
   | "dom"
   | "terminal"
   | "editor"

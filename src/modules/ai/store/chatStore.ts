@@ -2,7 +2,6 @@ import type { Chat, UIMessage } from "@ai-sdk/react";
 import { create } from "zustand";
 import {
   DEFAULT_MODEL_ID,
-  endpointIdFromCompatModel,
   getModel,
   isCompatModelId,
   providerNeedsKey,
@@ -93,17 +92,17 @@ const IDLE_META: AgentMeta = {
   compactionNotice: null,
 };
 
-export type MiniState = {
+type MiniState = {
   open: boolean;
 };
 
-export type PendingSelection = {
+type PendingSelection = {
   id: string;
   text: string;
   source: "terminal" | "editor";
 };
 
-export type ApprovalResponder = (approvalId: string, approved: boolean) => void;
+type ApprovalResponder = (approvalId: string, approved: boolean) => void;
 
 type StoreState = {
   live: Live;
@@ -458,20 +457,6 @@ export const useChatStore = create<StoreState>((set, get) => ({
   },
 }));
 
-export function getAgentMeta(): AgentMeta {
-  return useChatStore.getState().agentMeta;
-}
-
-export function getActiveProviderKey(): string | null {
-  const { selectedModelId, apiKeys, customEndpointKeys } =
-    useChatStore.getState();
-  if (isCompatModelId(selectedModelId)) {
-    const eid = endpointIdFromCompatModel(selectedModelId);
-    return customEndpointKeys[eid] ?? null;
-  }
-  return apiKeys[getModel(selectedModelId as ModelId).provider] ?? null;
-}
-
 export function hasKeyForModel(modelId: string): boolean {
   const { apiKeys } = useChatStore.getState();
   if (isCompatModelId(modelId)) {
@@ -485,10 +470,4 @@ export function getChat(sessionId?: string): Chat<UIMessage> | undefined {
   if (sessionId) return chats.get(sessionId);
   const id = useChatStore.getState().activeSessionId;
   return id ? chats.get(id) : undefined;
-}
-
-export function stop(): void {
-  const id = useChatStore.getState().activeSessionId;
-  if (!id) return;
-  void chats.get(id)?.stop();
 }

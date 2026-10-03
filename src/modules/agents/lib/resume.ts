@@ -33,7 +33,7 @@ export type AgentResumeLeaf = {
   resume: AgentResumeState;
 };
 
-export const AGENT_EXIT_RESUME_GRACE_MS = 3_000;
+const AGENT_EXIT_RESUME_GRACE_MS = 3_000;
 
 export class AgentExitResumeGuard {
   private readonly pending = new Map<number, ReturnType<typeof setTimeout>>();

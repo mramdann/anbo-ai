@@ -8,7 +8,11 @@ import {
 } from "react";
 import { useWhisperRecording } from "../hooks/useWhisperRecording";
 import { expandSnippetTokens, type Snippet } from "../lib/snippets";
-import { tryRunSlashCommand, type SlashCommandMeta } from "./slashCommands";
+import {
+  anboCommandMarker,
+  type SlashCommandMeta,
+  tryRunSlashCommand,
+} from "./slashCommands";
 import { getChat, useChatStore } from "../store/chatStore";
 import { useSnippetsStore } from "../store/snippetsStore";
 import { currentWorkspaceEnv } from "@/modules/workspace";
@@ -29,7 +33,7 @@ type MessagePart =
   | { type: "text"; text: string }
   | { type: "file"; mediaType: string; url: string; filename?: string };
 
-export const MAX_TEXT_INLINE = 200_000;
+const MAX_TEXT_INLINE = 200_000;
 export const ACCEPTED_FILES =
   "image/*,.txt,.md,.json,.yaml,.yml,.toml,.sh,.zsh,.bash,.py,.js,.jsx,.ts,.tsx,.rs,.go,.java,.c,.cpp,.h,.hpp,.html,.css,.csv,.log,.env,.config,.conf,.ini,Dockerfile,.dockerfile";
 
@@ -244,7 +248,7 @@ export function AiComposerProvider({ children }: ProviderProps) {
       if (outcome.kind === "send-prompt") {
         effectiveText = outcome.prompt;
         if (outcome.commandName) {
-          commandMarker = `<anbo-command name="${outcome.commandName}" />`;
+          commandMarker = anboCommandMarker(outcome.commandName);
         }
       }
     }

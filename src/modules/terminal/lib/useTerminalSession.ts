@@ -115,7 +115,7 @@ type Session = {
 
 const MAX_COMMAND_COMPLETIONS = 64;
 
-export type TerminalCommandCompletion = {
+type TerminalCommandCompletion = {
   generation: number;
   exitCode: number | null;
 };
@@ -279,10 +279,7 @@ function markSessionReady(leafId: number): void {
   }
 }
 
-export function whenSessionReady(
-  leafId: number,
-  timeoutMs = 4000,
-): Promise<void> {
+function whenSessionReady(leafId: number, timeoutMs = 4000): Promise<void> {
   if (readyLeaves.has(leafId)) return Promise.resolve();
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -1003,10 +1000,7 @@ function detachSession(leafId: number): void {
   s.container = null;
 }
 
-export async function respawnSession(
-  leafId: number,
-  cwd?: string,
-): Promise<void> {
+async function respawnSession(leafId: number, cwd?: string): Promise<void> {
   const s = sessions.get(leafId);
   if (!s || s.disposed) return;
   s.pty?.close();
@@ -1360,7 +1354,7 @@ function stripAnsi(s: string): string {
   return s.replace(ANSI_RE, "");
 }
 
-export function terminalDebugStats() {
+function terminalDebugStats() {
   const liveSessions = [...sessions.entries()].map(([leafId, s]) => ({
     leafId,
     pty: !!s.pty,

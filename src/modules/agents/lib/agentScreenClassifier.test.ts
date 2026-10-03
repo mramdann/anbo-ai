@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { agentScreens as screens } from "./agentScreen.fixtures";
 import {
   classifyAgentScreen,
-  classifyAgentTurn,
   isAgentScreenReady,
   readAgentScreen,
 } from "./agentScreenClassifier";
@@ -106,8 +105,8 @@ describe("real screens, captured 2026-09-28", () => {
     );
   });
 
-  it("is the same reading for browser ownership", () => {
-    expect(classifyAgentTurn("antigravity", text("agyBackgroundTask"))).toBe(
+  it("reads a turn that left a background task running as over", () => {
+    expect(classifyAgentScreen("antigravity", text("agyBackgroundTask"))).toBe(
       "ready",
     );
     expect(isAgentScreenReady("claude", text("claudeIdleAuto"))).toBe(true);
@@ -332,7 +331,6 @@ describe("antigravity", () => {
       "? for shortcuts                            Gemini 3.1 Pro · high · 1 subagent(s)",
     ].join("\n");
     expect(classifyAgentScreen("antigravity", handedOff)).toBe("working");
-    expect(classifyAgentTurn("antigravity", handedOff)).toBe("working");
     expect(
       classifyAgentScreen(
         "antigravity",

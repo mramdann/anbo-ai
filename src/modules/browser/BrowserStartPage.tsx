@@ -42,7 +42,7 @@ import {
 
 /** Where a web page opened from this tab goes when the tab was started from a
  * Chrome or Edge profile in the browser menu. */
-export type BrowserChoice = {
+type BrowserChoice = {
   label: string;
   inBrowser: boolean;
   opening: boolean;

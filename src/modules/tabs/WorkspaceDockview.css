@@ -72,9 +72,7 @@
   height: 0;
 }
 
-.dockview-theme-anbo-workspace .dv-tabs-overflow-dropdown-default,
-.dockview-theme-anbo-workspace .dv-default-overflow-action,
-.dockview-theme-anbo-workspace .dv-overflow-action {
+.dockview-theme-anbo-workspace .dv-tabs-overflow-dropdown-default {
   display: none !important;
 }
 

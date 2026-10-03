@@ -1,7 +1,7 @@
 import { quoteShellArg } from "@/lib/shellQuote";
 import type { AgentLauncherId, CustomCliAgent } from "./launcher";
 
-export const MCP_AGENT_IDS = [
+const MCP_AGENT_IDS = [
   "claude",
   "codex",
   "antigravity",

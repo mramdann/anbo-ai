@@ -1,6 +1,6 @@
 import { LocalLazyStore } from "@/lib/localStore";
 
-export type TodoStatus = "pending" | "in_progress" | "completed";
+type TodoStatus = "pending" | "in_progress" | "completed";
 
 export type Todo = {
   id: string;

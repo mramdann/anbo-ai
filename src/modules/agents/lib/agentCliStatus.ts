@@ -10,7 +10,7 @@ import { useEffect, useSyncExternalStore } from "react";
  */
 export type AgentCliAvailability = "ready" | "missing" | "unknown";
 
-export type AgentCliProbe = { installed: boolean; at: number };
+type AgentCliProbe = { installed: boolean; at: number };
 export type AgentCliProbes = Readonly<Record<string, AgentCliProbe>>;
 
 /**
