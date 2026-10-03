@@ -27,6 +27,18 @@ const HEADER_BLOCKLIST: &[&str] = &[
 ];
 const MAX_REDIRECTS: usize = 10;
 
+/// Every reqwest client starts here. reqwest 0.13 is built with
+/// `rustls-no-provider`, which leaves the crypto provider to the app and
+/// panics on the first client when none is installed; ring's is installed
+/// here, as tauri-plugin-updater does before its checks. Whichever runs first
+/// wins, and the other finds it in place.
+pub(crate) fn client_builder() -> reqwest::ClientBuilder {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    reqwest::Client::builder()
+}
+
 fn normalize_host(host: &str) -> &str {
     host.strip_prefix('[')
         .and_then(|value| value.strip_suffix(']'))
@@ -217,7 +229,7 @@ pub async fn lm_ping(base_url: String) -> Result<u16, String> {
         .to_string();
     let safe_ips = classify_and_collect_safe_ips(&host, true).await?;
 
-    let mut builder = reqwest::Client::builder()
+    let mut builder = client_builder()
         .timeout(Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::none());
     let addrs: Vec<SocketAddr> = safe_ips.iter().map(|ip| SocketAddr::new(*ip, 0)).collect();
@@ -258,7 +270,7 @@ fn build_safe_client(
     _allow_private: bool,
     pinned: &[(String, Vec<IpAddr>)],
 ) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(10));
+    let mut builder = client_builder().connect_timeout(Duration::from_secs(10));
     // Pin reqwest's resolver to the IPs we just classified. Without this,
     // reqwest's own DNS lookup could return a different (private/metadata) IP
     // for the same hostname between classify and connect — classic DNS
@@ -568,6 +580,15 @@ pub async fn ai_http_stream(
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+
+    #[test]
+    fn a_client_builds_without_a_preinstalled_crypto_provider() {
+        // reqwest 0.13 with rustls-no-provider panics here unless the
+        // builder installed a provider first.
+        assert!(client_builder().https_only(true).build().is_ok());
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+        assert!(client_builder().build().is_ok(), "a second install is a no-op");
+    }
 
     #[test]
     fn metadata_ips_classified_as_blocked() {

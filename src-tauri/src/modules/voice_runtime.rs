@@ -605,6 +605,18 @@ fn emit_progress(
     let _ = app.emit(PROGRESS_EVENT, progress);
 }
 
+/// Lowercase hex of a digest. sha2 0.11 returns a hybrid-array with no `{:x}`
+/// formatting, which 0.10's GenericArray had.
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
 fn hash_file(path: &Path) -> Result<String, String> {
     let file = File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
     let mut reader = io::BufReader::new(file);
@@ -619,7 +631,7 @@ fn hash_file(path: &Path) -> Result<String, String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex(&hasher.finalize()))
 }
 
 async fn file_is_valid(path: PathBuf, bytes: u64, hash: &'static str) -> bool {
@@ -661,7 +673,7 @@ async fn download_file(
         offset,
         total,
     } = request;
-    let client = reqwest::Client::builder()
+    let client = crate::modules::net::client_builder()
         .https_only(true)
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()
@@ -747,7 +759,7 @@ async fn download_file(
             "download {phase} was incomplete: {downloaded} of {expected_bytes} bytes"
         ));
     }
-    let actual_hash = format!("{:x}", hasher.finalize());
+    let actual_hash = hex(&hasher.finalize());
     if actual_hash != expected_hash {
         // Bytes that hash wrong are poison for a resume: keeping them would
         // make every later attempt fail the same way.
@@ -1304,9 +1316,10 @@ pub async fn whisper_runtime_uninstall(
 #[cfg(test)]
 mod tests {
     use super::{
-        detected_variant, hash_prefix, installed_models, manifest_variant, migrate_runtime_dir,
-        model_spec, recommended_model, release_entry_destination, resolve_variant, resume_offset,
-        transcription_threads, variant_spec, MODELS, VARIANTS,
+        detected_variant, extract_release_archive, hash_prefix, hex, installed_models,
+        manifest_variant, migrate_runtime_dir, model_spec, recommended_model,
+        release_entry_destination, resolve_variant, resume_offset, transcription_threads,
+        variant_spec, MODELS, VARIANTS,
     };
     use sha2::{Digest, Sha256};
     use std::fs;
@@ -1337,10 +1350,7 @@ mod tests {
 
         let mut whole = Sha256::new();
         whole.update(b"first halfsecond half");
-        assert_eq!(
-            format!("{:x}", resumed.finalize()),
-            format!("{:x}", whole.finalize())
-        );
+        assert_eq!(hex(&resumed.finalize()), hex(&whole.finalize()));
     }
 
     #[test]
@@ -1558,6 +1568,67 @@ mod tests {
         assert!(release_entry_destination(staging, Path::new("Release/server.exe")).is_ok());
         assert!(release_entry_destination(staging, Path::new("../server.exe")).is_err());
         assert!(release_entry_destination(staging, Path::new("Other/server.exe")).is_err());
+    }
+
+    #[test]
+    fn release_archives_extract_only_safe_release_entries() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        let temp = tempfile::tempdir().unwrap();
+        let write_archive = |name: &str, build: &dyn Fn(&mut zip::ZipWriter<fs::File>)| {
+            let path = temp.path().join(name);
+            let mut writer = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+            build(&mut writer);
+            writer.finish().unwrap();
+            path
+        };
+        let options = SimpleFileOptions::default();
+
+        let good = write_archive("good.zip", &|writer| {
+            writer.add_directory("Release/", options).unwrap();
+            writer
+                .start_file("Release/whisper-server.exe", options)
+                .unwrap();
+            writer.write_all(b"server").unwrap();
+            writer
+                .start_file("Release/models/readme.txt", options)
+                .unwrap();
+            writer.write_all(b"models").unwrap();
+        });
+        let staging = temp.path().join("stage");
+        extract_release_archive(&good, &staging, 1024).unwrap();
+        assert_eq!(
+            fs::read(staging.join("Release/whisper-server.exe")).unwrap(),
+            b"server"
+        );
+        assert_eq!(
+            fs::read(staging.join("Release/models/readme.txt")).unwrap(),
+            b"models"
+        );
+
+        let escape = write_archive("escape.zip", &|writer| {
+            writer.start_file("../evil.txt", options).unwrap();
+            writer.write_all(b"x").unwrap();
+        });
+        let error = extract_release_archive(&escape, &temp.path().join("s2"), 1024).unwrap_err();
+        assert!(error.contains("unsafe path"), "{error}");
+        assert!(!temp.path().join("evil.txt").exists());
+
+        let link = write_archive("link.zip", &|writer| {
+            writer
+                .add_symlink("Release/link", "../outside", options)
+                .unwrap();
+        });
+        let error = extract_release_archive(&link, &temp.path().join("s3"), 1024).unwrap_err();
+        assert!(error.contains("symbolic link"), "{error}");
+
+        let big = write_archive("big.zip", &|writer| {
+            writer.start_file("Release/big.bin", options).unwrap();
+            writer.write_all(&[0_u8; 4096]).unwrap();
+        });
+        let error = extract_release_archive(&big, &temp.path().join("s4"), 1024).unwrap_err();
+        assert!(error.contains("beyond the allowed size"), "{error}");
     }
 
     #[test]
