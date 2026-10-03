@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.33.4](https://github.com/mramdann/anbo-ai/compare/v0.33.3...v0.33.4) (2026-10-03)
+
+
+### Bug Fixes
+
+* **browser:** reap a leftover browser host only when it is the same process ([2256425](https://github.com/mramdann/anbo-ai/commit/2256425adf3db5e58032eed78ff176d68fe2e9ff))
+
+
+### Performance Improvements
+
+* **ai:** bundle only the SDK calls the lazy paths take ([64461dd](https://github.com/mramdann/anbo-ai/commit/64461dd1186ccb87589c863d39679a8a8092bc88))
+
 ## [0.33.3](https://github.com/mramdann/anbo-ai/compare/v0.33.2...v0.33.3) (2026-10-02)
 
 
