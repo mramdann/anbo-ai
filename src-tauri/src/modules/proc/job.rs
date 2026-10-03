@@ -41,42 +41,50 @@ impl ProcessJob {
 
     pub fn create_for(pid: u32) -> io::Result<Self> {
         unsafe {
-            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if job.is_null() || job == INVALID_HANDLE_VALUE {
-                return Err(io::Error::last_os_error());
-            }
-
-            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = zeroed();
-            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            let ok = SetInformationJobObject(
-                job,
-                JobObjectExtendedLimitInformation,
-                &info as *const _ as *const _,
-                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            );
-            if ok == 0 {
-                let e = io::Error::last_os_error();
-                CloseHandle(job);
-                return Err(e);
-            }
-
             let process = OpenProcess(PROCESS_TERMINATE | PROCESS_SET_QUOTA, FALSE, pid);
             if process.is_null() {
-                let e = io::Error::last_os_error();
-                CloseHandle(job);
-                return Err(e);
+                return Err(io::Error::last_os_error());
             }
-
-            let assign = AssignProcessToJobObject(job, process);
+            let job = Self::create_for_process(process);
             CloseHandle(process);
-            if assign == 0 {
-                let e = io::Error::last_os_error();
-                CloseHandle(job);
-                return Err(e);
-            }
-
-            Ok(Self { handle: job })
+            job
         }
+    }
+
+    /// The same, for a process the caller already holds open (with
+    /// PROCESS_TERMINATE and PROCESS_SET_QUOTA), so whatever it checked on that
+    /// handle is the process that lands in the job. The handle stays open.
+    ///
+    /// # Safety
+    ///
+    /// `process` must be a valid process handle with those access rights.
+    pub unsafe fn create_for_process(process: HANDLE) -> io::Result<Self> {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() || job == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ok = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const _,
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        if ok == 0 {
+            let e = io::Error::last_os_error();
+            CloseHandle(job);
+            return Err(e);
+        }
+
+        if AssignProcessToJobObject(job, process) == 0 {
+            let e = io::Error::last_os_error();
+            CloseHandle(job);
+            return Err(e);
+        }
+
+        Ok(Self { handle: job })
     }
 
     pub fn terminate(&self) -> io::Result<()> {
