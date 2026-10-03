@@ -12,6 +12,7 @@ import {
   insertGlobalVoiceText,
   rememberGlobalVoiceForeground,
 } from "@/modules/voice/lib/globalVoice";
+import { useVoiceMeterStyle } from "@/modules/voice/lib/useVoiceMeterStyle";
 import {
   orbVisibleFromStorage,
   VOICE_ORB_VISIBLE_KEY,
@@ -230,37 +231,7 @@ export function GlobalVoiceApp() {
     onSettled: settleTarget,
   });
 
-  useEffect(() => {
-    const element = visualRef.current;
-    if (!element) return;
-    const apply = (level: number, bands: readonly number[]) => {
-      element.style.setProperty(
-        "--voice-ring-scale",
-        (1.08 + level * 0.34).toFixed(3),
-      );
-      element.style.setProperty(
-        "--voice-ring-opacity",
-        (0.18 + level * 0.5).toFixed(3),
-      );
-      element.style.setProperty(
-        "--voice-glow",
-        `${Math.round(5 + level * 14)}px`,
-      );
-      bands.forEach((band, index) => {
-        element.style.setProperty(
-          `--voice-bar-${index + 1}`,
-          `${(3 + band * 9).toFixed(1)}px`,
-        );
-      });
-    };
-    if (!voice.recording) {
-      apply(0, [0, 0, 0, 0, 0]);
-      return;
-    }
-    return voice.audioMeter.subscribe((frame) => {
-      apply(frame.level, frame.bands);
-    });
-  }, [voice.audioMeter, voice.recording]);
+  useVoiceMeterStyle(visualRef, "--voice", voice.audioMeter, voice.recording);
 
   const cancel = useCallback(() => {
     voice.cancel();

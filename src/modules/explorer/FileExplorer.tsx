@@ -6,6 +6,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { basename } from "@/lib/path";
 import { cn } from "@/lib/utils";
 import type { GitStatusSnapshot } from "@/modules/ai/lib/native";
 import { isBrowserPreviewablePath } from "@/modules/browser";
@@ -101,11 +102,6 @@ type Row =
 
 const ROW_HEIGHT = 22;
 const OVERSCAN = 8;
-
-function basename(path: string): string {
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts.length ? parts[parts.length - 1] : path;
-}
 
 function parentOf(path: string, fallback: string): string {
   const i = path.lastIndexOf("/");

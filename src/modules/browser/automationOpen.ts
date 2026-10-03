@@ -1,3 +1,5 @@
+import { createRequestListener } from "@/lib/requestListener";
+
 export const BROWSER_OPEN_REQUEST_EVENT = "anbo:browser-open-request";
 export const BROWSER_OPEN_RESPONSE_EVENT = "anbo:browser-open-response";
 export const BROWSER_CLOSE_REQUEST_EVENT = "anbo:browser-close-request";
@@ -64,47 +66,6 @@ export type BrowserTabMetadata = {
   loading: boolean;
   pendingUrl: string | null;
 };
-
-type RequestHandler<T> = (request: T) => void;
-type RequestSubscribe<T> = (handler: RequestHandler<T>) => Promise<() => void>;
-
-function createRequestListener<T>(subscribe: RequestSubscribe<T>) {
-  let handler: RequestHandler<T> | null = null;
-  let subscription: Promise<void> | null = null;
-  let unlisten: (() => void) | null = null;
-  let generation = 0;
-
-  const start = () => {
-    if (subscription || unlisten) return;
-    const currentGeneration = generation;
-    subscription = subscribe((request) => handler?.(request))
-      .then((dispose) => {
-        if (generation !== currentGeneration) {
-          dispose();
-          return;
-        }
-        subscription = null;
-        unlisten = dispose;
-      })
-      .catch(() => {
-        if (generation === currentGeneration) subscription = null;
-      });
-  };
-
-  return {
-    setHandler(next: RequestHandler<T>) {
-      handler = next;
-      start();
-    },
-    stop() {
-      generation += 1;
-      handler = null;
-      unlisten?.();
-      unlisten = null;
-      subscription = null;
-    },
-  };
-}
 
 export const createBrowserOpenListener = createRequestListener<BrowserOpenRequest>;
 export const createBrowserCloseListener = createRequestListener<BrowserCloseRequest>;

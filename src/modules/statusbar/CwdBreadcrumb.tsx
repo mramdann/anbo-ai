@@ -12,6 +12,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { lastPathPart } from "@/lib/path";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import {
@@ -47,16 +48,11 @@ function dirname(path: string): string {
   return path.slice(0, i);
 }
 
-function basename(path: string): string {
-  const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  return i === -1 ? path : path.slice(i + 1);
-}
-
 export function CwdBreadcrumb({ cwd, filePath, home, onCd }: Props) {
   // File mode: dir segments navigate; filename is the terminal leaf.
   if (filePath) {
     const dir = dirname(filePath);
-    const name = basename(filePath);
+    const name = lastPathPart(filePath);
     const segments = segmentsFromCwd(dir, home);
     const first = segments[0];
     const middle = segments.slice(1);

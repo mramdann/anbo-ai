@@ -31,6 +31,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { SLASH_COMMANDS, ANBO_CMD_RE } from "../lib/slashCommands";
 import { Spinner } from "@/components/ui/spinner";
+import { lastPathPart } from "@/lib/path";
 import {
   DEFAULT_VISIBLE_MESSAGE_COUNT,
   visibleMessageWindow,
@@ -495,11 +496,6 @@ function readPathFromPart(p: AnyPart): string | null {
   return typeof path === "string" && path.length > 0 ? path : null;
 }
 
-function basename(p: string): string {
-  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  return i >= 0 ? p.slice(i + 1) : p;
-}
-
 const ReadGroup = memo(function ReadGroup({ parts }: { parts: AnyPart[] }) {
   const paths = useMemo(() => {
     const seen = new Set<string>();
@@ -514,7 +510,7 @@ const ReadGroup = memo(function ReadGroup({ parts }: { parts: AnyPart[] }) {
     return out;
   }, [parts]);
   const count = paths.length || parts.length;
-  const preview = paths.map(basename).join(", ");
+  const preview = paths.map(lastPathPart).join(", ");
 
   return (
     <Collapsible className="group/read overflow-hidden rounded-md border border-border/50 bg-card/50">
@@ -563,7 +559,7 @@ const ReadGroup = memo(function ReadGroup({ parts }: { parts: AnyPart[] }) {
                 strokeWidth={1.75}
                 className="shrink-0 opacity-60"
               />
-              <span className="truncate text-foreground">{basename(path)}</span>
+              <span className="truncate text-foreground">{lastPathPart(path)}</span>
               <span className="truncate opacity-60">{path}</span>
             </li>
           ))}

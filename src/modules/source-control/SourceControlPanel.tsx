@@ -35,6 +35,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { basename, relativeDirname } from "@/lib/path";
 import { IS_MAC } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { type GitBranchEntry, native } from "@/modules/ai/lib/native";
@@ -112,21 +113,9 @@ type RowDescriptor =
   | { kind: "list-header"; key: string; count: number }
   | { kind: "entry"; key: string; entry: SourceControlFileEntry };
 
-function basename(path: string): string {
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : path;
-}
-
-function dirname(path: string): string {
-  const normalized = path.replace(/\\/g, "/");
-  const index = normalized.lastIndexOf("/");
-  if (index <= 0) return "";
-  return normalized.slice(0, index);
-}
-
 function entryPathLabel(entry: SourceControlFileEntry): string {
   if (entry.originalPath) return `${entry.originalPath} → ${entry.path}`;
-  return dirname(entry.path);
+  return relativeDirname(entry.path);
 }
 
 function upstreamBadgeLabel(upstream: string | null | undefined): string {

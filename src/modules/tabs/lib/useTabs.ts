@@ -1,3 +1,4 @@
+import { basename } from "@/lib/path";
 import { isMarkdownPath } from "@/lib/utils";
 import type { ExternalBrowser } from "@/modules/browser/external/model";
 import {
@@ -178,11 +179,6 @@ export type GitDiffOpenInput = {
   originalPath?: string | null;
   title?: string;
 };
-
-function basename(path: string): string {
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts.length ? parts[parts.length - 1] : path;
-}
 
 function titleFromUrl(url: string): string {
   try {
@@ -1444,9 +1440,15 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [],
   );
 
-  /** Split the active leaf of `tabId` along `dir`. Returns the new leaf id. */
-  const splitActivePane = useCallback(
-    (tabId: number, dir: SplitDir): number | null => {
+  /**
+   * Give `tabId` a new leaf next to its active one and make it active. `grow`
+   * places it in the tree. Returns the new leaf id, or null at the pane cap.
+   */
+  const addLeaf = useCallback(
+    (
+      tabId: number,
+      grow: (tab: TerminalTab, splitId: number, leafId: number) => PaneNode,
+    ): number | null => {
       let newLeafId: number | null = null;
       setTabs((curr) =>
         curr.map((t) => {
@@ -1455,20 +1457,22 @@ export function useTabs(initial?: Partial<TerminalTab>) {
           const splitId = nextIdRef.current++;
           const leafId = nextIdRef.current++;
           newLeafId = leafId;
-          const paneTree = splitLeaf(
-            t.paneTree,
-            t.activeLeafId,
-            splitId,
-            leafId,
-            dir,
-            t.cwd,
-          );
+          const paneTree = grow(t, splitId, leafId);
           return { ...t, paneTree, activeLeafId: leafId };
         }),
       );
       return newLeafId;
     },
     [],
+  );
+
+  /** Split the active leaf of `tabId` along `dir`. Returns the new leaf id. */
+  const splitActivePane = useCallback(
+    (tabId: number, dir: SplitDir): number | null =>
+      addLeaf(tabId, (t, splitId, leafId) =>
+        splitLeaf(t.paneTree, t.activeLeafId, splitId, leafId, dir, t.cwd),
+      ),
+    [addLeaf],
   );
 
   /**
@@ -1537,30 +1541,18 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       tabId: number,
       dir: SplitDir,
       place: "before" | "after",
-    ): number | null => {
-      let newLeafId: number | null = null;
-      setTabs((curr) =>
-        curr.map((t) => {
-          if (t.id !== tabId || t.kind !== "terminal" || t.blocks) return t;
-          if (leafIds(t.paneTree).length >= MAX_PANES_PER_TAB) return t;
-          const splitId = nextIdRef.current++;
-          const leafId = nextIdRef.current++;
-          newLeafId = leafId;
-          const newLeaf: PaneNode = { kind: "leaf", id: leafId, cwd: t.cwd };
-          const paneTree = insertNodeBeside(
-            t.paneTree,
-            t.activeLeafId,
-            splitId,
-            newLeaf,
-            dir,
-            place,
-          );
-          return { ...t, paneTree, activeLeafId: leafId };
-        }),
-      );
-      return newLeafId;
-    },
-    [],
+    ): number | null =>
+      addLeaf(tabId, (t, splitId, leafId) =>
+        insertNodeBeside(
+          t.paneTree,
+          t.activeLeafId,
+          splitId,
+          { kind: "leaf", id: leafId, cwd: t.cwd },
+          dir,
+          place,
+        ),
+      ),
+    [addLeaf],
   );
 
   const closePaneByLeaf = useCallback((leafId: number): void => {

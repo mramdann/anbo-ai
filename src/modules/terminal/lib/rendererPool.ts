@@ -245,9 +245,7 @@ function refitVisibleSlots(kick: boolean): void {
     const bridge = adapter.resolveLeaf(leafId);
     bridge?.resizePty(slot.lastCols, slot.lastRows);
     if (kick) bridge?.kickPty(slot.lastCols, slot.lastRows);
-    try {
-      slot.term.refresh(0, slot.term.rows - 1);
-    } catch {}
+    repaintSlot(slot);
   }
 }
 
@@ -735,9 +733,7 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
   if (fast) {
     if (stale) {
       if (!slot.webglAddon) attachWebgl(slot);
-      try {
-        slot.term.refresh(0, slot.term.rows - 1);
-      } catch {}
+      repaintSlot(slot);
     }
     if (adapter?.isLeafFocused(p.leafId) && adapter.isLeafVisible(p.leafId))
       slot.term.focus();
@@ -756,9 +752,7 @@ function scheduleUnhide(slot: Slot, stale: boolean): void {
       slot.host.style.visibility = "";
       if (stale) {
         if (!slot.webglAddon) attachWebgl(slot);
-        try {
-          slot.term.refresh(0, slot.term.rows - 1);
-        } catch {}
+        repaintSlot(slot);
       }
       const leafId = slot.currentLeafId;
       if (
@@ -790,19 +784,26 @@ function scheduleRevealRepair(slot: Slot, leafId: number): void {
       slot.fitAddon.fit();
       slot.lastW = container.clientWidth;
       slot.lastH = container.clientHeight;
-      if (
-        slot.term.cols !== slot.lastCols ||
-        slot.term.rows !== slot.lastRows
-      ) {
-        slot.lastCols = slot.term.cols;
-        slot.lastRows = slot.term.rows;
-        adapter?.resolveLeaf(leafId)?.resizePty(slot.lastCols, slot.lastRows);
-      }
+      syncPtySize(slot, leafId);
     }
-    try {
-      slot.term.refresh(0, slot.term.rows - 1);
-    } catch {}
+    repaintSlot(slot);
   });
+}
+
+/** Repaints every row; xterm can throw while a terminal is being torn down. */
+function repaintSlot(slot: Slot): void {
+  try {
+    slot.term.refresh(0, slot.term.rows - 1);
+  } catch {}
+}
+
+/** Tells the PTY when a fit changed the terminal's grid. */
+function syncPtySize(slot: Slot, leafId: number): void {
+  if (slot.term.cols === slot.lastCols && slot.term.rows === slot.lastRows)
+    return;
+  slot.lastCols = slot.term.cols;
+  slot.lastRows = slot.term.rows;
+  adapter?.resolveLeaf(leafId)?.resizePty(slot.lastCols, slot.lastRows);
 }
 
 function cancelRevealRepair(slot: Slot): void {
@@ -826,9 +827,7 @@ function scheduleWebglFrameRepair(slot: Slot, leafId: number): void {
     ) {
       return;
     }
-    try {
-      slot.term.refresh(0, slot.term.rows - 1);
-    } catch {}
+    repaintSlot(slot);
   }, WEBGL_FRAME_REPAIR_DELAY_MS);
 }
 
@@ -886,11 +885,7 @@ function setupResizeObserver(slot: Slot, p: AcquireParams): void {
     slot.ptyTimer = null;
     if (slot.currentLeafId !== p.leafId || isWindowPresentationBlocked())
       return;
-    if (slot.term.cols === slot.lastCols && slot.term.rows === slot.lastRows)
-      return;
-    slot.lastCols = slot.term.cols;
-    slot.lastRows = slot.term.rows;
-    adapter?.resolveLeaf(p.leafId)?.resizePty(slot.lastCols, slot.lastRows);
+    syncPtySize(slot, p.leafId);
   };
 
   slot.observer = new ResizeObserver(() => {
@@ -1140,9 +1135,7 @@ function attachWebgl(slot: Slot): void {
         if (!usePreferencesStore.getState().terminalWebglEnabled) return;
         attachWebgl(slot);
         if (slot.webglAddon) {
-          try {
-            slot.term.refresh(0, slot.term.rows - 1);
-          } catch {}
+          repaintSlot(slot);
         }
       }, WEBGL_RECOVERY_DELAY_MS);
     });
@@ -1215,9 +1208,7 @@ export function applyWebglPreference(enabled: boolean): void {
       if (slot.currentLeafId !== null && !slot.parked && !slot.webglAddon) {
         attachWebgl(slot);
         if (slot.webglAddon) {
-          try {
-            slot.term.refresh(0, slot.term.rows - 1);
-          } catch {}
+          repaintSlot(slot);
         }
       }
     } else if (slot.webglAddon) {
@@ -1371,15 +1362,9 @@ export function refreshLeafSlot(leafId: number): void {
     slot.lastW = container.clientWidth;
     slot.lastH = container.clientHeight;
     slot.fitAddon.fit();
-    if (slot.term.cols !== slot.lastCols || slot.term.rows !== slot.lastRows) {
-      slot.lastCols = slot.term.cols;
-      slot.lastRows = slot.term.rows;
-      adapter?.resolveLeaf(leafId)?.resizePty(slot.lastCols, slot.lastRows);
-    }
+    syncPtySize(slot, leafId);
   }
-  try {
-    slot.term.refresh(0, slot.term.rows - 1);
-  } catch {}
+  repaintSlot(slot);
   if (wasParked) scheduleRevealRepair(slot, leafId);
 }
 

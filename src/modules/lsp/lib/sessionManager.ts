@@ -1,3 +1,4 @@
+import { lastPathPart } from "@/lib/path";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import type { Extension } from "@codemirror/state";
@@ -40,10 +41,6 @@ export type LspDocHandle = {
 const sessions = new Map<string, Managed>();
 const creating = new Map<string, Promise<Managed | null>>();
 const crashTimes = new Map<string, number[]>();
-
-function basename(path: string): string {
-  return path.split(/[\\/]/).pop() ?? path;
-}
 
 function crashedOut(key: string): boolean {
   const now = Date.now();
@@ -134,7 +131,7 @@ export async function acquireDocExtension(
       transport: managed.transport,
       rootUri: pathToFileUri(managed.root),
       workspaceFolders: [
-        { uri: pathToFileUri(managed.root), name: basename(managed.root) },
+        { uri: pathToFileUri(managed.root), name: lastPathPart(managed.root) },
       ],
       documentUri: uri,
       languageId,
@@ -214,7 +211,7 @@ async function createSession(
   const client = new AnboLspClient({
     transport,
     rootUri,
-    workspaceFolders: [{ uri: rootUri, name: basename(root) }],
+    workspaceFolders: [{ uri: rootUri, name: lastPathPart(root) }],
     documentUri: rootUri,
     languageId: "",
     initializationOptions: preset.initializationOptions,

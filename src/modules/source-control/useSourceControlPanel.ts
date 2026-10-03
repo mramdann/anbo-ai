@@ -18,7 +18,10 @@ import {
 } from "@/modules/editor/lib/diffCache";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { SourceControlSummary } from "./useSourceControl";
+import {
+  type SourceControlSummary,
+  sourceControlError,
+} from "./useSourceControl";
 
 type PanelState = "closed" | "loading" | "no-repo" | "ready" | "error";
 type DiffMode = "+" | "-";
@@ -113,15 +116,6 @@ type SourceControlPanelState = {
   commit: () => Promise<void>;
   push: () => Promise<void>;
 };
-
-function normalizeError(error: unknown): string {
-  if (typeof error === "string") return error;
-  if (error && typeof error === "object" && "message" in error) {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === "string") return message;
-  }
-  return "Unknown source control error";
-}
 
 function normalizeStatusCode(status: string): string {
   const code = status.trim().toUpperCase();
@@ -646,24 +640,26 @@ export function useSourceControlPanel(
     summary.status,
   ]);
 
-  const selectEntry = useCallback(
-    async (entry: SourceControlEntry) => {
+  const select = useCallback(
+    (nextSelection: DiffSelection) => {
       if (!repo) return;
-      const nextSelection: DiffSelection = { path: entry.path, mode: entry.mode };
-      if (sameSelection(selected, nextSelection)) {
-        setActionError(null);
-        setActionMessage(null);
-        setSelectionTransition("none");
-        return;
-      }
-      setSelected(nextSelection);
       setActionError(null);
       setActionMessage(null);
       setSelectionTransition("none");
-      const file = status?.changedFiles.find((c) => c.path === entry.path);
+      if (sameSelection(selected, nextSelection)) return;
+      setSelected(nextSelection);
+      const file = status?.changedFiles.find(
+        (c) => c.path === nextSelection.path,
+      );
       openSelection(nextSelection, repo.repoRoot, file);
     },
     [openSelection, repo, selected, status],
+  );
+
+  const selectEntry = useCallback(
+    async (entry: SourceControlEntry) =>
+      select({ path: entry.path, mode: entry.mode }),
+    [select],
   );
 
   const runMutation = useCallback(
@@ -686,7 +682,7 @@ export function useSourceControlPanel(
         await ipc();
         scheduleReconcile();
       } catch (error) {
-        setActionError(normalizeError(error));
+        setActionError(sourceControlError(error));
         cancelReconcile();
         await summary.refresh({ remote: "never" }).catch(() => {});
       } finally {
@@ -786,24 +782,9 @@ export function useSourceControlPanel(
   }, [repo, runMutation, stagedEntries]);
 
   const selectFile = useCallback(
-    async (entry: SourceControlFileEntry) => {
-      if (!repo) return;
-      const mode: DiffMode = entry.unstaged ? "-" : "+";
-      const nextSelection: DiffSelection = { path: entry.path, mode };
-      if (sameSelection(selected, nextSelection)) {
-        setActionError(null);
-        setActionMessage(null);
-        setSelectionTransition("none");
-        return;
-      }
-      setSelected(nextSelection);
-      setActionError(null);
-      setActionMessage(null);
-      setSelectionTransition("none");
-      const file = status?.changedFiles.find((c) => c.path === entry.path);
-      openSelection(nextSelection, repo.repoRoot, file);
-    },
-    [openSelection, repo, selected, status],
+    async (entry: SourceControlFileEntry) =>
+      select({ path: entry.path, mode: entry.unstaged ? "-" : "+" }),
+    [select],
   );
 
   const toggleStageFile = useCallback(
@@ -920,7 +901,7 @@ export function useSourceControlPanel(
       setCommitMessage(message);
       setActionMessage(null);
     } catch (error) {
-      setActionError(normalizeError(error));
+      setActionError(sourceControlError(error));
     } finally {
       setLocalActionBusy(null);
     }
@@ -953,7 +934,7 @@ export function useSourceControlPanel(
       invalidateRepoDiffs(repo.repoRoot);
       await summary.refresh({ remote: "never" });
     } catch (error) {
-      setActionError(normalizeError(error));
+      setActionError(sourceControlError(error));
     } finally {
       setLocalActionBusy(null);
     }

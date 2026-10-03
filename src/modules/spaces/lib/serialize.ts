@@ -1,3 +1,4 @@
+import { basename } from "@/lib/path";
 import {
   createAgentRestoreFallback,
   normalizePersistedAgentResume,
@@ -49,11 +50,6 @@ export type SerializedTab = SerializedTabKey &
     | { kind: "browser"; url: string; external?: ExternalBrowser }
     | { kind: "markdown"; path: string }
   );
-
-function basename(path: string): string {
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts.length ? parts[parts.length - 1] : path;
-}
 
 function titleFromUrl(url: string): string {
   try {
