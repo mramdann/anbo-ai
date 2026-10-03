@@ -869,10 +869,11 @@ export function useSourceControlPanel(
     setActionMessage(null);
     setActionError(null);
     try {
-      const [{ buildConfiguredLanguageModel }, { generateText }, diff] =
+      // One export through .then, so the bundle keeps only generateText.
+      const [{ buildConfiguredLanguageModel }, generateText, diff] =
         await Promise.all([
           import("@/modules/ai/lib/agent"),
-          import("ai"),
+          import("ai").then(({ generateText }) => generateText),
           native.gitDiff(repo.repoRoot, null, true),
         ]);
       const { text: diffText, truncated } = truncateDiff(diff.diffText);

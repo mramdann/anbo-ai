@@ -20,8 +20,12 @@ async function fetchWithTimeout(
 }
 
 async function transcribeOpenAI(blob: Blob, apiKey: string): Promise<string> {
-  const [{ createOpenAI }, { experimental_transcribe: transcribe }] =
-    await Promise.all([import("@ai-sdk/openai"), import("ai")]);
+  // Taking one export through .then lets the bundler drop the rest of the
+  // SDK; a bare import("ai") keeps every export it has.
+  const [{ createOpenAI }, transcribe] = await Promise.all([
+    import("@ai-sdk/openai"),
+    import("ai").then(({ experimental_transcribe }) => experimental_transcribe),
+  ]);
   const openai = createOpenAI({ apiKey });
   const buf = new Uint8Array(await blob.arrayBuffer());
   const { text } = await transcribe({
