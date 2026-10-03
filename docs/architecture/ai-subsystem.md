@@ -38,7 +38,7 @@ Keys are never persisted outside the OS keychain / Linux secrets file.
 1. Resolves the model via `buildConfiguredLanguageModel`.
 2. Builds a stable system prompt from `selectSystemPrompt(modelId)` plus optional persona, custom instructions, and `ANBO.md` project memory.
 3. Converts UI messages to model messages, prunes reasoning content if the model does not keep it, and compacts old messages if the context limit is exceeded.
-4. Streams via `streamText` with the tool set from `buildTools(ctx)` and `stopWhen: stepCountIs(MAX_AGENT_STEPS)`.
+4. Streams via `streamText` with the tool set and approval map from `buildTools(ctx)` (`tools`, `toolApproval`) and `stopWhen: isStepCount(MAX_AGENT_STEPS)`.
 5. Emits step labels, usage deltas, and finish metadata.
 
 The tool set is assembled in `src/modules/ai/tools/tools.ts` from `fs`, `edit`, `search`, `shell`, `subagent`, `terminal`, `todo`, and `managedAgent` builders.
@@ -68,7 +68,7 @@ The composer derives `isBusy` from `agentMeta.status` so it can mount safely bef
 Tool definitions live under `src/modules/ai/tools/`:
 
 - Read-only tools (`read_file`, `list_directory`, `grep`, `glob`) auto-execute after passing the security deny-list.
-- Mutating tools (`write_file`, `edit`, `multi_edit`, `create_directory`, `bash_run`, `bash_background`) set `needsApproval: true`. The AI SDK pauses and the UI renders an approval card.
+- Mutating tools (`write_file`, `create_directory`, `edit`, `multi_edit`, `bash_run`, `bash_background`, the terminal tools that open, close, interrupt or type into a terminal, `spawn_coding_agent`, `send_to_agent` and `browser_close_tab`) are named in their builder's `approval` map; `buildTools` merges the maps and `runAgentStream` passes them as `toolApproval`, so the AI SDK pauses on the call and surfaces a `tool-approval-request` part rendered as a confirmation card.
 - `edit` / `multi_edit` enforce a read-before-edit invariant: the model must have read the file earlier in the session.
 - In plan mode, mutating tools queue edits for batch review instead of applying them immediately.
 
