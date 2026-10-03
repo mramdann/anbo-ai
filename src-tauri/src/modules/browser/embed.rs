@@ -640,6 +640,9 @@ async fn spawn_browser_child(
                     event_loading.store(true, Ordering::Release);
                     event_navigation_generation.fetch_add(1, Ordering::AcqRel);
                     crate::modules::browser_automation::snapshot::invalidate_document(tab_id);
+                    crate::modules::browser_automation::ref_context::note_layout_change(
+                        &webview.clone().into(),
+                    );
                     if let Ok(mut pending_url) = event_pending_url.lock() {
                         *pending_url = Some(payload.url().to_string());
                     }
@@ -651,6 +654,9 @@ async fn spawn_browser_child(
                     );
                     crate::modules::browser_automation::activity::restore(&webview.clone().into());
                     crate::modules::browser_automation::design::restore(&webview.clone().into());
+                    crate::modules::browser_automation::ref_context::note_layout_change(
+                        &webview.clone().into(),
+                    );
                     event_loading.store(false, Ordering::Release);
                     if let Ok(mut pending_url) = event_pending_url.lock() {
                         *pending_url = None;
@@ -1602,6 +1608,7 @@ pub(crate) async fn apply_viewport(
         CDP_TIMEOUT,
     )
     .await;
+    crate::modules::browser_automation::ref_context::note_layout_change(&webview.clone().into());
     Ok(())
 }
 

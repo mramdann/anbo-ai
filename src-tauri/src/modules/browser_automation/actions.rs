@@ -2100,6 +2100,7 @@ async fn handle_action_inner(
                         .await;
                 }
                 let dispatched = async {
+                    timings.measure("keySettle", ref_context::settle_before_keys(&webview)).await;
                     // Focus emulation can run page focus handlers. Prepare it before
                     // checking the target, immediately ahead of native key dispatch.
                     timings.measure("focusEmulation", ref_context::ensure_focus(&webview)).await.map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
@@ -3679,6 +3680,7 @@ async fn native_retype(
     ref_id: &str,
     text: &str,
 ) -> Result<bool, String> {
+    ref_context::settle_before_keys(webview).await;
     let guard = |expected: &str| {
         let expected = serde_json::to_string(expected).unwrap();
         deep_ref_expression(
@@ -6982,6 +6984,7 @@ async fn dispatch_key_action(
     action: &str,
     modifiers: u8,
 ) -> Result<(), String> {
+    ref_context::settle_before_keys(webview).await;
     ref_context::ensure_focus(webview).await?;
     if matches!(action, "press" | "down") {
         let down = key_event_params("keyDown", key, modifiers).to_string();

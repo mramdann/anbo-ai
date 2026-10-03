@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::cdp::call_devtools_protocol_method;
 use super::registry::active_navigation_generation;
@@ -12,6 +12,16 @@ pub const REF_REGISTRY_JS: &str = include_str!("refRegistry.js");
 const CONTEXT_TIMEOUT: Duration = Duration::from_secs(2);
 static ROOT_CONTEXTS: Mutex<Option<HashMap<i64, (u64, i64)>>> = Mutex::new(None);
 static PREPARED: Mutex<Option<HashMap<i64, PreparedDocument>>> = Mutex::new(None);
+/// When each tab last got a new document or viewport. WebView2 155.0.4283.33
+/// drops a key sent through Input.dispatchKeyEvent within about 100 ms of
+/// either: the call succeeds, but the page never sees a keydown. Of 120 Enters
+/// sent right after a fresh tab's viewport emulation, 27 were lost; of 360 sent
+/// 100 ms later, none (Oct 3 2026). Mouse input waits a frame for actionability
+/// and never lost a click.
+static LAYOUT_CHANGES: Mutex<Option<HashMap<i64, Instant>>> = Mutex::new(None);
+/// How old the newest document or viewport must be before a key goes out: the
+/// 100 ms that held, with margin.
+const KEY_SETTLE: Duration = Duration::from_millis(150);
 
 #[derive(Default)]
 struct PreparedDocument {
@@ -74,6 +84,41 @@ pub async fn ensure_focus(webview: &Webview) -> Result<(), String> {
     Ok(())
 }
 
+/// Record that a tab got a new document or viewport, so its next key waits.
+pub fn note_layout_change(webview: &Webview) {
+    if let Ok(tab) = tab_id(webview) {
+        record_layout_change(tab, Instant::now());
+    }
+}
+
+fn record_layout_change(tab: i64, at: Instant) {
+    if let Ok(mut guard) = LAYOUT_CHANGES.lock() {
+        let changes = guard.get_or_insert_with(HashMap::new);
+        if changes.len() >= 256 && !changes.contains_key(&tab) {
+            return;
+        }
+        changes.insert(tab, at);
+    }
+}
+
+/// Hold a key until the tab's newest document or viewport is KEY_SETTLE old.
+/// Agents call tools seconds apart, so only scripted sequences ever wait.
+pub async fn settle_before_keys(webview: &Webview) {
+    let Ok(tab) = tab_id(webview) else {
+        return;
+    };
+    if let Some(wait) = key_settle_wait(tab, Instant::now()) {
+        tokio::time::sleep(wait).await;
+    }
+}
+
+fn key_settle_wait(tab: i64, now: Instant) -> Option<Duration> {
+    let changed = *LAYOUT_CHANGES.lock().ok()?.as_ref()?.get(&tab)?;
+    (changed + KEY_SETTLE)
+        .checked_duration_since(now)
+        .filter(|wait| !wait.is_zero())
+}
+
 pub fn remove(tab_id: i64) {
     if let Ok(mut guard) = PREPARED.lock() {
         if let Some(entries) = guard.as_mut() {
@@ -85,6 +130,11 @@ pub fn remove(tab_id: i64) {
             contexts.remove(&tab_id);
         }
     }
+    if let Ok(mut guard) = LAYOUT_CHANGES.lock() {
+        if let Some(changes) = guard.as_mut() {
+            changes.remove(&tab_id);
+        }
+    }
 }
 
 pub fn clear() {
@@ -92,6 +142,9 @@ pub fn clear() {
         *guard = None;
     }
     if let Ok(mut guard) = ROOT_CONTEXTS.lock() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = LAYOUT_CHANGES.lock() {
         *guard = None;
     }
 }
@@ -264,6 +317,22 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains_key(&tab));
+    }
+
+    #[test]
+    fn keys_wait_only_for_a_fresh_document_or_viewport() {
+        let tab = -920003;
+        let now = Instant::now();
+        assert_eq!(key_settle_wait(tab, now), None);
+        record_layout_change(tab, now);
+        assert_eq!(key_settle_wait(tab, now), Some(KEY_SETTLE));
+        assert_eq!(
+            key_settle_wait(tab, now + KEY_SETTLE / 3),
+            Some(KEY_SETTLE - KEY_SETTLE / 3)
+        );
+        assert_eq!(key_settle_wait(tab, now + KEY_SETTLE), None);
+        remove(tab);
+        assert_eq!(key_settle_wait(tab, now), None);
     }
 
     #[test]
