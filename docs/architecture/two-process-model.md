@@ -97,7 +97,7 @@ Three distinct surfaces:
 ### Workspace (`src-tauri/src/modules/workspace.rs`)
 
 - `workspace_authorize` / `workspace_current_dir` - the spawn/git/AI cwd authorization registry
-- `wsl_list_distros` / `wsl_default_distro` / `wsl_home` - WSL bridge
+- `wsl_list_distros` / `wsl_home` - WSL bridge
 
 ### Network (`src-tauri/src/modules/net.rs`)
 

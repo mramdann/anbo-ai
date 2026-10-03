@@ -92,7 +92,7 @@ export type BrowserDesignTheme = {
   accentText?: string;
 };
 
-export type BrowserDesignLocator = {
+type BrowserDesignLocator = {
   by: string;
   value: string;
   name?: string;
@@ -505,18 +505,6 @@ export async function browserEmbedSetPunchHole(
     instanceId: BROWSER_INSTANCE_ID,
     ownerId,
     holes,
-  });
-}
-
-export async function browserEmbedSuspend(
-  tabId: number,
-  ownerId: string,
-): Promise<void> {
-  await ensureBrowserSession();
-  await invoke("browser_embed_suspend", {
-    tabId,
-    instanceId: BROWSER_INSTANCE_ID,
-    ownerId,
   });
 }
 

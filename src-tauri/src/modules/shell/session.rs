@@ -15,8 +15,6 @@ pub struct ShellSession {
     pub workspace: WorkspaceEnv,
     pub pristine: AtomicBool,
     run_lock: Mutex<()>,
-    #[allow(dead_code)]
-    pub started_at_ms: u64,
     sentinel: String,
 }
 
@@ -47,16 +45,11 @@ fn generate_sentinel() -> String {
 
 impl ShellSession {
     pub fn new(initial_cwd: String, workspace: WorkspaceEnv) -> Self {
-        let started_at_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
         Self {
             cwd: Mutex::new(initial_cwd),
             workspace,
             pristine: AtomicBool::new(true),
             run_lock: Mutex::new(()),
-            started_at_ms,
             sentinel: generate_sentinel(),
         }
     }

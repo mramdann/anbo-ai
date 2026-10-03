@@ -57,14 +57,6 @@ pub async fn browser_automation_stop() -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub async fn browser_automation_status() -> Result<serde_json::Value, String> {
-    Ok(serde_json::json!({
-        "running": server::is_running(),
-        "mcpUrl": if http::is_running() { Some(http::MCP_URL) } else { None }
-    }))
-}
-
 /// Publish what each live agent goes by, keyed by the terminal it runs in.
 ///
 /// Only the frontend mints a callsign, and only the browser side knows which

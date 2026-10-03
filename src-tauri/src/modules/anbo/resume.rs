@@ -154,19 +154,6 @@ pub fn find_claude_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>) 
     })
 }
 
-/// Command Tauri: discover session-id claude utk cwd setelah since_ts.
-/// `claimed` = sesi yg sudah dipin tab lain (cegah bentrok multi-tab di cwd sama).
-/// Return UUID terbaru yang cocok, atau null.
-#[tauri::command]
-pub fn anbo_find_claude_session(
-    cwd: String,
-    since_ts: u64,
-    claimed: Vec<String>,
-) -> Option<String> {
-    let claimed: HashSet<String> = claimed.into_iter().collect();
-    find_claude_session(&cwd, since_ts, &claimed)
-}
-
 fn normalized_cwd(path: &str) -> String {
     let resolved = std::fs::canonicalize(path)
         .unwrap_or_else(|_| PathBuf::from(path))
@@ -305,27 +292,6 @@ pub fn find_codex_session(cwd: &str, since_ts: u64, claimed: &HashSet<String>) -
     best.map(|(id, _)| id).inspect(|id| {
         log::info!("[anbo] discovered Codex session {id} (cwd={cwd})");
     })
-}
-
-#[tauri::command]
-pub fn anbo_find_codex_session(
-    cwd: String,
-    since_ts: u64,
-    claimed: Vec<String>,
-    workspace: Option<WorkspaceEnv>,
-    registry: tauri::State<'_, WorkspaceRegistry>,
-) -> Result<Option<String>, String> {
-    let workspace = WorkspaceEnv::from_option(workspace);
-    if !matches!(workspace, WorkspaceEnv::Local) {
-        return Ok(None);
-    }
-    let cwd = authorize_existing_path(&registry, &cwd, &workspace)?;
-    let claimed = claimed.into_iter().collect();
-    Ok(find_codex_session(
-        &cwd.to_string_lossy(),
-        since_ts,
-        &claimed,
-    ))
 }
 
 fn read_file_tail(path: &Path, max_bytes: u64) -> Option<String> {
