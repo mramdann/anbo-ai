@@ -1,10 +1,12 @@
 import { resolveAgentWorkspace } from "@/modules/agents/lib/agentAutomation";
-import type {
-  AgentAutomationResponse,
-  TerminalAutomationMethod,
+import {
+  type AgentAutomationResponse,
+  automationError,
+  paramString,
+  type TerminalAutomationMethod,
 } from "@/modules/agents/lib/agentAutomationProtocol";
 import type { AgentSession } from "@/modules/agents/lib/types";
-import { redactSensitive } from "@/modules/ai/lib/redact";
+import { OutputTracker } from "@/modules/agents/lib/outputTracker";
 import type { SpaceMeta } from "@/modules/spaces/lib/store";
 import type { Tab, TerminalTab } from "@/modules/tabs";
 import { findLeafCwd, leafIds } from "@/modules/terminal/lib/panes";
@@ -12,8 +14,6 @@ import type { TerminalSessionState } from "@/modules/terminal/lib/useTerminalSes
 
 const MAX_INPUT_CHARS = 8_000;
 const MAX_TITLE_CHARS = 64;
-const MAX_OUTPUT_CHARS = 12_000;
-const OUTPUT_HISTORY_CHARS = 64_000;
 const MAX_TRACKED_TERMINALS = 100;
 const MAX_EXECUTIONS = 100;
 const WAIT_POLL_MS = 75;
@@ -54,14 +54,6 @@ export type TerminalAutomationDependencies = {
   close: (tabId: number, leafId: number) => boolean;
   write: (leafId: number, data: string) => boolean;
   initialPromptSyncTimeoutMs?: number;
-};
-
-type OutputState = {
-  generation: number;
-  snapshot: string;
-  stream: string;
-  base: number;
-  total: number;
 };
 
 type TerminalReadSnapshot = {
@@ -120,83 +112,11 @@ function shellSupportsOsc(shell: string | null | undefined): boolean {
   return /^(?:pwsh|powershell|bash|zsh|fish)$/.test(shell ?? "");
 }
 
-function suffixPrefixOverlap(previous: string, current: string): number {
-  const limit = Math.min(previous.length, current.length);
-  for (let length = limit; length > 0; length -= 1) {
-    if (previous.endsWith(current.slice(0, length))) return length;
-  }
-  return 0;
-}
-
-function parseTerminalCursor(
-  cursor: unknown,
-): { generation: number; offset: number } | null {
-  if (typeof cursor !== "string") return null;
-  const match = /^t1:(\d+):(\d+)$/.exec(cursor);
-  if (!match) return null;
-  const generation = Number(match[1]);
-  const offset = Number(match[2]);
-  return Number.isSafeInteger(generation) && Number.isSafeInteger(offset)
-    ? { generation, offset }
-    : null;
-}
-
 class TerminalOutputTracker {
-  private readonly states = new Map<string, OutputState>();
-
-  private update(
-    id: string,
-    rawOutput: string,
-  ): {
-    state: OutputState;
-    repainted: boolean;
-  } {
-    const current = redactSensitive(rawOutput).slice(-OUTPUT_HISTORY_CHARS);
-    let state = this.states.get(id);
-    let repainted = false;
-    if (!state) {
-      state = {
-        generation: 1,
-        snapshot: current,
-        stream: current,
-        base: 0,
-        total: current.length,
-      };
-      this.states.set(id, state);
-      while (this.states.size > MAX_TRACKED_TERMINALS) {
-        const oldest = this.states.keys().next().value;
-        if (oldest === undefined) break;
-        this.states.delete(oldest);
-      }
-    } else if (current !== state.snapshot) {
-      const overlap = current.startsWith(state.snapshot)
-        ? state.snapshot.length
-        : suffixPrefixOverlap(state.snapshot, current);
-      if (overlap === 0) {
-        state.generation += 1;
-        state.snapshot = current;
-        state.stream = current;
-        state.base = 0;
-        state.total = current.length;
-        repainted = true;
-      } else {
-        const appended = current.slice(overlap);
-        state.snapshot = current;
-        state.stream += appended;
-        state.total += appended.length;
-        if (state.stream.length > OUTPUT_HISTORY_CHARS) {
-          const removed = state.stream.length - OUTPUT_HISTORY_CHARS;
-          state.stream = state.stream.slice(removed);
-          state.base += removed;
-        }
-      }
-    }
-    return { state, repainted };
-  }
+  private readonly tracker = new OutputTracker("t1", MAX_TRACKED_TERMINALS);
 
   checkpoint(id: string, rawOutput: string): string {
-    const { state } = this.update(id, rawOutput);
-    return `t1:${state.generation}:${state.total}`;
+    return this.tracker.checkpoint(id, rawOutput);
   }
 
   read(
@@ -205,54 +125,21 @@ class TerminalOutputTracker {
     cursor: unknown,
     requestedMaxChars: unknown,
   ): TerminalReadSnapshot {
-    const maxChars =
-      typeof requestedMaxChars === "number" &&
-      Number.isInteger(requestedMaxChars)
-        ? Math.max(1, Math.min(MAX_OUTPUT_CHARS, requestedMaxChars))
-        : 4_000;
-    const { state, repainted } = this.update(id, rawOutput);
-    const parsed = parseTerminalCursor(cursor);
-    const cursorInvalid =
-      cursor !== undefined &&
-      (!parsed ||
-        parsed.generation !== state.generation ||
-        parsed.offset < state.base ||
-        parsed.offset > state.total);
-    const reset = repainted || cursorInvalid;
-    const start =
-      parsed && !reset
-        ? parsed.offset
-        : Math.max(state.base, state.total - maxChars);
-    const available = state.stream.slice(start - state.base);
-    const output = available.slice(0, maxChars);
-    const nextOffset = start + output.length;
-    const hasMore = nextOffset < state.total;
+    const read = this.tracker.read(id, rawOutput, cursor, requestedMaxChars);
     return {
-      output,
-      cursor: `t1:${state.generation}:${nextOffset}`,
-      truncated: hasMore,
-      hasMore,
-      historyTruncated: start > state.base,
-      reset,
-      replayed: reset && cursor !== undefined,
+      output: read.output,
+      cursor: read.cursor,
+      truncated: read.hasMore,
+      hasMore: read.hasMore,
+      historyTruncated: read.historyTruncated,
+      reset: read.reset,
+      replayed: read.reset && cursor !== undefined,
     };
   }
 
   remove(id: string): void {
-    this.states.delete(id);
+    this.tracker.remove(id);
   }
-}
-
-function responseError(code: string, message: string): AgentAutomationResponse {
-  return { error: { code, message } };
-}
-
-function paramString(
-  params: Record<string, unknown>,
-  key: string,
-): string | null {
-  const value = params[key];
-  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function terminalId(tabId: number, leafId: number): string {
@@ -573,7 +460,7 @@ export function createTerminalAutomationService(
     if (!workspace.ok) {
       return {
         ok: false,
-        response: responseError("workspace_not_found", workspace.error),
+        response: automationError("workspace_not_found", workspace.error),
       };
     }
     return {
@@ -597,7 +484,7 @@ export function createTerminalAutomationService(
     if (!id) {
       return {
         ok: false as const,
-        response: responseError("invalid_request", "terminalId is required"),
+        response: automationError("invalid_request", "terminalId is required"),
       };
     }
     const terminal = resolved.terminals.find(
@@ -607,7 +494,7 @@ export function createTerminalAutomationService(
       output.remove(id);
       return {
         ok: false as const,
-        response: responseError(
+        response: automationError(
           "terminal_not_found",
           `shared terminal is not available in workspace: ${id}`,
         ),
@@ -622,7 +509,7 @@ export function createTerminalAutomationService(
     if (await hasPendingExecution(target.terminal.terminalId)) {
       return {
         ok: false as const,
-        response: responseError(
+        response: automationError(
           "terminal_busy",
           `${target.terminal.terminalId} is still observing a previously executed command`,
         ),
@@ -631,7 +518,7 @@ export function createTerminalAutomationService(
     if (target.terminal.status !== "idle") {
       return {
         ok: false as const,
-        response: responseError(
+        response: automationError(
           "terminal_busy",
           `${target.terminal.terminalId} is ${target.terminal.status}; wait for an idle shell prompt`,
         ),
@@ -641,7 +528,7 @@ export function createTerminalAutomationService(
     if (latestState?.inputPending) {
       return {
         ok: false as const,
-        response: responseError(
+        response: automationError(
           "terminal_input_pending",
           `${target.terminal.terminalId} contains unsubmitted input; submit or clear it before executing another command`,
         ),
@@ -656,7 +543,7 @@ export function createTerminalAutomationService(
     ) {
       return {
         ok: false as const,
-        response: responseError(
+        response: automationError(
           "terminal_busy",
           `${target.terminal.terminalId} is no longer idle`,
         ),
@@ -676,13 +563,13 @@ export function createTerminalAutomationService(
           params.workspace,
         );
         if (!workspace.ok) {
-          return responseError("workspace_not_found", workspace.error);
+          return automationError("workspace_not_found", workspace.error);
         }
         const title = sanitizeTerminalTitle(params.title);
-        if (!title.ok) return responseError("invalid_request", title.error);
+        if (!title.ok) return automationError("invalid_request", title.error);
         const opened = deps.open(workspace.space, title.title);
         if (!opened) {
-          return responseError(
+          return automationError(
             "terminal_open_failed",
             `could not create a shared terminal in ${workspace.space.root}`,
           );
@@ -719,20 +606,20 @@ export function createTerminalAutomationService(
         if (!target.ok) return target.response;
         const id = target.terminal.terminalId;
         if (!openedTerminals.has(id)) {
-          return responseError(
+          return automationError(
             "terminal_not_owned",
             `${id} was not opened by terminal_open in this application session`,
           );
         }
         if (await hasPendingExecution(id)) {
-          return responseError(
+          return automationError(
             "terminal_busy",
             `${id} is still observing a previously executed command`,
           );
         }
         const state = deps.getSessionState(target.terminal.leafId);
         if (state?.inputPending) {
-          return responseError(
+          return automationError(
             "terminal_input_pending",
             `${id} contains unsubmitted input; submit or clear it before closing`,
           );
@@ -745,13 +632,13 @@ export function createTerminalAutomationService(
               state.blockMode !== "prompt" ||
               (await deps.hasForegroundProcess(target.terminal.leafId))))
         ) {
-          return responseError(
+          return automationError(
             "terminal_busy",
             `${id} is starting or running a foreground process`,
           );
         }
         if (!deps.close(target.terminal.tabId, target.terminal.leafId)) {
-          return responseError(
+          return automationError(
             "terminal_close_failed",
             `${id} could not be closed safely`,
           );
@@ -797,7 +684,7 @@ export function createTerminalAutomationService(
         if (!target.ok) return target.response;
         const raw = deps.getBuffer(target.terminal.leafId);
         if (raw === null) {
-          return responseError(
+          return automationError(
             "terminal_unavailable",
             "terminal buffer is not available",
           );
@@ -809,9 +696,7 @@ export function createTerminalAutomationService(
               target.terminal.terminalId,
               raw,
               params.cursor,
-              typeof params.maxChars === "number"
-                ? Math.min(MAX_OUTPUT_CHARS, params.maxChars)
-                : params.maxChars,
+              params.maxChars,
             ),
           },
         };
@@ -820,18 +705,18 @@ export function createTerminalAutomationService(
       if (method === "terminal_wait") {
         const executionId = paramString(params, "executionId");
         if (!executionId) {
-          return responseError("invalid_request", "executionId is required");
+          return automationError("invalid_request", "executionId is required");
         }
         const requestedTerminalId = paramString(params, "terminalId");
         if (!requestedTerminalId) {
-          return responseError("invalid_request", "terminalId is required");
+          return automationError("invalid_request", "terminalId is required");
         }
         const workspace = resolveAgentWorkspace(
           deps.getSpaces(),
           params.workspace,
         );
         if (!workspace.ok) {
-          return responseError("workspace_not_found", workspace.error);
+          return automationError("workspace_not_found", workspace.error);
         }
         const execution = executions.get(executionId);
         if (
@@ -839,7 +724,7 @@ export function createTerminalAutomationService(
           execution.terminalId !== requestedTerminalId ||
           execution.workspace !== workspace.space.root
         ) {
-          return responseError(
+          return automationError(
             "execution_not_found",
             `shared terminal execution is not available: ${executionId}`,
           );
@@ -970,7 +855,7 @@ export function createTerminalAutomationService(
             execution.terminalId !== target.terminal.terminalId ||
             execution.workspace !== target.terminal.workspace)
         ) {
-          return responseError(
+          return automationError(
             "execution_not_found",
             `shared terminal execution is not available: ${requestedExecutionId}`,
           );
@@ -1008,7 +893,7 @@ export function createTerminalAutomationService(
         }
         const state = deps.getSessionState(target.terminal.leafId);
         if (!state?.ready || state.shellExited) {
-          return responseError(
+          return automationError(
             "terminal_unavailable",
             `${target.terminal.terminalId} has no live shell`,
           );
@@ -1017,7 +902,7 @@ export function createTerminalAutomationService(
           execution.interruptRequested = true;
           if (!deps.write(target.terminal.leafId, "\x03")) {
             finishExecution(execution, "closed", null);
-            return responseError(
+            return automationError(
               "terminal_unavailable",
               "terminal stopped before the interrupt could be delivered",
             );
@@ -1037,7 +922,7 @@ export function createTerminalAutomationService(
         }
         if (state.inputPending) {
           if (!deps.write(target.terminal.leafId, "\x03")) {
-            return responseError(
+            return automationError(
               "terminal_unavailable",
               "terminal stopped before pending input could be cancelled",
             );
@@ -1056,13 +941,13 @@ export function createTerminalAutomationService(
           state.blockMode !== "prompt" ||
           (await deps.hasForegroundProcess(target.terminal.leafId));
         if (!busy) {
-          return responseError(
+          return automationError(
             "terminal_idle",
             `${target.terminal.terminalId} has no foreground command to interrupt`,
           );
         }
         if (!deps.write(target.terminal.leafId, "\x03")) {
-          return responseError(
+          return automationError(
             "terminal_unavailable",
             "terminal stopped before the interrupt could be delivered",
           );
@@ -1078,7 +963,7 @@ export function createTerminalAutomationService(
       }
 
       const input = sanitizeTerminalInput(params.text);
-      if (!input.ok) return responseError("invalid_request", input.error);
+      if (!input.ok) return automationError("invalid_request", input.error);
       const target = await requireIdle(params);
       if (!target.ok) return target.response;
       const rawBefore = deps.getBuffer(target.terminal.leafId) ?? "";
@@ -1086,7 +971,7 @@ export function createTerminalAutomationService(
       const cursor = output.checkpoint(target.terminal.terminalId, rawBefore);
       if (method === "terminal_insert") {
         if (!deps.write(target.terminal.leafId, input.text)) {
-          return responseError(
+          return automationError(
             "terminal_unavailable",
             "terminal stopped before input could be delivered",
           );

@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { lastPathPart } from "@/lib/path";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -11,11 +12,6 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { usePlanStore, type QueuedEdit } from "../store/planStore";
-
-function basename(p: string): string {
-  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  return i >= 0 ? p.slice(i + 1) : p;
-}
 
 function diffStats(
   original: string,
@@ -142,7 +138,7 @@ function PlanRow({
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-1.5 font-mono text-[11.5px]">
             <span className="truncate text-foreground">
-              {basename(item.path)}
+              {lastPathPart(item.path)}
             </span>
             {isNew ? (
               <span className="text-[10px] text-emerald-600 dark:text-emerald-400">

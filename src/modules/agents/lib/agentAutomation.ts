@@ -3,16 +3,18 @@ import type {
   AgentSession,
   AgentStatus,
 } from "@/modules/agents/lib/types";
-import { redactSensitive } from "@/modules/ai/lib/redact";
 import type { SpaceMeta } from "@/modules/spaces/lib/store";
 import type { Tab, TerminalTab } from "@/modules/tabs";
-import type {
-  AgentAutomationRequest,
-  AgentAutomationResponse,
+import {
+  type AgentAutomationRequest,
+  type AgentAutomationResponse,
+  automationError,
+  paramString,
 } from "./agentAutomationProtocol";
 import { agentIdFor } from "./agentIdentity";
 import { readAgentScreen } from "./agentScreenClassifier";
 import { codexTurnEvidence } from "./codexTurnEvidence";
+import { OutputTracker } from "./outputTracker";
 
 export type {
   AgentAutomationMethod,
@@ -26,8 +28,6 @@ export {
 export { agentIdFor } from "./agentIdentity";
 
 const MAX_MESSAGE_CHARS = 8_000;
-const MAX_OUTPUT_CHARS = 12_000;
-const OUTPUT_HISTORY_CHARS = 64_000;
 const MAX_DEDUPLICATION_KEYS = 100;
 const MAX_TRACKED_AGENTS = 100;
 const SUBMIT_DELAY_MS = 90;
@@ -89,14 +89,6 @@ type ServiceDependencies = {
 };
 
 type ResolvedWorkspace = { id: string; root: string };
-
-type OutputState = {
-  generation: number;
-  snapshot: string;
-  stream: string;
-  base: number;
-  total: number;
-};
 
 export type AgentReadResult = {
   output: string;
@@ -409,42 +401,8 @@ export async function submitAgentMessage(
   return write(leafId, "\r");
 }
 
-function suffixPrefixOverlap(previous: string, current: string): number {
-  const limit = Math.min(previous.length, current.length, 8_192);
-  if (limit === 0) return 0;
-  const prefix = current.slice(0, limit);
-  const suffix = previous.slice(-limit);
-  const combined = `${prefix}\u0000${suffix}`;
-  const table = new Uint32Array(combined.length);
-  for (let index = 1; index < combined.length; index += 1) {
-    let candidate = table[index - 1];
-    while (candidate > 0 && combined[index] !== combined[candidate]) {
-      candidate = table[candidate - 1];
-    }
-    if (combined[index] === combined[candidate]) candidate += 1;
-    table[index] = candidate;
-  }
-  return Math.min(table[table.length - 1], limit);
-}
-
-function cursorOf(state: OutputState, offset = state.total): string {
-  return `v1:${state.generation}:${offset}`;
-}
-
-function parseCursor(
-  cursor: string,
-): { generation: number; offset: number } | null {
-  const match = /^v1:(\d+):(\d+)$/.exec(cursor);
-  if (!match) return null;
-  const generation = Number(match[1]);
-  const offset = Number(match[2]);
-  return Number.isSafeInteger(generation) && Number.isSafeInteger(offset)
-    ? { generation, offset }
-    : null;
-}
-
 export class AgentOutputTracker {
-  private readonly states = new Map<string, OutputState>();
+  private readonly tracker = new OutputTracker("v1", MAX_TRACKED_AGENTS);
 
   read(
     agentId: string,
@@ -452,93 +410,23 @@ export class AgentOutputTracker {
     cursor: unknown,
     requestedMaxChars: unknown,
   ): AgentReadResult {
-    const maxChars =
-      typeof requestedMaxChars === "number" &&
-      Number.isInteger(requestedMaxChars)
-        ? Math.max(1, Math.min(MAX_OUTPUT_CHARS, requestedMaxChars))
-        : 4_000;
-    const current = redactSensitive(rawOutput).slice(-OUTPUT_HISTORY_CHARS);
-    let state = this.states.get(agentId);
-    let reset = false;
-    if (!state) {
-      state = {
-        generation: 1,
-        snapshot: current,
-        stream: current,
-        base: 0,
-        total: current.length,
-      };
-      this.states.set(agentId, state);
-      while (this.states.size > MAX_TRACKED_AGENTS) {
-        const oldest = this.states.keys().next().value;
-        if (oldest === undefined) break;
-        this.states.delete(oldest);
-      }
-    } else if (current !== state.snapshot) {
-      const overlap = current.startsWith(state.snapshot)
-        ? state.snapshot.length
-        : suffixPrefixOverlap(state.snapshot, current);
-      if (overlap === 0) {
-        state.generation += 1;
-        state.snapshot = current;
-        state.stream = current;
-        state.base = 0;
-        state.total = current.length;
-        reset = true;
-      } else {
-        const appended = current.slice(overlap);
-        state.snapshot = current;
-        state.stream += appended;
-        state.total += appended.length;
-        if (state.stream.length > OUTPUT_HISTORY_CHARS) {
-          const removed = state.stream.length - OUTPUT_HISTORY_CHARS;
-          state.stream = state.stream.slice(removed);
-          state.base += removed;
-        }
-      }
-    }
-
-    const parsed = typeof cursor === "string" ? parseCursor(cursor) : null;
-    if (
-      cursor !== undefined &&
-      (!parsed ||
-        parsed.generation !== state.generation ||
-        parsed.offset < state.base ||
-        parsed.offset > state.total)
-    ) {
-      reset = true;
-    }
-
-    const start =
-      parsed && !reset
-        ? parsed.offset
-        : Math.max(state.base, state.total - maxChars);
-    const available = state.stream.slice(start - state.base);
-    const output = available.slice(0, maxChars);
-    const nextOffset = start + output.length;
+    const read = this.tracker.read(
+      agentId,
+      rawOutput,
+      cursor,
+      requestedMaxChars,
+    );
     return {
-      output,
-      cursor: cursorOf(state, nextOffset),
-      truncated: nextOffset < state.total || start > state.base,
-      reset,
+      output: read.output,
+      cursor: read.cursor,
+      truncated: read.hasMore || read.historyTruncated,
+      reset: read.reset,
     };
   }
 
   remove(agentId: string): void {
-    this.states.delete(agentId);
+    this.tracker.remove(agentId);
   }
-}
-
-function error(code: string, message: string): AgentAutomationResponse {
-  return { error: { code, message } };
-}
-
-function paramString(
-  params: Record<string, unknown>,
-  key: string,
-): string | null {
-  const value = params[key];
-  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 export function createAgentAutomationService(deps: ServiceDependencies) {
@@ -561,7 +449,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       ? { ok: true, workspace: workspace.space }
       : {
           ok: false,
-          response: error("workspace_not_found", workspace.error),
+          response: automationError("workspace_not_found", workspace.error),
         };
   };
 
@@ -597,7 +485,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     if (!agentId) {
       return {
         ok: false,
-        response: error("invalid_request", "agentId is required"),
+        response: automationError("invalid_request", "agentId is required"),
       };
     }
     const agent = resolved.agents.find((candidate) => {
@@ -621,7 +509,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       sendAcknowledgements.delete(agentId);
       return {
         ok: false,
-        response: error(
+        response: automationError(
           "agent_not_found",
           `agent is not available in workspace: ${agentId}`,
         ),
@@ -738,10 +626,10 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     let target = resolveTarget(params);
     if (!target.ok) return target.response;
     const message = sanitizeAgentMessage(params.message);
-    if (!message.ok) return error("invalid_request", message.error);
+    if (!message.ok) return automationError("invalid_request", message.error);
     const sourceAgentId = paramString(params, "sourceAgentId");
     if (sourceAgentId === target.agent.agentId) {
-      return error(
+      return automationError(
         "invalid_request",
         "an agent cannot send a message to itself",
       );
@@ -751,7 +639,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       ? `${target.agent.agentId}:${messageId}`
       : null;
     if (deduplicationKey && messageIds.has(deduplicationKey)) {
-      return error(
+      return automationError(
         "duplicate_message",
         `messageId was already sent: ${messageId}`,
       );
@@ -788,7 +676,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         await new Promise<void>((resolve) => setTimeout(resolve, 100));
       }
       if (!acknowledged) {
-        return error(
+        return automationError(
           "timeout",
           `timed out waiting for ${target.agent.name} to acknowledge the previous message`,
         );
@@ -803,7 +691,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     ) {
       const waited = await waitFor(params, "waiting", timeout);
       if (!waited.matched) {
-        return error(
+        return automationError(
           waited.closed ? "agent_not_found" : "timeout",
           waited.closed
             ? "agent closed while waiting to receive the message"
@@ -819,13 +707,16 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     const readPreparedScreen = (leafId: number) =>
       deps.prepare(leafId) ? (deps.getScreen ?? deps.getBuffer)(leafId) : null;
     if (!deps.prepare(current.leafId)) {
-      return error(
+      return automationError(
         "agent_not_ready",
         `${current.agent.name} terminal is not attached`,
       );
     }
     if (!deps.getSessions()[current.leafId]) {
-      return error("agent_not_found", "agent terminal is no longer available");
+      return automationError(
+        "agent_not_found",
+        "agent terminal is no longer available",
+      );
     }
     if (
       waitForReady &&
@@ -839,7 +730,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         current.leafId,
       ))
     ) {
-      return error(
+      return automationError(
         "agent_not_ready",
         `${current.agent.name} did not reach a stable input prompt before timeout`,
       );
@@ -865,7 +756,10 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       timeout,
     );
     if (!submitted) {
-      return error("agent_not_ready", `${current.agent.name} input cancelled`);
+      return automationError(
+        "agent_not_ready",
+        `${current.agent.name} input cancelled`,
+      );
     }
     initialSpawnLeaves.delete(current.leafId);
     sendAcknowledgements.set(current.agent.agentId, {
@@ -897,14 +791,14 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         if (!resolved.ok) return resolved.response;
         const requestedAgent = paramString(params, "agent");
         if (!requestedAgent) {
-          return error("invalid_request", "agent is required");
+          return automationError("invalid_request", "agent is required");
         }
         let spawned: AgentSpawnHandle | null;
         try {
           spawned = await deps.spawn(resolved.workspace, requestedAgent);
         } catch (cause) {
           const message = String(cause);
-          return error(
+          return automationError(
             message.includes("resource_exhausted:")
               ? "resource_exhausted"
               : "launch_failed",
@@ -912,7 +806,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
           );
         }
         if (!spawned) {
-          return error(
+          return automationError(
             "launch_failed",
             `${requestedAgent} is not registered or could not be launched in ${resolved.workspace.root}`,
           );
@@ -963,7 +857,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         if (!resolved.ok) return resolved.response;
         const raw = deps.getBuffer(resolved.leafId);
         if (raw === null) {
-          return error(
+          return automationError(
             "agent_unavailable",
             "agent terminal buffer is not available",
           );
@@ -982,7 +876,8 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       }
       if (request.method === "agent_send") {
         const agentId = paramString(params, "agentId");
-        if (!agentId) return error("invalid_request", "agentId is required");
+        if (!agentId)
+          return automationError("invalid_request", "agentId is required");
         const previous = sendQueues.get(agentId);
         const pending = (
           previous ?? Promise.resolve<AgentAutomationResponse>({ result: null })
@@ -1017,7 +912,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
           },
         };
       }
-      return error(
+      return automationError(
         "invalid_request",
         `unsupported agent method: ${request.method}`,
       );

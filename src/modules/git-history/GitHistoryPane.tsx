@@ -6,6 +6,8 @@ import {
 } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { errorMessage } from "@/lib/errors";
+import { basename, relativeDirname } from "@/lib/path";
 import { cn } from "@/lib/utils";
 import {
   native,
@@ -83,27 +85,6 @@ type FilesEntry =
   | { state: "loading" }
   | { state: "loaded"; files: GitCommitFileChange[] }
   | { state: "error"; error: string };
-
-function basename(path: string): string {
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : path;
-}
-
-function dirname(path: string): string {
-  const normalized = path.replace(/\\/g, "/");
-  const index = normalized.lastIndexOf("/");
-  if (index <= 0) return "";
-  return normalized.slice(0, index);
-}
-
-function normalizeError(error: unknown): string {
-  if (typeof error === "string") return error;
-  if (error && typeof error === "object" && "message" in error) {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === "string") return message;
-  }
-  return "Unknown error";
-}
 
 function absoluteTime(secs: number): string {
   if (!secs) return "";
@@ -327,7 +308,7 @@ export function GitHistoryPane({
       if (entries.length < PAGE_SIZE) setEndReached(true);
     } catch (err) {
       if (requestId !== requestIdRef.current) return;
-      setError(normalizeError(err));
+      setError(errorMessage(err));
       setLoadStatus("error");
     }
   }, [repoRoot]);
@@ -353,7 +334,7 @@ export function GitHistoryPane({
       if (entries.length < PAGE_SIZE) setEndReached(true);
       setLoadStatus("idle");
     } catch (err) {
-      setError(normalizeError(err));
+      setError(errorMessage(err));
       setLoadStatus("error");
     } finally {
       inflightMoreRef.current = false;
@@ -441,7 +422,7 @@ export function GitHistoryPane({
         }
         bumpFiles();
       } catch (err) {
-        cache.set(sha, { state: "error", error: normalizeError(err) });
+        cache.set(sha, { state: "error", error: errorMessage(err) });
         bumpFiles();
       } finally {
         filesInflightRef.current.delete(sha);
@@ -981,7 +962,7 @@ const FileRow = memo(function FileRow({
   onOpen: () => void;
 }) {
   const fileName = basename(file.path);
-  const dir = dirname(file.path);
+  const dir = relativeDirname(file.path);
   const iconUrl = fileIconUrl(fileName);
   return (
     <button

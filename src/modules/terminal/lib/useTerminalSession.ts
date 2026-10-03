@@ -776,6 +776,30 @@ async function openPtyWithRetry(
 // Spawn failure must not flow through onExit: handleLeafExit closes the pane
 // (or respawns the last one, which would loop). Show the error in the pane
 // and let Enter retry instead of leaving a dead black grid.
+/**
+ * Hands a PTY that just opened to its session, or closes it when the session
+ * went away while it opened.
+ */
+function adoptPty(leafId: number, s: Session, pty: PtySession): void {
+  s.ptyOpening = false;
+  if (s.disposed) {
+    pty.close();
+    return;
+  }
+  s.pty = pty;
+  markSessionReady(leafId);
+  if (s.pendingInput) {
+    void pty.write(s.pendingInput);
+    s.pendingInput = "";
+  }
+  if (s.cols > 0 && s.rows > 0) pty.resize(s.cols, s.rows);
+}
+
+function failPtyOpen(leafId: number, s: Session, e: unknown): void {
+  s.ptyOpening = false;
+  if (!s.disposed) surfaceSpawnFailure(leafId, s, e);
+}
+
 function surfaceSpawnFailure(leafId: number, s: Session, e: unknown): void {
   console.error("[anbo] shell spawn failed:", e);
   s.shellExited = true;
@@ -971,24 +995,8 @@ function attachSession(
   if (!s.pty && !s.ptyOpening && !s.shellExited) {
     s.ptyOpening = true;
     openPtyWithRetry(leafId, s, s.initialCwd)
-      .then((pty) => {
-        s.ptyOpening = false;
-        if (s.disposed) {
-          pty.close();
-          return;
-        }
-        s.pty = pty;
-        markSessionReady(leafId);
-        if (s.pendingInput) {
-          void pty.write(s.pendingInput);
-          s.pendingInput = "";
-        }
-        if (s.cols > 0 && s.rows > 0) pty.resize(s.cols, s.rows);
-      })
-      .catch((e) => {
-        s.ptyOpening = false;
-        if (!s.disposed) surfaceSpawnFailure(leafId, s, e);
-      });
+      .then((pty) => adoptPty(leafId, s, pty))
+      .catch((e) => failPtyOpen(leafId, s, e));
   }
 }
 
@@ -1032,22 +1040,10 @@ async function respawnSession(leafId: number, cwd?: string): Promise<void> {
   try {
     pty = await openPtyWithRetry(leafId, s, cwd ?? s.initialCwd);
   } catch (e) {
-    s.ptyOpening = false;
-    if (!s.disposed) surfaceSpawnFailure(leafId, s, e);
+    failPtyOpen(leafId, s, e);
     return;
   }
-  s.ptyOpening = false;
-  if (s.disposed) {
-    pty.close();
-    return;
-  }
-  s.pty = pty;
-  markSessionReady(leafId);
-  if (s.pendingInput) {
-    void pty.write(s.pendingInput);
-    s.pendingInput = "";
-  }
-  if (s.cols > 0 && s.rows > 0) pty.resize(s.cols, s.rows);
+  adoptPty(leafId, s, pty);
 }
 
 export async function leafHasForegroundProcess(

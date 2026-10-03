@@ -30,3 +30,19 @@ export type AgentAutomationResponse = {
   result?: unknown;
   error?: { code: string; message: string };
 };
+
+export function automationError(
+  code: string,
+  message: string,
+): AgentAutomationResponse {
+  return { error: { code, message } };
+}
+
+/** A non-blank string parameter, trimmed, or null. */
+export function paramString(
+  params: Record<string, unknown>,
+  key: string,
+): string | null {
+  const value = params[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}

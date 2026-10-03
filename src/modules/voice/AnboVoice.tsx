@@ -4,6 +4,7 @@ import { STT_PROVIDER_LABELS } from "@/modules/ai/config";
 import { useComposer } from "@/modules/ai/lib/composer";
 import { notifyNativeBrowserLayout } from "@/modules/browser/nativeVisibility";
 import { ORB_WIDTH } from "@/modules/voice/lib/orbPosition";
+import { useVoiceMeterStyle } from "@/modules/voice/lib/useVoiceMeterStyle";
 import { useVoiceOrbPosition } from "@/modules/voice/lib/useVoiceOrbPosition";
 import {
   normalizeVoiceText,
@@ -97,38 +98,12 @@ export function AnboVoice({
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [cancel, voice.recording, voice.requesting]);
 
-  useEffect(() => {
-    const element = visualRef.current;
-    if (!element) return;
-    const apply = (level: number, bands: readonly number[]) => {
-      element.style.setProperty(
-        "--anbo-voice-ring-scale",
-        (1.08 + level * 0.34).toFixed(3),
-      );
-      element.style.setProperty(
-        "--anbo-voice-ring-opacity",
-        (0.18 + level * 0.5).toFixed(3),
-      );
-      element.style.setProperty(
-        "--anbo-voice-glow",
-        `${Math.round(5 + level * 14)}px`,
-      );
-      bands.forEach((band, index) => {
-        element.style.setProperty(
-          `--anbo-voice-bar-${index + 1}`,
-          `${(3 + band * 9).toFixed(1)}px`,
-        );
-      });
-    };
-
-    if (!voice.recording) {
-      apply(0, [0, 0, 0, 0, 0]);
-      return;
-    }
-    return voice.audioMeter.subscribe((frame) => {
-      apply(frame.level, frame.bands);
-    });
-  }, [voice.audioMeter, voice.recording]);
+  useVoiceMeterStyle(
+    visualRef,
+    "--anbo-voice",
+    voice.audioMeter,
+    voice.recording,
+  );
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: every visual state change can resize the native browser punch holes.
   useEffect(() => {

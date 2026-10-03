@@ -1043,7 +1043,6 @@ function LocalProviderCard({
   const [urlDraft, setUrlDraft] = useState(baseURL);
   const [modelDraft, setModelDraft] = useState(modelId);
   const [contextDraft, setContextDraft] = useState(String(contextLimit ?? ""));
-  const [keyDraft, setKeyDraft] = useState("");
   const [testStatus, setTestStatus] = useState<
     "idle" | "testing" | "ok" | "fail"
   >("idle");
@@ -1175,52 +1174,11 @@ function LocalProviderCard({
         ) : null}
 
         {supportsKey ? (
-          <FieldRow label="API key">
-            {compatKey ? (
-              <div className="flex flex-1 items-center gap-1.5">
-                <code className="flex-1 truncate rounded bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground">
-                  {`${compatKey.slice(0, 4)}${"•".repeat(8)}${compatKey.slice(-4)}`}
-                </code>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  onClick={() => void onClearKey()}
-                  title="Remove key"
-                  className="size-7 text-muted-foreground hover:text-destructive"
-                >
-                  <HugeiconsIcon
-                    icon={Cancel01Icon}
-                    size={12}
-                    strokeWidth={1.75}
-                  />
-                </Button>
-              </div>
-            ) : (
-              <div className="flex flex-1 gap-1.5">
-                <Input
-                  type="password"
-                  value={keyDraft}
-                  onChange={(e) => setKeyDraft(e.target.value)}
-                  placeholder="Optional — leave empty for unauthenticated endpoints"
-                  spellCheck={false}
-                  className="h-8 flex-1 font-mono text-[11.5px]"
-                />
-                <Button
-                  size="sm"
-                  onClick={async () => {
-                    const v = keyDraft.trim();
-                    if (!v) return;
-                    await onSaveKey(v);
-                    setKeyDraft("");
-                  }}
-                  disabled={!keyDraft.trim()}
-                  className="h-8 px-3 text-[11px]"
-                >
-                  Save
-                </Button>
-              </div>
-            )}
-          </FieldRow>
+          <OptionalKeyRow
+            storedKey={compatKey}
+            onSaveKey={onSaveKey}
+            onClearKey={onClearKey}
+          />
         ) : null}
 
         <StatusLine status={testStatus} />
@@ -1318,7 +1276,6 @@ function CustomEndpointCard({
   const [contextDraft, setContextDraft] = useState(
     String(endpoint.contextLimit ?? ""),
   );
-  const [keyDraft, setKeyDraft] = useState("");
   const [testStatus, setTestStatus] = useState<
     "idle" | "testing" | "ok" | "fail"
   >("idle");
@@ -1572,57 +1529,77 @@ function CustomEndpointCard({
             </div>
           </FieldRow>
 
-          <FieldRow label="API key">
-            {endpointKey ? (
-              <div className="flex flex-1 items-center gap-1.5">
-                <code className="flex-1 truncate rounded bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground">
-                  {`${endpointKey.slice(0, 4)}${"•".repeat(8)}${endpointKey.slice(-4)}`}
-                </code>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  onClick={() => void onClearKey()}
-                  title="Remove key"
-                  className="size-7 text-muted-foreground hover:text-destructive"
-                >
-                  <HugeiconsIcon
-                    icon={Cancel01Icon}
-                    size={12}
-                    strokeWidth={1.75}
-                  />
-                </Button>
-              </div>
-            ) : (
-              <div className="flex flex-1 gap-1.5">
-                <Input
-                  type="password"
-                  value={keyDraft}
-                  onChange={(e) => setKeyDraft(e.target.value)}
-                  placeholder="Optional — leave empty for unauthenticated endpoints"
-                  spellCheck={false}
-                  className="h-8 flex-1 font-mono text-[11.5px]"
-                />
-                <Button
-                  size="sm"
-                  onClick={async () => {
-                    const v = keyDraft.trim();
-                    if (!v) return;
-                    await onSaveKey(v);
-                    setKeyDraft("");
-                  }}
-                  disabled={!keyDraft.trim()}
-                  className="h-8 px-3 text-[11px]"
-                >
-                  Save
-                </Button>
-              </div>
-            )}
-          </FieldRow>
+          <OptionalKeyRow
+            storedKey={endpointKey}
+            onSaveKey={onSaveKey}
+            onClearKey={onClearKey}
+          />
 
           <StatusLine status={testStatus} />
         </div>
       )}
     </div>
+  );
+}
+
+/** A stored key shown masked with a remove button, or a field to save one. */
+function OptionalKeyRow({
+  storedKey,
+  onSaveKey,
+  onClearKey,
+}: {
+  storedKey: string | null | undefined;
+  onSaveKey: (v: string) => Promise<void>;
+  onClearKey: () => Promise<void>;
+}) {
+  const [keyDraft, setKeyDraft] = useState("");
+  return (
+    <FieldRow label="API key">
+      {storedKey ? (
+        <div className="flex flex-1 items-center gap-1.5">
+          <code className="flex-1 truncate rounded bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground">
+            {`${storedKey.slice(0, 4)}${"•".repeat(8)}${storedKey.slice(-4)}`}
+          </code>
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={() => void onClearKey()}
+            title="Remove key"
+            className="size-7 text-muted-foreground hover:text-destructive"
+          >
+            <HugeiconsIcon
+              icon={Cancel01Icon}
+              size={12}
+              strokeWidth={1.75}
+            />
+          </Button>
+        </div>
+      ) : (
+        <div className="flex flex-1 gap-1.5">
+          <Input
+            type="password"
+            value={keyDraft}
+            onChange={(e) => setKeyDraft(e.target.value)}
+            placeholder="Optional — leave empty for unauthenticated endpoints"
+            spellCheck={false}
+            className="h-8 flex-1 font-mono text-[11.5px]"
+          />
+          <Button
+            size="sm"
+            onClick={async () => {
+              const v = keyDraft.trim();
+              if (!v) return;
+              await onSaveKey(v);
+              setKeyDraft("");
+            }}
+            disabled={!keyDraft.trim()}
+            className="h-8 px-3 text-[11px]"
+          >
+            Save
+          </Button>
+        </div>
+      )}
+    </FieldRow>
   );
 }
 

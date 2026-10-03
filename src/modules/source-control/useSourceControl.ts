@@ -1,3 +1,4 @@
+import { errorMessage } from "@/lib/errors";
 import {
   type GitRepoInfo,
   type GitStatusSnapshot,
@@ -57,15 +58,6 @@ type SourceControlSummaryState = {
   lastRemoteError: string | null;
 };
 
-function normalizeError(error: unknown): string {
-  if (typeof error === "string") return error;
-  if (error && typeof error === "object" && "message" in error) {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === "string") return message;
-  }
-  return "Unknown source control error";
-}
-
 function getContextualAction(
   status: GitStatusSnapshot | null,
 ): SourceControlRemoteAction | null {
@@ -74,6 +66,11 @@ function getContextualAction(
   if (status.behind > 0) return "pull";
   if (status.ahead > 0) return "push";
   return "fetch";
+}
+
+/** A git failure as the source control views show it. */
+export function sourceControlError(error: unknown): string {
+  return errorMessage(error, "Unknown source control error");
 }
 
 function touchAutoFetch(map: Map<string, number>, key: string): void {
@@ -180,8 +177,9 @@ export function useSourceControl(
       }));
 
       try {
-        let repo: GitRepoInfo | null;
-        let status: GitStatusSnapshot | null;
+        let repo: GitRepoInfo | null = null;
+        let status: GitStatusSnapshot | null = null;
+        let reused = false;
 
         if (reusableRoot) {
           try {
@@ -196,37 +194,14 @@ export function useSourceControl(
                 isDetached: status.isDetached,
               };
             }
+            reused = true;
           } catch {
-            const snapshot = await native.gitPanelSnapshot(contextPath);
-            if (requestId !== requestIdRef.current) return;
-            if (!snapshot.repo) {
-              setState((current) => ({
-                ...current,
-                repo: null,
-                status: null,
-                hasRepo: false,
-                isLoading: false,
-                localError: null,
-              }));
-              return;
-            }
-            repo = snapshot.repo;
-            status = snapshot.status ?? null;
+            // The root the panel knew is gone; look the repository up again.
           }
-        } else {
+        }
+        if (!reused) {
           const snapshot = await native.gitPanelSnapshot(contextPath);
           if (requestId !== requestIdRef.current) return;
-          if (!snapshot.repo) {
-            setState((current) => ({
-              ...current,
-              repo: null,
-              status: null,
-              hasRepo: false,
-              isLoading: false,
-              localError: null,
-            }));
-            return;
-          }
           repo = snapshot.repo;
           status = snapshot.status ?? null;
         }
@@ -260,7 +235,7 @@ export function useSourceControl(
             status = await native.gitStatus(repo.repoRoot);
             if (requestId !== requestIdRef.current) return;
           } catch (error) {
-            nextRemoteError = normalizeError(error);
+            nextRemoteError = sourceControlError(error);
           }
         }
 
@@ -281,7 +256,7 @@ export function useSourceControl(
           hasRepo: false,
           status: null,
           isLoading: false,
-          localError: normalizeError(error),
+          localError: sourceControlError(error),
         }));
       } finally {
         lastRefreshAtRef.current = Date.now();
@@ -348,7 +323,7 @@ export function useSourceControl(
         await refresh({ remote: "never" });
         return { ok: true, action };
       } catch (error) {
-        const message = normalizeError(error);
+        const message = sourceControlError(error);
         setState((current) => ({ ...current, lastRemoteError: message }));
         await refresh({ remote: "never" }).catch(() => {});
         return { ok: false, action, error: message };

@@ -95,25 +95,31 @@ function ErrorPill({ preset, reason }: { preset: LspPreset; reason: string }) {
           {preset.name} language server stopped
         </div>
         <p className="mb-2 text-muted-foreground">{reason}</p>
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
-            onClick={() => void restartPresetSessions(preset.id)}
-          >
-            <HugeiconsIcon icon={RefreshIcon} size={11} strokeWidth={1.9} />
-            Restart
-          </button>
-          <button
-            type="button"
-            className="rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
-            onClick={() => void setLspActivation(preset.id, "dismissed")}
-          >
-            Disable
-          </button>
-        </div>
+        <PresetActions preset={preset} />
       </PopoverContent>
     </Popover>
+  );
+}
+
+function PresetActions({ preset }: { preset: LspPreset }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <button
+        type="button"
+        className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+        onClick={() => void restartPresetSessions(preset.id)}
+      >
+        <HugeiconsIcon icon={RefreshIcon} size={11} strokeWidth={1.9} />
+        Restart
+      </button>
+      <button
+        type="button"
+        className="rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+        onClick={() => void setLspActivation(preset.id, "dismissed")}
+      >
+        Disable
+      </button>
+    </div>
   );
 }
 
@@ -259,23 +265,7 @@ function ActivePill({
           <code className="text-foreground">{preset.command}</code>{" "}
           {starting ? "is starting" : "is running"} for this workspace.
         </p>
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
-            onClick={() => void restartPresetSessions(preset.id)}
-          >
-            <HugeiconsIcon icon={RefreshIcon} size={11} strokeWidth={1.9} />
-            Restart
-          </button>
-          <button
-            type="button"
-            className="rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
-            onClick={() => void setLspActivation(preset.id, "dismissed")}
-          >
-            Disable
-          </button>
-        </div>
+        <PresetActions preset={preset} />
       </PopoverContent>
     </Popover>
   );

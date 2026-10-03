@@ -1,3 +1,4 @@
+import { lastPathPart } from "@/lib/path";
 import type { Extension } from "@codemirror/state";
 import {
   extensionMap,
@@ -15,8 +16,7 @@ export interface LanguageResult {
 const cache = new Map<string, LanguageResult | null>();
 
 function basenameOf(filename: string): string {
-  const lower = filename.toLowerCase();
-  return lower.split(/[\\/]/).pop() ?? lower;
+  return lastPathPart(filename.toLowerCase());
 }
 
 function extOf(base: string): string | null {

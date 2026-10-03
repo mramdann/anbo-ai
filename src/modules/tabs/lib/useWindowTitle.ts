@@ -1,21 +1,17 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { basename } from "@/lib/path";
 import { findLeafCwd } from "@/modules/terminal/lib/panes";
 import type { Tab } from "./useTabs";
 
 const APP_NAME = "Anbo";
-
-function basename(path: string): string {
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts.length ? parts[parts.length - 1] : "/";
-}
 
 /** Label of the focused tab — for terminals, the active pane's folder. */
 function tabLabel(tab: Tab | undefined): string {
   if (!tab) return "";
   if (tab.kind === "terminal") {
     const cwd = findLeafCwd(tab.paneTree, tab.activeLeafId) ?? tab.cwd;
-    return cwd ? basename(cwd) : tab.title;
+    return cwd ? basename(cwd, "/") : tab.title;
   }
   return tab.title;
 }
@@ -33,7 +29,7 @@ export function useWindowTitle(
   activeTab: Tab | undefined,
   explorerRoot: string | null,
 ): void {
-  const project = explorerRoot ? basename(explorerRoot) : "";
+  const project = explorerRoot ? basename(explorerRoot, "/") : "";
   const label = tabLabel(activeTab);
 
   useEffect(() => {

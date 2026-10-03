@@ -1,3 +1,5 @@
+import { lastPathPart } from "@/lib/path";
+
 /**
  * Path-safety guards for AI tool calls.
  *
@@ -128,11 +130,6 @@ const WRITE_DENY_PREFIXES = [
 
 export type SafetyResult = { ok: true } | { ok: false; reason: string };
 
-function basename(p: string): string {
-  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  return i >= 0 ? p.slice(i + 1) : p;
-}
-
 /**
  * Build a normalized *comparison surface* — never used as a real path:
  *  - back-slashes -> forward-slashes
@@ -205,7 +202,7 @@ export function checkReadable(path: string): SafetyResult {
     return { ok: false, reason: "Refused: path contains control bytes." };
   }
 
-  const base = basename(path);
+  const base = lastPathPart(path);
   for (const re of SECRET_BASENAME_PATTERNS) {
     if (re.test(base)) {
       return {
