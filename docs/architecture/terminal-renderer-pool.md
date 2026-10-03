@@ -53,7 +53,8 @@ WebGL addons are created only for visible slots and reaped after a grace period 
 
 ## Invariants
 
-- Never allow the pool to grow without bound; max is `POOL_MAX_SIZE`.
+- Never allow the pool to grow without bound; max is `LIVE_BUFFER_LIMIT`
+  (`rendererCapacity.ts`).
 - Never serialize or evict a leaf that is mid-command or in alt-screen.
 - A hidden busy leaf keeps its live grid parked with `display:none`.
 - An idle hidden leaf releases its slot but the buffer continues parsing bytes.

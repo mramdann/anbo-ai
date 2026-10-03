@@ -23,13 +23,8 @@ import {
   writeTerminalClipboard,
 } from "./terminalClipboard";
 import { pasteIntoTerminal } from "./terminalPaste";
-import {
-  chooseTerminalBuffer,
-  LIVE_BUFFER_LIMIT,
-  WEBGL_CONTEXT_LIMIT,
-} from "./rendererCapacity";
+import { chooseTerminalBuffer, WEBGL_CONTEXT_LIMIT } from "./rendererCapacity";
 
-export const POOL_MAX_SIZE = LIVE_BUFFER_LIMIT;
 const FIT_DEBOUNCE_MS = 8;
 const PTY_RESIZE_DEBOUNCE_MS = 256;
 const SNAPSHOT_SCROLLBACK_CAP = 5_000;
@@ -48,7 +43,7 @@ export type SlotAdapter = {
   storeSnapshot(leafId: number, out: SerializeOutput): void;
 };
 
-export type LeafBridge = {
+type LeafBridge = {
   writeToPty(data: string): void;
   resizePty(cols: number, rows: number): void;
   // Force a SIGWINCH on the underlying PTY at the given dims. Implemented
@@ -275,10 +270,6 @@ function setWindowActive(active: boolean): void {
 export function configureRendererPool(a: SlotAdapter): void {
   adapter = a;
   bindWindowActivityListeners();
-}
-
-export function forEachSlot(fn: (slot: Slot) => void): void {
-  for (const s of slots) fn(s);
 }
 
 export function poolSize(): number {
@@ -927,7 +918,7 @@ function setupResizeObserver(slot: Slot, p: AcquireParams): void {
   slot.observer.observe(container);
 }
 
-export type SerializeOutput = {
+type SerializeOutput = {
   snapshot: string | null;
   cols: number;
   rows: number;

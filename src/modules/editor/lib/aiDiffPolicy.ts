@@ -1,5 +1,5 @@
 export const AI_DIFF_RENDER_MAX_BYTES = 1024 * 1024;
-export const AI_DIFF_RENDER_MAX_LINES = 20_000;
+const AI_DIFF_RENDER_MAX_LINES = 20_000;
 
 export type AiDiffRenderPolicy = {
   deferred: boolean;

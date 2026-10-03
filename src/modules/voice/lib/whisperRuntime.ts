@@ -7,7 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 export const WHISPER_RUNTIME_PROGRESS_EVENT =
   "anbo:whisper-runtime-progress" as const;
 
-export type WhisperRuntimePhase =
+type WhisperRuntimePhase =
   | "notInstalled"
   | "installing"
   | "stopped"

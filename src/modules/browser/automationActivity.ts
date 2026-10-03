@@ -7,7 +7,7 @@ import {
   parseAutomationState,
 } from "./automationState";
 
-export const BROWSER_AUTOMATION_ACTIVITY_TTL_MS = 8_000;
+const BROWSER_AUTOMATION_ACTIVITY_TTL_MS = 8_000;
 
 type BrowserAutomationActivityPayload = {
   method?: unknown;

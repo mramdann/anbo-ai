@@ -68,6 +68,7 @@ import {
   BROWSER_TABS_RESPONSE_EVENT,
   type BrowserPaneHandle,
   BrowserStack,
+  type BrowserTabMetadata,
   beginBrowserSession,
   browserEmbedClose,
   browserEmbedReconcile,
@@ -1818,7 +1819,7 @@ export default function App() {
         tabsRef.current.find(
           (tab) => tab.id === activeIdRef.current && tab.kind === "browser",
         )?.id ?? null;
-      const metadata = tabsRef.current.flatMap((tab) => {
+      const metadata = tabsRef.current.flatMap((tab): BrowserTabMetadata[] => {
         if (tab.kind !== "browser") return [];
         const space = spaces.find((candidate) => candidate.id === tab.spaceId);
         const automationMethod = getBrowserAutomationActivity(tab.id);

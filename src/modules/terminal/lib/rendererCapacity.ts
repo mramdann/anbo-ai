@@ -1,6 +1,6 @@
 // CPU buffers and GPU contexts have different lifetimes. Keep the normal
 // cache small, but never recycle a live TUI merely to satisfy the GPU budget.
-export const WARM_BUFFER_LIMIT = 5;
+const WARM_BUFFER_LIMIT = 5;
 export const LIVE_BUFFER_LIMIT = 16;
 export const WEBGL_CONTEXT_LIMIT = 5;
 

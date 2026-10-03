@@ -7,7 +7,7 @@ import {
   browserDesignSet,
 } from "@/modules/browser/native";
 
-export const DESIGN_TOOLS: readonly BrowserDesignTool[] = [
+const DESIGN_TOOLS: readonly BrowserDesignTool[] = [
   "pen",
   "box",
   "arrow",
@@ -111,11 +111,6 @@ export function applyBrowserDesignStatus(status: BrowserDesignStatus): void {
   notifyListeners();
 }
 
-export function forgetBrowserDesign(tabId: number): void {
-  idleByTab.delete(tabId);
-  if (tracker.statuses.delete(tabId)) notifyListeners();
-}
-
 export function getBrowserDesignStatus(tabId: number): BrowserDesignStatus {
   return tracker.statuses.get(tabId) ?? idleStatus(tabId);
 }
@@ -133,7 +128,7 @@ export function receiveBrowserDesignEvent(payload: unknown): void {
   }
 }
 
-export function ensureBrowserDesignListener(): void {
+function ensureBrowserDesignListener(): void {
   if (tracker.bound || typeof window === "undefined") return;
   tracker.bound = true;
   void listen(BROWSER_DESIGN_EVENT, (event) => {

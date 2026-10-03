@@ -38,7 +38,7 @@ export type CommandOutput = {
   truncated: boolean;
 };
 
-export type GrepHit = {
+type GrepHit = {
   path: string;
   rel: string;
   line: number;
@@ -51,7 +51,7 @@ export type GrepResponse = {
   files_scanned: number;
 };
 
-export type GlobHit = { path: string; rel: string };
+type GlobHit = { path: string; rel: string };
 export type GlobResponse = { hits: GlobHit[]; truncated: boolean };
 
 export type GitRepoInfo = {

@@ -25,7 +25,6 @@ import type { Theme } from "./types";
 import { rememberStartupTheme } from "./startupTheme";
 
 export type { Theme };
-export type ThemeModePref = ThemePref;
 
 type ThemeProviderProps = {
   children: React.ReactNode;

@@ -3,7 +3,7 @@ export type AgentPhase = "working" | "attention" | "finished";
 
 export type AgentSource = "terminal" | "local";
 
-export type AgentSignalKind =
+type AgentSignalKind =
   | "started"
   | "ready"
   | "working"

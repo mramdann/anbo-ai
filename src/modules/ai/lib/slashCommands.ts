@@ -72,8 +72,9 @@ export const SLASH_COMMANDS: Record<string, SlashCommandMeta> = {
 export const ANBO_CMD_RE =
   /^<anbo-command\s+name="([a-z0-9-]+)"(?:\s+state="([a-z]+)")?\s*\/>(?:\n+|$)/;
 
-export function wrapWithCommandMarker(prompt: string, name: string): string {
-  return `<anbo-command name="${name}" />\n\n${prompt}`;
+/** The marker a command leaves at the head of its prompt; ANBO_CMD_RE reads it. */
+export function anboCommandMarker(name: string): string {
+  return `<anbo-command name="${name}" />`;
 }
 
 export function tryRunSlashCommand(input: string): SlashOutcome {

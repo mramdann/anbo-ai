@@ -1,6 +1,6 @@
 export const MARKDOWN_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
 export const MARKDOWN_FENCE_MAX_BYTES = 64 * 1024;
-export const MARKDOWN_FENCE_MAX_LINES = 1_200;
+const MARKDOWN_FENCE_MAX_LINES = 1_200;
 
 export type BoundedMarkdown = {
   content: string;

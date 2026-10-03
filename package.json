@@ -88,7 +88,6 @@
     "@tauri-apps/plugin-process": "~2.4.0",
     "@tauri-apps/plugin-store": "~2.5.0",
     "@tauri-apps/plugin-updater": "~2.13.1",
-    "@tauri-apps/plugin-window-state": "~2.5.0",
     "@uiw/codemirror-theme-atomone": "^4.25.12",
     "@uiw/codemirror-theme-aura": "^4.25.12",
     "@uiw/codemirror-theme-copilot": "^4.25.12",

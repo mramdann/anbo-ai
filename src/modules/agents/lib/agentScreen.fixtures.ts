@@ -4,7 +4,7 @@
 // Antigravity 1.2.11, OpenCode 1.18.32. Captured 2026-09-28.
 
 /** trust prompt on first launch */
-export const claudeTrust: readonly string[] = [
+const claudeTrust: readonly string[] = [
   "PS D:\\work\\demo",
   "> claude",
   "",
@@ -27,7 +27,7 @@ export const claudeTrust: readonly string[] = [
 ];
 
 /** idle composer, auto mode */
-export const claudeIdleAuto: readonly string[] = [
+const claudeIdleAuto: readonly string[] = [
   "",
   "",
   "",
@@ -55,7 +55,7 @@ export const claudeIdleAuto: readonly string[] = [
 ];
 
 /** spinner while thinking */
-export const claudeThinking: readonly string[] = [
+const claudeThinking: readonly string[] = [
   "",
   "",
   "",
@@ -83,7 +83,7 @@ export const claudeThinking: readonly string[] = [
 ];
 
 /** short turn finished, manual mode */
-export const claudeFinishedShort: readonly string[] = [
+const claudeFinishedShort: readonly string[] = [
   "● Jakarta",
   "",
   "✻ Churned for 3s · done 7:30 PM",
@@ -111,7 +111,7 @@ export const claudeFinishedShort: readonly string[] = [
 ];
 
 /** permission to create a file */
-export const claudeCreateDialog: readonly string[] = [
+const claudeCreateDialog: readonly string[] = [
   "",
   "",
   "❯ Jawab satu kata saja: ibu kota Indonesia?",
@@ -139,7 +139,7 @@ export const claudeCreateDialog: readonly string[] = [
 ];
 
 /** permission to overwrite a file */
-export const claudeOverwriteDialog: readonly string[] = [
+const claudeOverwriteDialog: readonly string[] = [
   "",
   "● File catatan.txt sudah dibuat dan hanya berisi kata halo.",
   "",
@@ -167,7 +167,7 @@ export const claudeOverwriteDialog: readonly string[] = [
 ];
 
 /** shell command running */
-export const claudeToolRunning: readonly string[] = [
+const claudeToolRunning: readonly string[] = [
   "● Write(catatan.txt)",
   "  ⎿  Added 1 line, removed 1 line",
   "      1 -halo",
@@ -195,7 +195,7 @@ export const claudeToolRunning: readonly string[] = [
 ];
 
 /** finished; the answer quotes dialog words */
-export const claudeFinishedProse: readonly string[] = [
+const claudeFinishedProse: readonly string[] = [
   "",
   "❯ Jalankan perintah PowerShell ini persis lewat tool Bash/PowerShell: Start-Sleep -Seconds 8; Write-Output selesai.",
   "  Setelah itu jawab singkat.",
@@ -223,7 +223,7 @@ export const claudeFinishedProse: readonly string[] = [
 ];
 
 /** AskUserQuestion */
-export const claudeQuestion: readonly string[] = [
+const claudeQuestion: readonly string[] = [
   "  Press Enter to continue. / Would you like to proceed? Do you want to allow it to run?",
   "",
   "● This action requires approval and needs your input.",
@@ -251,7 +251,7 @@ export const claudeQuestion: readonly string[] = [
 ];
 
 /** streaming a long answer */
-export const claudeStreaming: readonly string[] = [
+const claudeStreaming: readonly string[] = [
   "  Would you like to proceed? Do you want to allow it to run?",
   "",
   "✻ Churned for 2s · done 7:33 PM",
@@ -279,7 +279,7 @@ export const claudeStreaming: readonly string[] = [
 ];
 
 /** turn interrupted with Esc */
-export const claudeInterrupted: readonly string[] = [
+const claudeInterrupted: readonly string[] = [
   "  306",
   "  307",
   "  308",
@@ -307,7 +307,7 @@ export const claudeInterrupted: readonly string[] = [
 ];
 
 /** plan ready for approval */
-export const claudePlanApproval: readonly string[] = [
+const claudePlanApproval: readonly string[] = [
   "  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
   "   Rencana: tambah b.txt",
   "",
@@ -335,7 +335,7 @@ export const claudePlanApproval: readonly string[] = [
 ];
 
 /** after /clear */
-export const claudeCleared: readonly string[] = [
+const claudeCleared: readonly string[] = [
   "",
   "",
   "",
@@ -363,7 +363,7 @@ export const claudeCleared: readonly string[] = [
 ];
 
 /** idle composer, bypass mode */
-export const claudeIdleBypass: readonly string[] = [
+const claudeIdleBypass: readonly string[] = [
   "",
   "",
   "",
@@ -391,7 +391,7 @@ export const claudeIdleBypass: readonly string[] = [
 ];
 
 /** turn over, a background shell still running */
-export const claudeBackgroundShell: readonly string[] = [
+const claudeBackgroundShell: readonly string[] = [
   "  Ran 1 shell command",
   "",
   '● Perintahnya sudah jalan dan mengeluarkan "beres" setelah jeda 10 detik.',
@@ -419,7 +419,7 @@ export const claudeBackgroundShell: readonly string[] = [
 ];
 
 /** finished at 80 columns */
-export const claudeNarrowFinished: readonly string[] = [
+const claudeNarrowFinished: readonly string[] = [
   "",
   "● oke",
   "",
@@ -447,7 +447,7 @@ export const claudeNarrowFinished: readonly string[] = [
 ];
 
 /** finished at 200 columns, prompt suggestion shown */
-export const claudeWideFinished: readonly string[] = [
+const claudeWideFinished: readonly string[] = [
   "✻ Cogitated for 2s · done 7:40 PM",
   "",
   "❯ Sebutkan 3 nama planet, satu per baris, tanpa tool.",
@@ -475,7 +475,7 @@ export const claudeWideFinished: readonly string[] = [
 ];
 
 /** trust prompt */
-export const codexTrust: readonly string[] = [
+const codexTrust: readonly string[] = [
   "",
   "  Folder access",
   "  D:\\work\\demo",
@@ -491,7 +491,7 @@ export const codexTrust: readonly string[] = [
 ];
 
 /** idle composer */
-export const codexIdle: readonly string[] = [
+const codexIdle: readonly string[] = [
   "",
   "╭───────────────────────────────────────────────────╮",
   "│ >_ OpenAI Codex (v0.157.1)                        │",
@@ -519,7 +519,7 @@ export const codexIdle: readonly string[] = [
 ];
 
 /** status row while working */
-export const codexWorking: readonly string[] = [
+const codexWorking: readonly string[] = [
   "",
   "╭───────────────────────────────────────────────────╮",
   "│ >_ OpenAI Codex (v0.157.1)                        │",
@@ -547,7 +547,7 @@ export const codexWorking: readonly string[] = [
 ];
 
 /** short turn finished with a time row */
-export const codexFinishedShort: readonly string[] = [
+const codexFinishedShort: readonly string[] = [
   "╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯",
   "",
   "╭───────────────────────────────────────────────────╮",
@@ -575,7 +575,7 @@ export const codexFinishedShort: readonly string[] = [
 ];
 
 /** a mistyped slash command, no model turn */
-export const codexUnknownCommand: readonly string[] = [
+const codexUnknownCommand: readonly string[] = [
   "╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯",
   "",
   "╭───────────────────────────────────────────────────╮",
@@ -603,7 +603,7 @@ export const codexUnknownCommand: readonly string[] = [
 ];
 
 /** commentary streaming with no status row */
-export const codexCommentary: readonly string[] = [
+const codexCommentary: readonly string[] = [
   "",
   "",
   "• Saya akan membuat catatan.txt menggunakan Set-Content.",
@@ -631,7 +631,7 @@ export const codexCommentary: readonly string[] = [
 ];
 
 /** command approval */
-export const codexApproval: readonly string[] = [
+const codexApproval: readonly string[] = [
   "",
   "› Buat file catatan.txt berisi kata halo dengan menjalankan perintah PowerShell Set-Content. Jangan lakukan hal lain.",
   "",
@@ -659,7 +659,7 @@ export const codexApproval: readonly string[] = [
 ];
 
 /** the /permissions menu the user opened */
-export const codexPermissionsMenu: readonly string[] = [
+const codexPermissionsMenu: readonly string[] = [
   "› Jawab satu kata saja: ibu kota Indonesia?",
   "",
   "",
@@ -687,7 +687,7 @@ export const codexPermissionsMenu: readonly string[] = [
 ];
 
 /** interrupted, background terminal left running */
-export const codexInterrupted: readonly string[] = [
+const codexInterrupted: readonly string[] = [
   "• Ran Set-Content -LiteralPath 'catatan.txt' -Value 'halo' -NoNewline",
   "  └ (no output)",
   "",
@@ -715,7 +715,7 @@ export const codexInterrupted: readonly string[] = [
 ];
 
 /** trust prompt */
-export const kimiTrust: readonly string[] = [
+const kimiTrust: readonly string[] = [
   "PS D:\\work\\demo",
   "imi --auto",
   " ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
@@ -738,7 +738,7 @@ export const kimiTrust: readonly string[] = [
 
 /** trust prompt listing project MCP targets, in an 80-column background pane
  * (captured 2026-10-02 in a folder with an .mcp.json) */
-export const kimiTrustProjectMcp: readonly string[] = [
+const kimiTrustProjectMcp: readonly string[] = [
   "PS D:\\work\\bench> kimi --auto",
   " ──────────────────────────────────────────────────────────────────────────────",
   "  Trust this folder?",
@@ -763,7 +763,7 @@ export const kimiTrustProjectMcp: readonly string[] = [
 ];
 
 /** idle composer */
-export const kimiIdle: readonly string[] = [
+const kimiIdle: readonly string[] = [
   "imi --auto",
   "",
   " ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮",
@@ -791,7 +791,7 @@ export const kimiIdle: readonly string[] = [
 ];
 
 /** moon row while working */
-export const kimiMoon: readonly string[] = [
+const kimiMoon: readonly string[] = [
   " │                                                                                                                    │",
   " │  ▐█▛█▛█▌  Welcome to Kimi Code!                                                                                    │",
   " │  ▐█████▌  Send /help for help information.                                                                         │",
@@ -819,7 +819,7 @@ export const kimiMoon: readonly string[] = [
 ];
 
 /** spinner while streaming */
-export const kimiSpinner: readonly string[] = [
+const kimiSpinner: readonly string[] = [
   "   97",
   "   98",
   "   99",
@@ -847,7 +847,7 @@ export const kimiSpinner: readonly string[] = [
 ];
 
 /** command approval */
-export const kimiApproval: readonly string[] = [
+const kimiApproval: readonly string[] = [
   "",
   " ✨ Jalankan perintah shell PowerShell: Start-Sleep -Seconds 10; Write-Output beres. Lalu jawab satu kalimat.",
   "",
@@ -875,7 +875,7 @@ export const kimiApproval: readonly string[] = [
 ];
 
 /** finished after the approved command */
-export const kimiFinished: readonly string[] = [
+const kimiFinished: readonly string[] = [
   "",
   "   Permission mode: Always Ask",
   "",
@@ -903,7 +903,7 @@ export const kimiFinished: readonly string[] = [
 ];
 
 /** interrupted */
-export const kimiInterrupted: readonly string[] = [
+const kimiInterrupted: readonly string[] = [
   " ✨ Jalankan perintah shell PowerShell: Start-Sleep -Seconds 10; Write-Output beres. Lalu jawab satu kalimat.",
   "",
   " ● The user wants me to run a PowerShell shell command: Start-Sleep -Seconds 10; Write-Output beres. Then answer in one",
@@ -931,7 +931,7 @@ export const kimiInterrupted: readonly string[] = [
 ];
 
 /** trust prompt */
-export const agyTrust: readonly string[] = [
+const agyTrust: readonly string[] = [
   "Accessing workspace:",
   "",
   "D:\\work\\demo",
@@ -948,7 +948,7 @@ export const agyTrust: readonly string[] = [
 ];
 
 /** signing in at launch (captured 2026-10-02, Antigravity CLI 1.2.14) */
-export const agySigningIn: readonly string[] = [
+const agySigningIn: readonly string[] = [
   "PS D:\\work\\demo> agy --dangerously-skip-permissions",
   "",
   "     ▄▀▀▄",
@@ -963,7 +963,7 @@ export const agySigningIn: readonly string[] = [
 ];
 
 /** idle composer */
-export const agyIdle: readonly string[] = [
+const agyIdle: readonly string[] = [
   "PS D:\\work\\demo a",
   "gy",
   "",
@@ -981,7 +981,7 @@ export const agyIdle: readonly string[] = [
 ];
 
 /** generating */
-export const agyGenerating: readonly string[] = [
+const agyGenerating: readonly string[] = [
   "PS D:\\work\\demo a",
   "gy",
   "",
@@ -1002,7 +1002,7 @@ export const agyGenerating: readonly string[] = [
 ];
 
 /** command approval */
-export const agyApproval: readonly string[] = [
+const agyApproval: readonly string[] = [
   "",
   "────────────────────────────────────────────────────────────",
   "> Jalankan perintah PowerShell Start-Sleep -Seconds 40 sebagai background task, jangan ditunggu, langsung jawab satu",
@@ -1030,7 +1030,7 @@ export const agyApproval: readonly string[] = [
 ];
 
 /** command done, model not resumed yet (mid-turn) */
-export const agyCommandGap: readonly string[] = [
+const agyCommandGap: readonly string[] = [
   "────────────────────────────────────────────────────────────",
   "> Jawab satu kata saja: ibu kota Indonesia?",
   "",
@@ -1058,7 +1058,7 @@ export const agyCommandGap: readonly string[] = [
 ];
 
 /** question */
-export const agyQuestion: readonly string[] = [
+const agyQuestion: readonly string[] = [
   "▸ Thought for 3s, 135 tokens",
   "  I'm now focusing on tool specificity. My thinking emphasizes selecting the most precise tool available for each ta...",
   '  Perintah PowerShell telah selesai dijalankan dan berhasil mencetak output "beres" di terminal.',
@@ -1086,7 +1086,7 @@ export const agyQuestion: readonly string[] = [
 ];
 
 /** turn over, background task running */
-export const agyBackgroundTask: readonly string[] = [
+const agyBackgroundTask: readonly string[] = [
   "  I'm now focusing on tool selection specificity. Before any tool call, I'm explicitly listing out all tools that mi...",
   "",
   "? Pilih Merah atau Biru?",
@@ -1114,7 +1114,7 @@ export const agyBackgroundTask: readonly string[] = [
 ];
 
 /** interrupted */
-export const agyInterrupted: readonly string[] = [
+const agyInterrupted: readonly string[] = [
   "  220",
   "  221",
   "  222",
@@ -1142,7 +1142,7 @@ export const agyInterrupted: readonly string[] = [
 ];
 
 /** slash-command autocomplete */
-export const agyAutocomplete: readonly string[] = [
+const agyAutocomplete: readonly string[] = [
   "  223",
   "  224",
   "  225",
@@ -1170,7 +1170,7 @@ export const agyAutocomplete: readonly string[] = [
 ];
 
 /** idle */
-export const opencodeIdle: readonly string[] = [
+const opencodeIdle: readonly string[] = [
   "",
   "                                                                          ▄",
   "                                         █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█",
@@ -1198,7 +1198,7 @@ export const opencodeIdle: readonly string[] = [
 ];
 
 /** working */
-export const opencodeWorking: readonly string[] = [
+const opencodeWorking: readonly string[] = [
   "",
   "",
   "",
@@ -1226,7 +1226,7 @@ export const opencodeWorking: readonly string[] = [
 ];
 
 /** first Esc pressed */
-export const opencodeEscAgain: readonly string[] = [
+const opencodeEscAgain: readonly string[] = [
   "     400",
   "",
   "     ▣  Build · Muse Spark 1.3 Free · 12.2s",
@@ -1254,7 +1254,7 @@ export const opencodeEscAgain: readonly string[] = [
 ];
 
 /** finished */
-export const opencodeFinished: readonly string[] = [
+const opencodeFinished: readonly string[] = [
   "     Nusantara",
   "",
   "     ▣  Build · Muse Spark 1.3 Free · 19.5s",
@@ -1282,7 +1282,7 @@ export const opencodeFinished: readonly string[] = [
 ];
 
 /** interrupted */
-export const opencodeInterrupted: readonly string[] = [
+const opencodeInterrupted: readonly string[] = [
   "",
   "     + Thought: 3.9s",
   "",
@@ -1310,7 +1310,7 @@ export const opencodeInterrupted: readonly string[] = [
 ];
 
 /** permission required */
-export const opencodePermission: readonly string[] = [
+const opencodePermission: readonly string[] = [
   "",
   "     Thought · 251ms",
   "",

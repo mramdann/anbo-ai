@@ -15,7 +15,7 @@ export type LspPreset = {
   install?: { command: string; docsUrl: string };
 };
 
-export const LSP_PRESETS: LspPreset[] = [
+const LSP_PRESETS: LspPreset[] = [
   {
     id: "typescript",
     name: "TypeScript",
@@ -281,7 +281,7 @@ export function allServers(custom: LspCustomServer[]): LspPreset[] {
   return [...LSP_PRESETS, ...custom.map(fromCustom)];
 }
 
-export function serversForLanguage(
+function serversForLanguage(
   langId: string | null,
   custom: LspCustomServer[],
 ): LspPreset[] {
@@ -306,11 +306,4 @@ export function serverForLanguage(
     if (fresh) return fresh;
   }
   return candidates[0];
-}
-
-export function serverById(
-  id: string,
-  custom: LspCustomServer[],
-): LspPreset | null {
-  return allServers(custom).find((p) => p.id === id) ?? null;
 }

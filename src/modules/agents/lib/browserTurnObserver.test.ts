@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  classifyAgentScreen,
-  classifyAgentTurn,
-} from "./agentScreenClassifier";
+import { classifyAgentScreen } from "./agentScreenClassifier";
 import { BrowserTurnObserver } from "./browserTurnObserver";
 
 const ready = ">\n? for shortcuts Gemini 3.8 Flash high 1 task(s) /tasks";
@@ -77,16 +74,15 @@ describe("browser turn cleanup", () => {
     // A background command is not the model's turn: the agent waits, and the
     // task shows as a marker next to that state.
     expect(classifyAgentScreen("antigravity", background)).toBe("ready");
-    expect(classifyAgentTurn("antigravity", background)).toBe("ready");
-    expect(classifyAgentTurn("agy", working)).toBe("working");
+    expect(classifyAgentScreen("agy", working)).toBe("working");
     expect(
-      classifyAgentTurn(
+      classifyAgentScreen(
         "antigravity",
         `${working}\nFinal answer\n>\n? for shortcuts`,
       ),
     ).toBe("ready");
     expect(
-      classifyAgentTurn(
+      classifyAgentScreen(
         "antigravity",
         "Requires approval\npress enter to confirm",
       ),

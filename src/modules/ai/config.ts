@@ -168,7 +168,7 @@ export function getProvider(id: ProviderId): ProviderInfo {
 }
 
 /** 1 (lowest) – 5 (highest). For `cost`, higher = cheaper. */
-export type CapabilityScore = 1 | 2 | 3 | 4 | 5;
+type CapabilityScore = 1 | 2 | 3 | 4 | 5;
 
 export type ModelCapabilities = {
   intelligence: CapabilityScore;
@@ -176,7 +176,7 @@ export type ModelCapabilities = {
   cost: CapabilityScore;
 };
 
-export type ModelTag = "vision" | "reasoning" | "tools" | "coding";
+type ModelTag = "vision" | "reasoning" | "tools" | "coding";
 
 export type ModelInfo = {
   id: string;
@@ -722,7 +722,7 @@ export const DEFAULT_MODEL_ID: ModelId = "gpt-5.4-mini";
 /** Approximate context window (in tokens) per model. Used for the
  *  context-usage indicator in the AI mini-window header. Conservative
  *  estimates — actual provider limits may shift. */
-export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
+const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "gpt-5.6": 1_050_000,
   "gpt-5.6-terra": 1_050_000,
   "gpt-5.6-luna": 1_050_000,
@@ -843,7 +843,7 @@ export function estimateCost(
 }
 
 /** Providers that do not require an API key (local servers, key-optional). */
-export const KEYLESS_PROVIDERS: readonly ProviderId[] = [
+const KEYLESS_PROVIDERS: readonly ProviderId[] = [
   "lmstudio",
   "mlx",
   "ollama",
@@ -893,7 +893,7 @@ export type SttProvider = "openai" | "groq" | "whispercpp";
 // it came from unless the user would rather leave the app.
 export const DEFAULT_OPEN_LINKS_IN_ANBO = true;
 
-export const WHISPERCPP_ACCELERATIONS = [
+const WHISPERCPP_ACCELERATIONS = [
   "auto",
   "cpu",
   "blas",
@@ -913,10 +913,10 @@ export function isWhispercppAcceleration(
 
 export const WHISPERCPP_DEFAULT_ACCELERATION: WhispercppAcceleration = "auto";
 
-export const WHISPERCPP_MODELS = ["tiny", "base", "small"] as const;
+const WHISPERCPP_MODELS = ["tiny", "base", "small"] as const;
 export type WhispercppModel = (typeof WHISPERCPP_MODELS)[number];
 
-export function isWhispercppModel(value: unknown): value is WhispercppModel {
+function isWhispercppModel(value: unknown): value is WhispercppModel {
   return (
     typeof value === "string" &&
     (WHISPERCPP_MODELS as readonly string[]).includes(value)
@@ -972,9 +972,8 @@ export const MLX_DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1";
 export const OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1";
 export const OPENAI_COMPATIBLE_DEFAULT_BASE_URL = "";
 export const MAX_AGENT_STEPS = 24;
-export const TERMINAL_BUFFER_LINES = 300;
 
-export const SYSTEM_PROMPT = `You are Anbo, an AI agent embedded in a developer terminal emulator. You are a hands-on engineer, not a chat bot — your job is to *do* the work, not narrate it.
+const SYSTEM_PROMPT = `You are Anbo, an AI agent embedded in a developer terminal emulator. You are a hands-on engineer, not a chat bot — your job is to *do* the work, not narrate it.
 
 # Environment
 Every turn carries a short <env> block (prepended to the latest user message): workspace_root, active_terminal_cwd, optionally active_file. Treat it as ground truth — never ask the user where they are. The terminal scrollback is NOT auto-injected; call get_terminal_output only when the user references "this error" / "the last command" or you genuinely need to interpret recent output.
@@ -1041,7 +1040,7 @@ Every turn carries a short <env> block (prepended to the latest user message): w
 - Code blocks always carry a language fence.
 - Refused reads on sensitive files (.env, .ssh, credentials) are final — don't retry.`;
 
-export const SYSTEM_PROMPT_LITE = `You are Anbo, an AI agent in a developer terminal. Each turn carries an <env> block (workspace_root, active_terminal_cwd, optional active_file) prepended to the user's message — treat as ground truth.
+const SYSTEM_PROMPT_LITE = `You are Anbo, an AI agent in a developer terminal. Each turn carries an <env> block (workspace_root, active_terminal_cwd, optional active_file) prepended to the user's message — treat as ground truth.
 
 Tools: read_file, list_directory, grep, glob, get_terminal_output, edit, multi_edit, write_file, create_directory, bash_run, bash_background, bash_logs, bash_list, bash_kill, terminal_open, terminal_close, terminal_list, terminal_read, terminal_insert, terminal_execute, terminal_wait, terminal_interrupt, todo_write, run_subagent, suggest_command, open_browser, browser_navigate, browser_snapshot, browser_click, browser_type, browser_press_key, browser_scroll, browser_wait, browser_screenshot, browser_history, spawn_coding_agent, read_agent_output, send_to_agent.
 

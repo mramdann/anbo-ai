@@ -333,15 +333,9 @@ export type AgentUsage = {
   cachedInputTokens: number;
 };
 
-export type AgentUsageDelta = AgentUsage & {
+type AgentUsageDelta = AgentUsage & {
   lastInputTokens: number;
   lastCachedTokens: number;
-};
-
-const EMPTY_USAGE: AgentUsage = {
-  inputTokens: 0,
-  outputTokens: 0,
-  cachedInputTokens: 0,
 };
 
 export type RunAgentOptions = {
@@ -490,5 +484,3 @@ export async function runAgentStream(opts: RunAgentOptions) {
     },
   });
 }
-
-export { EMPTY_USAGE };

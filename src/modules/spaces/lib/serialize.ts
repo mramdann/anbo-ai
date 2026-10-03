@@ -24,7 +24,7 @@ import {
   type SplitDir,
 } from "@/modules/terminal/lib/panes";
 
-export type SerializedNode =
+type SerializedNode =
   | {
       kind: "leaf";
       cwd?: string;

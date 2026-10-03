@@ -3,7 +3,7 @@ import {
   acceptsAutomationState,
   parseAutomationState,
 } from "@/modules/browser/automationState";
-import { readAgentTurn } from "./agentScreenClassifier";
+import { readAgentScreen } from "./agentScreenClassifier";
 import { AgentScreenObserver } from "./agentScreenObserver";
 
 export type BrowserTurnEnd = {
@@ -21,8 +21,10 @@ export class BrowserTurnObserver {
   // A surface is freed as soon as the turn reads over; the hold that keeps a
   // notification from firing in a pause is not needed to release a cursor.
   // A screen it cannot read keeps the cursor rather than guessing it free.
+  // The status reading already treats Antigravity's background tasks as
+  // waiting and its subagents as work, so the turn is the screen reading.
   private readonly observer = new AgentScreenObserver({
-    read: readAgentTurn,
+    read: readAgentScreen,
     readyHoldMs: () => 0,
     settleUnknownMs: null,
   });

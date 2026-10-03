@@ -111,10 +111,7 @@ export const createBrowserCloseListener = createRequestListener<BrowserCloseRequ
 export const createBrowserTabsListener = createRequestListener<BrowserTabsRequest>;
 export const createBrowserPopupListener = createRequestListener<BrowserPopupRequest>;
 
-export {
-  type AutomationTabPlacement as BrowserOpenPlacement,
-  automationTabPlacement as browserOpenPlacement,
-} from "@/modules/tabs/lib/automationTabPlacement";
+export { automationTabPlacement as browserOpenPlacement } from "@/modules/tabs/lib/automationTabPlacement";
 
 type BrowserOpenSpace = {
   id: string;

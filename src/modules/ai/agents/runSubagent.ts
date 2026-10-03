@@ -1,5 +1,4 @@
 import { generateText, isStepCount } from "ai";
-import { DEFAULT_MODEL_ID, type ModelId } from "../config";
 import {
   buildConfiguredLanguageModel,
   type LocalProviderConfig,
@@ -78,5 +77,3 @@ export async function runSubagent({
     durationMs: Date.now() - start,
   };
 }
-
-export const DEFAULT_SUBAGENT_MODEL: ModelId = DEFAULT_MODEL_ID;

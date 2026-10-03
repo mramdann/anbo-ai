@@ -12,7 +12,7 @@ export type OrbViewport = {
 
 export const ORB_WIDTH = 104;
 export const ORB_HEIGHT = 32;
-export const ORB_EDGE = 12;
+const ORB_EDGE = 12;
 export const ORB_TOP_LIMIT = 52;
 export const ORB_BOTTOM_LIMIT = 44;
 

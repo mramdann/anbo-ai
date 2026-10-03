@@ -8,7 +8,7 @@ type AgentRequestHandler = (request: AgentAutomationRequest) => void;
 type AgentBridge = ReturnType<typeof createAgentRequestListener>;
 type AgentAutomationWindow = Window & { __anboAgentBridge?: AgentBridge };
 
-export function createAgentRequestListener(
+function createAgentRequestListener(
   subscribe: (handler: AgentRequestHandler) => Promise<() => void>,
 ) {
   let handler: AgentRequestHandler | null = null;

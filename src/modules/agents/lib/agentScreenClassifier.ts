@@ -412,11 +412,3 @@ export function isAgentScreenReady(
 ): boolean {
   return classifyAgentScreen(agent, screen, evidence) === "ready";
 }
-
-/**
- * Browser ownership follows the model turn. The status reading already treats
- * Antigravity's background tasks as waiting and its subagents as work, so the
- * turn is the same reading.
- */
-export const readAgentTurn = readAgentScreen;
-export const classifyAgentTurn = classifyAgentScreen;
