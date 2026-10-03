@@ -136,7 +136,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "@vitest/coverage-v8": "5.0.3",
     "babel-plugin-react-compiler": "^1.0.0",
-    "knip": "^6.38.0",
+    "knip": "^6.39.0",
     "material-icon-theme": "5.38.1",
     "oxc-parser": "^0.152.0",
     "react-compiler-healthcheck": "^1.0.0",
