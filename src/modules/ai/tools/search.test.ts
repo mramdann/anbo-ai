@@ -1,4 +1,3 @@
-import type { ToolExecutionOptions } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "./context";
 
@@ -13,30 +12,10 @@ vi.mock("../lib/native", () => ({
 }));
 
 import { buildSearchTools } from "./search";
-
-const toolOptions: ToolExecutionOptions = {
-  toolCallId: "tool-call",
-  messages: [],
-};
+import { makeToolContext, toolOptions } from "./tools.fixtures";
 
 function makeContext(): ToolContext {
-  return {
-    getCwd: () => "/workspace",
-    getWorkspaceRoot: () => "/workspace",
-    getWorkspaceEnv: () => ({ kind: "local" }),
-    getTerminalContext: () => null,
-    isActiveTerminalPrivate: () => false,
-    injectIntoActivePty: () => false,
-    openBrowser: () => false,
-    navigateBrowser: () => false,
-    getActiveBrowserTabId: () => null,
-    switchBrowserTab: () => false,
-    closeBrowserTab: () => false,
-    spawnAgent: () => null,
-    readAgentOutput: () => null,
-    readCache: new Map(),
-    getSessionId: () => "session",
-  };
+  return makeToolContext();
 }
 
 type GrepToolResult = {

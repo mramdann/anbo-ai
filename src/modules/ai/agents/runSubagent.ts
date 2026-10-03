@@ -1,4 +1,4 @@
-import { generateText, stepCountIs } from "ai";
+import { generateText, isStepCount } from "ai";
 import { DEFAULT_MODEL_ID, type ModelId } from "../config";
 import {
   buildConfiguredLanguageModel,
@@ -42,10 +42,14 @@ export async function runSubagent({
   const def = SUBAGENTS[type];
   if (!def) throw new Error(`unknown subagent type: ${type}`);
 
-  const readOnly: Record<string, unknown> = {
-    ...buildFsTools(toolContext),
-    ...buildSearchTools(toolContext),
-  };
+  // A subagent has no user to ask, so a tool that needs approval is never
+  // handed to one, whatever its definition lists.
+  const fs = buildFsTools(toolContext);
+  const readOnly: Record<string, unknown> = Object.fromEntries(
+    Object.entries({ ...fs.tools, ...buildSearchTools(toolContext) }).filter(
+      ([name]) => !(name in fs.approval),
+    ),
+  );
   const tools: Record<string, unknown> = {};
   for (const t of def.tools) {
     if (t in readOnly) tools[t] = readOnly[t];
@@ -56,12 +60,12 @@ export async function runSubagent({
   const start = Date.now();
   const result = await generateText({
     model,
-    system: def.systemPrompt,
+    instructions: def.systemPrompt,
     prompt,
     tools: tools as Parameters<typeof generateText>[0]["tools"],
-    stopWhen: stepCountIs(SUBAGENT_MAX_STEPS),
+    stopWhen: isStepCount(SUBAGENT_MAX_STEPS),
     abortSignal,
-    onStepFinish: (step) => {
+    onStepEnd: (step) => {
       if (!onStep) return;
       const last = step.toolCalls?.[step.toolCalls.length - 1];
       if (last) onStep(`${type}: ${last.toolName}`);

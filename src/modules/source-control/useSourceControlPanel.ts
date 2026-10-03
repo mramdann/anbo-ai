@@ -896,7 +896,7 @@ export function useSourceControlPanel(
       );
       const result = await generateText({
         model,
-        system: COMMIT_MESSAGE_SYSTEM_PROMPT,
+        instructions: COMMIT_MESSAGE_SYSTEM_PROMPT,
         prompt: buildCommitMessagePrompt(stagedEntries, diffText, truncated),
         maxOutputTokens: COMMIT_MESSAGE_MAX_OUTPUT_TOKENS,
         ...(selectedModelSupportsTemperature ? { temperature: 0.2 } : {}),
@@ -905,7 +905,7 @@ export function useSourceControlPanel(
       if (!isValidCommitMessage(message)) {
         const repair = await generateText({
           model,
-          system: COMMIT_MESSAGE_SYSTEM_PROMPT,
+          instructions: COMMIT_MESSAGE_SYSTEM_PROMPT,
           prompt: buildRepairCommitMessagePrompt(message, stagedEntries),
           maxOutputTokens: COMMIT_MESSAGE_MAX_OUTPUT_TOKENS,
           ...(selectedModelSupportsTemperature ? { temperature: 0 } : {}),

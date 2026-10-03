@@ -61,7 +61,7 @@ export async function requestCompletion(
 
   const { text } = await generateText({
     model,
-    system: COMPLETION_SYSTEM_PROMPT,
+    instructions: COMPLETION_SYSTEM_PROMPT,
     prompt: buildUserPrompt(req),
     maxOutputTokens: isReasoning
       ? MAX_OUTPUT_TOKENS_REASONING

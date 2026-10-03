@@ -1,4 +1,3 @@
-import type { ToolExecutionOptions } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "./context";
 
@@ -23,28 +22,12 @@ vi.mock("../store/planStore", () => ({
 }));
 
 import { buildEditTools } from "./edit";
-
-const toolOptions: ToolExecutionOptions = {
-  toolCallId: "tool-call",
-  messages: [],
-};
+import { makeToolContext, toolOptions } from "./tools.fixtures";
 
 const FILE = "/workspace/a.txt";
 
 function makeContext(readCache: Map<string, { size: number; hash: number }>) {
-  return {
-    getCwd: () => "/workspace",
-    getWorkspaceRoot: () => "/workspace",
-    getWorkspaceEnv: () => ({ kind: "local" }),
-    getTerminalContext: () => null,
-    isActiveTerminalPrivate: () => false,
-    injectIntoActivePty: () => false,
-    openBrowser: () => false,
-    spawnAgent: () => null,
-    readAgentOutput: () => null,
-    readCache,
-    getSessionId: () => "session",
-  } as unknown as ToolContext;
+  return makeToolContext({ readCache });
 }
 
 /** Context with the file already marked as read, satisfying read-before-edit. */
@@ -68,7 +51,7 @@ async function runEdit(
   ctx: ToolContext,
   input: Record<string, unknown>,
 ): Promise<EditResult> {
-  const execute = buildEditTools(ctx).edit.execute;
+  const execute = buildEditTools(ctx).tools.edit.execute;
   if (!execute) throw new Error("edit tool has no execute");
   return (await execute(input as never, toolOptions)) as unknown as EditResult;
 }
@@ -77,7 +60,7 @@ async function runMultiEdit(
   ctx: ToolContext,
   input: Record<string, unknown>,
 ): Promise<EditResult> {
-  const execute = buildEditTools(ctx).multi_edit.execute;
+  const execute = buildEditTools(ctx).tools.multi_edit.execute;
   if (!execute) throw new Error("multi_edit tool has no execute");
   return (await execute(input as never, toolOptions)) as unknown as EditResult;
 }

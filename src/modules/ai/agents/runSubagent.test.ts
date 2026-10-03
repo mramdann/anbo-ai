@@ -14,7 +14,7 @@ vi.mock("../lib/agent", () => ({
 
 vi.mock("ai", () => ({
   generateText: mocks.generateText,
-  stepCountIs: vi.fn(() => vi.fn()),
+  isStepCount: vi.fn(() => vi.fn()),
   tool: vi.fn((definition) => definition),
 }));
 

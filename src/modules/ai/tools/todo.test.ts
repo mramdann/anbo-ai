@@ -1,4 +1,3 @@
-import type { ToolExecutionOptions } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "./context";
 
@@ -9,25 +8,10 @@ vi.mock("../store/todoStore", () => ({
 }));
 
 import { buildTodoTools } from "./todo";
-
-const toolOptions: ToolExecutionOptions = {
-  toolCallId: "tool-call",
-  messages: [],
-};
+import { makeToolContext, toolOptions } from "./tools.fixtures";
 
 function makeContext(sessionId: string | null = "session"): ToolContext {
-  return {
-    getCwd: () => "/workspace",
-    getWorkspaceRoot: () => "/workspace",
-    getTerminalContext: () => null,
-    isActiveTerminalPrivate: () => false,
-    injectIntoActivePty: () => false,
-    openBrowser: () => false,
-    spawnAgent: () => null,
-    readAgentOutput: () => null,
-    readCache: new Map(),
-    getSessionId: () => sessionId,
-  } as unknown as ToolContext;
+  return makeToolContext({ getSessionId: () => sessionId });
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: tool results are heterogeneous.
