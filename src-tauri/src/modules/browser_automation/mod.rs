@@ -20,7 +20,7 @@ mod page_state;
 mod peer;
 pub mod protocol;
 mod readable_text;
-mod ref_context;
+pub(crate) mod ref_context;
 mod ref_scan;
 pub mod registry;
 mod reveal;
