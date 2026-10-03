@@ -52,7 +52,8 @@ impl Process {
         let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
         let ok =
             unsafe { GetProcessTimes(self.0, &mut created, &mut exited, &mut kernel, &mut user) };
-        (ok != 0).then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+        (ok != 0)
+            .then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
     }
 }
 
@@ -395,7 +396,10 @@ mod tests {
         assert_eq!(reap_record(&path).1, Reap::Reaped);
         let deadline = Instant::now() + Duration::from_secs(3);
         while host.alive() {
-            assert!(Instant::now() < deadline, "the recorded host survived reaping");
+            assert!(
+                Instant::now() < deadline,
+                "the recorded host survived reaping"
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
     }
