@@ -13,7 +13,7 @@ const host = process.env.TAURI_DEV_HOST;
 // so the version has to be baked in rather than read at runtime. This is the
 // same field release-please keeps in step with the installer.
 const manifest = JSON.parse(
-  readFileSync(path.resolve(__dirname, "package.json"), "utf8"),
+  readFileSync(path.resolve(import.meta.dirname, "package.json"), "utf8"),
 ) as { version: string; repository?: { url?: string } };
 const appVersion: string = manifest.version;
 // The owner segment of the repository URL, which is the GitHub username. Read
@@ -68,10 +68,10 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
   ],
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      "@": path.resolve(import.meta.dirname, "./src"),
       // Shim keeps the ~117 kB CJS protocol package out of the bundle.
       "vscode-languageserver-protocol": path.resolve(
-        __dirname,
+        import.meta.dirname,
         "./src/modules/lsp/lib/protocolShim.ts",
       ),
     },
@@ -82,9 +82,9 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
     chunkSizeWarningLimit: 1500,
     rolldownOptions: {
       input: {
-        main: path.resolve(__dirname, "index.html"),
-        settings: path.resolve(__dirname, "settings.html"),
-        voice: path.resolve(__dirname, "voice.html"),
+        main: path.resolve(import.meta.dirname, "index.html"),
+        settings: path.resolve(import.meta.dirname, "settings.html"),
+        voice: path.resolve(import.meta.dirname, "voice.html"),
       },
       // Oxc drops `debugger` by default. These calls return undefined, so
       // marking them pure lets DCE strip them from production builds.
