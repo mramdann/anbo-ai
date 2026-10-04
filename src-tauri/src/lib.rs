@@ -111,6 +111,37 @@ fn parse_launch_target() -> LaunchTarget {
     resolve_launch_target(entries)
 }
 
+/// Settings' size when nothing is saved, in logical pixels.
+const SETTINGS_SIZE: (f64, f64) = (900.0, 700.0);
+
+/// Top-left that centers a box of `size` over the box at `origin` with
+/// `extent`, all in the same units.
+#[cfg(any(target_os = "windows", test))]
+fn centered_origin(origin: (f64, f64), extent: (f64, f64), size: (f64, f64)) -> (f64, f64) {
+    (
+        (origin.0 + (extent.0 - size.0) / 2.0).round(),
+        (origin.1 + (extent.1 - size.1) / 2.0).round(),
+    )
+}
+
+/// Where Settings starts when window-state has no place for it: over the main
+/// window, unless that is minimized or unavailable.
+#[cfg(target_os = "windows")]
+fn settings_origin_over_main(app: &tauri::AppHandle) -> Option<(f64, f64)> {
+    let main = app.get_webview_window("main")?;
+    if main.is_minimized().unwrap_or(true) {
+        return None;
+    }
+    let scale = main.scale_factor().ok()?;
+    let position = main.outer_position().ok()?.to_logical::<f64>(scale);
+    let size = main.outer_size().ok()?.to_logical::<f64>(scale);
+    Some(centered_origin(
+        (position.x, position.y),
+        (size.width, size.height),
+        SETTINGS_SIZE,
+    ))
+}
+
 #[tauri::command]
 async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Result<(), String> {
     let url_path = match tab.as_deref() {
@@ -133,10 +164,18 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
 
     let builder = WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App(url_path.into()))
         .title("Settings")
-        .inner_size(900.0, 700.0)
+        .inner_size(SETTINGS_SIZE.0, SETTINGS_SIZE.1)
         .min_inner_size(820.0, 620.0)
         .resizable(true)
         .visible(false);
+    // A popup window created without a position lands in the screen's top-left
+    // corner on Windows. Start centered over the main window instead;
+    // window-state still moves it to its saved place when it has one.
+    #[cfg(target_os = "windows")]
+    let builder = match settings_origin_over_main(&app) {
+        Some((x, y)) => builder.position(x, y),
+        None => builder.center(),
+    };
     // On Windows/Linux the settings window is parented to the main window
     // (below), which keeps it above main without floating above every other
     // app. macOS has no parent there, so it opts into always-on-top instead.
@@ -597,5 +636,26 @@ mod launch_target_tests {
         ]);
         assert_eq!(out.dir.as_deref(), Some("/workspace"));
         assert_eq!(out.files, vec!["/other/x.rs".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod settings_position_tests {
+    use super::{centered_origin, SETTINGS_SIZE};
+
+    #[test]
+    fn centers_settings_over_a_maximized_main_window() {
+        // A maximized window's outer box runs 8 px past each screen edge.
+        let origin = centered_origin((-8.0, -8.0), (1936.0, 962.0), SETTINGS_SIZE);
+        assert_eq!(origin, (510.0, 123.0));
+        assert_eq!(origin.0 + SETTINGS_SIZE.0 / 2.0, 960.0);
+    }
+
+    #[test]
+    fn stays_centered_when_main_is_smaller_than_settings() {
+        assert_eq!(
+            centered_origin((100.0, 50.0), (800.0, 600.0), SETTINGS_SIZE),
+            (50.0, 0.0)
+        );
     }
 }
