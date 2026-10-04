@@ -2100,11 +2100,13 @@ export default function App() {
   }, [activeId, handleClose, handleClosePane]);
 
   const [zenMode, setZenMode] = useState(false);
-  // Tabs not visible in the dock render over the active group's content box,
-  // at the size they will have once shown, so nothing resizes as one comes
-  // forward.
+  // Tabs not visible in the dock render over the content box of the group
+  // they come forward in (the active group, or a tidy layout's browser panel
+  // for browser tabs), at the size they will have once shown, so nothing
+  // resizes as one comes forward.
   const {
     area: backgroundArea,
+    browserArea: backgroundBrowserArea,
     containerRef: dockAreaRef,
     remeasure: measureBackgroundArea,
   } = useDockContentArea();
@@ -3047,7 +3049,7 @@ export default function App() {
                         {spacesHydrated && backgroundBrowserTabs.length > 0 ? (
                           <div
                             className="invisible pointer-events-none absolute"
-                            style={dockAreaStyle(backgroundArea)}
+                            style={dockAreaStyle(backgroundBrowserArea)}
                             aria-hidden
                           >
                             <BrowserStack
