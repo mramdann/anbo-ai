@@ -128,7 +128,7 @@ fn centered_origin(origin: (f64, f64), extent: (f64, f64), size: (f64, f64)) -> 
 /// window, unless that is minimized or unavailable.
 #[cfg(target_os = "windows")]
 fn settings_origin_over_main(app: &tauri::AppHandle) -> Option<(f64, f64)> {
-    let main = app.get_webview_window("main")?;
+    let main = app.get_window("main")?;
     if main.is_minimized().unwrap_or(true) {
         return None;
     }
@@ -183,7 +183,16 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
     // Tie lifecycle to the main window so settings minimizes/closes with it.
     // macOS: skip parent() — child + always_on_top leaves the settings webview
     // behind the main window except while the parent is being dragged (#33).
-    #[cfg(not(target_os = "macos"))]
+    // Windows finds main as a plain window and makes it the owner, which is all
+    // parent() does there: once main hosts browser tabs it holds several
+    // webviews, get_webview_window("main") is None, and Settings came out
+    // unowned (its own taskbar button, free to fall behind main).
+    #[cfg(target_os = "windows")]
+    let builder = match app.get_window("main") {
+        Some(main) => builder.owner_raw(main.hwnd().map_err(|e| e.to_string())?),
+        None => builder,
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let builder = if let Some(main) = app.get_webview_window("main") {
         builder.parent(&main).map_err(|e| e.to_string())?
     } else {
