@@ -70,6 +70,12 @@ function sanitizeErrorMessage(message: string): string {
 }
 
 function errorPrefix(code: string | null, message: string): string | null {
+  // One request larger than the plan allows per minute. Groq sends it as a
+  // rate limit, but waiting never helps: an agent request on its free tier is
+  // bigger than the whole minute's allowance, so retrying fails the same way.
+  if (/\brequest too large\b.*\btokens per minute\b/i.test(message)) {
+    return "Request exceeds the plan's per-minute token limit";
+  }
   switch (code?.toLowerCase()) {
     case "model_not_found":
     case "not_found_error":

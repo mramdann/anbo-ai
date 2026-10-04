@@ -35,6 +35,19 @@ describe("formatAiError", () => {
     ).toBe("Rate limit reached: Please retry after 10 seconds.");
   });
 
+  it("does not call a request too large for the plan a passing rate limit", () => {
+    const message =
+      "Request too large for model `openai/gpt-oss-20b` in organization `org_test` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Requested 9382, please reduce your message size and try again.";
+    expect(
+      formatAiError({
+        message: "Request too large",
+        responseBody: JSON.stringify({
+          error: { code: "rate_limit_exceeded", type: "tokens", message },
+        }),
+      }),
+    ).toBe(`Request exceeds the plan's per-minute token limit: ${message}`);
+  });
+
   it("preserves useful local errors", () => {
     expect(formatAiError(new Error("No API key configured for OpenAI."))).toBe(
       "No API key configured for OpenAI.",

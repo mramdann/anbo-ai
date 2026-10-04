@@ -29,6 +29,7 @@ import {
   LMSTUDIO_DEFAULT_BASE_URL,
   MLX_DEFAULT_BASE_URL,
   migrateLegacyCompatEndpoint,
+  migrateRetiredModelId,
   OLLAMA_DEFAULT_BASE_URL,
   OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
   type SttProvider,
@@ -450,8 +451,9 @@ export async function loadPreferences(): Promise<Preferences> {
     ),
     defaultModelId: ((): string => {
       const stored = get<string>(KEY_DEFAULT_MODEL);
-      return stored && (isKnownModelId(stored) || isCompatModelId(stored))
-        ? stored
+      const id = stored && migrateRetiredModelId(stored);
+      return id && isPickableModelId(id)
+        ? id
         : DEFAULT_PREFERENCES.defaultModelId;
     })(),
     editorTheme: ((): EditorThemePref => {
@@ -482,9 +484,10 @@ export async function loadPreferences(): Promise<Preferences> {
     autocompleteProvider:
       get<AutocompleteProviderId>(KEY_AUTOCOMPLETE_PROVIDER) ??
       DEFAULT_PREFERENCES.autocompleteProvider,
-    autocompleteModelId:
+    autocompleteModelId: migrateRetiredModelId(
       get<string>(KEY_AUTOCOMPLETE_MODEL) ??
-      DEFAULT_PREFERENCES.autocompleteModelId,
+        DEFAULT_PREFERENCES.autocompleteModelId,
+    ),
     lmstudioBaseURL:
       get<string>(KEY_LMSTUDIO_BASE_URL) ?? DEFAULT_PREFERENCES.lmstudioBaseURL,
     lmstudioModelId:
@@ -545,12 +548,13 @@ export async function loadPreferences(): Promise<Preferences> {
     globalVoiceEnabled:
       get<boolean>(KEY_GLOBAL_VOICE_ENABLED) ??
       DEFAULT_PREFERENCES.globalVoiceEnabled,
-    favoriteModelIds: (
-      get<string[]>(KEY_FAVORITE_MODELS) ?? DEFAULT_PREFERENCES.favoriteModelIds
-    ).filter(isKnownModelId),
-    recentModelIds: (
-      get<string[]>(KEY_RECENT_MODELS) ?? DEFAULT_PREFERENCES.recentModelIds
-    ).filter(isKnownModelId),
+    favoriteModelIds: storedModelList(
+      get<string[]>(KEY_FAVORITE_MODELS) ??
+        DEFAULT_PREFERENCES.favoriteModelIds,
+    ),
+    recentModelIds: storedModelList(
+      get<string[]>(KEY_RECENT_MODELS) ?? DEFAULT_PREFERENCES.recentModelIds,
+    ),
     vimMode: get<boolean>(KEY_VIM_MODE) ?? DEFAULT_PREFERENCES.vimMode,
     editorWordWrap:
       get<boolean>(KEY_EDITOR_WORD_WRAP) ?? DEFAULT_PREFERENCES.editorWordWrap,
@@ -676,6 +680,21 @@ export async function setThemeId(value: string): Promise<void> {
 /** Slider stores 0..1. Actual rendered opacity is halved in SurfaceLayer
  *  so the image never exceeds 50% — keeps UI/terminal readable at any setting. */
 export const BG_OPACITY_RENDER_FACTOR = 0.5;
+
+/** A model the picker can show: a built-in one, or a custom endpoint's. One
+ *  whose endpoint is gone is let go once the endpoints are known (see
+ *  dropRemovedEndpointModels); dropping every endpoint model here also threw
+ *  away the favorites and recents of endpoints that still exist, on every
+ *  start. */
+function isPickableModelId(id: string): boolean {
+  return isKnownModelId(id) || isCompatModelId(id);
+}
+
+/** A stored favorites or recents list, with withdrawn models moved to their
+ *  replacement and the duplicates that move can create folded away. */
+function storedModelList(ids: readonly string[]): string[] {
+  return [...new Set(ids.map(migrateRetiredModelId))].filter(isPickableModelId);
+}
 
 function clampBgOpacity(v: number): number {
   if (!Number.isFinite(v)) return 0.7;
