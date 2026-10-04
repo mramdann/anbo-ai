@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.33.7](https://github.com/mramdann/anbo-ai/compare/v0.33.6...v0.33.7) (2026-10-04)
+
+
+### Bug Fixes
+
+* find the main window while it hosts browser tabs ([900a392](https://github.com/mramdann/anbo-ai/commit/900a39245b3074dc60ec7e83b82b20cc9a930c0d))
+* **settings:** open Settings over the main window on Windows ([2a49e6a](https://github.com/mramdann/anbo-ai/commit/2a49e6abaedfbb6c6ae6f7d574d0cd23386ec245))
+* **settings:** stop the Settings window growing each time it opens ([e2d9f29](https://github.com/mramdann/anbo-ai/commit/e2d9f297e82509972097e930800c8c086ac185cd))
+* **tabs:** lay out background tabs at the size they get once shown ([6337b37](https://github.com/mramdann/anbo-ai/commit/6337b37acf88d436d7ec09d39dbfd5dffc013897))
+* **voice:** keep the global voice orb at its 122x42 design size ([d5abb1a](https://github.com/mramdann/anbo-ai/commit/d5abb1ae7a3ca5713aa773c04f6a0d2d76739bfc))
+
 ## [0.33.6](https://github.com/mramdann/anbo-ai/compare/v0.33.5...v0.33.6) (2026-10-04)
 
 
