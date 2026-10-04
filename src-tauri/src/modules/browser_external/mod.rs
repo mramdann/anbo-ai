@@ -1,5 +1,5 @@
 #[cfg(windows)]
-mod browser_process;
+pub(crate) mod browser_process;
 pub mod control;
 pub mod dock;
 #[cfg(windows)]

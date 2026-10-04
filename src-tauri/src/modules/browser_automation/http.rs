@@ -10,11 +10,13 @@
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
+use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tokio::net::TcpListener;
 
 use super::caller::{self, Caller};
@@ -24,16 +26,116 @@ use crate::modules::browser_automation::protocol::MAX_REQUEST_SIZE;
 
 const BIND_ADDR: &str = "127.0.0.1:7331";
 pub const MCP_URL: &str = "http://127.0.0.1:7331/mcp";
+/// Raised each time the endpoint takes its port or fails to.
+pub const STATUS_EVENT: &str = "anbo://mcp-status";
 
 static HTTP_RUNNING: AtomicBool = AtomicBool::new(false);
 static HTTP_CANCEL_TX: Mutex<Option<tokio::sync::oneshot::Sender<()>>> = Mutex::new(None);
+static HTTP_STATE: Mutex<(McpState, Option<BindFailure>)> = Mutex::new((McpState::Off, None));
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpState {
+    Off,
+    Starting,
+    Listening,
+    Failed,
+}
+
+/// The process holding the port the endpoint could not take.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PortHolder {
+    pub pid: u32,
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct BindFailure {
+    error: String,
+    in_use: bool,
+    holder: Option<PortHolder>,
+}
+
+/// What the UI is told. Every agent Anbo sets up is configured with this exact
+/// URL, so while another app holds the port the agents talk to that app, and
+/// the log used to be the only place that said so.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpStatus {
+    pub state: McpState,
+    pub url: &'static str,
+    pub error: Option<String>,
+    pub in_use: bool,
+    pub holder: Option<PortHolder>,
+}
 
 pub fn is_running() -> bool {
     HTTP_RUNNING.load(Ordering::SeqCst)
 }
 
+pub fn status() -> McpStatus {
+    let guard = HTTP_STATE.lock().unwrap_or_else(|error| error.into_inner());
+    status_of(guard.0, guard.1.as_ref())
+}
+
+fn status_of(state: McpState, failure: Option<&BindFailure>) -> McpStatus {
+    McpStatus {
+        state,
+        url: MCP_URL,
+        error: failure.map(|failure| failure.error.clone()),
+        in_use: failure.is_some_and(|failure| failure.in_use),
+        holder: failure.and_then(|failure| failure.holder.clone()),
+    }
+}
+
+fn set_state(state: McpState, failure: Option<BindFailure>) {
+    *HTTP_STATE.lock().unwrap_or_else(|error| error.into_inner()) = (state, failure);
+}
+
+pub fn announce(app: &AppHandle) {
+    if let Err(error) = app.emit(STATUS_EVENT, status()) {
+        log::warn!("[browser_automation] http: could not announce the endpoint state: {error}");
+    }
+}
+
+/// Who holds the port: pid and executable name, where the platform says.
+async fn port_holder() -> Option<PortHolder> {
+    #[cfg(windows)]
+    {
+        let addr = BIND_ADDR.parse::<std::net::SocketAddrV4>().ok()?;
+        tauri::async_runtime::spawn_blocking(move || {
+            let pid = super::peer::listener_pid(addr)?;
+            let name = crate::modules::browser_external::browser_process::image_path(pid)
+                .and_then(|path| Some(path.file_name()?.to_string_lossy().into_owned()));
+            Some(PortHolder { pid, name })
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// Try the port again, for after the user closed whatever held it. Only a
+/// failed endpoint restarts: one that is off was turned off on purpose.
+pub async fn retry(app: AppHandle) -> McpStatus {
+    if status().state == McpState::Failed {
+        let _ = start(app);
+    }
+    // A bind resolves in milliseconds; the deadline only bounds a stuck runtime.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while status().state == McpState::Starting && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    status()
+}
+
 /// Start the HTTP MCP server alongside the named-pipe server. Failure to bind
-/// is logged but does not disable the named-pipe path.
+/// does not disable the named-pipe path; it is logged and announced, naming
+/// the process that holds the port.
 pub fn start(app: AppHandle) -> Result<(), String> {
     if is_running() {
         return Ok(());
@@ -43,6 +145,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
         *guard = Some(cancel_tx);
     }
     HTTP_RUNNING.store(true, Ordering::SeqCst);
+    set_state(McpState::Starting, None);
 
     tauri::async_runtime::spawn(async move {
         let listener = match TcpListener::bind(BIND_ADDR).await {
@@ -53,10 +156,30 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                 if let Ok(mut guard) = HTTP_CANCEL_TX.lock() {
                     *guard = None;
                 }
+                let in_use = e.kind() == std::io::ErrorKind::AddrInUse;
+                let holder = if in_use { port_holder().await } else { None };
+                if let Some(holder) = &holder {
+                    log::error!(
+                        "[browser_automation] http: {BIND_ADDR} is held by pid {} ({})",
+                        holder.pid,
+                        holder.name.as_deref().unwrap_or("image unknown")
+                    );
+                }
+                set_state(
+                    McpState::Failed,
+                    Some(BindFailure {
+                        error: e.to_string(),
+                        in_use,
+                        holder,
+                    }),
+                );
+                announce(&app);
                 return;
             }
         };
         log::info!("[browser_automation] http: MCP endpoint listening at {MCP_URL}");
+        set_state(McpState::Listening, None);
+        announce(&app);
 
         loop {
             tokio::select! {
@@ -107,6 +230,7 @@ pub fn stop() {
         }
     }
     HTTP_RUNNING.store(false, Ordering::SeqCst);
+    set_state(McpState::Off, None);
 }
 
 /// Reject foreign `Origin` (DNS-rebinding guard). Absent Origin (CLI clients
@@ -348,6 +472,38 @@ fn empty(status: u16) -> hyper::Response<Full<Bytes>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_bind_tells_the_ui_who_holds_the_port() {
+        let failure = BindFailure {
+            error: "Only one usage of each socket address is normally permitted.".into(),
+            in_use: true,
+            holder: Some(PortHolder {
+                pid: 5688,
+                name: Some("zeron.exe".into()),
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(status_of(McpState::Failed, Some(&failure))).unwrap(),
+            json!({
+                "state": "failed",
+                "url": MCP_URL,
+                "error": "Only one usage of each socket address is normally permitted.",
+                "inUse": true,
+                "holder": { "pid": 5688, "name": "zeron.exe" },
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(status_of(McpState::Listening, None)).unwrap(),
+            json!({
+                "state": "listening",
+                "url": MCP_URL,
+                "error": null,
+                "inUse": false,
+                "holder": null,
+            })
+        );
+    }
 
     #[test]
     fn origin_allows_cli_and_loopback_hosts() {

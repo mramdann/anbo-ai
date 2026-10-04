@@ -97,7 +97,7 @@ fn open(pid: u32) -> Option<Handle> {
     (!handle.is_null()).then_some(Handle(handle))
 }
 
-pub(super) fn image_path(pid: u32) -> Option<PathBuf> {
+pub(crate) fn image_path(pid: u32) -> Option<PathBuf> {
     let process = open(pid)?;
     let mut buffer = vec![0_u16; 32_768];
     let mut length = buffer.len() as u32;
