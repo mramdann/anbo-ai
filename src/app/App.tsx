@@ -156,6 +156,7 @@ import {
   useDockContentArea,
 } from "@/modules/tabs/lib/dockContentArea";
 import { runtimeTabIdAllocator } from "@/modules/tabs/lib/runtimeId";
+import type { WorkspaceLayoutMode } from "@/modules/tabs/lib/workspaceTidyLayout";
 import { DEFAULT_SPACE_ID } from "@/modules/tabs/lib/useTabs";
 import {
   clearFocusedTerminal,
@@ -460,6 +461,15 @@ export default function App() {
   const activeSpaceName = useSpaces(
     (s) => s.spaces.find((p) => p.id === s.activeId)?.name ?? null,
   );
+  const activeSpaceLayout: WorkspaceLayoutMode = useSpaces(
+    (s) => s.spaces.find((p) => p.id === s.activeId)?.layout ?? "free",
+  );
+  const setActiveSpaceLayout = useCallback(
+    (mode: WorkspaceLayoutMode) => {
+      if (activeSpaceId) useSpaces.getState().setLayout(activeSpaceId, mode);
+    },
+    [activeSpaceId],
+  );
   const workspaceForSpace = useCallback(
     (spaceId: string) =>
       spaceEnvironments.find((space) => space.id === spaceId)?.env ??
@@ -674,6 +684,10 @@ export default function App() {
       spaceId: string;
       revision: number;
     }>
+  >([]);
+  const dockviewRevealRevision = useRef(0);
+  const [dockviewRevealRequests, setDockviewRevealRequests] = useState<
+    Array<{ tabId: number; spaceId: string; revision: number }>
   >([]);
 
   const spaceTabs = useMemo(
@@ -1713,6 +1727,14 @@ export default function App() {
       automationTabSelection.created(spaceId, tabId, placement);
       markBrowserAutomationActivity(tabId, "open", payload.actor ?? undefined);
       setActiveBrowserTabId(spaceId, tabId);
+      // A tab an agent opens behind another one may come to the front of a
+      // tidy layout's browser panel; WorkspaceDockview decides.
+      if (placement !== "visible-first-tab") {
+        setDockviewRevealRequests((requests) => [
+          ...requests.slice(-99),
+          { tabId, spaceId, revision: ++dockviewRevealRevision.current },
+        ]);
+      }
       if (preserveForeground) {
         const restoreForeground = () => {
           if (useSpaces.getState().activeId !== spaceId) return;
@@ -2657,6 +2679,8 @@ export default function App() {
             openSpacesOverview: () => setSwitcherOpen(true),
             newSpace: () => void handleNewSpace(),
             switchSpace: (id) => useSpaces.getState().setActive(id),
+            layoutMode: activeSpaceLayout,
+            setLayoutMode: setActiveSpaceLayout,
           })
         : [],
     [
@@ -2679,6 +2703,8 @@ export default function App() {
       askFromSelection,
       activeSpaceId,
       handleNewSpace,
+      activeSpaceLayout,
+      setActiveSpaceLayout,
     ],
   );
 
@@ -2963,6 +2989,9 @@ export default function App() {
                             externalMoves={dockviewExternalMoves}
                             externalSplits={dockviewExternalSplits}
                             onLayoutSettled={handleDockLayoutSettled}
+                            layoutMode={activeSpaceLayout}
+                            onLayoutModeChange={setActiveSpaceLayout}
+                            revealRequests={dockviewRevealRequests}
                             onSelect={setActiveId}
                             onRevealTab={warmTab}
                             onTabVisibilityChange={handleDockviewTabVisibility}

@@ -28,6 +28,8 @@ import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
 import {
   Cancel01Icon,
   FullScreenIcon,
+  Globe02Icon,
+  LayoutTwoColumnIcon,
   Minimize01Icon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
@@ -39,9 +41,12 @@ import {
   type DockviewGroupPanel,
   DockviewReact,
   type DockviewReadyEvent,
+  type IDockviewGroupPanel,
   type IDockviewHeaderActionsProps,
+  type IDockviewPanel,
   type IDockviewPanelHeaderProps,
   type IDockviewPanelProps,
+  type IWatermarkPanelProps,
 } from "dockview-react";
 import "dockview/dist/styles/dockview.css";
 import { useAgentCallsign } from "@/modules/agents/lib/agentCallsign";
@@ -90,6 +95,19 @@ import {
   workspaceDockviewLayoutIdentities,
   writeWorkspaceDockviewLayout,
 } from "./lib/workspaceDockviewPersistence";
+import {
+  BROWSER_PANEL_SHARE,
+  browserPanelSide,
+  isOnSide,
+  keepsNeighborSpot,
+  type PanelSide,
+  pickBrowserGroup,
+  type TidyGroup,
+  tidyPlacement,
+  WORKSPACE_LAYOUT_LABELS,
+  WORKSPACE_LAYOUT_MODES,
+  type WorkspaceLayoutMode,
+} from "./lib/workspaceTidyLayout";
 import { NewTabMenu } from "./NewTabMenu";
 import { TabIcon } from "./TabIcon";
 import "./WorkspaceDockview.css";
@@ -129,12 +147,25 @@ export type WorkspaceDockviewProps = {
     revision: number;
   }[];
   onLayoutSettled?: () => void;
+  /** This workspace's layout: free, or browser tabs in one panel on a side. */
+  layoutMode?: WorkspaceLayoutMode;
+  onLayoutModeChange?: (mode: WorkspaceLayoutMode) => void;
+  /** Browser tabs an agent opened, to bring to the front of the browser panel
+   *  while another panel is the one in use. */
+  revealRequests?: readonly {
+    tabId: number;
+    spaceId: string;
+    revision: number;
+  }[];
   /** Render one tab's content directly inside its dockview panel (flat model). */
   renderTab: (tab: Tab, visible: boolean) => ReactNode;
 };
 
 type WorkspaceDockviewContextValue = WorkspaceDockviewProps & {
   draggingTabId: number | null;
+  /** The browser panel of a tidy layout, if it has one. */
+  browserGroupId: string | null;
+  closeBrowserPanel: () => void;
   onTabPointerDown: (
     event: ReactPointerEvent<HTMLElement>,
     panelId: string,
@@ -223,6 +254,113 @@ function WorkspacePanel(props: IDockviewPanelProps<{ tabId: number }>) {
     >
       {tab ? renderTab(tab, visible) : null}
     </div>
+  );
+}
+
+/** Fills an empty group. The browser panel of a tidy layout says what it is
+ *  for; any other empty group stays blank, as before, and so does the whole
+ *  dock while the workspace welcome covers it. */
+function WorkspaceDockviewWatermark(props: IWatermarkPanelProps) {
+  const context = useWorkspaceDockviewContext();
+  if (
+    !props.group ||
+    props.group.id !== context.browserGroupId ||
+    context.tabs.length === 0
+  ) {
+    return null;
+  }
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-muted-foreground">
+      <HugeiconsIcon
+        icon={Globe02Icon}
+        size={22}
+        strokeWidth={1.6}
+        aria-hidden
+      />
+      <p className="text-[12px]">
+        Browser tabs open here, including the ones agents open.
+      </p>
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={() => context.onNewBrowser()}
+        >
+          New browser tab
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => context.closeBrowserPanel()}
+        >
+          Close panel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function WorkspaceLayoutMenu() {
+  const context = useWorkspaceDockviewContext();
+  const onChange = context.onLayoutModeChange;
+  if (!onChange) return null;
+  const currentMode = context.layoutMode ?? "free";
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label="Workspace layout"
+          title="Workspace layout"
+          className={cn(
+            "size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground",
+            currentMode !== "free" && "text-foreground",
+          )}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <HugeiconsIcon
+            icon={LayoutTwoColumnIcon}
+            size={14}
+            strokeWidth={1.8}
+          />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        side="bottom"
+        sideOffset={6}
+        className="w-60 rounded-xl border border-border/40 bg-popover/95 p-1 shadow-lg backdrop-blur-md"
+        onClick={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        {WORKSPACE_LAYOUT_MODES.map((mode) => {
+          const current = mode === currentMode;
+          return (
+            <DropdownMenuItem
+              key={mode}
+              aria-current={current ? "true" : undefined}
+              onSelect={() => onChange(mode)}
+              className={cn(
+                "flex cursor-default items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] focus:bg-accent focus:text-accent-foreground",
+                current && "bg-accent/55 text-foreground",
+              )}
+            >
+              <span className="flex-1">{WORKSPACE_LAYOUT_LABELS[mode]}</span>
+              {current ? (
+                <HugeiconsIcon
+                  icon={Tick02Icon}
+                  className="size-3.5 text-primary"
+                />
+              ) : null}
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -371,6 +509,7 @@ function WorkspaceDockviewActions(props: IDockviewHeaderActionsProps) {
         onNewGitGraph={context.onNewGitGraph}
         onLaunchAgents={context.onLaunchAgents}
       />
+      <WorkspaceLayoutMenu />
       <Button
         type="button"
         variant="ghost"
@@ -734,11 +873,76 @@ function setGroupHeadersHidden(api: DockviewApi, hidden: boolean): void {
   for (const group of api.groups) group.header.hidden = hidden;
 }
 
-function removeEmptyGroups(api: DockviewApi): void {
+function removeEmptyGroups(
+  api: DockviewApi,
+  keepGroupId: string | null = null,
+): void {
   if (api.panels.length === 0) return;
   for (const group of [...api.groups]) {
-    if (group.panels.length === 0) api.removeGroup(group);
+    if (group.panels.length === 0 && group.id !== keepGroupId) {
+      api.removeGroup(group);
+    }
   }
+}
+
+/** Closes a panel in a tidy layout. The browser panel stays when its last tab
+ *  goes, and closing a tab in a group that is not in use leaves the group in
+ *  use, and the focus, where they are; otherwise an agent closing its tab
+ *  there pulls the user out of the terminal. Mirrors Dockview's own
+ *  removePanel, whose options the public api does not take. */
+function closeTidyPanel(
+  api: DockviewApi,
+  panel: IDockviewPanel,
+  browserGroupId: string | null,
+): void {
+  const group = panel.group;
+  group.model.removePanel(panel, {
+    skipSetActiveGroup: api.activeGroup !== group,
+  });
+  group.model.renderContainer.detatch(panel);
+  panel.dispose();
+  if (
+    group.panels.length === 0 &&
+    group.id !== browserGroupId &&
+    api.groups.length > 1
+  ) {
+    api.removeGroup(group);
+  }
+}
+
+function isBrowserPanel(panel: IDockviewPanel, tabs: readonly Tab[]): boolean {
+  const tabId = tabIdForParams(panel.params ?? {});
+  return tabs.some((tab) => tab.id === tabId && tab.kind === "browser");
+}
+
+/** The dock's groups as the tidy layout reads them. */
+function tidyGroups(api: DockviewApi, tabs: readonly Tab[]): TidyGroup[] {
+  return api.groups.map((group) => {
+    const rect = group.element.getBoundingClientRect();
+    return {
+      id: group.id,
+      browserOnly: group.panels.every((panel) => isBrowserPanel(panel, tabs)),
+      left: rect.left,
+      right: rect.right,
+    };
+  });
+}
+
+function groupById(
+  api: DockviewApi,
+  id: string,
+): DockviewGroupPanel | undefined {
+  return api.groups.find((group) => group.id === id);
+}
+
+/** A new group along one edge of the whole dock, left out of use so opening
+ *  it does not take the focus from the group the user is in. */
+function addEdgeGroup(api: DockviewApi, side: PanelSide): DockviewGroupPanel {
+  return api.addGroup({ direction: side, skipSetActive: true });
+}
+
+function sizeBrowserPanel(api: DockviewApi, group: IDockviewGroupPanel): void {
+  group.api.setSize({ width: Math.round(api.width * BROWSER_PANEL_SHARE) });
 }
 
 export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
@@ -768,6 +972,13 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
   const restoredTabIdsRef = useRef<ReadonlySet<number>>(new Set());
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const layoutSettledFrameRef = useRef(0);
+  const [browserGroupId, setBrowserGroupId] = useState<string | null>(null);
+  const browserGroupIdRef = useRef<string | null>(null);
+  const lastWorkGroupIdRef = useRef<string | null>(null);
+  // The layout each space was last arranged for. A space seen for the first
+  // time keeps the layout it was saved with.
+  const arrangedLayoutRef = useRef(new Map<string, WorkspaceLayoutMode>());
+  const handledReveals = useRef(new Map<string, number>());
   latest.current = props;
   const layoutKey = `${props.spaceId}:${props.tabs.map((tab) => tab.id).join(",")}`;
   const persistenceTabsKey = JSON.stringify([
@@ -827,6 +1038,99 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
       });
     });
   }, []);
+
+  const rememberBrowserGroup = useCallback((id: string | null) => {
+    browserGroupIdRef.current = id;
+    setBrowserGroupId(id);
+  }, []);
+
+  /** The browser panel of a tidy layout, found again from the dock. */
+  const tidyBrowserGroup = useCallback(
+    (currentApi: DockviewApi, side: PanelSide) => {
+      const id = pickBrowserGroup(
+        tidyGroups(currentApi, latest.current.tabs),
+        side,
+        browserGroupIdRef.current,
+      );
+      const group = id ? groupById(currentApi, id) : undefined;
+      const nextId = group?.id ?? null;
+      if (nextId !== browserGroupIdRef.current) rememberBrowserGroup(nextId);
+      return group;
+    },
+    [rememberBrowserGroup],
+  );
+
+  /** Where a tab opened in a tidy workspace goes (see tidyPlacement). */
+  const tidyPosition = useCallback(
+    (currentApi: DockviewApi, tab: Tab, side: PanelSide) => {
+      const browser = tab.kind === "browser";
+      const browserGroup = tidyBrowserGroup(currentApi, side);
+      const groupIds = [
+        lastWorkGroupIdRef.current,
+        ...currentApi.groups.map((group) => group.id),
+      ].filter((id): id is string => id !== null && !!currentApi.getGroup(id));
+      const placement = tidyPlacement({
+        browser,
+        side,
+        browserGroupId: browserGroup?.id ?? null,
+        activeGroupId: currentApi.activeGroup?.id ?? null,
+        groupIds,
+      });
+      let group =
+        "group" in placement
+          ? groupById(currentApi, placement.group)
+          : undefined;
+      if (!group) {
+        group = addEdgeGroup(
+          currentApi,
+          "newGroup" in placement ? placement.newGroup : side,
+        );
+        if (browser) {
+          sizeBrowserPanel(currentApi, group);
+          rememberBrowserGroup(group.id);
+        } else if (browserGroup) {
+          sizeBrowserPanel(currentApi, browserGroup);
+        }
+      }
+      return group;
+    },
+    [rememberBrowserGroup, tidyBrowserGroup],
+  );
+
+  /** Moves every browser tab into one panel on `side`: a group there that
+   *  holds only browsers, or a new one along that edge. */
+  const arrangeTidy = useCallback(
+    (currentApi: DockviewApi, side: PanelSide) => {
+      const tabs = latest.current.tabs;
+      const dock = dockviewElementRef.current?.getBoundingClientRect();
+      const middle = dock ? dock.left + dock.width / 2 : 0;
+      const onSide = tidyGroups(currentApi, tabs).filter((group) =>
+        isOnSide(group, side, middle),
+      );
+      const keptId = pickBrowserGroup(onSide, side, browserGroupIdRef.current);
+      const target =
+        (keptId ? groupById(currentApi, keptId) : undefined) ??
+        addEdgeGroup(currentApi, side);
+      for (const panel of currentApi.panels) {
+        if (isBrowserPanel(panel, tabs) && panel.api.group !== target) {
+          panel.api.moveTo({ group: target, position: "center" });
+        }
+      }
+      sizeBrowserPanel(currentApi, target);
+      rememberBrowserGroup(target.id);
+    },
+    [rememberBrowserGroup],
+  );
+
+  const closeBrowserPanel = useCallback(() => {
+    const currentApi = apiRef.current;
+    const id = browserGroupIdRef.current;
+    const group = id ? currentApi?.getGroup(id) : undefined;
+    rememberBrowserGroup(null);
+    if (currentApi && group && group.panels.length === 0) {
+      currentApi.removeGroup(group);
+    }
+  }, [rememberBrowserGroup]);
 
   const placeGhost = useCallback((clientX: number, clientY: number) => {
     lastPointerRef.current = { x: clientX, y: clientY };
@@ -1240,11 +1544,27 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
         }
       }
       setGroupHeadersHidden(api, current.hideTabs ?? false);
+      const side = browserPanelSide(current.layoutMode);
+      rememberBrowserGroup(
+        side
+          ? pickBrowserGroup(tidyGroups(api, current.tabs), side, null)
+          : null,
+      );
+      arrangedLayoutRef.current.set(
+        props.spaceId,
+        current.layoutMode ?? "free",
+      );
     } finally {
       applyingLayout.current = false;
     }
     scheduleLayoutSettled();
-  }, [api, props.spaceId, flushPersistedLayout, scheduleLayoutSettled]);
+  }, [
+    api,
+    props.spaceId,
+    flushPersistedLayout,
+    rememberBrowserGroup,
+    scheduleLayoutSettled,
+  ]);
 
   useEffect(
     () => registerWorkspaceLayoutFlusher(() => flushPersistedLayout()),
@@ -1308,7 +1628,12 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
       queueMicrotask(() => {
         cleanupQueued = false;
         if (disposed || applyingLayout.current) return;
-        removeEmptyGroups(api);
+        removeEmptyGroups(
+          api,
+          browserPanelSide(latest.current.layoutMode)
+            ? browserGroupIdRef.current
+            : null,
+        );
       });
     };
     const changed = api.onDidLayoutChange(() => {
@@ -1342,8 +1667,11 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
       const wantedPanelIds = new Set(
         current.tabs.map((tab) => workspaceDockviewPanelId(tab.id)),
       );
+      const tidy = browserPanelSide(current.layoutMode) !== null;
       for (const panel of api.panels) {
-        if (!wantedPanelIds.has(panel.id)) panel.api.close();
+        if (wantedPanelIds.has(panel.id)) continue;
+        if (tidy) closeTidyPanel(api, panel, browserGroupIdRef.current);
+        else panel.api.close();
       }
 
       for (const [tabIndex, tab] of current.tabs.entries()) {
@@ -1383,19 +1711,37 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
           }
         }
 
+        const side = browserPanelSide(current.layoutMode);
+        const besideNeighbor =
+          restoredTabIdsRef.current.has(tab.id) &&
+          (!side ||
+            keepsNeighborSpot({
+              browser: tab.kind === "browser",
+              neighborGroupId: neighbor?.api.group.id ?? null,
+              browserGroupId: browserGroupIdRef.current,
+            }));
+        const tidyGroup =
+          side && !besideNeighbor ? tidyPosition(api, tab, side) : null;
         const added = api.addPanel({
           id,
           component: WORKSPACE_DOCKVIEW_COMPONENT,
           title: labelFor(tab),
           params: { tabId: tab.id },
           inactive: true,
-          position: workspaceDockviewInsertionPosition(
-            api.activeGroup,
-            neighbor,
-            neighborIndex,
-            restoredTabIdsRef.current.has(tab.id),
-          ),
+          position: tidyGroup
+            ? { referenceGroup: tidyGroup.id, index: tidyGroup.panels.length }
+            : workspaceDockviewInsertionPosition(
+                api.activeGroup,
+                neighbor,
+                neighborIndex,
+                besideNeighbor,
+              ),
         });
+        // A panel added inactive to an empty group leaves it showing nothing;
+        // show it there without making that group the one in use.
+        if (tidyGroup && tidyGroup.panels.length === 1) {
+          tidyGroup.model.openPanel(added, { skipSetGroupActive: true });
+        }
         added.api.group.header.hidden = current.hideTabs ?? false;
       }
 
@@ -1530,6 +1876,72 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
     schedulePersistedLayout,
   ]);
 
+  useEffect(() => {
+    if (!api || loadedSpaceRef.current !== props.spaceId) return;
+    const mode = props.layoutMode ?? "free";
+    const arranged = arrangedLayoutRef.current.get(props.spaceId);
+    arrangedLayoutRef.current.set(props.spaceId, mode);
+    if (arranged === undefined || arranged === mode) return;
+    const side = browserPanelSide(mode);
+    applyingLayout.current = true;
+    try {
+      if (side) {
+        arrangeTidy(api, side);
+      } else {
+        rememberBrowserGroup(null);
+        removeEmptyGroups(api);
+      }
+      const active = api.getPanel(
+        workspaceDockviewPanelId(latest.current.activeId),
+      );
+      if (active && api.activePanel !== active) active.api.setActive();
+    } finally {
+      applyingLayout.current = false;
+    }
+    schedulePersistedLayout();
+    scheduleLayoutSettled();
+  }, [
+    api,
+    arrangeTidy,
+    props.layoutMode,
+    props.spaceId,
+    rememberBrowserGroup,
+    scheduleLayoutSettled,
+    schedulePersistedLayout,
+  ]);
+
+  useEffect(() => {
+    if (!api) return;
+    const handled = handledReveals.current.get(props.spaceId) ?? 0;
+    const pending = (props.revealRequests ?? [])
+      .filter(
+        (request) =>
+          request.spaceId === props.spaceId && request.revision > handled,
+      )
+      .sort((left, right) => left.revision - right.revision);
+    for (const request of pending) {
+      handledReveals.current.set(props.spaceId, request.revision);
+      if (!browserPanelSide(latest.current.layoutMode)) continue;
+      const panel = api.getPanel(workspaceDockviewPanelId(request.tabId));
+      const group = panel?.api.group;
+      if (
+        !panel ||
+        !group ||
+        group.id !== browserGroupIdRef.current ||
+        api.activeGroup === group ||
+        group.activePanel === panel
+      ) {
+        continue;
+      }
+      applyingLayout.current = true;
+      try {
+        group.model.openPanel(panel, { skipSetGroupActive: true });
+      } finally {
+        applyingLayout.current = false;
+      }
+    }
+  }, [api, props.revealRequests, props.spaceId]);
+
   useLayoutEffect(() => {
     if (!api) return;
     const panel = api.getPanel(workspaceDockviewPanelId(props.activeId));
@@ -1551,6 +1963,11 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
       const current = latest.current;
       if (tabId !== null && tabId !== current.activeId) current.onSelect(tabId);
     });
+    const activeGroup = api.onDidActiveGroupChange((group) => {
+      if (group && group.id !== browserGroupIdRef.current) {
+        lastWorkGroupIdRef.current = group.id;
+      }
+    });
     const removedPanel = api.onDidRemovePanel((panel) => {
       if (applyingLayout.current || pendingRemovals.has(panel.id)) return;
       pendingRemovals.add(panel.id);
@@ -1570,6 +1987,7 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
     return () => {
       disposed = true;
       activePanel.dispose();
+      activeGroup.dispose();
       removedPanel.dispose();
     };
   }, [api]);
@@ -1581,6 +1999,8 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
   const contextValue: WorkspaceDockviewContextValue = {
     ...props,
     draggingTabId,
+    browserGroupId,
+    closeBrowserPanel,
     onTabPointerDown,
   };
   const draggedTab = props.tabs.find((tab) => tab.id === draggingTabId);
@@ -1593,6 +2013,7 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
           components={components}
           defaultTabComponent={WorkspaceDockviewTab}
           rightHeaderActionsComponent={WorkspaceDockviewActions}
+          watermarkComponent={WorkspaceDockviewWatermark}
           disableDnd
           disableFloatingGroups
           disableAutoResizing

@@ -48,6 +48,8 @@ function baseContext(
     openSpacesOverview: noop,
     newSpace: noop,
     switchSpace: noop,
+    layoutMode: "free",
+    setLayoutMode: noop,
     ...over,
   };
 }
@@ -99,5 +101,14 @@ describe("createCommandItems", () => {
       "spaces.switch.sp1",
     );
     expect(reason).toBe("Current space");
+  });
+
+  it("marks the workspace's layout as the current one", () => {
+    expect(
+      reasonById({ layoutMode: "browser-right" }, "layout.browser-right"),
+    ).toBe("Current layout");
+    expect(
+      reasonById({ layoutMode: "browser-right" }, "layout.free"),
+    ).toBeUndefined();
   });
 });

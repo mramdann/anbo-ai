@@ -1,4 +1,5 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import type { WorkspaceLayoutMode } from "@/modules/tabs/lib/workspaceTidyLayout";
 import { parseWorkspaceScopeKey, type WorkspaceEnv } from "@/modules/workspace";
 import { create } from "zustand";
 import {
@@ -33,6 +34,7 @@ type State = {
   setRoot: (id: string, root: string, name?: string) => void;
   setEnv: (id: string, env: WorkspaceEnv) => void;
   setColor: (id: string, color: number | undefined) => void;
+  setLayout: (id: string, layout: WorkspaceLayoutMode) => void;
   reorder: (orderedIds: string[]) => void;
   remove: (id: string) => string | null;
   setActive: (id: string) => void;
@@ -102,6 +104,15 @@ export const useSpaces = create<State>((set, get) => ({
   setColor: (id, color) => {
     const spaces = get().spaces.map((s) =>
       s.id === id ? { ...s, color, updatedAt: Date.now() } : s,
+    );
+    set({ spaces });
+    void saveSpacesList(spaces);
+  },
+
+  setLayout: (id, layout) => {
+    const value = layout === "free" ? undefined : layout;
+    const spaces = get().spaces.map((s) =>
+      s.id === id ? { ...s, layout: value, updatedAt: Date.now() } : s,
     );
     set({ spaces });
     void saveSpacesList(spaces);

@@ -1,4 +1,5 @@
 import { LocalLazyStore } from "@/lib/localStore";
+import type { WorkspaceLayoutMode } from "@/modules/tabs/lib/workspaceTidyLayout";
 import type { WorkspaceEnv } from "@/modules/workspace";
 import type { SerializedTab } from "./serialize";
 
@@ -9,6 +10,8 @@ export type SpaceMeta = {
   env: WorkspaceEnv;
   /** Opt-in accent, index into SPACE_COLORS. Undefined = theme primary. */
   color?: number;
+  /** Opt-in tidy layout for the dock. Undefined = free. */
+  layout?: Exclude<WorkspaceLayoutMode, "free">;
   createdAt: number;
   updatedAt: number;
 };
