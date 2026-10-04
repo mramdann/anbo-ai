@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.33.5](https://github.com/mramdann/anbo-ai/compare/v0.33.4...v0.33.5) (2026-10-04)
+
+
+### Bug Fixes
+
+* **ai:** keep custom endpoint models and retire Groq's withdrawn ones ([bee5c50](https://github.com/mramdann/anbo-ai/commit/bee5c50e8c89ea50d9f9443f1a3f4b1bafcd59a5))
+* **ai:** let go of a removed custom endpoint in every window ([76369d0](https://github.com/mramdann/anbo-ai/commit/76369d0d70152e0812334b364449779b52a80268))
+* **browser:** hold keys until a new document or viewport settles ([27107c3](https://github.com/mramdann/anbo-ai/commit/27107c35e44154ca3d5a9387ec48a686a51acc95))
+* **browser:** say which app holds the MCP port, and offer a retry ([ac684e5](https://github.com/mramdann/anbo-ai/commit/ac684e53d17e18397f12a697d1241c7e3aa6b63b))
+* **settings:** show the browser automation switch as it was set ([e6f5bb3](https://github.com/mramdann/anbo-ai/commit/e6f5bb316814c3565e10a2b004a652b0b681e22b))
+* **source-control:** build the commit message model with custom endpoints ([023a501](https://github.com/mramdann/anbo-ai/commit/023a501739c9422fd0d474f151a029423c903aac))
+
 ## [0.33.4](https://github.com/mramdann/anbo-ai/compare/v0.33.3...v0.33.4) (2026-10-03)
 
 
