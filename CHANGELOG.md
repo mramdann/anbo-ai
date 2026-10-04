@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.6](https://github.com/mramdann/anbo-ai/compare/v0.33.5...v0.33.6) (2026-10-04)
+
+
+### Bug Fixes
+
+* **browser:** end connected agents when browser automation is turned off ([caad4c5](https://github.com/mramdann/anbo-ai/commit/caad4c5878c369b6d417c1d3d0ccd8ce6de27e92))
+
 ## [0.33.5](https://github.com/mramdann/anbo-ai/compare/v0.33.4...v0.33.5) (2026-10-04)
 
 
