@@ -88,6 +88,7 @@ import {
   setBrowserPopupRequestHandler,
   setBrowserTabsRequestHandler,
 } from "@/modules/browser/automationOpenBridge";
+import { watchMcpPort } from "@/modules/browser/mcpPortNotice";
 import {
   listenForForwardedLinks,
   setInAppLinkOpener,
@@ -1535,6 +1536,10 @@ export default function App() {
     })();
     return () => unlisten?.();
   }, [handleOpenFile]);
+
+  // Another app holding the MCP port leaves every agent here talking to that
+  // app; say so, and offer a retry, instead of leaving it to the log.
+  useEffect(() => watchMcpPort(), []);
 
   const handleBeforePathRename = useCallback(
     (path: string) => {

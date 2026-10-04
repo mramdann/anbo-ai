@@ -52,9 +52,24 @@ pub async fn browser_automation_start(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn browser_automation_stop() -> Result<(), String> {
+pub async fn browser_automation_stop(app: AppHandle) -> Result<(), String> {
     server::stop_server();
+    // A port warning on screen has nothing left to warn about.
+    http::announce(&app);
     Ok(())
+}
+
+/// Whether the HTTP MCP endpoint holds its port, and when it does not, which
+/// process does.
+#[tauri::command]
+pub fn browser_mcp_status() -> http::McpStatus {
+    http::status()
+}
+
+/// Bind the HTTP MCP endpoint again once the user has freed its port.
+#[tauri::command]
+pub async fn browser_mcp_retry(app: AppHandle) -> http::McpStatus {
+    http::retry(app).await
 }
 
 /// Publish what each live agent goes by, keyed by the terminal it runs in.

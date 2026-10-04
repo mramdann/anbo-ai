@@ -402,6 +402,8 @@ pub fn run() {
             browser::embed::browser_embed_reconcile,
             browser_automation::browser_automation_start,
             browser_automation::browser_automation_stop,
+            browser_automation::browser_mcp_status,
+            browser_automation::browser_mcp_retry,
             modules::browser_external::browser_external_connections,
             modules::browser_external::dock::browser_external_dock,
             modules::browser_external::target::browser_external_bind,
