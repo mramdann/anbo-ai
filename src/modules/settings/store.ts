@@ -1125,6 +1125,7 @@ export async function onPreferencesChange(
     [KEY_AGENT_SYSTEM_NOTIFICATIONS]: "agentSystemNotifications",
     [KEY_AGENT_ATTENTION_SOUND]: "agentAttentionSound",
     [KEY_AGENT_MCP_ENABLED]: "agentMcpEnabled",
+    [KEY_BROWSER_AUTOMATION_ENABLED]: "browserAutomationEnabled",
     [KEY_AGENT_LAUNCH_COMMANDS]: "agentLaunchCommands",
     [KEY_CUSTOM_CLI_AGENTS]: "customCliAgents",
     [KEY_DEFAULT_WORKSPACE_ENV]: "defaultWorkspaceEnv",
