@@ -22,4 +22,5 @@ pub mod secrets;
 pub mod shell;
 pub mod skills;
 pub mod voice_runtime;
+pub mod window_frame;
 pub mod workspace;
