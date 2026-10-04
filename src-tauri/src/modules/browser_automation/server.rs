@@ -132,6 +132,9 @@ pub fn start_server(app: AppHandle) -> Result<(), String> {
         {
             use tokio::net::windows::named_pipe::ServerOptions;
 
+            // Each connected client watches this, so a stop also ends the
+            // pipe connections that are already open.
+            let (closing_tx, closing_rx) = tokio::sync::watch::channel(false);
             let mut first = true;
             loop {
                 let server_res = if first {
@@ -154,14 +157,16 @@ pub fn start_server(app: AppHandle) -> Result<(), String> {
                 tokio::select! {
                     _ = &mut cancel_rx => {
                         log::info!("[browser_automation] server received stop signal");
+                        let _ = closing_tx.send(true);
                         break;
                     }
                     connect_res = server.connect() => {
                         if connect_res.is_ok() {
                             let app_clone = app.clone();
                             let token_clone = expected_token.clone();
+                            let closing = closing_rx.clone();
                             tokio::spawn(async move {
-                                handle_client(server, app_clone, token_clone).await;
+                                handle_client(server, app_clone, token_clone, closing).await;
                             });
                         }
                     }
@@ -247,13 +252,20 @@ async fn handle_client(
     stream: tokio::net::windows::named_pipe::NamedPipeServer,
     app: AppHandle,
     expected_token: String,
+    mut closing: tokio::sync::watch::Receiver<bool>,
 ) {
     let pty_id = super::peer::pipe_owner(app.clone(), &stream).await;
     let client = super::peer::pipe_client(&stream);
     let (reader, mut writer) = tokio::io::split(stream);
     let mut buf_reader = BufReader::new(reader);
     loop {
-        let line = match read_bounded_line(&mut buf_reader, MAX_REQUEST_SIZE).await {
+        // A stop ends the connection between requests: the one in flight
+        // finishes, and no further request is read.
+        let read = tokio::select! {
+            read = read_bounded_line(&mut buf_reader, MAX_REQUEST_SIZE) => read,
+            _ = closing.changed() => break,
+        };
+        let line = match read {
             Ok(BoundedLine::Eof) | Err(_) => break,
             Ok(BoundedLine::TooLarge) => {
                 let resp = BrowserResponse::err(
