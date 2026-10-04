@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -132,6 +132,22 @@ try {
   const cursorState = () => evaluate("(()=>{const el=window.testRoots.at(-1).querySelector('.cursor'),r=el.getBoundingClientRect();return{display:getComputedStyle(el).display,opacity:+getComputedStyle(el).opacity,x:r.x,y:r.y}})()");
   const motionFrames = () => evaluate("new Promise(resolve=>{const start=performance.now(),samples=[];const sample=now=>{const root=window.testRoots.at(-1),el=root.querySelector('.cursor'),r=el.getBoundingClientRect(),b=root.querySelector('.badge').getBoundingClientRect();samples.push({time:now-start,x:r.x,y:r.y,badgeX:b.x,badgeY:b.y,display:getComputedStyle(el).display});if(now-start<500)requestAnimationFrame(sample);else resolve(samples)};requestAnimationFrame(sample)})");
   const from = {x:140,y:160}, to = {x:680,y:330};
+  // A finished action collapses its detail line; an error or the next action
+  // brings it back. Folded in from the old Playwright-only completion smoke.
+  const detailState = () => evaluate("(()=>{const root=window.testRoots.at(-1),detail=root.querySelector('.detail');return{text:detail.textContent,display:getComputedStyle(detail).display,height:root.querySelector('.badge').getBoundingClientRect().height}})()");
+  await emit('running', point);
+  const working = await detailState();
+  assert(working.text.startsWith('Clicking') && working.display !== 'none', 'Running action detail remains visible');
+  await emit('done', point);
+  const finished = await detailState();
+  assert.deepEqual({text:finished.text,display:finished.display}, {text:'',display:'none'}, 'A finished action collapses its detail');
+  assert(finished.height < working.height, 'The collapsed card is shorter than the working one');
+  const finishedCard = await cardState();
+  assert.deepEqual({name:finishedCard.name,tool:finishedCard.tool,cursor:(await cursorState()).display}, {name:'Claude',tool:'browser_click',cursor:'block'}, 'Completion keeps who acted, the tool and the cursor');
+  await emit('error', point);
+  assert((await detailState()).text.startsWith('Action stopped'), 'Errors remain visible after completion');
+  await emit('running', point);
+  assert.notEqual((await detailState()).display, 'none', 'The next action restores the detail');
   await emit('move', from, 'hover', undefined, 10); await pause(450);
   await emit('done', undefined, 'hover', undefined, 10);
   await emit('running', undefined, 'get_text', undefined, 11);
@@ -154,19 +170,23 @@ try {
   assert((await cursorState()).opacity > .99, 'Short idle gaps do not blink the cursor away');
   await emit('move', from, 'hover', undefined, 13);
   assert((await motionFrames()).some(sample => sample.x > from.x+1 && sample.x < to.x-1), 'The next request resumes from the retained position');
+  // A held session always shows its cursor, so a pointer that must not be
+  // used goes back to the viewport centre at once instead of disappearing.
+  const centre = {display:'block',x:500,y:360};
+  const pointer = async () => { const state = await cursorState(); return {display:state.display,x:state.x,y:state.y}; };
+  assert.notDeepEqual({x:point.x,y:point.y}, {x:centre.x,y:centre.y}, 'The fixture pointer is not the viewport centre');
   await emit('move', {x:-20,y:100}, 'hover', undefined, 13);
-  assert.equal((await cursorState()).display, 'none', 'Invalid viewport coordinates clear the stale pointer immediately');
+  assert.deepEqual(await pointer(), centre, 'Invalid viewport coordinates drop the stale pointer immediately');
   await emit('move', point);
   await emit("frame");
-  assert.equal(await evaluate("getComputedStyle(window.testRoots.at(-1).querySelector('.cursor')).display"), "none", "Frame-local coordinates never masquerade as page coordinates");
-  assert.equal((await badgeBounds()).placement, 'docked', 'Frame actions do not reuse a root-page pointer anchor');
+  assert.deepEqual(await pointer(), centre, "Frame-local coordinates never masquerade as page coordinates");
+  assert.equal((await badgeBounds()).placement, 'pointer', 'Frame actions anchor the card to the centred cursor, not the root-page pointer');
   await emit('move', point);
   await emit('running', undefined, 'wait', {brand:'codex',label:'Codex'}, 2);
-  assert.equal((await badgeBounds()).placement, 'docked', 'Another caller does not inherit the previous caller cursor');
-  assert.equal((await cursorState()).display, 'none', 'Another caller does not inherit a visible pointer');
+  assert.deepEqual(await pointer(), centre, 'Another caller does not inherit the previous caller cursor');
   await emit('move', point, 'hover', undefined, 30, 30);
   await emit('running', undefined, 'wait', undefined, 31, 31);
-  assert.equal((await cursorState()).display, 'none', 'Same-brand connections do not share their pointer');
+  assert.deepEqual(await pointer(), centre, 'Same-brand connections do not share their pointer');
   await emit("running", undefined, "type");
   await evaluate("document.querySelector('input').focus()");
   await send("Input.insertText", { text: "native input" });
@@ -210,7 +230,7 @@ try {
   assert((await cursorState()).opacity > .99, 'Completion leaves the cursor readable through short idle gaps');
   await pause(3000);
   assert((await cursorState()).opacity > .99, 'A finished tool retains its pointer beyond the old disposal timeout');
-  assert.equal(await evaluate("window.testRoots.at(-1).getAnimations().filter(a=>a.playState==='running').length"), 0, 'Thinking gaps have no running animations');
+  assert.deepEqual(await evaluate("window.testRoots.at(-1).getAnimations().filter(a=>a.playState==='running').map(a=>a.animationName)"), ['hold'], 'Thinking gaps run only the held-session halo');
   await emit('running', undefined, 'get_text', undefined, 80);
   assert.equal((await cursorState()).display, 'block', 'A read resumes the retained cursor after a long gap');
   await emit('ended', undefined, 'get_text', undefined, 80);
@@ -277,12 +297,12 @@ try {
   for (let i=0;i<100;i++) {if(await evaluate("location.pathname === '/tabs' && document.readyState === 'complete'")) break; await pause(25);}
   await evaluate(`(()=>{
     const style=document.createElement('style');style.textContent=${JSON.stringify(tabCss)};document.head.append(style);
-    document.body.innerHTML='<div class="dockview-theme-anbo-workspace" style="width:360px;margin:24px;font-size:12px"><div class="dv-tab" style="height:29px"><div class="anbo-workspace-dockview-tab"><span class="anbo-workspace-dockview-tab-main"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis">Browser / Research workspace</span><span class="anbo-browser-automation-indicator" data-phase="running"><img class="anbo-browser-automation-robot" width="12" height="12"></span></span><span>×</span></div></div></div>';
+    document.body.innerHTML='<div class="dockview-theme-anbo-workspace" style="width:360px;margin:24px;font-size:12px"><div class="dv-tab" style="height:29px"><div class="anbo-workspace-dockview-tab"><span class="anbo-workspace-dockview-tab-main"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis">Browser / Research workspace</span><span class="anbo-browser-automation-indicator" data-phase="running" data-state="acting"><img class="anbo-browser-automation-robot" width="12" height="12"></span></span><span>×</span></div></div></div>';
     document.querySelector('img').src=${JSON.stringify(iconFor('claude').source)};
   })()`);
   const pulseState = () => evaluate(`(()=>{
     const el=document.querySelector('.anbo-browser-automation-indicator'),logo=el.querySelector('img').getBoundingClientRect(),box=el.getBoundingClientRect(),clip=el.parentElement.getBoundingClientRect(),a=getComputedStyle(el,'::before'),b=getComputedStyle(el,'::after');
-    return {scale:a.transform==='none'?1:new DOMMatrix(a.transform).a,opacity:+a.opacity,radius:a.borderRadius,first:a.animationName,second:b.animationName,delay:b.animationDelay,logo:{x:logo.x,y:logo.y,width:logo.width,height:logo.height},room:{top:box.top-clip.top,bottom:clip.bottom-box.bottom,left:box.left-clip.left,right:clip.right-box.right},color:a.borderColor,logoAnimation:getComputedStyle(el.querySelector('img')).animationName};
+    return {scale:a.transform==='none'?1:new DOMMatrix(a.transform).a,opacity:+a.opacity,radius:a.borderRadius,first:a.animationName,second:b.animationName,delay:b.animationDelay,duration:a.animationDuration,logo:{x:logo.x,y:logo.y,width:logo.width,height:logo.height},room:{top:box.top-clip.top,bottom:clip.bottom-box.bottom,left:box.left-clip.left,right:clip.right-box.right},color:a.borderColor,logoAnimation:getComputedStyle(el.querySelector('img')).animationName};
   })()`);
   const pulseColors=[];
   for (const [primary,background] of [['#8b80ff','#181b21'],['#5143bb','#f8fafc']]) {
@@ -290,7 +310,7 @@ try {
     const initial=await pulseState();
     pulseColors.push(initial.color);
     assert.equal(initial.first,'anbo-browser-automation-pulse');assert.equal(initial.second,initial.first);
-    assert.equal(initial.radius,'50%');assert.equal(initial.delay,'-0.9s');assert.equal(initial.logoAnimation,'none');
+    assert.equal(initial.radius,'50%');assert.equal(initial.duration,'1.5s');assert.equal(initial.delay,'-0.75s');assert.equal(initial.logoAnimation,'none');
     assert(Object.values(initial.room).every(value=>value>=5.2),'The full expanding circle fits inside the clipped tab content');
     const setPulseTime = time => evaluate(`document.getAnimations().filter(a=>a.animationName==='anbo-browser-automation-pulse').forEach(a=>{a.pause();a.currentTime=${time}})`);
     await setPulseTime(450);const early=await pulseState();
@@ -301,28 +321,41 @@ try {
   }
   assert.notEqual(pulseColors[0],pulseColors[1],'Pulse color follows the active theme token');
   if (tabOutput) { const shot=await send('Page.captureScreenshot',{format:'png'});writeFileSync(tabOutput,Buffer.from(shot.data,'base64')); }
+  // A finished or failed call leaves the tab held, beating slower; only a
+  // parked session rests (WorkspaceDockview maps the phases the same way).
+  const setIndicator = (phase, state) => evaluate(`Object.assign(document.querySelector('.anbo-browser-automation-indicator').dataset,{phase:'${phase}',state:'${state}'})`);
   for (const phase of ['done','error']) {
-    await evaluate(`document.querySelector('.anbo-browser-automation-indicator').dataset.phase='${phase}'`);
-    const state=await pulseState();assert.equal(state.first,'none');assert.equal(state.second,'none');assert.equal(state.opacity,0);
+    await setIndicator(phase,'held');
+    const state=await pulseState();
+    assert.equal(state.first,'anbo-browser-automation-pulse',`A tab held after ${phase} keeps its wave`);
+    assert.equal(state.duration,'3.4s','A held tab beats slower than the acting one');
   }
+  await setIndicator('idle','idle');
+  const parked=await pulseState();assert.equal(parked.first,'none');assert.equal(parked.second,'none');assert.equal(parked.opacity,0,'A parked session rests its wave');
   const tabSamples=[];
   if (process.argv.includes('--measure')) {
     const metrics=async()=>Object.fromEntries((await send('Performance.getMetrics')).metrics.map(metric=>[metric.name,metric.value]));
     for (const on of [false,true,false,true,false,true]) {
-      await evaluate(`document.querySelector('.anbo-browser-automation-indicator').dataset.phase='${on?'running':'done'}'`);
+      await setIndicator(on?'running':'idle',on?'acting':'idle');
       const a=await metrics();
       const frames=await evaluate("new Promise(resolve=>{let start=performance.now(),previous=start;const times=[];const tick=now=>{times.push(now-previous);previous=now;if(now-start<3000)requestAnimationFrame(tick);else resolve(times)};requestAnimationFrame(tick)})");
       const b=await metrics();frames.sort((a,b)=>a-b);
       tabSamples.push({pulse:on,rendererTaskMs:+(1000*(b.TaskDuration-a.TaskDuration)).toFixed(2),layoutMs:+(1000*(b.LayoutDuration-a.LayoutDuration)).toFixed(2),frameP95Ms:+frames[Math.floor(frames.length*.95)].toFixed(2),frames:frames.length});
     }
   }
-  await evaluate("document.querySelector('.anbo-browser-automation-indicator').dataset.phase='running'");
+  await setIndicator('running','acting');
   await send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
   const reducedPulse=await pulseState();assert.equal(reducedPulse.first,'none');assert.equal(reducedPulse.second,'none');
   assert.equal(requests.filter(url => !url.startsWith(origin) && !url.startsWith('data:image/')).length, 0, "Effects make no external requests");
   assert.deepEqual(errors, []);
   if (reportPath) writeFileSync(reportPath,JSON.stringify({passed:true,scope:'Shipped visual source in isolated headless Chromium, not the Dev foreground window',soak,samples,tabSamples},null,2),{flag:'wx'});
-  console.log(JSON.stringify({ passed: true, checks: ["lazy mount", "click-through", "unchanged geometry/text", "closed shadow", "native click once", "native typing", "click ripple", "cursor-attached identity", "badge edge clamping", "caller anchor isolation", "frame fallback", "clean screenshot", "reduced motion", "hidden cleanup", "DPI/small viewport", "50 lifecycle cycles", "stable completion anchor", "explicit session end", "strict page CSP", "no external requests", "no runtime errors", "cross-request cursor interpolation", "read-tool cursor continuity", "short-idle resume", "invalid coordinate reset", "persistent idle cursor with paused animations", "reduced-motion pointer", "compact two-line card", "14x18 neutral pointer", "seven canonical brand logos", "generic icon fallback", "public tool names", "bounded method labels", "error state", "CSP image fallback", "right and bottom edge flips", "same-brand session reset", "late completion rejection", "screenshot completion restore", "distance-aware travel", "matched cursor/card duration", "mid-flight retarget continuity", "stationary tab logo", "two expanding circular pulses", "unclipped pulse bounds", "pulse theme tokens", "idle and reduced-motion pulse stop"], samples, tabSamples }, null, 2));
+  console.log(JSON.stringify({ passed: true, checks: ["lazy mount", "click-through", "unchanged geometry/text", "closed shadow", "native click once", "native typing", "click ripple", "cursor-attached identity", "badge edge clamping", "caller anchor isolation", "frame fallback", "clean screenshot", "reduced motion", "hidden cleanup", "DPI/small viewport", "50 lifecycle cycles", "stable completion anchor", "completion detail collapses and returns", "explicit session end", "strict page CSP", "no external requests", "no runtime errors", "cross-request cursor interpolation", "read-tool cursor continuity", "short-idle resume", "invalid coordinate reset to the centred cursor", "persistent idle cursor with only its hold halo running", "reduced-motion pointer", "compact two-line card", "14x18 neutral pointer", "seven canonical brand logos", "generic icon fallback", "public tool names", "bounded method labels", "error state", "CSP image fallback", "right and bottom edge flips", "same-brand session reset", "late completion rejection", "screenshot completion restore", "distance-aware travel", "matched cursor/card duration", "mid-flight retarget continuity", "stationary tab logo", "two expanding circular pulses", "unclipped pulse bounds", "pulse theme tokens", "idle and reduced-motion pulse stop"], samples, tabSamples }, null, 2));
 } finally {
-  clearTimeout(deadline); socket?.close(); child.kill(); server.close();
+  clearTimeout(deadline); socket?.close(); server.close();
+  // Chromium holds its profile until it exits; every run used to leave one
+  // (6 to 79 MB) in the temp folder.
+  const exited = child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : new Promise(resolve => child.once("exit", resolve));
+  child.kill();
+  await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 5_000))]);
+  rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }
