@@ -1,5 +1,10 @@
 import type { SearchTarget } from "@/modules/header";
 import type { Tab } from "@/modules/tabs";
+import {
+  WORKSPACE_LAYOUT_LABELS,
+  WORKSPACE_LAYOUT_MODES,
+  type WorkspaceLayoutMode,
+} from "@/modules/tabs/lib/workspaceTidyLayout";
 import { leafIds } from "@/modules/terminal";
 import {
   Cancel01Icon,
@@ -60,6 +65,8 @@ export type CommandPaletteActionContext = {
   openSpacesOverview: () => void;
   newSpace: () => void;
   switchSpace: (id: string) => void;
+  layoutMode: WorkspaceLayoutMode;
+  setLayoutMode: (mode: WorkspaceLayoutMode) => void;
 };
 
 const noop = () => {};
@@ -275,6 +282,17 @@ export function createCommandItems(
       shortcutId: "sidebar.toggle",
       run: ctx.toggleSidebar,
     },
+    ...WORKSPACE_LAYOUT_MODES.map(
+      (mode): PaletteItem => ({
+        id: `layout.${mode}`,
+        title: `Layout: ${WORKSPACE_LAYOUT_LABELS[mode]}`,
+        group: "View",
+        keywords: ["layout", "tidy", "browser", "agent", "panel", "side"],
+        icon: LayoutTwoColumnIcon,
+        disabledReason: ctx.layoutMode === mode ? "Current layout" : undefined,
+        run: () => ctx.setLayoutMode(mode),
+      }),
+    ),
     {
       id: "ai.toggle",
       title: "Toggle AI agent",
