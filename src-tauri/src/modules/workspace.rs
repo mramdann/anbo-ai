@@ -825,7 +825,30 @@ mod auth_tests {
     use std::env;
     use std::fs;
 
-    fn tempdir(label: &str) -> PathBuf {
+    /// A canonical temp dir that is removed when the test ends, however it
+    /// ends: before this, every `cargo test` left fifteen of them in %TEMP%.
+    struct TempDir(PathBuf);
+
+    impl std::ops::Deref for TempDir {
+        type Target = PathBuf;
+        fn deref(&self) -> &PathBuf {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for TempDir {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn tempdir(label: &str) -> TempDir {
         let mut p = env::temp_dir();
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -833,7 +856,7 @@ mod auth_tests {
             .unwrap_or(0);
         p.push(format!("anbo-auth-{label}-{nanos}-{}", std::process::id()));
         fs::create_dir_all(&p).expect("create tempdir");
-        fs::canonicalize(&p).expect("canonicalize tempdir")
+        TempDir(fs::canonicalize(&p).expect("canonicalize tempdir"))
     }
 
     #[test]
@@ -861,7 +884,7 @@ mod auth_tests {
         let resolved = authorize_spawn_cwd(&reg, Some(&s), &WorkspaceEnv::Local)
             .expect("authorized")
             .expect("returned canonical");
-        assert_eq!(resolved, dir);
+        assert_eq!(resolved, *dir);
     }
 
     #[test]
@@ -918,7 +941,7 @@ mod auth_tests {
         let resolved = authorize_user_spawn_cwd(&reg, Some(&s), &WorkspaceEnv::Local)
             .expect("user spawn allowed anywhere")
             .expect("returned canonical");
-        assert_eq!(resolved, dir);
+        assert_eq!(resolved, *dir);
         assert!(reg.is_authorized(&dir));
     }
 
@@ -1028,14 +1051,17 @@ mod auth_tests {
     #[test]
     fn resolve_launch_cwd_falls_back_to_env_when_cli_missing() {
         let env = tempdir("envonly");
-        assert_eq!(resolve_launch_cwd(None, Some(env.clone())), Some(env));
+        assert_eq!(
+            resolve_launch_cwd(None, Some(env.clone())),
+            Some(env.to_path_buf())
+        );
     }
 
     #[test]
     fn resolve_launch_cwd_ignores_nonexistent_cli_dir() {
         let env = tempdir("envfb");
         let resolved = resolve_launch_cwd(Some("/no/such/anbo/dir"), Some(env.clone()));
-        assert_eq!(resolved, Some(env));
+        assert_eq!(resolved, Some(env.to_path_buf()));
     }
 }
 
