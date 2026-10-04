@@ -8,7 +8,7 @@ extern "C" {}
 
 use modules::{
     agent, agent_cli, anbo, app_data, browser, browser_automation, fs, git, global_voice, history,
-    lsp, net, proc, project_memory, pty, secrets, shell, voice_runtime, workspace,
+    lsp, net, proc, project_memory, pty, secrets, shell, voice_runtime, window_frame, workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -247,6 +247,9 @@ pub fn run() {
         )
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Before window-state, so a restored size is measured against the
+        // frame the window keeps (see window_frame).
+        .plugin(window_frame::init())
         // Skip restoring VISIBLE — frontend calls window.show() after first
         // paint so the user never sees a transparent window-shadow flash on
         // Windows/Linux.
