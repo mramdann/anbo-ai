@@ -88,7 +88,9 @@ fn voice_window_handle(app: &tauri::AppHandle) -> Option<isize> {
 }
 
 fn request_internal_focus(app: &tauri::AppHandle) -> Result<(), String> {
-    app.get_webview_window("main")
+    // The main webview, not the main webview window: once main hosts browser
+    // tabs it holds several webviews and get_webview_window("main") is None.
+    app.get_webview("main")
         .ok_or_else(|| "The main Anbo window is unavailable.".to_string())?
         .eval(RESTORE_INTERNAL_FOCUS_SCRIPT)
         .map_err(|error| error.to_string())
