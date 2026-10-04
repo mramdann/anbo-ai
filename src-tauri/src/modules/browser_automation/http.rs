@@ -181,10 +181,14 @@ pub fn start(app: AppHandle) -> Result<(), String> {
         set_state(McpState::Listening, None);
         announce(&app);
 
+        // Every open connection watches this, so a stop reaches the agents
+        // already connected and not only the next ones.
+        let (closing_tx, closing_rx) = tokio::sync::watch::channel(false);
         loop {
             tokio::select! {
                 _ = &mut cancel_rx => {
                     log::info!("[browser_automation] http: received stop signal");
+                    let _ = closing_tx.send(true);
                     break;
                 }
                 accept = listener.accept() => {
@@ -196,6 +200,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                         }
                     };
                     let app = app.clone();
+                    let closing = closing_rx.clone();
                     tauri::async_runtime::spawn(async move {
                         let local = stream.local_addr().ok();
                         let owner = std::sync::Arc::new(tokio::sync::OnceCell::new());
@@ -205,10 +210,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                             let owner = owner.clone();
                             async move { handle(req, app, peer, local, owner).await }
                         });
-                        if let Err(e) = hyper::server::conn::http1::Builder::new()
-                            .serve_connection(io, svc)
-                            .await
-                        {
+                        if let Err(e) = serve_until_closed(io, svc, closing).await {
                             log::warn!("[browser_automation] http: connection error: {e}");
                         }
                     });
@@ -220,6 +222,33 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     });
 
     Ok(())
+}
+
+/// Serves one connection until the client leaves or the endpoint stops. On a
+/// stop the request in flight finishes and the connection closes: turning
+/// browser automation off used to leave a kept-alive client free to initialize
+/// again on its open socket and go on driving the browser.
+async fn serve_until_closed<S>(
+    io: hyper_util::rt::TokioIo<tokio::net::TcpStream>,
+    service: S,
+    mut closing: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), hyper::Error>
+where
+    S: hyper::service::HttpService<hyper::body::Incoming>,
+    S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    S::ResBody: 'static,
+    <S::ResBody as hyper::body::Body>::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let connection = hyper::server::conn::http1::Builder::new().serve_connection(io, service);
+    tokio::pin!(connection);
+    tokio::select! {
+        result = connection.as_mut() => result,
+        // A dropped sender means the endpoint is gone as well.
+        _ = closing.changed() => {
+            connection.as_mut().graceful_shutdown();
+            connection.await
+        }
+    }
 }
 
 pub fn stop() {
@@ -472,6 +501,43 @@ fn empty(status: u16) -> hyper::Response<Full<Bytes>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_stop_closes_a_kept_alive_connection_after_its_request() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (closing_tx, closing_rx) = tokio::sync::watch::channel(false);
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let service = hyper::service::service_fn(|_request| async {
+                Ok::<_, Infallible>(hyper::Response::new(Full::new(Bytes::from_static(b"ok"))))
+            });
+            serve_until_closed(hyper_util::rt::TokioIo::new(stream), service, closing_rx).await
+        });
+
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let request = b"POST /mcp HTTP/1.1\r\nhost: 127.0.0.1\r\ncontent-length: 0\r\n\r\n";
+        let mut reply = [0u8; 512];
+        client.write_all(request).await.unwrap();
+        let read = client.read(&mut reply).await.unwrap();
+        assert!(
+            reply[..read].starts_with(b"HTTP/1.1 200"),
+            "the open connection is served"
+        );
+
+        closing_tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("the connection ends once the endpoint stops")
+            .unwrap()
+            .unwrap();
+        // Nothing answers on that socket any more, so a client can no longer
+        // initialize again on it and go on.
+        let _ = client.write_all(request).await;
+        assert_eq!(client.read(&mut reply).await.unwrap_or(0), 0);
+    }
 
     #[test]
     fn a_failed_bind_tells_the_ui_who_holds_the_port() {
