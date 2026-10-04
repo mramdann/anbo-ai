@@ -9,6 +9,8 @@ pub const SHORTCUT: &str = "ctrl+alt+space";
 pub const TOGGLE_EVENT: &str = "anbo://global-voice-toggle";
 const RESTORE_INTERNAL_FOCUS_SCRIPT: &str = "(() => { const target = document.querySelector('[data-anbo-voice-target=\"true\"]'); if (target?.isConnected && target.getClientRects().length > 0) target.focus({ preventScroll: true }); })()";
 const PENDING_INTERNAL_TARGET_MAX_AGE: Duration = Duration::from_secs(3);
+/// The orb window's size in logical pixels; voice.css lays the pill out in it.
+const WINDOW_SIZE: (f64, f64) = (122.0, 42.0);
 
 #[derive(Default)]
 pub struct GlobalVoiceState {
@@ -129,9 +131,9 @@ fn ensure_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String>
     let builder =
         WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::App("voice.html".into()))
             .title("AnboVoice")
-            .inner_size(122.0, 42.0)
-            .min_inner_size(122.0, 42.0)
-            .max_inner_size(122.0, 42.0)
+            .inner_size(WINDOW_SIZE.0, WINDOW_SIZE.1)
+            .min_inner_size(WINDOW_SIZE.0, WINDOW_SIZE.1)
+            .max_inner_size(WINDOW_SIZE.0, WINDOW_SIZE.1)
             .resizable(false)
             .decorations(false)
             .always_on_top(true)
@@ -152,6 +154,12 @@ fn ensure_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String>
     let builder = builder.drag_and_drop(false);
 
     let window = builder.build().map_err(|error| error.to_string())?;
+    // Windows widens a new window that has a caption style to its minimum
+    // width (136 px at 100%) before tao's limits apply, and window-state then
+    // saves and restores that width. Set the designed size after both, before
+    // the orb is placed by its size.
+    #[cfg(target_os = "windows")]
+    let _ = window.set_size(tauri::LogicalSize::new(WINDOW_SIZE.0, WINDOW_SIZE.1));
     place_window_at_default(&window);
     Ok(window)
 }
