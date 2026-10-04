@@ -14,10 +14,10 @@ import { NotificationBell } from "@/modules/agents";
 import { EXTERNAL_BROWSERS_ENABLED } from "@/modules/browser/external/store";
 import type { WorkspaceEnv } from "@/modules/workspace";
 import {
-  AudioWaveformIcon,
   CommandIcon,
   Settings01Icon,
   SidebarLeftIcon,
+  SpeechToTextIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { getVersion } from "@tauri-apps/api/app";
@@ -125,7 +125,7 @@ export function Header({
       aria-pressed={voiceVisible}
     >
       <HugeiconsIcon
-        icon={AudioWaveformIcon}
+        icon={SpeechToTextIcon}
         size={14}
         strokeWidth={1.75}
         className="size-3.5"
