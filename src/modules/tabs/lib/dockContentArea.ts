@@ -8,9 +8,44 @@ export type DockArea = {
   height: number;
 };
 
+/** Marks the group a tidy layout keeps browser tabs in. */
+export const BROWSER_PANEL_ATTRIBUTE = "data-anbo-browser-panel";
+
+/** What a hidden host holds: browser tabs, or every other kind of tab. */
+type HiddenTabKind = "browser" | "other";
+
+const PANEL = `.dv-groupview[${BROWSER_PANEL_ATTRIBUTE}]`;
+const NOT_PANEL = `:not([${BROWSER_PANEL_ATTRIBUTE}])`;
+// The groups each kind of hidden tab takes its box from, best first.
+const GROUPS: Record<HiddenTabKind, readonly string[]> = {
+  browser: [PANEL, ".dv-groupview.dv-active-group", ".dv-groupview"],
+  other: [
+    `.dv-groupview.dv-active-group${NOT_PANEL}`,
+    `.dv-groupview${NOT_PANEL}`,
+    ".dv-groupview.dv-active-group",
+    ".dv-groupview",
+  ],
+};
+
+function groupContent(
+  container: HTMLElement,
+  kind: HiddenTabKind,
+): HTMLElement | null {
+  for (const selector of GROUPS[kind]) {
+    const content = container
+      .querySelector<HTMLElement>(selector)
+      ?.querySelector<HTMLElement>(":scope > .dv-content-container");
+    if (content) return content;
+  }
+  return null;
+}
+
 /**
  * Where a panel's content sits inside the dock: the active group's content
- * box (below its tab strip), which is where a new tab lands.
+ * box (below its tab strip), which is where a new tab lands. In a tidy layout
+ * browser tabs land in the browser panel instead, so a hidden browser tab
+ * takes that panel's box, and any other hidden tab the box of the group in
+ * use, or of another group while the browser panel is the one in use.
  *
  * Tabs that are not visible in the dock render in hidden hosts outside
  * dockview, which used to cover the whole dock area. A browser tab opened
@@ -24,13 +59,11 @@ export type DockArea = {
  * second time (at 95% a background tab came out 5% too small), while a share
  * of the dock stays the same share at any zoom.
  */
-export function dockContentArea(container: HTMLElement): DockArea | null {
-  const group =
-    container.querySelector<HTMLElement>(".dv-groupview.dv-active-group") ??
-    container.querySelector<HTMLElement>(".dv-groupview");
-  const content = group?.querySelector<HTMLElement>(
-    ":scope > .dv-content-container",
-  );
+export function dockContentArea(
+  container: HTMLElement,
+  kind: HiddenTabKind = "other",
+): DockArea | null {
+  const content = groupContent(container, kind);
   if (!content) return null;
   const outer = container.getBoundingClientRect();
   const inner = content.getBoundingClientRect();
@@ -68,40 +101,52 @@ function sameArea(a: DockArea | null, b: DockArea | null): boolean {
   );
 }
 
-/** dockContentArea for the element `containerRef` is set on, kept current as
- *  the dock or the active group's content box resizes. Call `remeasure`
- *  whenever the dock's layout changes (a group added or activated, a space
- *  loaded): those resize neither box, and dockview builds its groups after
- *  the dock mounts. A callback ref, because the dock is not there at all
- *  while the first-run page shows. */
+/** dockContentArea for the element `containerRef` is set on, for both kinds
+ *  of hidden tab, kept current as the dock or either content box resizes.
+ *  Call `remeasure` whenever the dock's layout changes (a group added or
+ *  activated, a space loaded): those resize neither box, and dockview builds
+ *  its groups after the dock mounts. A callback ref, because the dock is not
+ *  there at all while the first-run page shows. */
 export function useDockContentArea(): {
   area: DockArea | null;
+  browserArea: DockArea | null;
   containerRef: (container: HTMLElement | null) => (() => void) | undefined;
   remeasure: () => void;
 } {
   const [area, setArea] = useState<DockArea | null>(null);
+  const [browserArea, setBrowserArea] = useState<DockArea | null>(null);
   const measureRef = useRef<(() => void) | null>(null);
   const containerRef = useCallback((container: HTMLElement | null) => {
     if (!container) return;
     let frame = 0;
-    let watched: Element | null = null;
+    let watched: Element[] = [];
     const observer = new ResizeObserver(() => {
       if (!frame) frame = requestAnimationFrame(measure);
     });
     function measure() {
       frame = 0;
-      const next = dockContentArea(container as HTMLElement);
+      const dock = container as HTMLElement;
+      const next = dockContentArea(dock, "other");
+      const nextBrowser = dockContentArea(dock, "browser");
       setArea((current) => (sameArea(current, next) ? current : next));
-      // Follow the content box itself too: a split's sash moves it without
-      // resizing the dock.
-      const content = (container as HTMLElement).querySelector(
-        ".dv-groupview.dv-active-group > .dv-content-container",
+      setBrowserArea((current) =>
+        sameArea(current, nextBrowser) ? current : nextBrowser,
       );
-      if (content !== watched) {
-        if (watched) observer.unobserve(watched);
-        if (content) observer.observe(content);
-        watched = content;
+      // Follow the content boxes themselves too: a split's sash moves them
+      // without resizing the dock.
+      const contents = [
+        groupContent(dock, "other"),
+        groupContent(dock, "browser"),
+      ].filter((content): content is HTMLElement => content !== null);
+      for (const content of watched) {
+        if (!contents.includes(content as HTMLElement)) {
+          observer.unobserve(content);
+        }
       }
+      for (const content of contents) {
+        if (!watched.includes(content)) observer.observe(content);
+      }
+      watched = contents;
     }
     observer.observe(container);
     measure();
@@ -113,5 +158,5 @@ export function useDockContentArea(): {
     };
   }, []);
   const remeasure = useCallback(() => measureRef.current?.(), []);
-  return { area, containerRef, remeasure };
+  return { area, browserArea, containerRef, remeasure };
 }

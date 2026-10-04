@@ -73,6 +73,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { BROWSER_PANEL_ATTRIBUTE } from "./lib/dockContentArea";
 import { labelFor } from "./lib/tabLabel";
 import { countClippedTabs, formatClippedTabCount } from "./lib/tabOverflow";
 import type { EditorTab, Tab } from "./lib/useTabs";
@@ -945,6 +946,20 @@ function sizeBrowserPanel(api: DockviewApi, group: IDockviewGroupPanel): void {
   group.api.setSize({ width: Math.round(api.width * BROWSER_PANEL_SHARE) });
 }
 
+/** Marks the browser panel's element for the hidden hosts outside the dock,
+ *  which give background browser tabs its size (lib/dockContentArea.ts). */
+function markBrowserPanel(
+  api: DockviewApi,
+  browserGroupId: string | null,
+): void {
+  for (const group of api.groups) {
+    group.element.toggleAttribute(
+      BROWSER_PANEL_ATTRIBUTE,
+      group.id === browserGroupId,
+    );
+  }
+}
+
 export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
   const [api, setApi] = useState<DockviewApi | null>(null);
   const [dragGhost, setDragGhost] = useState<DragGhost | null>(null);
@@ -1042,6 +1057,7 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
   const rememberBrowserGroup = useCallback((id: string | null) => {
     browserGroupIdRef.current = id;
     setBrowserGroupId(id);
+    if (apiRef.current) markBrowserPanel(apiRef.current, id);
   }, []);
 
   /** The browser panel of a tidy layout, found again from the dock. */

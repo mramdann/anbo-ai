@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { dockAreaStyle, dockContentArea } from "./dockContentArea";
+import {
+  BROWSER_PANEL_ATTRIBUTE,
+  dockAreaStyle,
+  dockContentArea,
+} from "./dockContentArea";
 
 type Box = { top: number; left: number; width: number; height: number };
-type FakeGroup = { content: Box; active?: boolean };
+type FakeGroup = { content: Box; active?: boolean; browserPanel?: boolean };
 
 // The dock's DOM as dockview builds it, reduced to what the measurement reads.
 function dock(outer: Box, groups: FakeGroup[]): HTMLElement {
@@ -10,21 +14,31 @@ function dock(outer: Box, groups: FakeGroup[]): HTMLElement {
     const content = { getBoundingClientRect: () => group.content };
     return {
       active: !!group.active,
+      browserPanel: !!group.browserPanel,
       element: {
         querySelector: (selector: string) =>
           selector === ":scope > .dv-content-container" ? content : null,
       },
     };
   });
+  // The group selectors dockContentArea uses: active or not, browser panel
+  // or not panel.
+  const matches =
+    (selector: string) =>
+    (group: (typeof elements)[number]): boolean => {
+      if (selector.includes(".dv-active-group") && !group.active) return false;
+      if (selector.includes(`:not([${BROWSER_PANEL_ATTRIBUTE}])`)) {
+        return !group.browserPanel;
+      }
+      if (selector.includes(`[${BROWSER_PANEL_ATTRIBUTE}]`)) {
+        return group.browserPanel;
+      }
+      return true;
+    };
   return {
     getBoundingClientRect: () => outer,
-    querySelector: (selector: string) => {
-      if (selector === ".dv-groupview.dv-active-group") {
-        return elements.find((group) => group.active)?.element ?? null;
-      }
-      if (selector === ".dv-groupview") return elements[0]?.element ?? null;
-      return null;
-    },
+    querySelector: (selector: string) =>
+      elements.find(matches(selector))?.element ?? null,
   } as unknown as HTMLElement;
 }
 
@@ -90,5 +104,47 @@ describe("dockAreaStyle", () => {
       height: "96%",
     });
     expect(dockAreaStyle(null)).toEqual({ inset: 0 });
+  });
+
+  describe("in a tidy layout", () => {
+    const work = { top: 72, left: 330, width: 640, height: 768 };
+    const panel = { top: 72, left: 970, width: 960, height: 768 };
+
+    it("gives hidden browser tabs the browser panel's box", () => {
+      const groups = [
+        { content: work, active: true },
+        { content: panel, browserPanel: true },
+      ];
+      expect(dockContentArea(dock(dockBox, groups), "browser")).toEqual({
+        top: 0.04,
+        left: 0.4,
+        width: 0.6,
+        height: 0.96,
+      });
+      expect(dockContentArea(dock(dockBox, groups), "other")?.left).toBe(0);
+    });
+
+    it("keeps other hidden tabs out of the browser panel while it is in use", () => {
+      const groups = [
+        { content: work },
+        { content: panel, active: true, browserPanel: true },
+      ];
+      expect(dockContentArea(dock(dockBox, groups), "other")?.width).toBe(0.4);
+      expect(dockContentArea(dock(dockBox, groups), "browser")?.width).toBe(
+        0.6,
+      );
+    });
+  });
+
+  it("gives both kinds the active group's box without a browser panel", () => {
+    const groups = [
+      { content: { top: 72, left: 330, width: 800, height: 768 } },
+      {
+        content: { top: 72, left: 1130, width: 800, height: 768 },
+        active: true,
+      },
+    ];
+    expect(dockContentArea(dock(dockBox, groups), "browser")?.left).toBe(0.5);
+    expect(dockContentArea(dock(dockBox, groups), "other")?.left).toBe(0.5);
   });
 });
