@@ -151,6 +151,10 @@ import {
 } from "@/modules/tabs";
 import { isSerializableTab } from "@/modules/spaces/lib/serialize";
 import { createAutomationTabSelection } from "@/modules/tabs/lib/automationTabPlacement";
+import {
+  dockAreaStyle,
+  useDockContentArea,
+} from "@/modules/tabs/lib/dockContentArea";
 import { runtimeTabIdAllocator } from "@/modules/tabs/lib/runtimeId";
 import { DEFAULT_SPACE_ID } from "@/modules/tabs/lib/useTabs";
 import {
@@ -2074,6 +2078,18 @@ export default function App() {
   }, [activeId, handleClose, handleClosePane]);
 
   const [zenMode, setZenMode] = useState(false);
+  // Tabs not visible in the dock render over the active group's content box,
+  // at the size they will have once shown, so nothing resizes as one comes
+  // forward.
+  const {
+    area: backgroundArea,
+    containerRef: dockAreaRef,
+    remeasure: measureBackgroundArea,
+  } = useDockContentArea();
+  const handleDockLayoutSettled = useCallback(() => {
+    refitVisibleTerminalSlots();
+    measureBackgroundArea();
+  }, [measureBackgroundArea]);
 
   // Focus an agent's tab, switching to its space first so the header and tab
   // strip don't end up showing a different space than the focused pane.
@@ -2934,7 +2950,10 @@ export default function App() {
                     minSize="30%"
                   >
                     <div className="flex h-full min-h-0 flex-col">
-                      <div className="relative min-h-0 flex-1">
+                      <div
+                        ref={dockAreaRef}
+                        className="relative min-h-0 flex-1"
+                      >
                         {spacesHydrated ? (
                           <WorkspaceDockview
                             spaceId={activeSpaceId ?? DEFAULT_SPACE_ID}
@@ -2943,7 +2962,7 @@ export default function App() {
                             hideTabs={zenMode}
                             externalMoves={dockviewExternalMoves}
                             externalSplits={dockviewExternalSplits}
-                            onLayoutSettled={refitVisibleTerminalSlots}
+                            onLayoutSettled={handleDockLayoutSettled}
                             onSelect={setActiveId}
                             onRevealTab={warmTab}
                             onTabVisibilityChange={handleDockviewTabVisibility}
@@ -2998,7 +3017,8 @@ export default function App() {
                         ) : null}
                         {spacesHydrated && backgroundBrowserTabs.length > 0 ? (
                           <div
-                            className="invisible pointer-events-none absolute inset-0"
+                            className="invisible pointer-events-none absolute"
+                            style={dockAreaStyle(backgroundArea)}
                             aria-hidden
                           >
                             <BrowserStack
@@ -3014,7 +3034,8 @@ export default function App() {
                         ) : null}
                         {spacesHydrated && backgroundTerminalTabs.length > 0 ? (
                           <div
-                            className="invisible pointer-events-none absolute inset-0"
+                            className="invisible pointer-events-none absolute"
+                            style={dockAreaStyle(backgroundArea)}
                             aria-hidden
                           >
                             <TerminalStack
