@@ -7,6 +7,7 @@ export {
   acceptBrowserPopupRequest,
   BROWSER_CLOSE_RESPONSE_EVENT,
   BROWSER_OPEN_RESPONSE_EVENT,
+  BROWSER_SHOW_RESPONSE_EVENT,
   BROWSER_TABS_RESPONSE_EVENT,
   type BrowserTabMetadata,
   resolveBrowserCloseTarget,

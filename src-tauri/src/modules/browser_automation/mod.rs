@@ -9,6 +9,7 @@ mod context_block;
 pub mod design;
 pub mod download;
 mod embedded_cdp;
+mod external_front;
 pub mod http;
 mod initial_read;
 pub mod locator;

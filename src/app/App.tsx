@@ -66,6 +66,7 @@ import {
   acceptBrowserPopupRequest,
   BROWSER_CLOSE_RESPONSE_EVENT,
   BROWSER_OPEN_RESPONSE_EVENT,
+  BROWSER_SHOW_RESPONSE_EVENT,
   BROWSER_TABS_RESPONSE_EVENT,
   type BrowserPaneHandle,
   BrowserStack,
@@ -87,6 +88,7 @@ import {
   setBrowserCloseRequestHandler,
   setBrowserOpenRequestHandler,
   setBrowserPopupRequestHandler,
+  setBrowserShowRequestHandler,
   setBrowserTabsRequestHandler,
 } from "@/modules/browser/automationOpenBridge";
 import { EXTERNAL_BROWSERS_ENABLED } from "@/modules/browser/external/store";
@@ -153,6 +155,7 @@ import {
 } from "@/modules/tabs";
 import { isSerializableTab } from "@/modules/spaces/lib/serialize";
 import { createAutomationTabSelection } from "@/modules/tabs/lib/automationTabPlacement";
+import { showBrowserTabForInput } from "@/modules/tabs/lib/browserTabShow";
 import {
   dockAreaStyle,
   useDockContentArea,
@@ -1833,6 +1836,24 @@ export default function App() {
       openBrowserTab(payload.url, false, resolved.space.id);
     });
   }, [openBrowserTab]);
+
+  useEffect(() => {
+    setBrowserShowRequestHandler((payload) => {
+      const tab = tabsRef.current.find(
+        (candidate) => candidate.id === payload.tabId,
+      );
+      const outcome =
+        tab?.kind !== "browser" || !tab.external?.connected
+          ? "missing"
+          : tab.spaceId !== (useSpaces.getState().activeId ?? DEFAULT_SPACE_ID)
+            ? "workspace"
+            : showBrowserTabForInput(tab.spaceId, tab.id);
+      void emit(`${BROWSER_SHOW_RESPONSE_EVENT}:${payload.requestId}`, {
+        shown: outcome === "shown",
+        reason: outcome === "shown" ? null : outcome,
+      });
+    });
+  }, []);
 
   // A driven tab should name the agent holding it, not the CLI it happens to
   // run. Only this side mints a callsign, and only the browser side knows which

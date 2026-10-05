@@ -73,6 +73,10 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import {
+  planBrowserTabShow,
+  registerBrowserTabShow,
+} from "./lib/browserTabShow";
 import { BROWSER_PANEL_ATTRIBUTE } from "./lib/dockContentArea";
 import { labelFor } from "./lib/tabLabel";
 import { countClippedTabs, formatClippedTabCount } from "./lib/tabOverflow";
@@ -1957,6 +1961,35 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
       }
     }
   }, [api, props.revealRequests, props.spaceId]);
+
+  // An agent's click on a Chrome or Edge tab needs its page shown, in any
+  // layout.
+  useEffect(() => {
+    if (!api) return;
+    return registerBrowserTabShow(props.spaceId, (tabId) => {
+      const panel = api.getPanel(workspaceDockviewPanelId(tabId));
+      const group = panel?.api.group;
+      const front = tabIdForParams(group?.activePanel?.params ?? {});
+      const plan = planBrowserTabShow({
+        found: Boolean(panel && group),
+        front: Boolean(panel) && group?.activePanel === panel,
+        groupInUse: Boolean(group) && api.activeGroup === group,
+        frontIsBrowser:
+          latest.current.tabs.find((tab) => tab.id === front)?.kind ===
+          "browser",
+      });
+      if (plan.step === "select") latest.current.onSelect(tabId);
+      if (plan.step === "reveal" && panel && group) {
+        applyingLayout.current = true;
+        try {
+          group.model.openPanel(panel, { skipSetGroupActive: true });
+        } finally {
+          applyingLayout.current = false;
+        }
+      }
+      return plan.outcome;
+    });
+  }, [api, props.spaceId]);
 
   useLayoutEffect(() => {
     if (!api) return;

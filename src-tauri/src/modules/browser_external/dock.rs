@@ -465,6 +465,42 @@ pub fn window_changed() {
     }
 }
 
+/// Where Anbo's window stands for a page it would bring into a panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Standing {
+    /// Anbo is the window the user is in.
+    Front,
+    Minimized,
+    /// Another window has the user's input: another app, or the page Anbo docks.
+    Behind,
+}
+
+pub fn standing<R: tauri::Runtime>(app: &AppHandle<R>) -> Standing {
+    #[cfg(windows)]
+    {
+        native::standing(app)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Standing::Front
+    }
+}
+
+/// Whether the dock shows this tab's page (true), holds it without showing it
+/// yet (false, with the reason), or does not hold it (None).
+pub fn docked(tab_id: i64) -> Option<(bool, Option<&'static str>)> {
+    #[cfg(windows)]
+    {
+        native::docked(tab_id)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = tab_id;
+        None
+    }
+}
+
 #[cfg(windows)]
 fn main_window<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<tauri::Window<R>, String> {
     use tauri::Manager;
@@ -1464,6 +1500,29 @@ mod native {
             "actualBounds": window_bounds(dock.lease.hwnd()).ok(),
             "lastWindowError": dock.last_error,
         }))
+    }
+
+    pub(super) fn docked(tab_id: i64) -> Option<(bool, Option<&'static str>)> {
+        let state = DOCK.lock().ok()?;
+        let dock = state.as_ref().filter(|dock| dock.target.tab_id == tab_id)?;
+        Some((dock.committed && dock.status.0, dock.status.1))
+    }
+
+    pub(super) fn standing<R: tauri::Runtime>(app: &AppHandle<R>) -> Standing {
+        let Some(host) = main_window(app)
+            .ok()
+            .and_then(|window| window.hwnd().ok())
+            .map(|handle| HWND(handle.0 as *mut _))
+        else {
+            return Standing::Behind;
+        };
+        if unsafe { IsIconic(host) }.as_bool() {
+            Standing::Minimized
+        } else if unsafe { GetForegroundWindow() } == host {
+            Standing::Front
+        } else {
+            Standing::Behind
+        }
     }
 
     fn status(dock: &Dock) -> Status {

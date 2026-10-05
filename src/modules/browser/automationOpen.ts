@@ -7,6 +7,8 @@ export const BROWSER_CLOSE_RESPONSE_EVENT = "anbo:browser-close-response";
 export const BROWSER_TABS_REQUEST_EVENT = "anbo:browser-tabs-request";
 export const BROWSER_TABS_RESPONSE_EVENT = "anbo:browser-tabs-response";
 export const BROWSER_POPUP_REQUEST_EVENT = "anbo:browser-popup-request";
+export const BROWSER_SHOW_REQUEST_EVENT = "anbo:browser-show-request";
+export const BROWSER_SHOW_RESPONSE_EVENT = "anbo:browser-show-response";
 
 export type BrowserOpenRequest = {
   requestId: string;
@@ -30,6 +32,12 @@ export type BrowserTabsRequest = {
 export type BrowserPopupRequest = {
   sourceTabId: number;
   url: string;
+};
+
+/** A Chrome or Edge tab an agent's pointer input needs in front. */
+export type BrowserShowRequest = {
+  requestId: string;
+  tabId: number;
 };
 
 export type BrowserPopupStamp = {
@@ -71,6 +79,7 @@ export const createBrowserOpenListener = createRequestListener<BrowserOpenReques
 export const createBrowserCloseListener = createRequestListener<BrowserCloseRequest>;
 export const createBrowserTabsListener = createRequestListener<BrowserTabsRequest>;
 export const createBrowserPopupListener = createRequestListener<BrowserPopupRequest>;
+export const createBrowserShowListener = createRequestListener<BrowserShowRequest>;
 
 export { automationTabPlacement as browserOpenPlacement } from "@/modules/tabs/lib/automationTabPlacement";
 

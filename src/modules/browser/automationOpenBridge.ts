@@ -3,14 +3,17 @@ import {
   BROWSER_CLOSE_REQUEST_EVENT,
   BROWSER_OPEN_REQUEST_EVENT,
   BROWSER_POPUP_REQUEST_EVENT,
+  BROWSER_SHOW_REQUEST_EVENT,
   BROWSER_TABS_REQUEST_EVENT,
   type BrowserCloseRequest,
   type BrowserOpenRequest,
   type BrowserPopupRequest,
+  type BrowserShowRequest,
   type BrowserTabsRequest,
   createBrowserCloseListener,
   createBrowserOpenListener,
   createBrowserPopupListener,
+  createBrowserShowListener,
   createBrowserTabsListener,
 } from "./automationOpen";
 
@@ -18,11 +21,13 @@ type OpenBridge = ReturnType<typeof createBrowserOpenListener>;
 type CloseBridge = ReturnType<typeof createBrowserCloseListener>;
 type TabsBridge = ReturnType<typeof createBrowserTabsListener>;
 type PopupBridge = ReturnType<typeof createBrowserPopupListener>;
+type ShowBridge = ReturnType<typeof createBrowserShowListener>;
 type BrowserAutomationWindow = Window & {
   __anboBrowserOpenBridge?: OpenBridge;
   __anboBrowserCloseBridge?: CloseBridge;
   __anboBrowserTabsBridge?: TabsBridge;
   __anboBrowserPopupBridge?: PopupBridge;
+  __anboBrowserShowBridge?: ShowBridge;
 };
 
 const browserWindow = window as BrowserAutomationWindow;
@@ -30,7 +35,8 @@ const installedNewBridge =
   !browserWindow.__anboBrowserOpenBridge ||
   !browserWindow.__anboBrowserCloseBridge ||
   !browserWindow.__anboBrowserTabsBridge ||
-  !browserWindow.__anboBrowserPopupBridge;
+  !browserWindow.__anboBrowserPopupBridge ||
+  !browserWindow.__anboBrowserShowBridge;
 const openBridge =
   browserWindow.__anboBrowserOpenBridge ??
   createBrowserOpenListener((handler) =>
@@ -59,6 +65,13 @@ const popupBridge =
       handler(payload),
     ),
   );
+const showBridge =
+  browserWindow.__anboBrowserShowBridge ??
+  createBrowserShowListener((handler) =>
+    listen<BrowserShowRequest>(BROWSER_SHOW_REQUEST_EVENT, ({ payload }) =>
+      handler(payload),
+    ),
+  );
 
 if (!browserWindow.__anboBrowserOpenBridge) {
   browserWindow.__anboBrowserOpenBridge = openBridge;
@@ -72,6 +85,9 @@ if (!browserWindow.__anboBrowserTabsBridge) {
 if (!browserWindow.__anboBrowserPopupBridge) {
   browserWindow.__anboBrowserPopupBridge = popupBridge;
 }
+if (!browserWindow.__anboBrowserShowBridge) {
+  browserWindow.__anboBrowserShowBridge = showBridge;
+}
 if (installedNewBridge) {
   window.addEventListener(
     "beforeunload",
@@ -80,6 +96,7 @@ if (installedNewBridge) {
       closeBridge.stop();
       tabsBridge.stop();
       popupBridge.stop();
+      showBridge.stop();
     },
     { once: true },
   );
@@ -107,4 +124,10 @@ export function setBrowserPopupRequestHandler(
   handler: (request: BrowserPopupRequest) => void,
 ) {
   popupBridge.setHandler(handler);
+}
+
+export function setBrowserShowRequestHandler(
+  handler: (request: BrowserShowRequest) => void,
+) {
+  showBridge.setHandler(handler);
 }

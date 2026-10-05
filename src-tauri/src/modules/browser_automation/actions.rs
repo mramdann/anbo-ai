@@ -54,8 +54,8 @@ const VALUE_ACTION_JS: &str = include_str!("valueAction.js");
 /// purpose: while a tab is navigating, WebView2 drops the script callback, and a
 /// single dropped callback must not be allowed to eat the whole wait budget.
 const SCRIPT_POLL_TIMEOUT: Duration = Duration::from_secs(2);
-const HIDDEN_TAB: &str = "the tab is hidden in its browser window (another tab is in front, or the window is minimized), and the browser delivers no input to a hidden page. Dock the tab in Anbo or bring it to the front, then try again.";
-const UNDRAWN_TAB: &str = "the browser draws nothing for this tab while its window is not being shown, and a pointer move waits for a drawn frame. Dock the tab in Anbo or bring its browser window forward, then try again.";
+const HIDDEN_TAB: &str = "the page went out of view in its browser while the action ran (another tab came in front of it, or its window was minimized), and the browser delivers no pointer input to a hidden page. Retry: Anbo brings the tab forward first.";
+const UNDRAWN_TAB: &str = "the browser stopped drawing this tab while the action ran (its window went out of view), and a pointer move waits for a drawn frame. Retry: Anbo brings the tab forward first.";
 const MAX_TEXT_OUTPUT_CHARS: u64 = 16_000;
 /// The longest a wait may actually run.
 ///
@@ -871,6 +871,15 @@ async fn handle_action_inner(
             error_codes::INPUT_NOT_READY.into(),
             super::design::refusal(),
         ));
+    }
+    // Before the tab lock and any lookup: the dock takes that lock to bring the
+    // page in, and the page's layout changes as it comes.
+    if super::external_front::needs_shown_page(method) {
+        if let Some(tab_id) = params.get("tabId").and_then(Value::as_i64) {
+            timings
+                .measure("front", super::external_front::bring_to_front(app, tab_id))
+                .await?;
+        }
     }
     if params.get("locator").is_some() {
         // A malformed submit is refused before the lookup can spend its timeout.

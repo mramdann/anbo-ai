@@ -13,6 +13,7 @@ import {
   useNativeBrowserDragActive,
 } from "@/modules/browser/nativeVisibility";
 import type { BrowserTab } from "@/modules/tabs";
+import { subscribeBrowserTabShown } from "@/modules/tabs/lib/browserTabShow";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -653,6 +654,15 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     setHold(null);
     setAsked(true);
   }, []);
+
+  // An agent's pointer input brought this tab forward and waits for its page.
+  useEffect(
+    () =>
+      subscribeBrowserTabShown((id) => {
+        if (id === tab.id) retry();
+      }),
+    [tab.id, retry],
+  );
 
   return {
     surface,
