@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.35.1](https://github.com/mramdann/anbo-ai/compare/v0.35.0...v0.35.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* **agents:** keep a custom launcher's own name, resume command and MCP switch ([483cef8](https://github.com/mramdann/anbo-ai/commit/483cef8979a1e4450bad056782f56b034b46a0d4))
+* **browser:** bring an earlier browser Setup up to date after an update ([dca31f3](https://github.com/mramdann/anbo-ai/commit/dca31f38550731bc1a6c27865a02a8409925e54a))
+* **browser:** drop the development wording from the bridge setup error ([f4bde4e](https://github.com/mramdann/anbo-ai/commit/f4bde4e68bb98831134f60e0856943728a5e9f50))
+* **browser:** let agents open pages while the Chrome/Edge service is down ([9d4f6d3](https://github.com/mramdann/anbo-ai/commit/9d4f6d34f9165f451f1e5664b4d3bfaea6539d99))
+
 ## [0.35.0](https://github.com/mramdann/anbo-ai/compare/v0.34.0...v0.35.0) (2026-10-05)
 
 
