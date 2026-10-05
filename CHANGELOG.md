@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.34.0](https://github.com/mramdann/anbo-ai/compare/v0.33.7...v0.34.0) (2026-10-05)
+
+
+### Features
+
+* **header:** show the AnboVoice toggle with a speech-to-text icon ([daee749](https://github.com/mramdann/anbo-ai/commit/daee7491376cb6ac22989c1538979a983915de17))
+* **tabs:** give hidden browser tabs the browser panel's size ([8ec59b8](https://github.com/mramdann/anbo-ai/commit/8ec59b82e96e5c982663e1f5f0f89616f34b0801))
+* **tabs:** tidy workspace layouts that keep browser tabs in one panel ([36718a1](https://github.com/mramdann/anbo-ai/commit/36718a152788d9e205e24c0b802d0744f7f4065e))
+
 ## [0.33.7](https://github.com/mramdann/anbo-ai/compare/v0.33.6...v0.33.7) (2026-10-04)
 
 
