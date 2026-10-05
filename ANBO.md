@@ -186,6 +186,7 @@ Tauri capabilities are split by window: `default.json` is main-only, `settings.j
   - **macOS**: `minimumSystemVersion: 10.15`.
   - **Linux**: deb depends `libwebkit2gtk-4.1-0`, `libgtk-3-0`; rpm `webkit2gtk4.1`, `gtk3`; AppImage bundles its media framework.
   - **Windows**: NSIS installer in `currentUser` mode (no admin required), WebView2 via `embedBootstrapper` (offline install).
+    The in-app updater starts the installer with `/UPDATE` and then exits the app with `std::process::exit`, so the app can still be exiting when the template's Restart Manager check runs; shutting down an exiting process fails with "Failed to kill Anbo" (tauri-apps/tauri#12309). `installer-hooks.nsh` therefore waits in `NSIS_HOOK_PREINSTALL`, for updates only and at most 20 s, until Restart Manager sees nothing using `anbo.exe`.
 - Auto-updater configured with a public minisign key; release artifacts at `https://github.com/mramdann/anbo-ai/releases/latest/download/latest.json`.
 
 ### Browser automation & MCP
