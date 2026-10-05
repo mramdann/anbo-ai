@@ -9,7 +9,7 @@ describe("popup view", () => {
     expect(popupView(base)).toEqual({
       tone: "idle",
       headline: "Not connected",
-      detail: ["Start the Anbo development build, then connect this profile."],
+      detail: ["Start Anbo, then connect this profile."],
       connected: false,
     });
     expect(popupView({ ...base, error: "Anbo disconnected. Reconnect and approve this profile again." })).toMatchObject({

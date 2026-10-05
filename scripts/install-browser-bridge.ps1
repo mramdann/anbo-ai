@@ -88,7 +88,7 @@ if ($PSCmdlet.ShouldProcess($destination, "Register the browser bridge for $Brow
     Write-BridgeText $configPath $config
     $manifest = @{
         name = $HostName
-        description = 'Anbo development browser bridge'
+        description = 'Anbo browser bridge'
         path = $hostPath
         type = 'stdio'
         allowed_origins = $origins

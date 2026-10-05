@@ -21,7 +21,7 @@ export function popupView(result) {
   }
   if (result?.busy) return { tone: "idle", headline: "Disconnecting", detail: ["Closing this profile's connection to Anbo."], connected: false };
   if (result?.error) return { tone: "bad", headline: "Not connected", detail: [String(result.error)], connected: false };
-  return { tone: "idle", headline: "Not connected", detail: ["Start the Anbo development build, then connect this profile."], connected: false };
+  return { tone: "idle", headline: "Not connected", detail: ["Start Anbo, then connect this profile."], connected: false };
 }
 
 export function failureView(type, error, connected) {
