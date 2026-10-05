@@ -8,6 +8,7 @@ import { useExternalBrowsers } from "@/modules/browser/external/store";
 import type { BrowserTab, Tab, TabPatch } from "@/modules/tabs/lib/useTabs";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { warn } from "@tauri-apps/plugin-log";
 
 type Space = { id: string; root: string | null };
 type Host = {
@@ -33,6 +34,16 @@ type Binding = {
   ready: boolean;
   error?: string;
 };
+
+/** Whether an Anbo space shows a tab from a Chrome or Edge profile. */
+function showsExternalTabs(tabs: Tab[], spaceId: string | undefined) {
+  return tabs.some(
+    (tab) =>
+      tab.kind === "browser" &&
+      Boolean(tab.external) &&
+      tab.spaceId === spaceId,
+  );
+}
 
 export function createExternalBrowserSync(
   host: Host,
@@ -303,16 +314,7 @@ export function createExternalBrowserSync(
           (space) =>
             space.root !== null && sameWorkspace(space.root, workspace),
         );
-      if (
-        host
-          .tabs()
-          .some(
-            (tab) =>
-              tab.kind === "browser" &&
-              tab.external &&
-              tab.spaceId === space?.id,
-          )
-      )
+      if (showsExternalTabs(host.tabs(), space?.id))
         throw new Error(
           "Reconnect this workspace's Chrome/Edge profile before opening a browser tab. Anbo will not fall back to a different login.",
         );
@@ -442,6 +444,9 @@ export async function startExternalBrowserSync(host: Host) {
     stopListening?.();
     service.stop();
     if (current === service) current = undefined;
+    void warn(`external browser sync did not start: ${String(cause)}`).catch(
+      () => {},
+    );
     throw cause;
   }
   return () => {
@@ -457,15 +462,38 @@ export async function startExternalBrowserSync(host: Host) {
 export function reconcileExternalBrowserTabs(tabs: Tab[]) {
   current?.reconcile(tabs);
 }
+const NOT_READY =
+  "Browser connections are not ready; retry after Anbo finishes starting.";
 function running() {
-  if (!current)
-    throw new Error(
-      "Browser connections are not ready; retry after Anbo finishes starting.",
-    );
+  if (!current) throw new Error(NOT_READY);
   return current;
 }
-export async function openExternalBrowser(url: string, workspace: string) {
-  return running().open(url, workspace);
+/** Opens an agent's page in the workspace's approved Chrome or Edge profile,
+ *  or returns null for Anbo's own browser. Without the service (Anbo still
+ *  starting, or its start failed) the page still opens in Anbo's browser,
+ *  unless the workspace has an approved profile or shows a Chrome or Edge
+ *  tab: those wait for the service instead of switching logins. */
+export async function openExternalBrowser(
+  url: string,
+  workspace: string,
+  tabs: Tab[],
+  spaceId: string,
+) {
+  if (current) return current.open(url, workspace);
+  if (showsExternalTabs(tabs, spaceId)) throw new Error(NOT_READY);
+  const approvedHere = await invoke<ExternalConnection[]>(
+    "browser_external_connections",
+  ).then(
+    (connections) =>
+      connections.some(
+        (connection) =>
+          connection.workspace !== null &&
+          sameWorkspace(connection.workspace, workspace),
+      ),
+    () => false,
+  );
+  if (approvedHere) throw new Error(NOT_READY);
+  return null;
 }
 export async function openExternalBrowserInto(
   url: string,

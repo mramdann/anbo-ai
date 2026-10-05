@@ -1709,7 +1709,7 @@ export default function App() {
       try {
         if (EXTERNAL_BROWSERS_ENABLED && resolved.space.root) {
           const service = await import("@/modules/browser/external/sync");
-          externalTabId = await service.openExternalBrowser(payload.url, resolved.space.root);
+          externalTabId = await service.openExternalBrowser(payload.url, resolved.space.root, tabsRef.current, spaceId);
         }
       } catch (cause) {
         void emit(responseEvent, { error: String(cause) });

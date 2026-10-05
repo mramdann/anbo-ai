@@ -3,10 +3,17 @@ import {
   type ExternalConnection,
   savedExternalBrowser,
 } from "@/modules/browser/external/model";
-import { createExternalBrowserSync } from "@/modules/browser/external/sync";
+import {
+  createExternalBrowserSync,
+  openExternalBrowser,
+} from "@/modules/browser/external/sync";
 import type { BrowserTab, Tab, TabPatch } from "@/modules/tabs/lib/useTabs";
-import type { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { describe, expect, it, vi } from "vitest";
+
+// The service under test takes its own `call`; only the opens made before
+// any service runs reach this mock.
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 const profile = {
   profileId: "00112233-4455-6677-8899-aabbccddeeff",
@@ -651,5 +658,59 @@ describe("external browser workspace synchronization", () => {
     );
     await service.refresh();
     expect(publish).toHaveBeenCalledWith([connection()]);
+  });
+});
+
+describe("agent opens before the service runs", () => {
+  const listed = vi.mocked(invoke);
+  const plain: Tab = {
+    id: 1,
+    kind: "browser",
+    spaceId: "work",
+    url: "https://example.com/",
+    title: "Example",
+  };
+  const saved: Tab = { ...plain, id: 2, external: profile };
+
+  it("opens in Anbo's browser when no profile is approved for the workspace", async () => {
+    listed.mockResolvedValueOnce([{ ...connection(), workspace: null }]);
+    await expect(
+      openExternalBrowser("https://example.org/", "D:/work", [plain], "work"),
+    ).resolves.toBeNull();
+    expect(listed).toHaveBeenLastCalledWith("browser_external_connections");
+  });
+
+  it("still opens in Anbo's browser when the connections cannot be read", async () => {
+    listed.mockRejectedValueOnce(new Error("bridge unavailable"));
+    await expect(
+      openExternalBrowser("https://example.org/", "D:/work", [], "work"),
+    ).resolves.toBeNull();
+  });
+
+  it("waits for a profile approved for the workspace instead of switching logins", async () => {
+    listed.mockResolvedValueOnce([connection()]);
+    await expect(
+      openExternalBrowser("https://example.org/", "d:\\work", [plain], "work"),
+    ).rejects.toThrow("not ready");
+  });
+
+  it("waits while the workspace shows a Chrome or Edge tab", async () => {
+    listed.mockClear();
+    await expect(
+      openExternalBrowser("https://example.org/", "D:/work", [saved], "work"),
+    ).rejects.toThrow("not ready");
+    expect(listed).not.toHaveBeenCalled();
+  });
+
+  it("ignores Chrome or Edge tabs of other workspaces", async () => {
+    listed.mockResolvedValueOnce([]);
+    await expect(
+      openExternalBrowser(
+        "https://example.org/",
+        "D:/work",
+        [{ ...saved, spaceId: "other" }],
+        "work",
+      ),
+    ).resolves.toBeNull();
   });
 });
