@@ -2,6 +2,12 @@ const ALLOWED_DOMAINS = new Set([
   "Accessibility", "DOM", "DOMSnapshot", "Emulation", "Input", "Log",
   "Network", "Page", "Runtime", "Target",
 ]);
+// The profile is signed in and its cookies are its sessions, so agents drive
+// its pages but never read or change them.
+const COOKIE_METHODS = new Set([
+  "Network.getCookies", "Network.getAllCookies", "Network.setCookie", "Network.setCookies",
+  "Network.deleteCookies", "Network.clearBrowserCookies", "Page.getCookies", "Page.deleteCookie",
+]);
 const PROFILE_METHODS = new Set(["anbo.listTabs", "anbo.openTab"]);
 const TAB_METHODS = new Set(["anbo.selectTab", "anbo.releaseTab", "anbo.closeTab"]);
 
@@ -23,6 +29,9 @@ export function validateCommand(message, attached, now = Date.now()) {
   }
   if (!profile && !selection && (typeof message.selectionId !== "string" || !message.selectionId || message.selectionId !== attached.get(message.tabId)?.selectionId)) {
     throw new Error("Tab selection lease changed; action was not replayed");
+  }
+  if (COOKIE_METHODS.has(message.method)) {
+    throw new Error("Cookie access is not available to agents");
   }
   if (!profile && !selection && !["anbo.focusTab", "anbo.dockPrepare", "anbo.dockCommit", "anbo.dockRelease"].includes(message.method) && !ALLOWED_DOMAINS.has(message.method.split(".")[0])) {
     throw new Error("Unsupported browser command domain");

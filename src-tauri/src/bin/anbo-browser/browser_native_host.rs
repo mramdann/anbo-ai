@@ -105,9 +105,7 @@ async fn connect(origin: &str) -> Result<(), String> {
     .ok_or("missing browser handshake")?;
     let profile: serde_json::Value =
         serde_json::from_slice(&hello).map_err(|error| error.to_string())?;
-    let mut pipe = tokio::net::windows::named_pipe::ClientOptions::new()
-        .open(&descriptor.pipe)
-        .map_err(|error| error.to_string())?;
+    let mut pipe = super::open_instance_pipe(&descriptor)?;
     let handshake = super::BrowserRequest {
         version: 1,
         id: "external-browser".into(),

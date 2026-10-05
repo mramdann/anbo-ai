@@ -24,6 +24,42 @@ pub struct InstanceDescriptor {
     pub started_at: u64,
 }
 
+/// Opens the instance's pipe and checks that the process the descriptor names
+/// serves it before any token is written: a pipe of that name served by another
+/// program would otherwise get the token, and through the native host it could
+/// drive a signed-in browser profile.
+#[cfg(windows)]
+pub fn open_instance_pipe(
+    desc: &InstanceDescriptor,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeClient, String> {
+    use std::os::windows::io::AsRawHandle;
+    let client = tokio::net::windows::named_pipe::ClientOptions::new()
+        .open(&desc.pipe)
+        .map_err(|e| format!("failed to connect to named pipe {}: {e}", desc.pipe))?;
+    let mut server = 0u32;
+    // SAFETY: the handle belongs to `client`, which outlives the call.
+    let ok = unsafe {
+        windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId(
+            client.as_raw_handle(),
+            &mut server,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "could not tell which process serves {}: {}",
+            desc.pipe,
+            std::io::Error::last_os_error()
+        ));
+    }
+    if server != desc.pid {
+        return Err(format!(
+            "{} is served by process {server}, not by Anbo (process {})",
+            desc.pipe, desc.pid
+        ));
+    }
+    Ok(client)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserRequest {
     pub version: u32,
@@ -394,14 +430,7 @@ async fn execute_ipc_command(
 ) -> Result<Value, (i32, String)> {
     #[cfg(windows)]
     {
-        use tokio::net::windows::named_pipe::ClientOptions;
-
-        let client = ClientOptions::new().open(&desc.pipe).map_err(|e| {
-            (
-                3,
-                format!("failed to connect to named pipe {}: {e}", desc.pipe),
-            )
-        })?;
+        let client = open_instance_pipe(desc).map_err(|e| (3, e))?;
 
         let (reader, mut writer) = tokio::io::split(client);
         let mut buf_reader = BufReader::new(reader);

@@ -6,9 +6,9 @@ import {
 import { isTauri } from "@tauri-apps/api/core";
 import { create } from "zustand";
 
-/** Chrome and Edge profiles are a Windows development preview. */
-export const EXTERNAL_BROWSERS_ENABLED =
-  import.meta.env.DEV && IS_WINDOWS && isTauri();
+/** Chrome and Edge profiles are a Windows preview. Nothing connects until a
+ *  profile is set up from Anbo and approved for a workspace. */
+export const EXTERNAL_BROWSERS_ENABLED = IS_WINDOWS && isTauri();
 
 export type BrowserProfile = ExternalConnection["profile"];
 

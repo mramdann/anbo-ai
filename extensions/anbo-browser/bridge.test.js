@@ -45,6 +45,19 @@ describe("external browser bridge", () => {
     ]) expect(() => validateCommand(command(invalid), attached)).toThrow();
   });
 
+  it("never lets an agent read or change the signed-in profile's cookies", async () => {
+    const attached = new Map([[10, { selectionId: "lease" }]]);
+    for (const method of [
+      "Network.getCookies", "Network.getAllCookies", "Network.setCookie", "Network.setCookies",
+      "Network.deleteCookies", "Network.clearBrowserCookies", "Page.getCookies", "Page.deleteCookie",
+    ]) expect(() => validateCommand(command({ method }), attached)).toThrow("Cookie access");
+    expect(validateCommand(command({ method: "Network.enable" }), attached).method).toBe("Network.enable");
+    const state = harness();
+    await state.dispatch(command({ method: "Network.getAllCookies" }));
+    expect(state.api.debugger.sendCommand).not.toHaveBeenCalled();
+    expect(state.replies[0].error).toContain("Cookie access");
+  });
+
   it("refuses privileged pages and bounds metadata", () => {
     expect(tabInfo({ id: 10, url: "https://example.com", title: "a".repeat(1024) }).title).toHaveLength(256);
     for (const url of ["chrome://settings", "edge://settings", "file:///private.txt", "javascript:alert(1)"]) {

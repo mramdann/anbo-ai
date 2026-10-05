@@ -15,7 +15,12 @@ frames, console/network observation, workspace-confined uploads/artifacts, curso
 effects, and the existing isolated-world design layer. Workspace switching leaves
 bound targets and ongoing automation running without focusing their browser window.
 
-This remains a development preview. Release builds reject profile handshakes.
+This is a preview in production builds as well (Windows, from the header's
+browser menu), opened on 2026-10-05 at the user's request with docking included.
+Extension 0.5.0 refuses every cookie method, so agents drive signed-in pages
+without reading or changing their sessions; forwarded network events carry only
+request ids. The native host and the `anbo-browser` CLI verify the pipe server's
+process id before sending a token. The acceptance gates below are known limits.
 Managed agent downloads are explicitly unsupported on external targets, and no
 profile-wide download behavior is changed. Downloads through Chrome/Edge's own UI
 still work. Embedded start-page history is not imported from the browser profile.
@@ -595,5 +600,5 @@ or a desktop workspace-switch acceptance test.
 - Matched embedded/external runs with ten-workspace idle CPU, total process-tree
   CPU/RAM, p50/p95 action latency, four/eight concurrent agents and error counts.
   Include browser and native-host processes, not only Anbo.
-- Resolve the remaining feature matrix and pass release regression gates before
-  exposing external profiles in production. Keep the dev-only gate meanwhile.
+- Resolve the remaining feature matrix. The dev-only gate was lifted on 2026-10-05
+  with these items still open; they are the preview's known limits.

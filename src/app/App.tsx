@@ -1,4 +1,3 @@
-import { IS_WINDOWS } from "@/lib/platform";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -88,6 +87,7 @@ import {
   setBrowserPopupRequestHandler,
   setBrowserTabsRequestHandler,
 } from "@/modules/browser/automationOpenBridge";
+import { EXTERNAL_BROWSERS_ENABLED } from "@/modules/browser/external/store";
 import { watchMcpPort } from "@/modules/browser/mcpPortNotice";
 import {
   listenForForwardedLinks,
@@ -337,7 +337,7 @@ export default function App() {
   tabsRef.current = tabs;
   const externalSyncRef = useRef<((currentTabs: typeof tabs) => void) | undefined>(undefined);
   useEffect(() => {
-    if (!import.meta.env.DEV || !IS_WINDOWS) return;
+    if (!EXTERNAL_BROWSERS_ENABLED) return;
     let disposed = false;
     let stop: (() => void) | undefined;
     void import("@/modules/browser/external/sync").then(async (service) => {
@@ -1707,7 +1707,7 @@ export default function App() {
         );
       let externalTabId: number | null = null;
       try {
-        if (import.meta.env.DEV && IS_WINDOWS && resolved.space.root) {
+        if (EXTERNAL_BROWSERS_ENABLED && resolved.space.root) {
           const service = await import("@/modules/browser/external/sync");
           externalTabId = await service.openExternalBrowser(payload.url, resolved.space.root);
         }

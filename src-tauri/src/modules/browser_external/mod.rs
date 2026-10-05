@@ -296,9 +296,6 @@ where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
-    if !cfg!(debug_assertions) {
-        return Err("external browser preview is only available in development builds".into());
-    }
     let mut profile: Profile =
         serde_json::from_value(handshake).map_err(|error| error.to_string())?;
     if let Err(error) = profile.validate() {

@@ -413,9 +413,6 @@ pub async fn browser_external_dock(
     request: Request,
 ) -> Result<Status, String> {
     super::ensure_main(&webview)?;
-    if !cfg!(debug_assertions) || app.config().identifier == "com.anbo.desktop" {
-        return Err("Native docking is available only in an isolated development build".into());
-    }
     if request
         .layout
         .as_ref()
