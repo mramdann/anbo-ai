@@ -459,7 +459,10 @@ pub fn shutdown() {
 
 pub fn window_changed() {
     #[cfg(windows)]
-    native::signal();
+    {
+        native::clear_leftover_topmost();
+        native::signal();
+    }
 }
 
 #[cfg(windows)]
@@ -956,13 +959,22 @@ mod native {
     /// anyway, so nothing else on screen changes.
     struct KeepInFront(usize);
 
+    // Only these guards make Anbo topmost, so with none alive a topmost Anbo
+    // is a leftover that would keep it over every other app.
+    static GUARDS: AtomicUsize = AtomicUsize::new(0);
+    static GUARDED_HOST: AtomicUsize = AtomicUsize::new(0);
+
     impl KeepInFront {
         fn new(host: usize) -> Option<Self> {
             let window = HWND(host as *mut _);
             if unsafe { GetForegroundWindow() } != window || topmost(window) {
                 return None;
             }
-            unsafe {
+            // Counted before the change, so the leftover check never takes this
+            // guard's topmost for one.
+            GUARDS.fetch_add(1, Ordering::AcqRel);
+            GUARDED_HOST.store(host, Ordering::Release);
+            let raised = unsafe {
                 SetWindowPos(
                     window,
                     Some(HWND_TOPMOST),
@@ -972,8 +984,11 @@ mod native {
                     0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                 )
+            };
+            if raised.is_err() {
+                GUARDS.fetch_sub(1, Ordering::AcqRel);
+                return None;
             }
-            .ok()?;
             Some(Self(host))
         }
     }
@@ -982,31 +997,68 @@ mod native {
         fn drop(&mut self) {
             let window = HWND(self.0 as *mut _);
             let browser = HWND(BROWSER.load(Ordering::Acquire) as *mut _);
-            let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
-            let process = |window: HWND| {
-                let mut process = 0;
-                unsafe { GetWindowThreadProcessId(window, Some(&mut process)) };
-                process
-            };
-            unsafe {
-                // A browser window that turned topmost below Anbo leaves first,
-                // so it is never left above Anbo.
-                if !browser.is_invalid() && topmost(browser) {
-                    let _ = SetWindowPos(browser, Some(HWND_NOTOPMOST), 0, 0, 0, 0, flags);
-                }
-                let _ = SetWindowPos(window, Some(HWND_NOTOPMOST), 0, 0, 0, 0, flags);
-                // The user may have switched to another app meanwhile; Anbo goes
-                // back below it. The browser's own windows never count, or Anbo
-                // could end up below one of them.
-                let front = GetForegroundWindow();
-                let owner = process(front);
-                if owner != 0
-                    && owner != process(window)
-                    && (browser.is_invalid() || owner != process(browser))
-                {
-                    let _ = SetWindowPos(window, Some(front), 0, 0, 0, 0, flags);
+            // A browser window that turned topmost below Anbo leaves first, so
+            // it is never left above Anbo.
+            if !browser.is_invalid() && topmost(browser) {
+                unsafe {
+                    let _ = SetWindowPos(
+                        browser,
+                        Some(HWND_NOTOPMOST),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    );
                 }
             }
+            leave_topmost(window, browser);
+            GUARDS.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    fn process(window: HWND) -> u32 {
+        let mut process = 0;
+        unsafe { GetWindowThreadProcessId(window, Some(&mut process)) };
+        process
+    }
+
+    /// Takes Anbo out of the topmost band. The user may have switched to
+    /// another app meanwhile, so Anbo goes back below it, but never below a
+    /// topmost window such as the taskbar or the task switcher the user is
+    /// switching with: Windows makes a window placed there topmost, which is
+    /// how Anbo once stayed over every app after a dock. The browser's own
+    /// windows never count either, or Anbo could end up below one of them.
+    fn leave_topmost(window: HWND, browser: HWND) {
+        let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+        unsafe {
+            let _ = SetWindowPos(window, Some(HWND_NOTOPMOST), 0, 0, 0, 0, flags);
+            let front = GetForegroundWindow();
+            let owner = process(front);
+            if owner != 0
+                && owner != process(window)
+                && (browser.is_invalid() || owner != process(browser))
+                && !topmost(front)
+            {
+                let _ = SetWindowPos(window, Some(front), 0, 0, 0, 0, flags);
+            }
+            if topmost(window) {
+                log::warn!("[browser_dock] Anbo was still topmost after leaving it; cleared again");
+                let _ = SetWindowPos(window, Some(HWND_NOTOPMOST), 0, 0, 0, 0, flags);
+            }
+        }
+    }
+
+    /// Anbo's window events end any topmost a lost restore left behind.
+    pub(super) fn clear_leftover_topmost() {
+        let host = GUARDED_HOST.load(Ordering::Acquire);
+        if host == 0 || GUARDS.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        let window = HWND(host as *mut _);
+        if topmost(window) {
+            log::warn!("[browser_dock] Anbo was topmost with no dock holding it there; cleared");
+            leave_topmost(window, HWND(BROWSER.load(Ordering::Acquire) as *mut _));
         }
     }
 
