@@ -132,6 +132,36 @@ describe("agent tab creation", () => {
     });
   });
 
+  it("keeps a custom launcher's name while its own CLI runs", () => {
+    const claudeZ: TerminalTab = {
+      ...agentTab(1, "a", "ClaudeZ"),
+      agent: {
+        launcherId: "custom:claudez",
+        icon: "claude",
+        label: "ClaudeZ",
+        name: "ClaudeZ",
+      },
+    };
+    const claude = {
+      launcherId: "claude" as const,
+      icon: "claude" as const,
+      label: "Claude",
+    };
+    expect(adoptDetectedAgentIdentity([claudeZ], 101, claude)).toEqual([
+      claudeZ,
+    ]);
+
+    const [codex] = adoptDetectedAgentIdentity([claudeZ], 101, {
+      launcherId: "codex",
+      icon: "codex",
+      label: "Codex",
+    });
+    expect(codex).toMatchObject({
+      title: "Codex",
+      agent: { launcherId: "codex", name: "Codex" },
+    });
+  });
+
   it("creates one independent single-leaf tab per requested instance", () => {
     const tabs = createAgentTerminalTabs({
       spaceId: "a",

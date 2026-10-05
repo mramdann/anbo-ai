@@ -275,6 +275,17 @@ export function isBuiltInAgentLauncherId(
   return AGENT_LAUNCHERS.some((agent) => agent.id === id);
 }
 
+/**
+ * The CLI a launcher's sessions resume as: a built-in launcher's own, or the
+ * one a custom launcher's icon names, so its own command and flags come back.
+ */
+export function launcherResumeAgent(
+  launcher: Pick<AgentLauncher, "id" | "icon">,
+): AgentLauncherId {
+  if (isBuiltInAgentLauncherId(launcher.id)) return launcher.id;
+  return isBuiltInAgentLauncherId(launcher.icon) ? launcher.icon : launcher.id;
+}
+
 export function getAgentLaunchers(
   customAgents: readonly CustomCliAgent[],
 ): AgentLauncher[] {

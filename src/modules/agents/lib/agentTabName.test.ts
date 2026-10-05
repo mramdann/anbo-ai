@@ -4,7 +4,31 @@ import {
   BUILT_IN_AGENT_ALIASES,
   canonicalAgentTabIdentity,
   normalizeAgentTabIdentity,
+  sameAgentFamily,
 } from "./agentTabName";
+
+describe("agent families", () => {
+  it("treats a custom launcher as the CLI its icon names", () => {
+    const claudeZ = {
+      launcherId: "custom:claudez" as const,
+      icon: "claude" as const,
+    };
+    expect(sameAgentFamily(claudeZ, "claude")).toBe(true);
+    expect(sameAgentFamily(claudeZ, "codex")).toBe(false);
+    expect(
+      sameAgentFamily({ launcherId: "custom:tool", icon: "robot" }, "claude"),
+    ).toBe(false);
+  });
+
+  it("keeps a built-in launcher to its own CLI", () => {
+    expect(
+      sameAgentFamily({ launcherId: "claude", icon: "claude" }, "claude"),
+    ).toBe(true);
+    expect(
+      sameAgentFamily({ launcherId: "codex", icon: "codex" }, "claude"),
+    ).toBe(false);
+  });
+});
 
 describe("agent tab names", () => {
   it("uses the original name first and preferred aliases after it", () => {

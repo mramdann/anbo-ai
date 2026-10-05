@@ -27,11 +27,13 @@ import {
   createAgentResumeStates,
   createManualAgentResumeState,
   findAgentLauncher,
-  isMcpAgentId,
   isUnverifiedAgentResume,
+  launcherResumeAgent,
   MAX_PARALLEL_OPENCODE_AGENTS,
   nextAttentionTarget,
   pollCodexSession,
+  resumeMcpFlavour,
+  sameAgentFamily,
   shouldWarmAgentTabOnReopen,
   validateAgentLaunchCommand,
   withAgentMcpRuntime,
@@ -1052,7 +1054,7 @@ export default function App() {
       if (!manualResume) return;
       const changesAgentFamily =
         (existing !== undefined && existing.resume.agent !== agent) ||
-        (target.agent !== undefined && target.agent.launcherId !== agent);
+        (target.agent !== undefined && !sameAgentFamily(target.agent, agent));
       if (changesAgentFamily) {
         resumedAgentLeavesRef.current.delete(leafId);
         agentDiscoveryQueueRef.current.cancel(leafId);
@@ -1179,15 +1181,21 @@ export default function App() {
           continue;
         }
         let mcpReady = Promise.resolve(false);
-        if (isMcpAgentId(leaf.resume.agent) && targetRoot) {
-          const key = `${tab.spaceId}:${leaf.resume.agent}`;
+        const mcp = resumeMcpFlavour(
+          tab.agent?.launcherId,
+          leaf.resume.agent,
+          agentMcpEnabled,
+          customCliAgents,
+        );
+        if (mcp && targetRoot) {
+          const key = `${tab.spaceId}:${mcp.agent}:${mcp.enabled}`;
           const existing = mcpPromises.get(key);
           if (existing) {
             mcpReady = existing;
           } else {
-            const enabled = agentMcpEnabled[leaf.resume.agent];
+            const enabled = mcp.enabled;
             mcpReady = invoke("agent_configure_mcp", {
-              agent: leaf.resume.agent,
+              agent: mcp.agent,
               workspaceRoot: targetRoot,
               workspace: targetWorkspace,
               enabled,
@@ -1280,7 +1288,14 @@ export default function App() {
         })();
       }
     }
-  }, [activeSpaceId, agentMcpEnabled, spaceEnvironments, tabs, warmTab]);
+  }, [
+    activeSpaceId,
+    agentMcpEnabled,
+    customCliAgents,
+    spaceEnvironments,
+    tabs,
+    warmTab,
+  ]);
 
   useEffect(() => {
     const queue = agentDiscoveryQueueRef.current;
@@ -1381,11 +1396,14 @@ export default function App() {
         throw error;
       }
       const agentCwd = target.cwd;
+      // A custom launcher resumes as the CLI its icon names, with its own
+      // command, so its flags (another account's settings, say) come back too.
+      const resumeAgent = launcherResumeAgent(launcher);
       const agentResumes =
-        request.agent === "opencode" && target.workspace.kind !== "local"
+        resumeAgent === "opencode" && target.workspace.kind !== "local"
           ? Array.from({ length: request.instances }, () => undefined)
           : createAgentResumeStates(
-              request.agent,
+              resumeAgent,
               command.command,
               request.instances,
             );

@@ -3,8 +3,58 @@ import {
   agentMcpFlavour,
   DEFAULT_AGENT_MCP_ENABLED,
   normalizeAgentMcpEnabled,
+  resumeMcpFlavour,
   withAgentMcpRuntime,
 } from "./agentMcp";
+
+describe("resumed agent MCP", () => {
+  const custom = [
+    {
+      id: "custom:claudez",
+      name: "ClaudeZ",
+      icon: "claude",
+      command: "claude",
+      mcp: true,
+    },
+    { id: "custom:quiet", name: "Quiet", icon: "claude", command: "claude" },
+  ] as const;
+  const allOff = { ...DEFAULT_AGENT_MCP_ENABLED, claude: false };
+
+  it("follows the custom launcher that started the tab", () => {
+    expect(
+      resumeMcpFlavour("custom:claudez", "claude", allOff, custom),
+    ).toEqual({ agent: "claude", enabled: true });
+    expect(
+      resumeMcpFlavour(
+        "custom:quiet",
+        "claude",
+        DEFAULT_AGENT_MCP_ENABLED,
+        custom,
+      ),
+    ).toBeNull();
+    expect(
+      resumeMcpFlavour(
+        "custom:claudez",
+        "codex",
+        DEFAULT_AGENT_MCP_ENABLED,
+        custom,
+      ),
+    ).toBeNull();
+  });
+
+  it("follows the CLI's own switch for a built-in launcher or a hand-started CLI", () => {
+    expect(resumeMcpFlavour("claude", "claude", allOff, custom)).toEqual({
+      agent: "claude",
+      enabled: false,
+    });
+    expect(
+      resumeMcpFlavour(undefined, "codex", DEFAULT_AGENT_MCP_ENABLED, custom),
+    ).toEqual({ agent: "codex", enabled: true });
+    expect(
+      resumeMcpFlavour(undefined, "pi", DEFAULT_AGENT_MCP_ENABLED, custom),
+    ).toBeNull();
+  });
+});
 
 describe("agent MCP preferences", () => {
   it("defaults every supported agent on and preserves explicit opt-outs", () => {

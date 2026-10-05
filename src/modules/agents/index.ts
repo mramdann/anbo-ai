@@ -2,15 +2,17 @@ export { AgentNotificationsBridge } from "./components/AgentNotificationsBridge"
 export { NotificationBell } from "./components/NotificationBell";
 export {
   agentMcpFlavour,
-  isMcpAgentId,
+  resumeMcpFlavour,
   withAgentMcpRuntime,
 } from "./lib/agentMcp";
+export { sameAgentFamily } from "./lib/agentTabName";
 export { pollCodexSession } from "./lib/codexDiscovery";
 export {
   type AgentLaunchRequest,
   canLaunchAgentRequest,
   configuredAgentLaunchRequest,
   findAgentLauncher,
+  launcherResumeAgent,
   MAX_PARALLEL_OPENCODE_AGENTS,
   validateAgentLaunchCommand,
 } from "./lib/launcher";

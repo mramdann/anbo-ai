@@ -498,6 +498,9 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       return (
         candidate.agentId === agentId ||
         provisionalId === agentId ||
+        // An id handed out before the agent got its callsign, or before its
+        // tab was renamed, still names the same CLI in the same tab.
+        agentId.endsWith(`-${provisionalId}`) ||
         legacyId === agentId ||
         // A callsign addresses the agent as readily as its id does. Names are
         // unique within a workspace, so this cannot become ambiguous.

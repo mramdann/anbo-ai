@@ -1,5 +1,9 @@
 import { quoteShellArg } from "@/lib/shellQuote";
-import type { AgentLauncherId, CustomCliAgent } from "./launcher";
+import {
+  type AgentLauncherId,
+  type CustomCliAgent,
+  isBuiltInAgentLauncherId,
+} from "./launcher";
 
 const MCP_AGENT_IDS = [
   "claude",
@@ -66,6 +70,28 @@ export function agentMcpFlavour(
   const custom = customAgents.find((candidate) => candidate.id === agent);
   if (!custom?.mcp) return null;
   return mcpFlavourForIcon(custom.icon);
+}
+
+/**
+ * The MCP wiring a resumed agent gets. The launcher that started its tab
+ * decides, as it did at launch: a custom launcher by its own switch, a
+ * built-in launcher or a CLI started by hand by that CLI's switch.
+ */
+export function resumeMcpFlavour(
+  launcherId: AgentLauncherId | undefined,
+  resumeAgent: string,
+  enabled: AgentMcpEnabled,
+  customAgents: readonly CustomCliAgent[],
+): { agent: McpAgentId; enabled: boolean } | null {
+  if (launcherId !== undefined && !isBuiltInAgentLauncherId(launcherId)) {
+    const flavour = agentMcpFlavour(launcherId, enabled, customAgents);
+    return flavour !== null && flavour === resumeAgent
+      ? { agent: flavour, enabled: true }
+      : null;
+  }
+  return isMcpAgentId(resumeAgent)
+    ? { agent: resumeAgent, enabled: enabled[resumeAgent] }
+    : null;
 }
 
 function workspaceFile(root: string, ...parts: string[]): string {

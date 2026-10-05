@@ -9,6 +9,7 @@ import {
   getAgentLaunchers,
   getOfferedAgentLaunchers,
   isBuiltInAgentLauncherId,
+  launcherResumeAgent,
   normalizeAgentLaunchCommands,
   normalizeCustomCliAgents,
   validateAgentLaunchCommand,
@@ -294,5 +295,19 @@ describe("the command a launcher would run", () => {
       { id: "custom:z", icon: "claude", name: "ClaudeZ", command: "myclaude" },
     ]).filter((agent) => agent.custom);
     expect(configuredAgentLaunchCommand(custom, commands)).toBe("myclaude");
+  });
+});
+
+describe("launcher resume", () => {
+  it("resumes a custom launcher as the CLI its icon names", () => {
+    expect(launcherResumeAgent({ id: "claude", icon: "claude" })).toBe(
+      "claude",
+    );
+    expect(launcherResumeAgent({ id: "custom:claudez", icon: "claude" })).toBe(
+      "claude",
+    );
+    expect(launcherResumeAgent({ id: "custom:tool", icon: "robot" })).toBe(
+      "custom:tool",
+    );
   });
 });

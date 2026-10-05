@@ -5,6 +5,7 @@ import {
   type AgentTabIdentity,
   type AgentTabNameRequest,
   allocateAgentTabNames,
+  sameAgentFamily,
 } from "@/modules/agents/lib/agentTabName";
 import type { AgentInstanceCount } from "@/modules/agents/lib/launcher";
 import type {
@@ -290,7 +291,9 @@ export function adoptDetectedAgentIdentity(
       tab.kind === "terminal" && !tab.private && hasLeaf(tab.paneTree, leafId),
   );
   if (target?.kind !== "terminal") return tabs;
-  if (target.agent?.launcherId === agent.launcherId) return tabs;
+  if (target.agent && sameAgentFamily(target.agent, agent.launcherId)) {
+    return tabs;
+  }
   const occupied = occupiedNamesInSpace(tabs, target.spaceId, target.id);
   const [name] = allocateAgentTabNames(agent, 1, occupied);
   return tabs.map((tab) =>

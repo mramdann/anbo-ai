@@ -1070,6 +1070,71 @@ describe("agent spawning", () => {
     service.dispose();
   });
 
+  it("keeps answering to the id a custom agent was spawned with after it gets a callsign", async () => {
+    let sessions: Record<number, AgentSession> = {};
+    const writes: Array<[number, string]> = [];
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab({ title: "ClaudeZ" })],
+      getSpaces: () => [space()],
+      getSessions: () => sessions,
+      getActiveTabId: () => null,
+      getBuffer: () => writes.map(([, data]) => data).join(""),
+      write: (leafId, data) => {
+        writes.push([leafId, data]);
+        return true;
+      },
+      spawn: (workspace, agent) => {
+        sessions = {
+          101: session({
+            agent: "claude",
+            name: "ClaudeZ",
+            status: "working",
+            phase: "working",
+          }),
+        };
+        return {
+          agentId: agentIdFor(agent, agent, 10),
+          cli: "claude",
+          tabId: 10,
+          leafId: 101,
+          spaceId: workspace.id,
+          workspace: workspace.root,
+        };
+      },
+      subscribeSessions: () => () => {},
+    });
+    const spawned = await service.handle({
+      requestId: "spawn-claudez",
+      method: "agent_spawn",
+      params: { workspace: "space-a", agent: "custom:claudez", timeout: 100 },
+    });
+    expect(spawned).toMatchObject({
+      result: { agent: { agentId: "claudez-claude:10" } },
+    });
+    sessions = {
+      101: {
+        ...sessions[101],
+        name: "Jasper",
+        status: "waiting",
+        phase: "finished",
+      },
+    };
+    await expect(
+      service.handle({
+        requestId: "send-claudez",
+        method: "agent_send",
+        params: {
+          workspace: "space-a",
+          agentId: "claudez-claude:10",
+          message: "next task",
+          waitForReady: false,
+        },
+      }),
+    ).resolves.toMatchObject({ result: { ok: true } });
+    expect(writes[0]).toEqual([101, "next task"]);
+    service.dispose();
+  });
+
   it("waits for the real Antigravity prompt after its login shell", async () => {
     vi.useFakeTimers();
     let tabs: Tab[] = [];

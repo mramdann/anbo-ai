@@ -19,6 +19,21 @@ export type AgentTabNameRequest = Pick<
   "launcherId" | "icon" | "label"
 >;
 
+/**
+ * Whether a tab's identity already speaks for the CLI Anbo detected in it. A
+ * custom launcher's icon names the CLI it runs, so a session of that CLI keeps
+ * the launcher's name instead of turning into the built-in agent.
+ */
+export function sameAgentFamily(
+  identity: Pick<AgentTabIdentity, "launcherId" | "icon">,
+  agent: string,
+): boolean {
+  return (
+    identity.launcherId === agent ||
+    (!isBuiltInAgentLauncherId(identity.launcherId) && identity.icon === agent)
+  );
+}
+
 export const BUILT_IN_AGENT_ALIASES: Record<
   BuiltInAgentLauncherId,
   readonly string[]
