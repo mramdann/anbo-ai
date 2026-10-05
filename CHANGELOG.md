@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.35.0](https://github.com/mramdann/anbo-ai/compare/v0.34.0...v0.35.0) (2026-10-05)
+
+
+### Features
+
+* **browser:** open the Chrome and Edge preview in production builds ([bbb0d69](https://github.com/mramdann/anbo-ai/commit/bbb0d690af09dcb8561876520e8f56f9850b0d01))
+
+
+### Bug Fixes
+
+* **browser:** drop the development wording from the browser extension ([b5a56ab](https://github.com/mramdann/anbo-ai/commit/b5a56abfb8ff5841519c2fc405a50deb801047c4))
+* **installer:** name what still holds anbo.exe when an update cannot start ([cebc2ae](https://github.com/mramdann/anbo-ai/commit/cebc2aea7007422e54d2b5333fdb8bce53600974))
+* **installer:** wait for Anbo to exit before an update's running-app check ([e50165e](https://github.com/mramdann/anbo-ai/commit/e50165e7af85f26dba4148ef355b74a9bf0a1e33))
+
 ## [0.34.0](https://github.com/mramdann/anbo-ai/compare/v0.33.7...v0.34.0) (2026-10-05)
 
 
