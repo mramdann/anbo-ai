@@ -192,6 +192,9 @@ export function createTabManager(api, attached, publish, dockChanged) {
         if (activate) await api.windows.update(window.id, { focused: true });
         return result;
       };
+    } else if (message.method === "anbo.version") {
+      // Anbo compares it with the files it ships, to ask for a reload after an update.
+      operation = async () => ({ version: api.runtime.getManifest().version });
     } else {
       throw new Error("Unknown tab selection action");
     }

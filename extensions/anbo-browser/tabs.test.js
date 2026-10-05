@@ -49,6 +49,7 @@ function harness() {
       update: vi.fn(async () => ({})),
     },
   };
+  api.runtime = { getManifest: () => ({ version: "0.5.1" }) };
   const manager = createTabManager(api, selected, () => publications.push([...selected.values()].map((tab) => ({ ...tab }))));
   const dispatch = createDispatcher(api, selected, (reply) => replies.push(reply), () => active, manager);
   const run = async (method, tabId = 0, params = {}) => {
@@ -122,6 +123,13 @@ describe("tabs selected directly from Anbo", () => {
     expect(state.selected.get(10).generation).toBeGreaterThan(original.generation);
     expect(state.selected.get(10).selectionId).toBe(original.selectionId);
   });
+  it("tells Anbo which extension version runs", async () => {
+    const state = harness();
+    expect((await state.run("anbo.version")).result).toEqual({ version: "0.5.1" });
+    expect(state.api.debugger.attach).not.toHaveBeenCalled();
+    expect(state.api.tabs.query).not.toHaveBeenCalled();
+  });
+
   it("lists only normal web tab metadata on demand without attaching", async () => {
     const state = harness();
     state.tabs.set(13, { id: 13, url: "chrome://extensions" });

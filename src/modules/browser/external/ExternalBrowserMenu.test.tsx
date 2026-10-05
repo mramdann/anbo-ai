@@ -89,6 +89,22 @@ describe("browser menu", () => {
     expect(markup).toContain("New tab</button>");
   });
 
+  it("asks for a reload while a profile runs extension files from before an update", () => {
+    const current = body([connection("a", "D:/anbo-ai")]);
+    expect(current).not.toContain("Reload Anbo Browser Bridge");
+    const outdated = body([
+      { ...connection("a", "D:/anbo-ai"), extensionOutdated: true },
+    ]);
+    expect(outdated).toContain(
+      "Reload Anbo Browser Bridge at chrome://extensions",
+    );
+    const edge = connection("b", "D:/anbo-ai");
+    edge.profile = { ...edge.profile, browser: "edge" };
+    expect(body([{ ...edge, extensionOutdated: true }])).toContain(
+      "edge://extensions",
+    );
+  });
+
   it("names the workspace of a profile approved somewhere else", () => {
     const markup = body([connection("a", "D:/other-project")]);
     expect(markup).toContain('alt="Chrome"');

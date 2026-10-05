@@ -8,7 +8,7 @@ const COOKIE_METHODS = new Set([
   "Network.getCookies", "Network.getAllCookies", "Network.setCookie", "Network.setCookies",
   "Network.deleteCookies", "Network.clearBrowserCookies", "Page.getCookies", "Page.deleteCookie",
 ]);
-const PROFILE_METHODS = new Set(["anbo.listTabs", "anbo.openTab"]);
+const PROFILE_METHODS = new Set(["anbo.listTabs", "anbo.openTab", "anbo.version"]);
 const TAB_METHODS = new Set(["anbo.selectTab", "anbo.releaseTab", "anbo.closeTab"]);
 
 export function validateCommand(message, attached, now = Date.now()) {

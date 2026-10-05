@@ -560,6 +560,7 @@ mod tests {
                     generation: 1,
                     ..Default::default()
                 }],
+                extension: None,
                 sender,
                 pending: Default::default(),
                 next_request: 1,

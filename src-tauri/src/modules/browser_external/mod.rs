@@ -30,6 +30,9 @@ struct Connection {
     profile: Profile,
     workspace: Option<String>,
     tabs: Vec<Tab>,
+    /// The extension version the browser runs, once asked after approval;
+    /// empty when an extension too old to answer refused the question.
+    extension: Option<String>,
     sender: mpsc::Sender<Value>,
     pending: BTreeMap<u64, Reply>,
     next_request: u64,
@@ -46,6 +49,34 @@ struct Registry {
 
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| Mutex::new(Registry::default()));
 
+/// The extension version this build ships. Setup and the startup refresh
+/// write these files, but a browser keeps running the ones it loaded.
+static BUNDLED_EXTENSION: LazyLock<Option<String>> = LazyLock::new(|| {
+    serde_json::from_str::<Value>(include_str!(
+        "../../../../extensions/anbo-browser/manifest.json"
+    ))
+    .ok()
+    .and_then(|manifest| manifest["version"].as_str().map(str::to_owned))
+});
+
+impl Connection {
+    /// Whether the browser still runs extension files from before an update.
+    fn extension_outdated(&self) -> bool {
+        match (&self.extension, BUNDLED_EXTENSION.as_deref()) {
+            (Some(running), Some(bundled)) => running != bundled,
+            _ => false,
+        }
+    }
+}
+
+fn valid_extension_version(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() <= 32
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionInfo {
@@ -53,6 +84,7 @@ pub struct ConnectionInfo {
     profile: Profile,
     workspace: Option<String>,
     tabs: Vec<Tab>,
+    extension_outdated: bool,
 }
 
 fn ensure_main(webview: &Webview) -> Result<(), String> {
@@ -132,7 +164,7 @@ impl Registry {
         let connection = self.connection_mut(id)?;
         connection.pending.retain(|_, sender| !sender.is_closed());
         let target_allowed = match method {
-            "anbo.listTabs" | "anbo.openTab" => tab_id == 0,
+            "anbo.listTabs" | "anbo.openTab" | "anbo.version" => tab_id == 0,
             "anbo.selectTab" | "anbo.releaseTab" => protocol::valid_tab_id(tab_id),
             _ => connection.tabs.iter().any(|tab| tab.id == tab_id),
         };
@@ -335,6 +367,7 @@ where
                 profile,
                 workspace: None,
                 tabs: Vec::new(),
+                extension: None,
                 sender,
                 pending: BTreeMap::new(),
                 next_request: 1,
@@ -416,6 +449,7 @@ pub fn browser_external_connections(webview: Webview) -> Result<Vec<ConnectionIn
             profile: connection.profile.clone(),
             workspace: connection.workspace.clone(),
             tabs: connection.tabs.clone(),
+            extension_outdated: connection.extension_outdated(),
         })
         .collect())
 }
@@ -441,7 +475,49 @@ pub fn browser_external_approve(
         .map_err(|_| "browser registry unavailable")?
         .approve(&connection_id, crate::modules::fs::to_canon(&root))?;
     changed(&app);
+    // Ask which extension version the browser runs, so the menu can ask for
+    // a reload when an update has refreshed the files on disk.
+    tauri::async_runtime::spawn(async move {
+        let Some(version) = extension_version(&connection_id).await else {
+            return;
+        };
+        let stored = REGISTRY.lock().is_ok_and(|mut registry| {
+            registry
+                .connections
+                .get_mut(&connection_id)
+                .map(|connection| connection.extension = Some(version))
+                .is_some()
+        });
+        if stored {
+            changed(&app);
+        }
+    });
     Ok(())
+}
+
+/// The version an approved extension reports; empty when it is too old to
+/// know the question, and None when it could not answer at all.
+async fn extension_version(connection_id: &str) -> Option<String> {
+    let (request_id, receiver) = REGISTRY
+        .lock()
+        .ok()?
+        .queue(connection_id, 0, "anbo.version", json!({}))
+        .ok()?;
+    let _guard = RequestGuard {
+        connection_id: connection_id.into(),
+        request_id,
+    };
+    match tokio::time::timeout(REQUEST_TIMEOUT, receiver).await {
+        Ok(Ok(Ok(reply))) => Some(
+            reply["version"]
+                .as_str()
+                .filter(|version| valid_extension_version(version))
+                .unwrap_or_default()
+                .to_owned(),
+        ),
+        Ok(Ok(Err(_))) => Some(String::new()),
+        _ => None,
+    }
 }
 
 #[tauri::command]
@@ -543,6 +619,7 @@ mod tests {
                 },
                 workspace: None,
                 tabs: Vec::new(),
+                extension: None,
                 sender,
                 pending: BTreeMap::new(),
                 next_request: 1,
@@ -569,6 +646,35 @@ mod tests {
                 },
             )
             .unwrap();
+    }
+
+    #[test]
+    fn version_question_needs_approval_and_an_old_extension_reads_as_outdated() {
+        let mut registry = Registry::default();
+        let (first, _receiver) = connection("profile-one");
+        registry.insert("first".into(), first).unwrap();
+        assert!(registry
+            .queue("first", 0, "anbo.version", json!({}))
+            .is_err());
+        registry.approve("first", "D:/workspace".into()).unwrap();
+        assert!(registry
+            .queue("first", 0, "anbo.version", json!({}))
+            .is_ok());
+        assert!(registry
+            .queue("first", 5, "anbo.version", json!({}))
+            .is_err());
+
+        let bundled = BUNDLED_EXTENSION.clone().unwrap();
+        assert!(valid_extension_version(&bundled));
+        let connection = registry.connections.get_mut("first").unwrap();
+        assert!(!connection.extension_outdated());
+        connection.extension = Some(String::new());
+        assert!(connection.extension_outdated());
+        connection.extension = Some("0.4.9".into());
+        assert!(connection.extension_outdated());
+        connection.extension = Some(bundled);
+        assert!(!connection.extension_outdated());
+        assert!(!valid_extension_version("1.0<script>"));
     }
 
     #[tokio::test]

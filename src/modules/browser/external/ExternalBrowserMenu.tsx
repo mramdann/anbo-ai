@@ -533,6 +533,15 @@ function ProfileSection({
           Disconnect
         </button>
       </div>
+      {connection.extensionOutdated ? (
+        <p className="px-1.5 pb-1 pl-6 text-[11px] leading-relaxed text-muted-foreground">
+          Reload Anbo Browser Bridge at{" "}
+          {connection.profile.browser === "edge"
+            ? "edge://extensions"
+            : "chrome://extensions"}{" "}
+          so this profile runs the updated extension.
+        </p>
+      ) : null}
       {expanded ? (
         <div className="pb-1 pl-4">
           <Heading>In Anbo</Heading>

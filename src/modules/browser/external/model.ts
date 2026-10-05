@@ -13,6 +13,8 @@ export type ExternalConnection = {
   connectionId: string;
   profile: { profileId: string; browser: "chrome" | "edge"; name: string };
   workspace: string | null;
+  /** The browser still runs extension files from before an Anbo update. */
+  extensionOutdated?: boolean;
   tabs: {
     id: number;
     title: string;

@@ -126,11 +126,12 @@ fn reject_reparse_points(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn write_asset(path: &Path, content: impl AsRef<[u8]>) -> Result<(), String> {
+/// Writes a file only when its content changed; true when it did.
+fn write_asset(path: &Path, content: impl AsRef<[u8]>) -> Result<bool, String> {
     let content = content.as_ref();
     reject_reparse_points(path)?;
     if fs::read(path).is_ok_and(|existing| existing == content) {
-        return Ok(());
+        return Ok(false);
     }
     let mut temporary =
         tempfile::NamedTempFile::new_in(path.parent().ok_or("Missing setup directory")?)
@@ -139,23 +140,107 @@ fn write_asset(path: &Path, content: impl AsRef<[u8]>) -> Result<(), String> {
         .write_all(content)
         .map_err(|error| error.to_string())?;
     temporary.persist(path).map_err(|error| error.to_string())?;
-    Ok(())
+    Ok(true)
 }
 
-fn prepare_assets(root: &Path, host: &str) -> Result<PathBuf, String> {
+/// Writes the extension files and installer; true when an extension file changed.
+fn prepare_assets(root: &Path, host: &str) -> Result<(PathBuf, bool), String> {
     reject_reparse_points(root)?;
     let extension = root.join("extension");
     reject_reparse_points(&extension)?;
     fs::create_dir_all(&extension).map_err(|error| error.to_string())?;
+    let mut changed = false;
     for (name, content) in ASSETS {
-        write_asset(&extension.join(name), content)?;
+        changed |= write_asset(&extension.join(name), content)?;
     }
-    write_asset(
+    changed |= write_asset(
         &extension.join("host.js"),
         format!("export const NATIVE_HOST = {host:?};\n"),
     )?;
     write_asset(&root.join("install.ps1"), INSTALLER)?;
-    Ok(extension)
+    Ok((extension, changed))
+}
+
+/// What an update changed in an earlier Setup.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Refreshed {
+    pub extension: bool,
+    pub native_host: bool,
+}
+
+/// Brings an earlier Setup's extension files and native host copy up to
+/// this build. Browsers keep the extension they loaded until it is reloaded,
+/// which the browser menu asks for.
+pub fn refresh_installed(identifier: &str, sidecar: &Path) -> Result<Refreshed, String> {
+    let _guard = INSTALLING
+        .try_lock()
+        .map_err(|_| "browser setup is running")?;
+    let root = app_data::local_data_root()?.join("browser-bridge");
+    refresh_at(&root, &host_name(identifier), sidecar)
+}
+
+fn refresh_at(root: &Path, host: &str, sidecar: &Path) -> Result<Refreshed, String> {
+    if !root.join("extension").join("manifest.json").is_file() {
+        return Ok(Refreshed::default());
+    }
+    let (_, extension) = prepare_assets(root, host)?;
+    let native_host =
+        refresh_native_host(&root.join("native-host").join("anbo-browser.exe"), sidecar)?;
+    Ok(Refreshed {
+        extension,
+        native_host,
+    })
+}
+
+/// Copies this build's native host over the one Setup installed when it is
+/// newer. A host the browser runs right now cannot be overwritten, but
+/// Windows lets its file be renamed, so it moves aside and the next start
+/// uses the copy. An older sidecar (a stale development build, a downgrade)
+/// never replaces a newer host.
+fn refresh_native_host(installed: &Path, sidecar: &Path) -> Result<bool, String> {
+    if !installed.is_file() || !sidecar.is_file() {
+        return Ok(false);
+    }
+    reject_reparse_points(installed)?;
+    let modified = |path: &Path| {
+        fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    };
+    let Some(built) = modified(sidecar) else {
+        return Ok(false);
+    };
+    if modified(installed).is_some_and(|current| current >= built) {
+        return Ok(false);
+    }
+    let fresh = fs::read(sidecar).map_err(|error| error.to_string())?;
+    if fs::read(installed).is_ok_and(|current| current == fresh) {
+        return Ok(false);
+    }
+    let directory = installed.parent().ok_or("Missing native host directory")?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    let parked = directory.join(format!("anbo-browser.{stamp}.old"));
+    fs::rename(installed, &parked).map_err(|error| error.to_string())?;
+    if let Err(error) = write_asset(installed, &fresh) {
+        let _ = fs::rename(&parked, installed);
+        return Err(error);
+    }
+    // The copy keeps the build's time, so the next update compares builds
+    // rather than the moment this copy was made.
+    if let Ok(file) = fs::File::options().write(true).open(installed) {
+        let _ = file.set_modified(built);
+    }
+    for entry in fs::read_dir(directory).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|extension| extension == "old") {
+            // Still in use until that host exits; a later start retries.
+            let _ = fs::remove_file(path);
+        }
+    }
+    Ok(true)
 }
 
 async fn run_hidden(mut command: Command, seconds: u64) -> Result<Output, String> {
@@ -285,7 +370,7 @@ pub async fn install(app: AppHandle, browser: Browser) -> Result<SetupResult, St
     let host = host_name(&app.config().identifier);
     let asset_root = root.clone();
     let asset_host = host.clone();
-    let extension =
+    let (extension, _) =
         tauri::async_runtime::spawn_blocking(move || prepare_assets(&asset_root, &asset_host))
             .await
             .map_err(|error| error.to_string())??;
@@ -329,13 +414,17 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("browser-bridge");
         let host = host_name("com.anbo.desktop.dev");
-        let extension = prepare_assets(&root, &host).unwrap();
+        let (extension, written) = prepare_assets(&root, &host).unwrap();
+        assert!(written);
         assert_eq!(fs::read_dir(&extension).unwrap().count(), ASSETS.len() + 1);
         assert!(fs::read_to_string(extension.join("host.js"))
             .unwrap()
             .contains(&host));
         assert!(!extension.join("bridge.test.js").exists());
-        assert_eq!(prepare_assets(&root, &host).unwrap(), extension);
+        assert_eq!(
+            prepare_assets(&root, &host).unwrap(),
+            (extension.clone(), false)
+        );
         assert_eq!(
             fs::read_to_string(extension.join("manifest.json")).unwrap(),
             MANIFEST
@@ -382,6 +471,65 @@ mod tests {
             browser_details(&Browser::Chrome).2,
             browser_details(&Browser::Edge).2
         );
+    }
+
+    #[test]
+    fn refresh_updates_only_an_earlier_setup_and_never_downgrades_its_host() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("browser-bridge");
+        let host = host_name("com.anbo.desktop.setup-test");
+        let sidecar = temporary.path().join("anbo-browser.exe");
+        fs::write(&sidecar, b"new host").unwrap();
+        assert_eq!(
+            refresh_at(&root, &host, &sidecar).unwrap(),
+            Refreshed::default()
+        );
+        assert!(!root.exists());
+
+        let (extension, _) = prepare_assets(&root, &host).unwrap();
+        fs::write(extension.join("bridge.js"), "old bridge").unwrap();
+        let installed = root.join("native-host").join("anbo-browser.exe");
+        fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        fs::write(&installed, b"old host").unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(3600);
+        fs::File::options()
+            .write(true)
+            .open(&installed)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+
+        let refreshed = refresh_at(&root, &host, &sidecar).unwrap();
+        assert_eq!(
+            refreshed,
+            Refreshed {
+                extension: true,
+                native_host: true
+            }
+        );
+        assert_ne!(
+            fs::read_to_string(extension.join("bridge.js")).unwrap(),
+            "old bridge"
+        );
+        assert_eq!(fs::read(&installed).unwrap(), b"new host");
+        assert_eq!(
+            fs::read_dir(installed.parent().unwrap()).unwrap().count(),
+            1
+        );
+        assert_eq!(
+            refresh_at(&root, &host, &sidecar).unwrap(),
+            Refreshed::default()
+        );
+
+        fs::write(&installed, b"newer host").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&sidecar)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert!(!refresh_native_host(&installed, &sidecar).unwrap());
+        assert_eq!(fs::read(&installed).unwrap(), b"newer host");
     }
 
     #[tokio::test]
