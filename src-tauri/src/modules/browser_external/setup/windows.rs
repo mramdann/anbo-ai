@@ -274,7 +274,7 @@ pub async fn install(app: AppHandle, browser: Browser) -> Result<SetupResult, St
         .await
         .is_ok_and(|output| output.status.success() && output.stdout == b"anbo-native-host-2\n");
     if !supported {
-        return Err("The browser bridge binary needs an update. Restart the updated development preview; its startup prepares the bridge automatically.".into());
+        return Err("Anbo's browser bridge binary does not match this version of Anbo. Restart Anbo, or reinstall it if this message comes back, then run Setup again.".into());
     }
     let data_root = app_data::local_data_root()?;
     reject_reparse_points(&data_root)?;
