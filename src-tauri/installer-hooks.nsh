@@ -2,13 +2,22 @@
 ; HKCU matches installer currentUser scope. %V = clicked path.
 ; NoWorkingDirectory keeps Explorer from overriding %V (System32 on Drive).
 
+; Where an update moved anbo.exe and anbo-browser.exe aside, or "".
+Var AnboMovedExe
+Var AnboMovedSidecar
+
 ; The in-app updater starts this installer with /UPDATE and then exits Anbo
 ; with std::process::exit, so Anbo can still be on its way out when the
 ; template's running-app check runs right after this hook. That check asks
-; Restart Manager to shut down whatever uses anbo.exe, and a process that is
-; already exiting cannot be shut down, so the update stopped with "Failed to
-; kill Anbo" (tauri-apps/tauri#12309). For updates, wait until nothing uses
-; anbo.exe, at most 20 s, then let the check run as before.
+; Restart Manager to shut down whatever uses anbo.exe and stops the update
+; with "Failed to kill Anbo" when that fails. An exiting Anbo is not the only
+; user: while an anbo.exe process starts or ends (an agent's hook helper, for
+; one), Restart Manager also lists csrss and System, which it can never shut
+; down, and the process that started it, which it tries to. So for updates:
+; wait until nothing uses anbo.exe, at most 20 s, close the Anbo processes
+; still left, then move anbo.exe and anbo-browser.exe aside. Windows lets a
+; running executable be renamed, so the check finds nothing to shut down
+; and the new files go in under the old names.
 !macro NSIS_HOOK_PREINSTALL
   ${If} $UpdateMode = 1
     Push $0
@@ -36,11 +45,13 @@
         IntOp $R9 $R9 + 1
         Goto anbo_wait_for_exit
       ${EndIf}
-    ; Still in use: the check below is about to fail, so name what holds the
-    ; file. Restart Manager counts every process with anbo.exe open, a virus
-    ; scanner or indexer included, and cannot stop a service or an elevated
-    ; process from this per-user installer.
-    ${IfThen} $0 = ${ERROR_MORE_DATA} ${|} Call AnboListFileUsers ${|}
+    ${IfThen} $0 = ${ERROR_MORE_DATA} ${|} Call AnboCloseLeftoverAnbo ${|}
+    Push "$INSTDIR\${MAINBINARYNAME}.exe"
+    Call AnboMoveAside
+    Pop $AnboMovedExe
+    Push "$INSTDIR\anbo-browser.exe"
+    Call AnboMoveAside
+    Pop $AnboMovedSidecar
     Pop $R9
     Pop $R8
     Pop $3
@@ -50,11 +61,15 @@
   ${EndIf}
 !macroend
 
-; Writes the processes Restart Manager sees using anbo.exe to the installer
-; details and to %TEMP%\anbo-update-check.txt. RM_PROCESS_INFO is 668 bytes:
-; pid at 0, strAppName[256] at 12, strServiceShortName[64] at 524, then
-; ApplicationType, AppStatus and TSSessionId from 652.
-Function AnboListFileUsers
+; Still in use after the wait: names every process Restart Manager sees using
+; anbo.exe, in the installer details and in %TEMP%\anbo-update-check.txt, and
+; has Restart Manager close the ones that run this anbo.exe. Anything else (a
+; scanner, Explorer, the agent that started a hook helper) is left alone; the
+; move aside gets the update past it. RM_PROCESS_INFO is 668 bytes:
+; RM_UNIQUE_PROCESS (pid, start time; 12 bytes) at 0, strAppName[256] at 12,
+; strServiceShortName[64] at 524, then ApplicationType, AppStatus and
+; TSSessionId from 652.
+Function AnboCloseLeftoverAnbo
   Push $0
   Push $1
   Push $2
@@ -70,12 +85,18 @@ Function AnboListFileUsers
   Push $R2
   Push $R3
   Push $R4
+  Push $R5
+  Push $R6
+  Push $R7
   !insertmacro RestartManager_StartSession $R0
   ${If} $R0 != ""
     !insertmacro RestartManager_RegisterFile $R0 "$INSTDIR\${MAINBINARYNAME}.exe"
     ${If} $0 = 0
       System::Alloc 6680
       Pop $R1
+      System::Alloc 120
+      Pop $R5
+      StrCpy $R6 0
       StrCpy $2 10
       System::Call 'RSTRTMGR::RmGetList(p R0, *i .r1, *i r2r2, p R1, *i .r3) i .r0'
       ${IfThen} $0 <> 0 ${|} StrCpy $2 0 ${|}
@@ -93,15 +114,41 @@ Function AnboListFileUsers
         System::Call '*$9(&w64 .r6)'
         IntOp $9 $R4 + 652
         System::Call '*$9(i .r7, i .r8, i .r9)'
-        DetailPrint "  pid $4 '$5' service '$6' type $7 status $8 session $9"
-        FileWrite $R2 "pid $4 '$5' service '$6' type $7 status $8 session $9$\r$\n"
+        Push $4
+        Call AnboProcessImage
+        Pop $R7
+        DetailPrint "  pid $4 '$5' service '$6' type $7 status $8 session $9 image '$R7'"
+        FileWrite $R2 "pid $4 '$5' service '$6' type $7 status $8 session $9 image '$R7'$\r$\n"
+        ${If} $R7 == "$INSTDIR\${MAINBINARYNAME}.exe"
+          System::Call '*$R4(i .r4, i .r5, i .r6)'
+          IntOp $9 $R6 * 12
+          IntOp $9 $9 + $R5
+          System::Call '*$9(i r4, i r5, i r6)'
+          IntOp $R6 $R6 + 1
+        ${EndIf}
         IntOp $R3 $R3 + 1
       ${Loop}
+      ${If} $R6 > 0
+        !insertmacro RestartManager_StartSession $R7
+        ${If} $R7 != ""
+          System::Call 'RSTRTMGR::RmRegisterResources(i R7, i 0, p 0, i R6, p R5, i 0, p 0) i .r0'
+          ${If} $0 = 0
+            System::Call 'RSTRTMGR::RmShutdown(i R7, i ${RmForceShutdown}, p 0) i .r0'
+          ${EndIf}
+          DetailPrint "Closing $R6 Anbo process(es) still running: $0"
+          FileWrite $R2 "closing $R6 Anbo process(es) still running: $0$\r$\n"
+          !insertmacro RestartManager_EndSession $R7
+        ${EndIf}
+      ${EndIf}
       FileClose $R2
+      System::Free $R5
       System::Free $R1
     ${EndIf}
     !insertmacro RestartManager_EndSession $R0
   ${EndIf}
+  Pop $R7
+  Pop $R6
+  Pop $R5
   Pop $R4
   Pop $R3
   Pop $R2
@@ -118,6 +165,80 @@ Function AnboListFileUsers
   Pop $1
   Pop $0
 FunctionEnd
+
+; Replaces the pid on the stack with that process's full image path, or ""
+; when the process cannot be queried (csrss, System, another user's).
+Function AnboProcessImage
+  Exch $0
+  Push $1
+  Push $2
+  StrCpy $2 ""
+  System::Call 'kernel32::OpenProcess(i 0x1000, i 0, i r0) p .r1'
+  ${If} $1 P<> 0
+    System::Call 'kernel32::QueryFullProcessImageNameW(p r1, i 0, w .r2, *i ${NSIS_MAX_STRLEN}) i .r0'
+    ${IfThen} $0 = 0 ${|} StrCpy $2 "" ${|}
+    System::Call 'kernel32::CloseHandle(p r1)'
+  ${EndIf}
+  StrCpy $0 $2
+  Pop $2
+  Pop $1
+  Exch $0
+FunctionEnd
+
+; Renames the file on the stack to <file>.<tick>.old and replaces it with the
+; new name, or with "" when there is no such file or it cannot be moved (a
+; holder that does not allow it), in which case the update goes on as before.
+Function AnboMoveAside
+  Exch $0
+  Push $1
+  Push $2
+  StrCpy $1 ""
+  ${If} ${FileExists} "$0"
+    StrCpy $2 0
+    ${Do}
+      System::Call 'kernel32::GetTickCount() i .r1'
+      IntFmt $1 "%u" $1
+      StrCpy $1 "$0.$1.old"
+      ClearErrors
+      Rename "$0" "$1"
+      ${IfNot} ${Errors}
+        DetailPrint "Moved $0 aside"
+        ${Break}
+      ${EndIf}
+      StrCpy $1 ""
+      IntOp $2 $2 + 1
+      ${If} $2 >= 10
+        DetailPrint "Could not move $0 aside"
+        ${Break}
+      ${EndIf}
+      Sleep 100
+    ${Loop}
+  ${EndIf}
+  StrCpy $0 $1
+  Pop $2
+  Pop $1
+  Exch $0
+FunctionEnd
+
+; An update that stops after moving the old files aside puts them back, so
+; the installed Anbo still starts.
+Function .onInstFailed
+  ${If} $AnboMovedExe != ""
+    Delete "$INSTDIR\${MAINBINARYNAME}.exe"
+    Rename "$AnboMovedExe" "$INSTDIR\${MAINBINARYNAME}.exe"
+  ${EndIf}
+  ${If} $AnboMovedSidecar != ""
+    Delete "$INSTDIR\anbo-browser.exe"
+    Rename "$AnboMovedSidecar" "$INSTDIR\anbo-browser.exe"
+  ${EndIf}
+FunctionEnd
+
+; The files an update moved aside. One that something still runs cannot be
+; deleted yet and goes with the next update or the uninstall.
+!macro AnboRemoveMovedAside
+  Delete "$INSTDIR\${MAINBINARYNAME}.exe.*.old"
+  Delete "$INSTDIR\anbo-browser.exe.*.old"
+!macroend
 
 !macro NSIS_HOOK_POSTINSTALL
   ; Remove context-menu keys from pre-Anbo installations during migration.
@@ -152,6 +273,13 @@ FunctionEnd
   Rename "$SMPROGRAMS\Anbo.tmp.lnk" "$SMPROGRAMS\Anbo.lnk"
   Rename "$DESKTOP\anbo.lnk" "$DESKTOP\Anbo.tmp.lnk"
   Rename "$DESKTOP\Anbo.tmp.lnk" "$DESKTOP\Anbo.lnk"
+
+  !insertmacro AnboRemoveMovedAside
+!macroend
+
+; Before the template's uninstall, so its RMDir finds the folder empty.
+!macro NSIS_HOOK_PREUNINSTALL
+  !insertmacro AnboRemoveMovedAside
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
