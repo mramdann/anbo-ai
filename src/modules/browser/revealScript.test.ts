@@ -16,6 +16,13 @@ const baselineSource = readFileSync(
   ),
   "utf8",
 );
+const announceSource = readFileSync(
+  new URL(
+    "../../../src-tauri/src/modules/browser_automation/announce.js",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 type Attributes = Record<string, string>;
 
@@ -191,7 +198,10 @@ function run(options: {
       },
     },
   });
-  vm.runInContext(`${baselineSource}\n${revealSource}`, context);
+  vm.runInContext(
+    `${baselineSource}\n${announceSource}\n${revealSource}`,
+    context,
+  );
   let before = options.before ?? null;
   if (options.duringAction) {
     Object.assign(context, {

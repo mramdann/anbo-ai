@@ -31,7 +31,7 @@ function probe(
     scrollIntoView: vi.fn(),
   };
   const result = vm.runInNewContext(
-    `(() => { ${script("actionRect")} ${script("pointerGuard")} })()`,
+    `(() => { ${script("actionRect")} ${script("announce")} ${script("pointerGuard")} })()`,
     {
       el: options.stale ? null : element,
       refId: "g1-e1",
