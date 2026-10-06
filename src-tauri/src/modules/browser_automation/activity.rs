@@ -347,6 +347,57 @@ pub fn foreign_holder(tab_id: i64, root: &Path, caller: &Caller) -> Option<Calle
     holder
 }
 
+/// Who opened each open tab. browser_open is not tracked, its tab does not
+/// exist yet, so a tab an agent opened and never touched left no trace of it.
+static OPENERS: Mutex<Option<HashMap<i64, Caller>>> = Mutex::new(None);
+const MAX_OPENERS: usize = 256;
+
+pub fn note_opened(tab_id: i64, caller: &Caller) {
+    let Ok(mut guard) = OPENERS.lock() else {
+        return;
+    };
+    let openers = guard.get_or_insert_with(HashMap::new);
+    if openers.len() >= MAX_OPENERS && !openers.contains_key(&tab_id) {
+        // Tab ids only grow, so the smallest is the oldest.
+        if let Some(oldest) = openers.keys().min().copied() {
+            openers.remove(&oldest);
+        }
+    }
+    openers.insert(tab_id, caller.clone());
+}
+
+/// Whether this caller opened the tab or drove it, in a session that is live
+/// or over. browser_tabs marks these, so an agent can tell it left no tab of
+/// its own open: before, the only count it got was of terminal and editor tabs.
+pub fn is_yours(tab_id: i64, caller: &Caller) -> bool {
+    let opened = OPENERS
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref()?.get(&tab_id).map(|owner| owner == caller))
+        .unwrap_or(false);
+    opened
+        || TABS.lock().is_ok_and(|guard| {
+            guard
+                .as_ref()
+                .and_then(|tabs| tabs.get(&tab_id))
+                .is_some_and(|surface| {
+                    surface
+                        .members
+                        .values()
+                        .chain(surface.last.iter().map(|(event, _)| event))
+                        .any(|event| event.actor == *caller)
+                })
+        })
+}
+
+fn forget_opener(tab_id: i64) {
+    if let Ok(mut guard) = OPENERS.lock() {
+        if let Some(openers) = guard.as_mut() {
+            openers.remove(&tab_id);
+        }
+    }
+}
+
 /// Whether this caller already holds a session.
 ///
 /// Read-only on purpose: the session gate has to be able to ask without
@@ -1188,12 +1239,14 @@ pub fn remove(tab_id: i64) {
             tabs.remove(&tab_id);
         }
     }
+    forget_opener(tab_id);
 }
 
 /// For an external tab Anbo lost control of mid-action: its sessions are told
 /// they ended there, so the tab's header does not keep showing an action that
 /// will never report back.
 pub fn retire(app: &AppHandle, tab_id: i64) {
+    forget_opener(tab_id);
     let unfinished: Vec<Activity> = TABS
         .lock()
         .ok()
@@ -1217,6 +1270,9 @@ pub fn retire(app: &AppHandle, tab_id: i64) {
 pub fn clear() {
     super::artifacts::clear();
     if let Ok(mut guard) = TABS.lock() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = OPENERS.lock() {
         *guard = None;
     }
 }
@@ -1297,6 +1353,44 @@ mod tests {
             assert!(members.values().count() <= MAX_CONTROLS);
         }
         assert!(members.get(1000).is_some());
+    }
+
+    #[test]
+    fn browser_tabs_marks_what_this_caller_opened_or_drove() {
+        let _serial = CONTROL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let claude = |pty| {
+            Caller::from_client_info(&serde_json::json!({"name":"claude"})).with_pty(Some(pty))
+        };
+        let (me, other) = (claude(51), claude(52));
+        let (opened, driven, theirs) = (9_101, 9_102, 9_103);
+        note_opened(opened, &me);
+        note_opened(theirs, &other);
+        let mut driving = event(81, "done", 1);
+        driving.actor = me.clone();
+        driving.tab_id = driven;
+        TABS.lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .entry(driven)
+            .or_default()
+            .members
+            .record(&driving);
+
+        assert!(is_yours(opened, &me), "opened, never touched");
+        assert!(is_yours(driven, &me), "driven, the session over");
+        assert!(!is_yours(theirs, &me));
+        assert!(is_yours(theirs, &other));
+        // The same agent in a new connection is still the same caller.
+        assert!(is_yours(opened, &claude(51)));
+
+        for tab in [opened, driven, theirs] {
+            remove(tab);
+        }
+        assert!(!is_yours(opened, &me));
+        assert!(!is_yours(driven, &me));
+        assert!(!is_yours(theirs, &other));
     }
 
     #[test]

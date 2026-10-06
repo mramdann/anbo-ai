@@ -276,6 +276,15 @@ pub async fn handle_action_as(
     }
     let mut result = result;
     if method == "open" {
+        // A tab closed within its own open (closeTab) is gone already.
+        if let Some(tab_id) = result
+            .as_ref()
+            .ok()
+            .filter(|value| value["closed"] != json!(true))
+            .and_then(|value| value.get("tabId").and_then(Value::as_i64))
+        {
+            super::activity::note_opened(tab_id, &actor);
+        }
         if let Some(root) = result
             .as_ref()
             .ok()
@@ -1052,7 +1061,13 @@ async fn handle_action_inner(
                     }));
                 }
             }
+            let mut yours = 0;
             for item in &mut result {
+                let mine = item["tabId"]
+                    .as_i64()
+                    .is_some_and(|tab_id| super::activity::is_yours(tab_id, caller));
+                item["yours"] = json!(mine);
+                yours += usize::from(mine);
                 if let Some(target) = item["tabId"]
                     .as_i64()
                     .and_then(crate::modules::browser_external::get_target)
@@ -1069,10 +1084,10 @@ async fn handle_action_inner(
             }
             Ok(json!({
                 "tabs": result,
+                "yourTabs": yours,
                 "activeTabId": active_tab_id,
                 "activeSpaceId": active_space_id,
                 "otherTabsInSpace": other_tabs,
-                "workspaceHasTabs": other_tabs > 0 || !result.is_empty(),
             }))
         }
 
