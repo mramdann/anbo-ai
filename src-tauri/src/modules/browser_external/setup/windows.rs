@@ -214,6 +214,12 @@ fn refresh_native_host(installed: &Path, sidecar: &Path) -> Result<bool, String>
         return Ok(false);
     }
     let fresh = fs::read(sidecar).map_err(|error| error.to_string())?;
+    // Only a program replaces a working host. Dev's build once left a 0-byte
+    // placeholder sidecar with a newer time, the refresh copied it over the
+    // host, and no browser profile could connect until the host was rebuilt.
+    if !fresh.starts_with(b"MZ") {
+        return Ok(false);
+    }
     if fs::read(installed).is_ok_and(|current| current == fresh) {
         return Ok(false);
     }
@@ -479,7 +485,7 @@ mod tests {
         let root = temporary.path().join("browser-bridge");
         let host = host_name("com.anbo.desktop.setup-test");
         let sidecar = temporary.path().join("anbo-browser.exe");
-        fs::write(&sidecar, b"new host").unwrap();
+        fs::write(&sidecar, b"MZ new host").unwrap();
         assert_eq!(
             refresh_at(&root, &host, &sidecar).unwrap(),
             Refreshed::default()
@@ -511,7 +517,7 @@ mod tests {
             fs::read_to_string(extension.join("bridge.js")).unwrap(),
             "old bridge"
         );
-        assert_eq!(fs::read(&installed).unwrap(), b"new host");
+        assert_eq!(fs::read(&installed).unwrap(), b"MZ new host");
         assert_eq!(
             fs::read_dir(installed.parent().unwrap()).unwrap().count(),
             1
@@ -530,6 +536,30 @@ mod tests {
             .unwrap();
         assert!(!refresh_native_host(&installed, &sidecar).unwrap());
         assert_eq!(fs::read(&installed).unwrap(), b"newer host");
+    }
+
+    #[test]
+    fn an_empty_or_foreign_sidecar_never_replaces_a_working_host() {
+        let temporary = tempfile::tempdir().unwrap();
+        let installed = temporary
+            .path()
+            .join("native-host")
+            .join("anbo-browser.exe");
+        fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        fs::write(&installed, b"MZ working host").unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(3600);
+        fs::File::options()
+            .write(true)
+            .open(&installed)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let sidecar = temporary.path().join("anbo-browser.exe");
+        for placeholder in [&b""[..], b"not a program"] {
+            fs::write(&sidecar, placeholder).unwrap();
+            assert!(!refresh_native_host(&installed, &sidecar).unwrap());
+            assert_eq!(fs::read(&installed).unwrap(), b"MZ working host");
+        }
     }
 
     #[tokio::test]
