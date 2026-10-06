@@ -5,6 +5,11 @@
 ; Where an update moved anbo.exe and anbo-browser.exe aside, or "".
 Var AnboMovedExe
 Var AnboMovedSidecar
+; anbo.exe's path and file name, set by NSIS_HOOK_PREINSTALL. The template
+; defines MAINBINARYNAME only after it includes this file, so the functions
+; below, compiled here, would see the literal text "${MAINBINARYNAME}".
+Var AnboExe
+Var AnboExeName
 
 ; The in-app updater starts this installer with /UPDATE and then exits Anbo
 ; with std::process::exit, so Anbo can still be on its way out when the
@@ -20,6 +25,8 @@ Var AnboMovedSidecar
 ; and the new files go in under the old names.
 !macro NSIS_HOOK_PREINSTALL
   ${If} $UpdateMode = 1
+    StrCpy $AnboExeName "${MAINBINARYNAME}.exe"
+    StrCpy $AnboExe "$INSTDIR\$AnboExeName"
     Push $0
     Push $1
     Push $2
@@ -35,7 +42,7 @@ Var AnboMovedSidecar
       StrCpy $0 0
       !insertmacro RestartManager_StartSession $R8
       ${If} $R8 != ""
-        !insertmacro RestartManager_RegisterFile $R8 "$INSTDIR\${MAINBINARYNAME}.exe"
+        !insertmacro RestartManager_RegisterFile $R8 "$AnboExe"
         ${If} $0 = 0
           ; ERROR_MORE_DATA: some process still uses anbo.exe
           System::Call 'RSTRTMGR::RmGetList(p R8, *i .r1, *i .r2, p 0, *i .r3) i .r0'
@@ -52,7 +59,7 @@ Var AnboMovedSidecar
         Goto anbo_wait_for_exit
       ${EndIf}
     ${IfThen} $0 = ${ERROR_MORE_DATA} ${|} Call AnboCloseLeftoverAnbo ${|}
-    Push "$INSTDIR\${MAINBINARYNAME}.exe"
+    Push "$AnboExe"
     Call AnboMoveAside
     Pop $AnboMovedExe
     Push "$INSTDIR\anbo-browser.exe"
@@ -70,14 +77,11 @@ Var AnboMovedSidecar
 
 ; Still in use after the wait: names every process Restart Manager sees using
 ; anbo.exe, in the installer details and in %TEMP%\anbo-update-check.txt, then
-; closes the Anbo processes still running. Restart Manager cannot be trusted
-; for that: while other anbo.exe processes come and go it can list nothing at
-; all, and a running Anbo then stays open next to the one the update starts.
-; They are found by name instead, as the Tauri template did before 2.12, which
-; matches only this user's anbo.exe processes; anything else that holds the
-; file (a scanner, Explorer, the agent that started a hook helper) is left to
-; the move aside. RM_PROCESS_INFO is 668 bytes: pid at 0, strAppName[256] at
-; 12, strServiceShortName[64] at 524, then ApplicationType, AppStatus and
+; ends the Anbo processes still running (AnboEndLeftoverAnbo), so the update
+; does not start a second Anbo next to them. Anything else that holds the file
+; (a scanner, Explorer, the agent that started a hook helper) is left to the
+; move aside. RM_PROCESS_INFO is 668 bytes: pid at 0, strAppName[256] at 12,
+; strServiceShortName[64] at 524, then ApplicationType, AppStatus and
 ; TSSessionId from 652.
 Function AnboCloseLeftoverAnbo
   Push $0
@@ -98,7 +102,7 @@ Function AnboCloseLeftoverAnbo
   Push $R7
   !insertmacro RestartManager_StartSession $R0
   ${If} $R0 != ""
-    !insertmacro RestartManager_RegisterFile $R0 "$INSTDIR\${MAINBINARYNAME}.exe"
+    !insertmacro RestartManager_RegisterFile $R0 "$AnboExe"
     ${If} $0 = 0
       System::Alloc 6680
       Pop $R1
@@ -131,17 +135,14 @@ Function AnboCloseLeftoverAnbo
     ${EndIf}
     !insertmacro RestartManager_EndSession $R0
   ${EndIf}
-  nsis_tauri_utils::FindProcessCurrentUser "${MAINBINARYNAME}.exe"
+  Call AnboEndLeftoverAnbo
   Pop $0
-  ${If} $0 = 0
-    nsis_tauri_utils::KillProcessCurrentUser "${MAINBINARYNAME}.exe"
-    Pop $0
-    DetailPrint "Closed the Anbo processes still running: $0"
+  ${If} $0 > 0
+    DetailPrint "Closed $0 Anbo process(es) still running"
     FileOpen $R2 "$TEMP\anbo-update-check.txt" a
     FileSeek $R2 0 END
-    FileWrite $R2 "closed the Anbo processes still running: $0$\r$\n"
+    FileWrite $R2 "closed $0 Anbo process(es) still running$\r$\n"
     FileClose $R2
-    Sleep 500
   ${EndIf}
   Pop $R7
   Pop $R4
@@ -159,6 +160,62 @@ Function AnboCloseLeftoverAnbo
   Pop $2
   Pop $1
   Pop $0
+FunctionEnd
+
+; Ends every process whose image is $INSTDIR\anbo.exe, found in a process
+; snapshot, and pushes how many it ended. The nsis_tauri_utils that tauri-cli
+; 2.12 bundles (0.5.3) has no process helpers. PROCESSENTRY32W in this 32-bit
+; installer is 556 bytes: th32ProcessID at 8 and szExeFile[260] at 36.
+Function AnboEndLeftoverAnbo
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  Push $6
+  Push $7
+  Push $8
+  Push $9
+  StrCpy $7 0
+  ; TH32CS_SNAPPROCESS
+  System::Call 'kernel32::CreateToolhelp32Snapshot(i 2, i 0) p .r8'
+  ${If} $8 <> -1
+    System::Call '*(i 556, i, i, i, i, i, i, i, i, &w260) p .r9'
+    System::Call 'kernel32::Process32FirstW(p r8, p r9) i .r0'
+    ${DoWhile} $0 <> 0
+      System::Call '*$9(i, i, i .r4, i, i, i, i, i, i, &w260 .r5)'
+      ${If} $5 == $AnboExeName
+        ; PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE
+        System::Call 'kernel32::OpenProcess(i 0x101001, i 0, i r4) p .r6'
+        ${If} $6 P<> 0
+          StrCpy $3 ${NSIS_MAX_STRLEN}
+          System::Call 'kernel32::QueryFullProcessImageNameW(p r6, i 0, w .r1, *i r3) i .r2'
+          ${If} $2 <> 0
+          ${AndIf} $1 == $AnboExe
+            System::Call 'kernel32::TerminateProcess(p r6, i 1) i .r2'
+            System::Call 'kernel32::WaitForSingleObject(p r6, i 3000) i .r2'
+            IntOp $7 $7 + 1
+          ${EndIf}
+          System::Call 'kernel32::CloseHandle(p r6)'
+        ${EndIf}
+      ${EndIf}
+      System::Call 'kernel32::Process32NextW(p r8, p r9) i .r0'
+    ${Loop}
+    System::Free $9
+    System::Call 'kernel32::CloseHandle(p r8)'
+  ${EndIf}
+  StrCpy $0 $7
+  Pop $9
+  Pop $8
+  Pop $7
+  Pop $6
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Exch $0
 FunctionEnd
 
 ; Replaces the pid on the stack with that process's full image path, or ""
@@ -219,8 +276,8 @@ FunctionEnd
 ; the installed Anbo still starts.
 Function .onInstFailed
   ${If} $AnboMovedExe != ""
-    Delete "$INSTDIR\${MAINBINARYNAME}.exe"
-    Rename "$AnboMovedExe" "$INSTDIR\${MAINBINARYNAME}.exe"
+    Delete "$AnboExe"
+    Rename "$AnboMovedExe" "$AnboExe"
   ${EndIf}
   ${If} $AnboMovedSidecar != ""
     Delete "$INSTDIR\anbo-browser.exe"
