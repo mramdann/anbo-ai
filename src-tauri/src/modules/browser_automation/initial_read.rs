@@ -5,6 +5,8 @@ use super::protocol::error_codes;
 
 pub const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const EMPTY_GRACE: Duration = Duration::from_millis(1_000);
+/// How long an initial snapshot waits for a loading indicator to go.
+pub const LOADING_PATIENCE: Duration = Duration::from_secs(3);
 pub const MAX_RECOVERIES: usize = 3;
 pub const PROBE_JS: &str = r#"JSON.stringify({url:location.href,ready:document.readyState === 'interactive' || document.readyState === 'complete',body:!!document.body})"#;
 

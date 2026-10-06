@@ -173,6 +173,17 @@ pub struct SnapshotPayload {
     /// Citation links to notes on the same page, left out of the elements.
     #[serde(default)]
     pub citations_omitted: usize,
+    /// A loading indicator on screen: the page may not have its content yet.
+    #[serde(default)]
+    pub loading: Option<LoadingIndicator>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LoadingIndicator {
+    /// `text`, `busy` (aria-busy) or `progressbar`.
+    pub kind: String,
+    #[serde(default)]
+    pub text: String,
 }
 
 pub fn build_snapshot_js(generation_id: u64) -> String {
@@ -234,6 +245,21 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                 if (text.length <= limit) return text;
                 const cut = text.lastIndexOf(' ', limit - 1);
                 return (cut > limit * 0.6 ? text.substring(0, cut) : text.substring(0, limit - 1)) + '…';
+            }}
+
+            // A loading indicator on screen: content the page is still fetching.
+            // A snapshot taken over "Memuat katalog..." came back as if it were
+            // the page, and closeTab closed the tab with it. Only the loading
+            // word itself, or a short phrase it starts and an ellipsis ends, so
+            // a heading like "Loading docks" is not one.
+            let loading = null;
+            const loadingWord = '(loading|memuat|sedang memuat|please wait|mohon tunggu|harap tunggu|cargando|chargement|carregando|caricamento|wird geladen|загрузка|読み込み中|加载中|載入中|로딩 중)';
+            const loadingOnly = new RegExp('^' + loadingWord + '\\s*(\\.{{1,3}}|…)?$', 'i');
+            const loadingPhrase = new RegExp('^' + loadingWord + '\\b.{{0,60}}(\\.{{3}}|…)$', 'i');
+            function noteLoadingText(text) {{
+                if (!loading && (loadingOnly.test(text) || loadingPhrase.test(text))) {{
+                    loading = {{ kind: 'text', text: clip(text, 80) }};
+                }}
             }}
 
             {VISIBILITY_JS}
@@ -334,6 +360,7 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                         const tag = host.tagName.toLowerCase();
                         if (!['button', 'a', 'option', 'script', 'style'].includes(tag)) {{
                             const t = inlineRunText(host);
+                            if (t.length > 0) noteLoadingText(t);
                             if (t.length > 0) {{
                                 add({{
                                     type: 'text',
@@ -355,6 +382,18 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                 const nowHidden = ariaHidden || el.getAttribute('aria-hidden') === 'true';
 
                 const roleAttr = el.getAttribute('role') || '';
+                // A busy region, or a spinner: a progress bar that reports no
+                // value. One with a value (an upload, a reading position) can
+                // sit on a page that has finished loading.
+                if (!loading && !nowHidden &&
+                    (el.getAttribute('aria-busy') === 'true' ||
+                     (roleAttr === 'progressbar' && !el.hasAttribute('aria-valuenow'))) &&
+                    isVisible(el) && isInViewport(el)) {{
+                    loading = {{
+                        kind: roleAttr === 'progressbar' ? 'progressbar' : 'busy',
+                        text: clip(squash(accessibleName(el) || el.textContent), 80)
+                    }};
+                }}
                 const inputType = tag === 'input'
                     ? (el.getAttribute('type') || 'text').toLowerCase()
                     : '';
@@ -466,7 +505,8 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                 url: (window.location.href || "").substring(0, 2000),
                 elements: selected,
                 source_truncated: sourceTruncated,
-                citations_omitted: citationsOmitted
+                citations_omitted: citationsOmitted,
+                loading: loading
             }});
         }})();"#,
         ref_prefix_json = serde_json::to_string(ref_prefix).unwrap()
@@ -551,6 +591,19 @@ pub fn format_snapshot(
             "Left out: {} citation links such as [1] to notes on this page",
             payload.citations_omitted
         ));
+    }
+    if let Some(loading) = &payload.loading {
+        let shown = match loading.kind.as_str() {
+            "progressbar" => "a spinner",
+            "busy" => "a busy region",
+            _ => "a loading message",
+        };
+        let text = loading.text.chars().take(80).collect::<String>();
+        lines.push(if text.is_empty() {
+            format!("Still loading: {shown} is on screen, so the page may not show its content yet")
+        } else {
+            format!("Still loading: {shown} (\"{text}\") is on screen, so the page may not show its content yet")
+        });
     }
     lines.push("---".to_string());
 
@@ -660,6 +713,7 @@ mod tests {
             ],
             source_truncated: false,
             citations_omitted: 0,
+            loading: None,
         };
 
         let formatted = format_snapshot(&payload, 1, DEFAULT_SNAPSHOT_MAX_CHARS, 0);
@@ -677,6 +731,7 @@ mod tests {
             elements: Vec::new(),
             source_truncated: false,
             citations_omitted: 240,
+            loading: None,
         };
         let formatted = format_snapshot(&payload, 3, DEFAULT_SNAPSHOT_MAX_CHARS, 0);
         assert!(formatted
@@ -698,6 +753,35 @@ mod tests {
         assert!(script.contains("citations_omitted: citationsOmitted"));
         assert!(script.contains("text: clip(t, 600)"));
         assert!(!script.contains("t.substring(0, 300)"));
+    }
+
+    #[test]
+    fn a_loading_indicator_is_named_in_the_header() {
+        let payload = SnapshotPayload {
+            title: "Katalog".to_string(),
+            url: "http://127.0.0.1/table".to_string(),
+            elements: Vec::new(),
+            source_truncated: false,
+            citations_omitted: 0,
+            loading: Some(LoadingIndicator {
+                kind: "text".into(),
+                text: "Memuat katalog...".into(),
+            }),
+        };
+        let text = format_snapshot(&payload, 2, DEFAULT_SNAPSHOT_MAX_CHARS, 0).text;
+        assert!(
+            text.contains("Still loading: a loading message (\"Memuat katalog...\") is on screen")
+        );
+        let spinner = SnapshotPayload {
+            loading: Some(LoadingIndicator {
+                kind: "progressbar".into(),
+                text: String::new(),
+            }),
+            ..payload
+        };
+        assert!(format_snapshot(&spinner, 2, DEFAULT_SNAPSHOT_MAX_CHARS, 0)
+            .text
+            .contains("Still loading: a spinner is on screen"));
     }
 
     #[test]
@@ -731,6 +815,7 @@ mod tests {
             }],
             source_truncated: false,
             citations_omitted: 0,
+            loading: None,
         };
 
         let formatted = format_snapshot(&payload, 1, DEFAULT_SNAPSHOT_MAX_CHARS, 0);
@@ -820,6 +905,7 @@ mod tests {
                 .collect(),
             source_truncated: false,
             citations_omitted: 0,
+            loading: None,
         };
 
         let formatted = format_snapshot(&payload, 1, usize::MAX, 0);
@@ -890,6 +976,7 @@ mod tests {
             elements: Vec::new(),
             source_truncated: false,
             citations_omitted: 0,
+            loading: None,
         };
         let formatted = format_snapshot(&payload, u64::MAX, 2000, 0);
         assert!(formatted.truncated);

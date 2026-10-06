@@ -975,7 +975,12 @@ async fn handle_action_inner(
                             && !read_lets_tab_close(method, &result["read"])
                         {
                             result["closed"] = json!(false);
-                            result["closeSkipped"] = json!("the snapshot continues at nextOffset, so the tab stays open for the rest");
+                            let loading = result["read"]["settled"] == json!(false);
+                            result["closeSkipped"] = json!(if loading {
+                                "the page still showed a loading indicator, so the tab stays open for another read"
+                            } else {
+                                "the snapshot continues at nextOffset, so the tab stays open for the rest"
+                            });
                         } else if params["closeTab"] == true {
                             let close_params =
                                 json!({"tabId":tab_id,"workspace":params["workspace"]});
@@ -1205,7 +1210,7 @@ async fn handle_action_inner(
                 .unwrap_or(0);
             let formatted = format_snapshot(&payload, gen, requested_max_chars, offset);
 
-            Ok(json!({
+            let mut body = json!({
                 "tabId": tab_id,
                 "generation": gen,
                 "snapshot": formatted.text,
@@ -1220,7 +1225,12 @@ async fn handle_action_inner(
                 "nextOffset": formatted.next_offset,
                 "includedFrames": included_frames,
                 "skippedFrames": skipped_frames
-            }))
+            });
+            if let Some(loading) = &payload.loading {
+                body["settled"] = json!(false);
+                body["loading"] = json!(loading);
+            }
+            Ok(body)
         }
 
         "find" => {
@@ -5366,6 +5376,7 @@ async fn collect_snapshot_payload(
         included_frames += 1;
         payload.source_truncated |= frame_payload.source_truncated;
         payload.citations_omitted += frame_payload.citations_omitted;
+        payload.loading = payload.loading.take().or(frame_payload.loading);
         for element in frame_payload.elements {
             if let Some(ref_id) = &element.ref_id {
                 targets.insert(
@@ -7278,7 +7289,7 @@ fn open_read_request(params: &Value) -> Result<Option<(&'static str, Value)>, (S
 /// for: agy's snapshot of a Wikipedia article stopped at item 254, closeTab
 /// closed the tab with it, and the next read had to open the page again.
 fn read_lets_tab_close(method: &str, read: &Value) -> bool {
-    method != "snapshot" || read["nextOffset"].is_null()
+    method != "snapshot" || (read["nextOffset"].is_null() && read["settled"] != json!(false))
 }
 
 async fn initial_document(
@@ -7364,7 +7375,9 @@ async fn read_initial_page(
     timings: &mut ActionTimings,
     caller: &super::caller::Caller,
 ) -> Result<Value, (String, String)> {
-    use super::initial_read::{retry_read_error, EMPTY_GRACE, MAX_RECOVERIES, SNAPSHOT_TIMEOUT};
+    use super::initial_read::{
+        retry_read_error, EMPTY_GRACE, LOADING_PATIENCE, MAX_RECOVERIES, SNAPSHOT_TIMEOUT,
+    };
     let tab_id = extract_tab_id(&params)?;
     let webview = get_embed_webview(app, tab_id)
         .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
@@ -7378,6 +7391,7 @@ async fn read_initial_page(
     let result = tokio::time::timeout_at(deadline, async {
         let mut recoveries = 0;
         let mut empty_since = None;
+        let mut loading_since = None;
         let mut empty_navigation = None;
         let mut settled = false;
         loop {
@@ -7385,6 +7399,7 @@ async fn read_initial_page(
             let (navigation, url) = timings.measure("initialDocument", initial_document(&webview, tab_id, deadline)).await?;
             if empty_navigation != Some(navigation) {
                 empty_since = None;
+                loading_since = None;
                 empty_navigation = Some(navigation);
             }
             if method == "snapshot" && !settled {
@@ -7411,6 +7426,17 @@ async fn read_initial_page(
                         if since.elapsed() < EMPTY_GRACE {
                             phase = "initial content";
                             tokio::time::sleep_until((tokio::time::Instant::now() + Duration::from_millis(200)).min(deadline)).await;
+                            continue;
+                        }
+                    }
+                    // A page that shows "Loading..." over its content is not
+                    // read yet. Waited out for a few seconds; past that the read
+                    // comes back with settled:false and the tab stays open.
+                    if method == "snapshot" && value.get("loading").is_some() {
+                        let since = loading_since.get_or_insert_with(tokio::time::Instant::now);
+                        if since.elapsed() < LOADING_PATIENCE {
+                            phase = "page content";
+                            tokio::time::sleep_until((tokio::time::Instant::now() + Duration::from_millis(250)).min(deadline)).await;
                             continue;
                         }
                     }
@@ -8999,6 +9025,11 @@ mod tests {
             &json!({"nextOffset":null,"totalItems":3})
         ));
         assert!(read_lets_tab_close("snapshot", &json!({"totalItems":0})));
+        // A snapshot still showing a loading indicator is not the page yet.
+        assert!(!read_lets_tab_close(
+            "snapshot",
+            &json!({"nextOffset":null,"settled":false,"loading":{"kind":"text","text":"Loading..."}})
+        ));
         assert!(read_lets_tab_close(
             "find",
             &json!({"matches":[],"nextOffset":5})
