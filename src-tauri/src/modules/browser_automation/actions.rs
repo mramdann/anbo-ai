@@ -38,7 +38,8 @@ use crate::modules::browser_automation::registry::{
     get_active_tabs, get_embed_webview, get_tab_lock, remove_tab_lock,
 };
 use crate::modules::browser_automation::reveal::{
-    build_reveal_js, parse_reveal, reveal_budget, DEFAULT_REVEAL_MS, REVEAL_BASELINE_JS,
+    build_reveal_js, parse_reveal, reveal_budget, ANNOUNCE_JS, DEFAULT_REVEAL_MS,
+    REVEAL_BASELINE_JS,
 };
 use crate::modules::browser_automation::snapshot::{
     build_frame_snapshot_js, build_snapshot_js, commit_generation, format_snapshot,
@@ -1462,7 +1463,9 @@ async fn handle_action_inner(
                 result["media"] = media;
             }
             if let Some(revealed) = revealed.filter(|revealed| {
-                revealed["count"].as_u64().unwrap_or(0) > 0 || revealed.get("observed").is_some()
+                revealed["count"].as_u64().unwrap_or(0) > 0
+                    || revealed.get("observed").is_some()
+                    || revealed.get("announced").is_some()
             }) {
                 merge_reveal(&mut result, revealed);
             }
@@ -3603,6 +3606,12 @@ fn merge_reveal(result: &mut Value, mut revealed: Value) {
         .and_then(|surface| surface.remove("observed"))
     {
         result["observed"] = observed;
+    }
+    if let Some(announced) = revealed
+        .as_object_mut()
+        .and_then(|surface| surface.remove("announced"))
+    {
+        result["announced"] = announced;
     }
     if revealed["count"].as_u64().unwrap_or(0) > 0 {
         result["revealed"] = revealed;
@@ -6807,7 +6816,7 @@ async fn dispatch_mouse_click_profiled(
         let script = deep_ref_expression(
             ref_id,
             &format!(
-                "const x = {x}; const y = {y}; {} {VISIBILITY_JS} {}",
+                "const x = {x}; const y = {y}; {} {VISIBILITY_JS} {ANNOUNCE_JS} {}",
                 include_str!("actionRect.js"),
                 include_str!("pointerGuard.js"),
             ),
@@ -9010,6 +9019,17 @@ mod tests {
         };
         assert!(!clock.missed(&scan(1), Some(&page(1, 1_000)), at(0), 5_000, false));
         assert!(clock.missed(&scan(1), Some(&page(1, 1_000)), at(1_000), 5_000, false));
+    }
+
+    #[test]
+    fn a_click_reply_carries_what_it_announced_at_the_top() {
+        let mut result = json!({"ok": true});
+        merge_reveal(
+            &mut result,
+            json!({"surface": null, "count": 0, "items": [], "announced": [{"role": "alert", "text": "Email is required"}]}),
+        );
+        assert_eq!(result["announced"][0]["text"], "Email is required");
+        assert!(result.get("revealed").is_none());
     }
 
     #[test]

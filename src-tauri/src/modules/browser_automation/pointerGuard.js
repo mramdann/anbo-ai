@@ -6,4 +6,5 @@ if (!point.inViewport || !Number.isFinite(x) || !Number.isFinite(y) || Math.abs(
     return { ok: false, reason: 'moved' };
 }
 if (!receivesActionPointer(el, { ...point, x, y })) return { ok: false, reason: 'covered' };
+captureAnnounceBaseline(el);
 return { ok: true };

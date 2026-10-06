@@ -106,6 +106,7 @@ function revealAfterAction(el, options, refRegistry) {
         const started = Date.now();
         const reply = items => JSON.stringify({
             ok: true, surface: items.length ? 'focus' : null, count: items.length, items, observed: {},
+            announced: readAnnounced(el, options.announcedLimit || 3),
             waitedMs: Date.now() - started,
         });
         if (!focused) return Promise.resolve(reply([]));
@@ -265,6 +266,7 @@ function revealAfterAction(el, options, refRegistry) {
                 truncated,
                 items,
                 observed,
+                announced: readAnnounced(el, options.announcedLimit || 3),
                 waitedMs: Date.now() - started,
             }));
         };

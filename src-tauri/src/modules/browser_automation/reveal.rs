@@ -13,6 +13,11 @@ use super::visibility::VISIBILITY_JS;
 
 const REVEAL_JS: &str = include_str!("reveal.js");
 pub const REVEAL_BASELINE_JS: &str = include_str!("revealBaseline.js");
+/// Live-region text before a press and the change after it; the pointer guard
+/// takes the baseline, the reveal reads it.
+pub const ANNOUNCE_JS: &str = include_str!("announce.js");
+/// Live-region messages handed back per click.
+const ANNOUNCED_LIMIT: usize = 3;
 
 /// Waiting this long is worth it because the alternative is another turn.
 pub const DEFAULT_REVEAL_MS: u64 = 400;
@@ -63,6 +68,7 @@ pub fn build_reveal_js(
         "declaredOnly": declared_only,
         "query": query,
         "before": before.cloned().unwrap_or(Value::Null),
+        "announcedLimit": ANNOUNCED_LIMIT,
     });
     format!(
         r#"(function() {{
@@ -72,6 +78,7 @@ pub fn build_reveal_js(
             {VISIBILITY_JS}
             {ACCESSIBLE_NAME_JS}
             {baseline_js}
+            {ANNOUNCE_JS}
             {REVEAL_JS}
             return revealAfterAction(el, {options}, refRegistry);
         }})()"#,
@@ -115,6 +122,12 @@ pub fn parse_reveal(response: &str) -> Option<Reveal> {
     if parsed.get("expanded").and_then(Value::as_bool) == Some(true) {
         value["expanded"] = json!(true);
     }
+    if let Some(announced) = parsed
+        .get("announced")
+        .filter(|announced| announced.as_array().is_some_and(|items| !items.is_empty()))
+    {
+        value["announced"] = announced.clone();
+    }
     // An empty effects object says nothing, so it is not spent on the reply.
     if let Some(observed) = parsed
         .get("observed")
@@ -132,6 +145,24 @@ pub fn parse_reveal(response: &str) -> Option<Reveal> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_live_region_message_rides_along_and_an_empty_list_does_not() {
+        let posted = parse_reveal(&serde_json::to_string(&json!({
+            "ok": true, "surface": null, "count": 0, "items": [], "observed": {},
+            "announced": [{"role": "status", "text": "Terdaftar: Rina"}]
+        }).to_string()).unwrap())
+        .unwrap();
+        assert_eq!(posted.value["announced"][0]["text"], "Terdaftar: Rina");
+        let quiet = parse_reveal(&serde_json::to_string(&json!({
+            "ok": true, "surface": null, "count": 0, "items": [], "observed": {}, "announced": []
+        }).to_string()).unwrap())
+        .unwrap();
+        assert!(quiet.value.get("announced").is_none());
+        let script = build_reveal_js("g1-e1", 2, 400, None, true, None);
+        assert!(script.contains("function readAnnounced"));
+        assert!(script.contains("\"announcedLimit\":3"));
+    }
 
     #[test]
     fn baseline_lookup_is_only_included_for_a_captured_input() {
