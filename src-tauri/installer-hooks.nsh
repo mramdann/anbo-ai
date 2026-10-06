@@ -24,9 +24,13 @@ Var AnboMovedSidecar
     Push $1
     Push $2
     Push $3
+    Push $R7
     Push $R8
     Push $R9
     StrCpy $R9 0
+    ; 20 s of clock time: each Restart Manager query slows down while many
+    ; processes start, so a count of polls ran past a minute.
+    System::Call 'kernel32::GetTickCount() i .R7'
     anbo_wait_for_exit:
       StrCpy $0 0
       !insertmacro RestartManager_StartSession $R8
@@ -38,8 +42,10 @@ Var AnboMovedSidecar
         ${EndIf}
         !insertmacro RestartManager_EndSession $R8
       ${EndIf}
+      System::Call 'kernel32::GetTickCount() i .r1'
+      IntOp $1 $1 - $R7
       ${If} $0 = ${ERROR_MORE_DATA}
-      ${AndIf} $R9 < 80
+      ${AndIf} $1 < 20000
         ${IfThen} $R9 = 0 ${|} DetailPrint "Waiting for Anbo to close..." ${|}
         Sleep 250
         IntOp $R9 $R9 + 1
@@ -54,6 +60,7 @@ Var AnboMovedSidecar
     Pop $AnboMovedSidecar
     Pop $R9
     Pop $R8
+    Pop $R7
     Pop $3
     Pop $2
     Pop $1
@@ -62,12 +69,15 @@ Var AnboMovedSidecar
 !macroend
 
 ; Still in use after the wait: names every process Restart Manager sees using
-; anbo.exe, in the installer details and in %TEMP%\anbo-update-check.txt, and
-; has Restart Manager close the ones that run this anbo.exe. Anything else (a
-; scanner, Explorer, the agent that started a hook helper) is left alone; the
-; move aside gets the update past it. RM_PROCESS_INFO is 668 bytes:
-; RM_UNIQUE_PROCESS (pid, start time; 12 bytes) at 0, strAppName[256] at 12,
-; strServiceShortName[64] at 524, then ApplicationType, AppStatus and
+; anbo.exe, in the installer details and in %TEMP%\anbo-update-check.txt, then
+; closes the Anbo processes still running. Restart Manager cannot be trusted
+; for that: while other anbo.exe processes come and go it can list nothing at
+; all, and a running Anbo then stays open next to the one the update starts.
+; They are found by name instead, as the Tauri template did before 2.12, which
+; matches only this user's anbo.exe processes; anything else that holds the
+; file (a scanner, Explorer, the agent that started a hook helper) is left to
+; the move aside. RM_PROCESS_INFO is 668 bytes: pid at 0, strAppName[256] at
+; 12, strServiceShortName[64] at 524, then ApplicationType, AppStatus and
 ; TSSessionId from 652.
 Function AnboCloseLeftoverAnbo
   Push $0
@@ -85,8 +95,6 @@ Function AnboCloseLeftoverAnbo
   Push $R2
   Push $R3
   Push $R4
-  Push $R5
-  Push $R6
   Push $R7
   !insertmacro RestartManager_StartSession $R0
   ${If} $R0 != ""
@@ -94,9 +102,6 @@ Function AnboCloseLeftoverAnbo
     ${If} $0 = 0
       System::Alloc 6680
       Pop $R1
-      System::Alloc 120
-      Pop $R5
-      StrCpy $R6 0
       StrCpy $2 10
       System::Call 'RSTRTMGR::RmGetList(p R0, *i .r1, *i r2r2, p R1, *i .r3) i .r0'
       ${IfThen} $0 <> 0 ${|} StrCpy $2 0 ${|}
@@ -119,36 +124,26 @@ Function AnboCloseLeftoverAnbo
         Pop $R7
         DetailPrint "  pid $4 '$5' service '$6' type $7 status $8 session $9 image '$R7'"
         FileWrite $R2 "pid $4 '$5' service '$6' type $7 status $8 session $9 image '$R7'$\r$\n"
-        ${If} $R7 == "$INSTDIR\${MAINBINARYNAME}.exe"
-          System::Call '*$R4(i .r4, i .r5, i .r6)'
-          IntOp $9 $R6 * 12
-          IntOp $9 $9 + $R5
-          System::Call '*$9(i r4, i r5, i r6)'
-          IntOp $R6 $R6 + 1
-        ${EndIf}
         IntOp $R3 $R3 + 1
       ${Loop}
-      ${If} $R6 > 0
-        !insertmacro RestartManager_StartSession $R7
-        ${If} $R7 != ""
-          System::Call 'RSTRTMGR::RmRegisterResources(i R7, i 0, p 0, i R6, p R5, i 0, p 0) i .r0'
-          ${If} $0 = 0
-            System::Call 'RSTRTMGR::RmShutdown(i R7, i ${RmForceShutdown}, p 0) i .r0'
-          ${EndIf}
-          DetailPrint "Closing $R6 Anbo process(es) still running: $0"
-          FileWrite $R2 "closing $R6 Anbo process(es) still running: $0$\r$\n"
-          !insertmacro RestartManager_EndSession $R7
-        ${EndIf}
-      ${EndIf}
       FileClose $R2
-      System::Free $R5
       System::Free $R1
     ${EndIf}
     !insertmacro RestartManager_EndSession $R0
   ${EndIf}
+  nsis_tauri_utils::FindProcessCurrentUser "${MAINBINARYNAME}.exe"
+  Pop $0
+  ${If} $0 = 0
+    nsis_tauri_utils::KillProcessCurrentUser "${MAINBINARYNAME}.exe"
+    Pop $0
+    DetailPrint "Closed the Anbo processes still running: $0"
+    FileOpen $R2 "$TEMP\anbo-update-check.txt" a
+    FileSeek $R2 0 END
+    FileWrite $R2 "closed the Anbo processes still running: $0$\r$\n"
+    FileClose $R2
+    Sleep 500
+  ${EndIf}
   Pop $R7
-  Pop $R6
-  Pop $R5
   Pop $R4
   Pop $R3
   Pop $R2
