@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.35.2](https://github.com/mramdann/anbo-ai/compare/v0.35.1...v0.35.2) (2026-10-06)
+
+
+### Bug Fixes
+
+* **browser:** bring a hidden Chrome or Edge tab forward before pointer input ([d4a6067](https://github.com/mramdann/anbo-ai/commit/d4a60673bd14514f87b641f8b76399148f50cb2a))
+* **browser:** keep Anbo from staying on top after a dock opens ([1f0654f](https://github.com/mramdann/anbo-ai/commit/1f0654f7d8ee9923096d981f86642600d72e40d5))
+* **browser:** leave citation links out of snapshots and clip text at a word ([db72366](https://github.com/mramdann/anbo-ai/commit/db72366d909376da3bcf4e4a2d049e48ef586452))
+* **browser:** name the element that replaced a stale ref ([47fc27c](https://github.com/mramdann/anbo-ai/commit/47fc27c22f573bb421d667ec3285f9819c668127))
+* **browser:** never replace the native host with an empty sidecar ([9239e13](https://github.com/mramdann/anbo-ai/commit/9239e1375ee8c969c8947e44807328b2dd56109f))
+* **browser:** report what a click posts to a live region ([6b76b46](https://github.com/mramdann/anbo-ai/commit/6b76b46c1cdbf2af6ff4e454e72ca502f6ad2163))
+* **browser:** say which tabs are the caller's in browser_tabs ([152812c](https://github.com/mramdann/anbo-ai/commit/152812c32d80b76e2f6972b5d3f5856aaf2ec4ef))
+* **browser:** wait out a loading message before an open's snapshot closes the tab ([48d25e6](https://github.com/mramdann/anbo-ai/commit/48d25e65a7fc16d1991fe0f1f107afae98065e2f))
+* **installer:** close a lingering Anbo by name and time the update wait by the clock ([2768cb0](https://github.com/mramdann/anbo-ai/commit/2768cb0ffcfc2987fff1fc9e0598e32bf0d14429))
+* **installer:** give the hook's functions the real anbo.exe path and end leftovers without the plugin ([b44ea4b](https://github.com/mramdann/anbo-ai/commit/b44ea4bfb99a83dede39601455ca20264117b508))
+* **installer:** move the old executables aside so an update gets past "Failed to kill Anbo" ([737dd3b](https://github.com/mramdann/anbo-ai/commit/737dd3be7a2934e321b017bf0b97b3d48cf0f1d3))
+
 ## [0.35.1](https://github.com/mramdann/anbo-ai/compare/v0.35.0...v0.35.1) (2026-10-05)
 
 
