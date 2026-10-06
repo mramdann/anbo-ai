@@ -170,6 +170,9 @@ pub struct SnapshotPayload {
     pub elements: Vec<SnapshotElement>,
     #[serde(default)]
     pub source_truncated: bool,
+    /// Citation links to notes on the same page, left out of the elements.
+    #[serde(default)]
+    pub citations_omitted: usize,
 }
 
 pub fn build_snapshot_js(generation_id: u64) -> String {
@@ -204,6 +207,33 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                 }}
                 bucket.push(item);
                 return true;
+            }}
+
+            // Citation markers, [4], [a] or [citation needed], linking to a note
+            // on the same page. A Wikipedia article carried some 240 of them,
+            // each a ref on its own line, and their brackets split the sentences
+            // they sit in. They are counted instead.
+            let citationsOmitted = 0;
+            const citationText = /^\[\s*[^\[\]]{{1,24}}\s*\]$/;
+            const squash = text => String(text || '').replace(/\s+/g, ' ').trim();
+            function isCitation(el) {{
+                if (!el || el.tagName?.toLowerCase() !== 'a') return false;
+                if (!citationText.test(squash(el.textContent))) return false;
+                return (el.getAttribute('href') || '').startsWith('#') || !!el.closest('sup');
+            }}
+            function isCitationBox(el) {{
+                const tag = el.tagName?.toLowerCase();
+                if (tag === 'a') return isCitation(el);
+                if (tag !== 'sup' || !citationText.test(squash(el.textContent))) return false;
+                const links = el.querySelectorAll('a');
+                return links.length > 0 && Array.from(links).every(isCitation);
+            }}
+            // Cut at a word, and say so: a run cut at "each seated inside a pe"
+            // read as if the page said that.
+            function clip(text, limit) {{
+                if (text.length <= limit) return text;
+                const cut = text.lastIndexOf(' ', limit - 1);
+                return (cut > limit * 0.6 ? text.substring(0, cut) : text.substring(0, limit - 1)) + '…';
             }}
 
             {VISIBILITY_JS}
@@ -272,7 +302,7 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                     if (node.nodeType !== 1) return;
                     const tag = node.tagName.toLowerCase();
                     if (['script', 'style', 'noscript', 'template'].includes(tag)) return;
-                    if (node !== host && (!isInlineBox(node) || slotHides(node))) return;
+                    if (node !== host && (!isInlineBox(node) || slotHides(node) || isCitationBox(node))) return;
                     for (const child of node.childNodes) walk(child, depth + 1);
                 }};
                 walk(host, 0);
@@ -307,7 +337,7 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                             if (t.length > 0) {{
                                 add({{
                                     type: 'text',
-                                    text: t.substring(0, 300),
+                                    text: clip(t, 600),
                                     in_viewport: true
                                 }});
                             }}
@@ -337,6 +367,10 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                 // them without opening a native file chooser, so retain a ref.
                 const isHiddenFileInput = tag === 'input' && inputType === 'file';
 
+                if (isInteractive && isCitation(el)) {{
+                    citationsOmitted++;
+                    return;
+                }}
                 if (isInteractive && (isVisible(el) || isHiddenFileInput)) {{
                     const inViewport = isInViewport(el);
                     if ((inViewport ? viewportElements : elements).length >= maxItems) {{
@@ -400,7 +434,7 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                         const named = accessibleName(el).trim();
                         if (named.length > 0) {{
                             emittedRuns.add(el);
-                            add({{ type: 'text', text: named.substring(0, 300), in_viewport: true }});
+                            add({{ type: 'text', text: clip(named, 300), in_viewport: true }});
                         }}
                     }}
                 }}
@@ -431,7 +465,8 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                 title: (document.title || "").substring(0, 500),
                 url: (window.location.href || "").substring(0, 2000),
                 elements: selected,
-                source_truncated: sourceTruncated
+                source_truncated: sourceTruncated,
+                citations_omitted: citationsOmitted
             }});
         }})();"#,
         ref_prefix_json = serde_json::to_string(ref_prefix).unwrap()
@@ -511,6 +546,12 @@ pub fn format_snapshot(
     lines.push(format!(
         "Scope: viewport text first, then interactive elements; limit {max_chars} characters"
     ));
+    if payload.citations_omitted > 0 {
+        lines.push(format!(
+            "Left out: {} citation links such as [1] to notes on this page",
+            payload.citations_omitted
+        ));
+    }
     lines.push("---".to_string());
 
     let mut candidates: Vec<String> = payload
@@ -618,6 +659,7 @@ mod tests {
                 },
             ],
             source_truncated: false,
+            citations_omitted: 0,
         };
 
         let formatted = format_snapshot(&payload, 1, DEFAULT_SNAPSHOT_MAX_CHARS, 0);
@@ -625,6 +667,37 @@ mod tests {
         assert!(formatted.text.contains("Generation: 1"));
         assert!(formatted.text.contains("[g1-e1] <button> Click Me"));
         assert!(!formatted.truncated);
+    }
+
+    #[test]
+    fn left_out_citations_are_counted_in_the_header() {
+        let payload = SnapshotPayload {
+            title: "Borobudur".to_string(),
+            url: "https://en.wikipedia.org/wiki/Borobudur".to_string(),
+            elements: Vec::new(),
+            source_truncated: false,
+            citations_omitted: 240,
+        };
+        let formatted = format_snapshot(&payload, 3, DEFAULT_SNAPSHOT_MAX_CHARS, 0);
+        assert!(formatted
+            .text
+            .contains("Left out: 240 citation links such as [1] to notes on this page"));
+        let none = SnapshotPayload {
+            citations_omitted: 0,
+            ..payload
+        };
+        assert!(!format_snapshot(&none, 3, DEFAULT_SNAPSHOT_MAX_CHARS, 0)
+            .text
+            .contains("Left out"));
+    }
+
+    #[test]
+    fn the_snapshot_script_leaves_citations_out_and_clips_at_a_word() {
+        let script = build_snapshot_js(1);
+        assert!(script.contains("isCitation(el)"));
+        assert!(script.contains("citations_omitted: citationsOmitted"));
+        assert!(script.contains("text: clip(t, 600)"));
+        assert!(!script.contains("t.substring(0, 300)"));
     }
 
     #[test]
@@ -657,6 +730,7 @@ mod tests {
                 expanded: None,
             }],
             source_truncated: false,
+            citations_omitted: 0,
         };
 
         let formatted = format_snapshot(&payload, 1, DEFAULT_SNAPSHOT_MAX_CHARS, 0);
@@ -745,6 +819,7 @@ mod tests {
                 })
                 .collect(),
             source_truncated: false,
+            citations_omitted: 0,
         };
 
         let formatted = format_snapshot(&payload, 1, usize::MAX, 0);
@@ -814,6 +889,7 @@ mod tests {
             url: format!("https://example.test/?{}", "界".repeat(2000)),
             elements: Vec::new(),
             source_truncated: false,
+            citations_omitted: 0,
         };
         let formatted = format_snapshot(&payload, u64::MAX, 2000, 0);
         assert!(formatted.truncated);

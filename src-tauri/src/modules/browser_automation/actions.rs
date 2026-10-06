@@ -5365,6 +5365,7 @@ async fn collect_snapshot_payload(
         };
         included_frames += 1;
         payload.source_truncated |= frame_payload.source_truncated;
+        payload.citations_omitted += frame_payload.citations_omitted;
         for element in frame_payload.elements {
             if let Some(ref_id) = &element.ref_id {
                 targets.insert(
