@@ -242,25 +242,15 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("__anbo_hook") {
-        if let (Some(agent), Some(event)) = (args.get(2), args.get(3)) {
-            agent::run_hook_helper(agent, event);
-        }
+    // A hook command an older Anbo wrote into an agent's config. Startup
+    // removes them from every space; one it never reached is answered here
+    // instead of starting another Anbo.
+    if let Some("__anbo_hook" | "__anbo_notify") = args.get(1).map(String::as_str) {
+        agent::answer_leftover_hook(
+            args.get(2).map_or("", String::as_str),
+            args.get(3).map_or("", String::as_str),
+        );
         std::process::exit(0);
-    }
-
-    #[cfg(windows)]
-    {
-        if args.get(1).map(String::as_str) == Some("__anbo_notify") {
-            if let (Some(agent), Some(event)) = (args.get(2), args.get(3)) {
-                agent::emit_conout_marker(agent, event);
-            }
-            use std::io::Write;
-            let mut out = std::io::stdout();
-            let _ = out.write_all(b"{}");
-            let _ = out.flush();
-            std::process::exit(0);
-        }
     }
 
     let launch = parse_launch_target();

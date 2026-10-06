@@ -144,7 +144,6 @@ describe("custom CLI agents", () => {
       icon: "antigravity",
       label: "Aider",
       defaultCommand: "aider",
-      supportsHooks: false,
       custom: true,
     });
     expect(findAgentLauncher("custom:aider", custom)?.label).toBe("Aider");

@@ -76,7 +76,7 @@ The terminal parses OSC sequences from the PTY byte stream:
 
 - **OSC 7** updates the tab cwd.
 - **OSC 133 A/B/C/D** marks prompt/command boundaries.
-- **OSC 777** is used by the agent detector to signal coding-agent state transitions.
+- **OSC 9 / OSC 777** notifications count only as generic attention in the agent detector; agent status comes from the rendered screen.
 
 The agent detector (`src-tauri/src/modules/pty/agent_detect.rs`) is armed by `OSC 133;C;<cmd>` or by a self-armed marker and emits `anbo:agent-signal` events. It is driven **only by OSC sequences**, never by raw output, so a repainting TUI never flaps.
 

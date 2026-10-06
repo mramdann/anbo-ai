@@ -3,14 +3,7 @@ export type AgentPhase = "working" | "attention" | "finished";
 
 export type AgentSource = "terminal" | "local";
 
-type AgentSignalKind =
-  | "started"
-  | "ready"
-  | "working"
-  | "session"
-  | "attention"
-  | "finished"
-  | "exited";
+type AgentSignalKind = "started" | "attention" | "exited";
 
 export type AgentSignal = {
   id: number;

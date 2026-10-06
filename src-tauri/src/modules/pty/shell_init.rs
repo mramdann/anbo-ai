@@ -204,10 +204,6 @@ fn apply_common(cmd: &mut CommandBuilder, cwd: Option<String>, blocks: bool) {
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("ANBO_TERMINAL", "1");
-    #[cfg(windows)]
-    if let Ok(executable) = std::env::current_exe() {
-        cmd.env("ANBO_HOOK_EXE", hook_executable_env_value(&executable));
-    }
     if blocks {
         cmd.env("ANBO_BLOCKS", "1");
     }
@@ -236,11 +232,6 @@ fn apply_common(cmd: &mut CommandBuilder, cwd: Option<String>, blocks: bool) {
     } else {
         log::warn!("pty cwd: no usable directory, inheriting from process");
     }
-}
-
-#[cfg(windows)]
-fn hook_executable_env_value(path: &std::path::Path) -> String {
-    format!(r#""{}""#, path.display())
 }
 
 #[cfg(unix)]
@@ -1162,9 +1153,6 @@ mod tests {
     use super::{apply_common, fish_init_command, remove_owned_fish_file, sanitize_shell_override};
     use portable_pty::CommandBuilder;
 
-    #[cfg(windows)]
-    use super::hook_executable_env_value;
-
     #[test]
     fn rejects_non_enumerated_override() {
         let exe = std::env::current_exe()
@@ -1265,15 +1253,5 @@ mod tests {
         assert!(capture < install);
         assert!(profile.contains("if ($commandSucceeded)"));
         assert!(!profile.contains("$lec = $LASTEXITCODE"));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn hook_executable_env_value_quotes_paths_with_spaces() {
-        let path = std::path::Path::new(r"C:\Users\Agent User\Anbo\anbo.exe");
-        assert_eq!(
-            hook_executable_env_value(path),
-            r#""C:\Users\Agent User\Anbo\anbo.exe""#
-        );
     }
 }

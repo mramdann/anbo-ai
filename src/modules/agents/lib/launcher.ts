@@ -4,7 +4,6 @@ export const AGENT_LAUNCHERS = [
     icon: "claude",
     label: "Claude",
     defaultCommand: "claude",
-    supportsHooks: false,
     custom: false,
     hidden: false,
   },
@@ -13,7 +12,6 @@ export const AGENT_LAUNCHERS = [
     icon: "codex",
     label: "Codex",
     defaultCommand: "codex",
-    supportsHooks: false,
     custom: false,
     hidden: false,
   },
@@ -22,7 +20,6 @@ export const AGENT_LAUNCHERS = [
     icon: "antigravity",
     label: "Antigravity",
     defaultCommand: "agy",
-    supportsHooks: false,
     custom: false,
     hidden: false,
   },
@@ -31,7 +28,6 @@ export const AGENT_LAUNCHERS = [
     icon: "pi",
     label: "Pi",
     defaultCommand: "pi",
-    supportsHooks: false,
     custom: false,
     hidden: false,
   },
@@ -40,7 +36,6 @@ export const AGENT_LAUNCHERS = [
     icon: "opencode",
     label: "OpenCode",
     defaultCommand: "opencode",
-    supportsHooks: false,
     custom: false,
     hidden: false,
   },
@@ -49,7 +44,6 @@ export const AGENT_LAUNCHERS = [
     icon: "kimi",
     label: "Kimi",
     defaultCommand: "kimi --auto",
-    supportsHooks: false,
     custom: false,
     hidden: false,
   },
@@ -58,7 +52,6 @@ export const AGENT_LAUNCHERS = [
     icon: "grok",
     label: "Grok",
     defaultCommand: "grok",
-    supportsHooks: false,
     custom: false,
     hidden: false,
   },
@@ -101,7 +94,6 @@ export type AgentLauncher = {
   icon: CustomCliAgentIcon;
   label: string;
   defaultCommand: string;
-  supportsHooks: boolean;
   custom: boolean;
   /** Kept known, but not offered in the launcher picker. */
   hidden?: boolean;
@@ -296,7 +288,6 @@ export function getAgentLaunchers(
       icon: agent.icon,
       label: agent.name,
       defaultCommand: agent.command,
-      supportsHooks: false,
       custom: true,
     })),
   ];

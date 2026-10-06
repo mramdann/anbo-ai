@@ -196,7 +196,7 @@ src-tauri/                  Rust backend
   src/
     lib.rs                  Tauri command registration
     modules/
-      agent.rs              Terminal coding-agent hook installer/status
+      agent.rs              Old agent-hook cleanup, per-project agent MCP setup
       fs/                   File system commands (read/write/search/grep)
       git/                  Source control commands
       history/              Shell history integration

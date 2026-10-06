@@ -1,192 +1,47 @@
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use toml_edit::{value as toml_value, DocumentMut, Item, Table};
 
 use crate::modules::workspace::{resolve_path, wsl_home, WorkspaceEnv, WorkspaceRegistry};
 
-// How a given agent's hook delivers our OSC 777 marker into the terminal.
-#[derive(Clone, Copy)]
-enum Delivery {
-    // Claude returns the sequence via a `terminalSequence` JSON field (it lost
-    // /dev/tty access in v2.1.139) and emits it in-band. Cross-platform.
-    TerminalSequence,
-    // Codex/Antigravity hooks can't write to the terminal, so the hook command emits
-    // the marker itself: to /dev/tty on Unix, via a CONOUT$ helper on Windows.
-    Osc,
-}
-
-struct AgentSpec {
+// Where older Anbo versions wrote each agent's hook commands. Anbo writes no
+// hooks any more (agent status comes from the rendered terminal screen), so
+// these files are only cleaned up.
+struct HookFiles {
     agent: &'static str,
     project_file: &'static str,
     legacy_global_file: &'static str,
-    events: &'static [(&'static str, &'static str)],
-    matcher: bool,
-    delivery: Delivery,
 }
 
-const AGENTS: &[AgentSpec] = &[
-    AgentSpec {
+const HOOK_FILES: &[HookFiles] = &[
+    HookFiles {
         agent: "claude",
         project_file: ".claude/settings.local.json",
         legacy_global_file: ".claude/settings.json",
-        events: &[
-            ("SessionStart", "ready"),
-            ("UserPromptSubmit", "working"),
-            ("Notification", "attention"),
-            ("Stop", "finished"),
-        ],
-        matcher: false,
-        delivery: Delivery::TerminalSequence,
     },
-    AgentSpec {
+    HookFiles {
         agent: "codex",
         project_file: ".codex/hooks.json",
         legacy_global_file: ".codex/hooks.json",
-        events: &[
-            ("SessionStart", "ready"),
-            ("UserPromptSubmit", "working"),
-            ("PermissionRequest", "attention"),
-            ("Stop", "finished"),
-        ],
-        matcher: false,
-        delivery: Delivery::Osc,
     },
-    AgentSpec {
+    HookFiles {
         agent: "antigravity",
         project_file: ".agents/hooks.json",
         legacy_global_file: ".gemini/config/hooks.json",
-        events: &[
-            ("PreInvocation", "working"),
-            ("PreToolUse", "attention"),
-            ("Stop", "finished"),
-        ],
-        matcher: false,
-        delivery: Delivery::Osc,
     },
 ];
 
+// The Pi extension and the OpenCode plugin older versions wrote, each told
+// apart from a foreign file by the marker on its first line.
 const PI_PROJECT_FILE: &str = ".pi/extensions/anbo-notifications.ts";
 const PI_LEGACY_GLOBAL_FILE: &str = ".pi/agent/extensions/anbo-notifications.ts";
 const PI_EXTENSION_MARKER: &str = "anbo-pi-notifications-v2";
-const PI_STATUS_NEEDLES: [&str; 8] = [
-    PI_EXTENSION_MARKER,
-    "agent_start",
-    "agent_settled",
-    "notify;Anbo;pi;${event}",
-    "ctx.sessionManager.getSessionId()",
-    "session;${sessionId}",
-    "emit(\"working\")",
-    "emit(\"finished\")",
-];
-const PI_EXTENSION: &str = r#"// anbo-pi-notifications-v2
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-
-export default function (pi: ExtensionAPI) {
-  const emit = (event: string) => {
-    if (process.env.ANBO_TERMINAL) {
-      process.stdout.write(`\u001b]777;notify;Anbo;pi;${event}\u0007`);
-    }
-  };
-
-  pi.on("agent_start", (_event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) {
-      emit(`session;${sessionId}`);
-    }
-    emit("working");
-  });
-  pi.on("agent_settled", () => emit("finished"));
-}
-"#;
 const OPENCODE_PROJECT_FILE: &str = ".opencode/plugins/anbo-notifications.js";
 const OPENCODE_LEGACY_GLOBAL_FILE: &str = ".config/opencode/plugins/anbo-notifications.js";
 const OPENCODE_PLUGIN_MARKER: &str = "anbo-opencode-notifications-v2";
 const OPENCODE_PLUGIN_LEGACY_MARKER: &str = "anbo-opencode-notifications-v1";
-const OPENCODE_PLUGIN: &str = r#"// anbo-opencode-notifications-v2
-export const AnboNotifications = async () => {
-  let sessionId = null;
-  let announced = false;
-  let phase = "idle";
-  const childSessions = new Set();
-
-  const emit = (event) => {
-    if (process.env.ANBO_TERMINAL) {
-      process.stdout.write(`\u001b]777;notify;Anbo;opencode;${event}\u0007`);
-    }
-  };
-  const validId = (id) =>
-    typeof id === "string" && /^ses_[A-Za-z0-9]+$/.test(id);
-  const eventId = (event) =>
-    event.properties?.sessionID || event.properties?.info?.id || null;
-  const announce = () => {
-    if (!announced && validId(sessionId)) {
-      emit(`session;${sessionId}`);
-      announced = true;
-    }
-  };
-  const setPhase = (next) => {
-    if (phase === next) return;
-    announce();
-    if (!announced) return;
-    phase = next;
-    emit(next);
-  };
-
-  return {
-    event: async ({ event }) => {
-      if (!process.env.ANBO_TERMINAL) return;
-
-      if (event.type === "session.created") {
-        const info = event.properties?.info;
-        const id = eventId(event);
-        if (!validId(id)) return;
-        if (info?.parentID) {
-          childSessions.add(id);
-          return;
-        }
-        sessionId = id;
-        announced = false;
-        phase = "idle";
-        return;
-      }
-
-      if (event.type === "session.updated" && !sessionId) {
-        const info = event.properties?.info;
-        const id = eventId(event);
-        if (validId(id) && !info?.parentID) sessionId = id;
-        return;
-      }
-
-      const id = eventId(event);
-      if (validId(id)) {
-        if (childSessions.has(id)) return;
-        if (sessionId && id !== sessionId) return;
-        if (!sessionId) sessionId = id;
-      }
-
-      if (event.type === "session.status") {
-        const status = event.properties?.status?.type || event.properties?.status;
-        if (status === "busy" || status === "retry") setPhase("working");
-        else if (status === "idle" && announced) setPhase("finished");
-        return;
-      }
-      if (event.type === "session.idle") {
-        if (announced) setPhase("finished");
-        return;
-      }
-      if (
-        event.type === "permission.asked" ||
-        event.type === "question.asked" ||
-        event.type === "session.error"
-      ) {
-        setPhase("attention");
-      }
-    },
-  };
-};
-"#;
 
 const ANBO_MCP_NAME: &str = "anbomcp";
 const ANBO_MCP_URL: &str = "http://127.0.0.1:7331/mcp";
@@ -201,10 +56,8 @@ const OPENCODE_MCP_FILE: &str = ".opencode/anbo-mcp.json";
 // server into a repo the user shares.
 const KIMI_MCP_FILE: &str = ".kimi-code/mcp.json";
 
-// Substrings identifying a hook command as ours, across every form we've ever
-// emitted (legacy /dev/tty Claude, current TerminalSequence, Osc, Windows
-// helper). Used to prune our own groups before reinserting so installs are
-// idempotent and migrate older markers.
+// Substrings that mark a hook command as Anbo's, across every form an older
+// Anbo (or Terax before it) wrote. Cleanup removes only groups carrying one.
 const OWNED_MARKERS: [&str; 8] = [
     "notify;Anbo;",
     "anbo;notify",
@@ -215,54 +68,6 @@ const OWNED_MARKERS: [&str; 8] = [
     "__terax_notify",
     "__terax_hook",
 ];
-
-fn find(agent: &str) -> Result<&'static AgentSpec, String> {
-    AGENTS
-        .iter()
-        .find(|s| s.agent == agent)
-        .ok_or_else(|| format!("unknown agent {agent}"))
-}
-
-fn hook_command(spec: &AgentSpec, event: &str) -> String {
-    hook_helper_command(spec.agent, event)
-}
-
-#[cfg(unix)]
-fn quote_executable(path: &str) -> String {
-    format!("'{}'", path.replace('\'', "'\"'\"'"))
-}
-
-#[cfg(windows)]
-fn quote_executable(path: &str) -> String {
-    format!(r#""{path}""#)
-}
-
-fn hook_helper_command(agent: &str, event: &str) -> String {
-    #[cfg(windows)]
-    if agent == "antigravity" {
-        let fallback = hook_noop_output(agent, event);
-        return format!(
-            "if defined ANBO_HOOK_EXE (%ANBO_HOOK_EXE% __anbo_hook {agent} {event}) else (echo {fallback})"
-        );
-    }
-    let exe = std::env::current_exe()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|_| "anbo".to_string());
-    #[cfg(windows)]
-    if agent == "codex" {
-        let exe = exe.replace('\'', "''");
-        return format!(
-            "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"& '{exe}' __anbo_hook {agent} {event}\""
-        );
-    }
-    format!("{} __anbo_hook {agent} {event}", quote_executable(&exe))
-}
-
-// The stable substring that proves a given (agent, event) hook is installed.
-// Kept in sync with hook_command so status reflects what enable writes.
-fn status_needle(spec: &AgentSpec, event: &str) -> String {
-    format!("__anbo_hook {} {event}", spec.agent)
-}
 
 fn is_ours(group: &Value) -> bool {
     group
@@ -275,72 +80,6 @@ fn is_ours(group: &Value) -> bool {
                     .is_some_and(|c| OWNED_MARKERS.iter().any(|m| c.contains(m)))
             })
         })
-}
-
-// A group with no hooks is inert cruft (e.g. left behind when someone deletes
-// our command but not its wrapper). Drop it so the file stays clean.
-fn is_empty_group(group: &Value) -> bool {
-    group
-        .get("hooks")
-        .and_then(Value::as_array)
-        .is_none_or(|hs| hs.is_empty())
-}
-
-fn merge_hooks(mut root: Value, spec: &AgentSpec) -> Value {
-    if spec.agent == "antigravity" {
-        if !root.is_object() {
-            root = json!({});
-        }
-        let definition = spec.events.iter().fold(
-            serde_json::Map::from_iter([("enabled".into(), json!(true))]),
-            |mut value, (event, marker)| {
-                let handlers = if *event == "PreToolUse" {
-                    json!([{
-                        "matcher": "ask_question|ask_permission",
-                        "hooks": [{
-                            "type": "command",
-                            "command": hook_command(spec, marker)
-                        }]
-                    }])
-                } else {
-                    json!([{ "type": "command", "command": hook_command(spec, marker) }])
-                };
-                value.insert((*event).into(), handlers);
-                value
-            },
-        );
-        root.as_object_mut().unwrap().insert(
-            "anbo-desktop-agent-alerts".into(),
-            Value::Object(definition),
-        );
-        return root;
-    }
-    if !root.is_object() {
-        root = json!({});
-    }
-    let obj = root.as_object_mut().unwrap();
-    let hooks = obj.entry("hooks").or_insert_with(|| json!({}));
-    if !hooks.is_object() {
-        *hooks = json!({});
-    }
-    let hooks = hooks.as_object_mut().unwrap();
-
-    for (event, marker) in spec.events {
-        let arr = hooks.entry(*event).or_insert_with(|| json!([]));
-        if !arr.is_array() {
-            *arr = json!([]);
-        }
-        let arr = arr.as_array_mut().unwrap();
-        arr.retain(|group| !is_ours(group) && !is_empty_group(group));
-        let mut group = json!({
-            "hooks": [ { "type": "command", "command": hook_command(spec, marker) } ]
-        });
-        if spec.matcher {
-            group["matcher"] = json!("*");
-        }
-        arr.push(group);
-    }
-    root
 }
 
 fn existing_config(contents: Option<&str>, path: &std::path::Path) -> Result<Value, String> {
@@ -361,8 +100,8 @@ fn home_path(relative: &str) -> Result<PathBuf, String> {
         .join(relative))
 }
 
-fn legacy_global_path(spec: &AgentSpec) -> Result<PathBuf, String> {
-    home_path(spec.legacy_global_file)
+fn legacy_global_path(files: &HookFiles) -> Result<PathBuf, String> {
+    home_path(files.legacy_global_file)
 }
 
 fn authorize_project_root(
@@ -450,19 +189,6 @@ fn project_file_path(root: &Path, relative: &str, create: bool) -> Result<PathBu
     Ok(path)
 }
 
-fn pi_extension_contents(
-    existing: Option<&str>,
-    path: &std::path::Path,
-) -> Result<&'static str, String> {
-    if existing.is_some_and(|s| !s.trim().is_empty() && !s.contains(PI_EXTENSION_MARKER)) {
-        return Err(format!(
-            "{} is not managed by Anbo; refusing to overwrite",
-            path.display()
-        ));
-    }
-    Ok(PI_EXTENSION)
-}
-
 fn write_atomic(path: &std::path::Path, contents: &str) -> Result<(), String> {
     let parent = path
         .parent()
@@ -480,7 +206,9 @@ fn write_atomic(path: &std::path::Path, contents: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn pi_extension_write_path(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+// Where a rewrite of `path` lands: a symlinked config is rewritten at its
+// target, so the link stays a link.
+fn resolved_write_path(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             std::fs::canonicalize(path).map_err(|e| format!("resolve {}: {e}", path.display()))
@@ -491,44 +219,8 @@ fn pi_extension_write_path(path: &std::path::Path) -> Result<std::path::PathBuf,
     }
 }
 
-fn enable_pi_extension_at(path: &std::path::Path) -> Result<(), String> {
-    let dir = path.parent().unwrap();
-    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let existing = match std::fs::read_to_string(path) {
-        Ok(s) if s == PI_EXTENSION => return Ok(()),
-        Ok(s) => Some(s),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(format!("read {}: {e}", path.display())),
-    };
-    let contents = pi_extension_contents(existing.as_deref(), path)?;
-    write_atomic(&pi_extension_write_path(path)?, contents)
-}
-
-fn enable_opencode_plugin_at(path: &std::path::Path) -> Result<(), String> {
-    let dir = path.parent().unwrap();
-    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let existing = match std::fs::read_to_string(path) {
-        Ok(s) if s == OPENCODE_PLUGIN => return Ok(()),
-        Ok(s)
-            if s.contains(OPENCODE_PLUGIN_MARKER) || s.contains(OPENCODE_PLUGIN_LEGACY_MARKER) =>
-        {
-            Some(s)
-        }
-        Ok(_) => {
-            return Err(format!(
-                "{} is not managed by Anbo; refusing to overwrite",
-                path.display()
-            ))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(format!("read {}: {e}", path.display())),
-    };
-    let _ = existing;
-    write_atomic(&pi_extension_write_path(path)?, OPENCODE_PLUGIN)
-}
-
-fn remove_owned_hooks(mut root: Value, spec: &AgentSpec) -> (Value, bool) {
-    if spec.agent == "antigravity" {
+fn remove_owned_hooks(mut root: Value, files: &HookFiles) -> (Value, bool) {
+    if files.agent == "antigravity" {
         let changed = root
             .as_object_mut()
             .and_then(|object| object.remove("anbo-desktop-agent-alerts"))
@@ -564,14 +256,14 @@ fn remove_owned_hooks(mut root: Value, spec: &AgentSpec) -> (Value, bool) {
     (root, changed)
 }
 
-fn remove_legacy_json_at(path: &Path, spec: &AgentSpec) -> Result<bool, String> {
+fn remove_legacy_json_at(path: &Path, files: &HookFiles) -> Result<bool, String> {
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(format!("read {}: {e}", path.display())),
     };
     let root = existing_config(Some(&contents), path)?;
-    let (cleaned, changed) = remove_owned_hooks(root, spec);
+    let (cleaned, changed) = remove_owned_hooks(root, files);
     if !changed {
         return Ok(false);
     }
@@ -579,7 +271,7 @@ fn remove_legacy_json_at(path: &Path, spec: &AgentSpec) -> Result<bool, String> 
         std::fs::remove_file(path).map_err(|e| format!("remove {}: {e}", path.display()))?;
     } else {
         let output = serde_json::to_string_pretty(&cleaned).map_err(|e| e.to_string())?;
-        write_atomic(&pi_extension_write_path(path)?, &output)?;
+        write_atomic(&resolved_write_path(path)?, &output)?;
     }
     Ok(true)
 }
@@ -603,8 +295,8 @@ fn remove_legacy_owned_file(path: &Path, marker: &str) -> Result<bool, String> {
 pub fn cleanup_legacy_global_integrations() -> Result<usize, String> {
     let mut removed = 0;
     let mut errors = Vec::new();
-    for spec in AGENTS {
-        match legacy_global_path(spec).and_then(|path| remove_legacy_json_at(&path, spec)) {
+    for files in HOOK_FILES {
+        match legacy_global_path(files).and_then(|path| remove_legacy_json_at(&path, files)) {
             Ok(true) => removed += 1,
             Ok(false) => {}
             Err(error) => errors.push(error),
@@ -613,6 +305,7 @@ pub fn cleanup_legacy_global_integrations() -> Result<usize, String> {
     for (relative, marker) in [
         (PI_LEGACY_GLOBAL_FILE, PI_EXTENSION_MARKER),
         (OPENCODE_LEGACY_GLOBAL_FILE, OPENCODE_PLUGIN_MARKER),
+        (OPENCODE_LEGACY_GLOBAL_FILE, OPENCODE_PLUGIN_LEGACY_MARKER),
     ] {
         match home_path(relative).and_then(|path| remove_legacy_owned_file(&path, marker)) {
             Ok(true) => removed += 1,
@@ -627,24 +320,12 @@ pub fn cleanup_legacy_global_integrations() -> Result<usize, String> {
     }
 }
 
-#[tauri::command]
-pub fn agent_enable_hooks(
-    agent: String,
-    workspace_root: String,
-    workspace: Option<WorkspaceEnv>,
-    registry: tauri::State<'_, WorkspaceRegistry>,
-) -> Result<(), String> {
-    let workspace = WorkspaceEnv::from_option(workspace);
-    let root = authorize_project_root(&registry, &workspace_root, &workspace)?;
-    enable_project_integration(&agent, &root)
-}
-
 fn cleanup_project_integrations(root: &Path) -> Result<usize, String> {
     let mut removed = 0;
     let mut errors = Vec::new();
-    for spec in AGENTS {
-        match project_file_path(root, spec.project_file, false)
-            .and_then(|path| remove_legacy_json_at(&path, spec))
+    for files in HOOK_FILES {
+        match project_file_path(root, files.project_file, false)
+            .and_then(|path| remove_legacy_json_at(&path, files))
         {
             Ok(true) => removed += 1,
             Ok(false) => {}
@@ -654,6 +335,7 @@ fn cleanup_project_integrations(root: &Path) -> Result<usize, String> {
     for (relative, marker) in [
         (PI_PROJECT_FILE, PI_EXTENSION_MARKER),
         (OPENCODE_PROJECT_FILE, OPENCODE_PLUGIN_MARKER),
+        (OPENCODE_PROJECT_FILE, OPENCODE_PLUGIN_LEGACY_MARKER),
     ] {
         match project_file_path(root, relative, false)
             .and_then(|path| remove_legacy_owned_file(&path, marker))
@@ -681,86 +363,8 @@ pub fn agent_cleanup_hooks(
     cleanup_project_integrations(&root)
 }
 
-fn enable_project_integration(agent: &str, root: &Path) -> Result<(), String> {
-    if agent == "pi" {
-        let path = project_file_path(root, PI_PROJECT_FILE, true)?;
-        return enable_pi_extension_at(&path);
-    }
-    if agent == "opencode" {
-        let path = project_file_path(root, OPENCODE_PROJECT_FILE, true)?;
-        return enable_opencode_plugin_at(&path);
-    }
-    let spec = find(agent)?;
-    let path = project_file_path(root, spec.project_file, true)?;
-
-    let existing = match std::fs::read_to_string(&path) {
-        Ok(s) => existing_config(Some(&s), &path)?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
-        Err(e) => return Err(format!("read {}: {e}", path.display())),
-    };
-
-    let merged = merge_hooks(existing, spec);
-    let out = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
-    write_atomic(&path, &out)
-}
-
-const HOOK_INPUT_MAX_BYTES: u64 = 64 * 1024;
-
-fn terminal_marker(agent: &str, event: &str) -> String {
-    format!("\x1b]777;notify;Anbo;{agent};{event}\x07")
-}
-
-fn valid_exact_session_id(agent: &str, session_id: &str) -> bool {
-    if agent == "opencode" {
-        return session_id.strip_prefix("ses_").is_some_and(|tail| {
-            !tail.is_empty() && tail.chars().all(|c| c.is_ascii_alphanumeric())
-        });
-    }
-    if session_id.len() != 36 {
-        return false;
-    }
-    session_id
-        .bytes()
-        .enumerate()
-        .all(|(index, byte)| match index {
-            8 | 13 | 18 | 23 => byte == b'-',
-            14 => matches!(byte, b'1'..=b'8'),
-            19 => matches!(byte.to_ascii_lowercase(), b'8' | b'9' | b'a' | b'b'),
-            _ => byte.is_ascii_hexdigit(),
-        })
-}
-
-fn hook_payload_from_reader(reader: impl Read) -> Option<Value> {
-    let mut input = Vec::new();
-    reader
-        .take(HOOK_INPUT_MAX_BYTES + 1)
-        .read_to_end(&mut input)
-        .ok()?;
-    if input.len() as u64 > HOOK_INPUT_MAX_BYTES {
-        return None;
-    }
-    serde_json::from_slice(&input).ok()
-}
-
-fn hook_session_id_from_payload(value: &Value, agent: &str) -> Option<String> {
-    let key = if agent == "antigravity" {
-        "conversationId"
-    } else {
-        "session_id"
-    };
-    let session_id = value.get(key)?.as_str()?;
-    valid_exact_session_id(agent, session_id).then(|| session_id.to_string())
-}
-
-fn should_emit_hook_event(value: Option<&Value>, agent: &str, event: &str) -> bool {
-    agent != "antigravity"
-        || event != "finished"
-        || value
-            .and_then(|payload| payload.get("fullyIdle"))
-            .and_then(Value::as_bool)
-            .unwrap_or(true)
-}
-
+// What an agent expects back from a hook that changes nothing. Antigravity
+// reads a decision from its hooks; these leave its behavior as it was.
 fn hook_noop_output(agent: &str, event: &str) -> String {
     if agent == "antigravity" {
         return match event {
@@ -772,122 +376,14 @@ fn hook_noop_output(agent: &str, event: &str) -> String {
     "{}".to_string()
 }
 
-fn hook_terminal_sequence(agent: &str, event: &str, session_id: Option<&str>) -> String {
-    let mut sequence = String::new();
-    if let Some(session_id) = session_id {
-        sequence.push_str(&terminal_marker(agent, &format!("session;{session_id}")));
-    }
-    sequence.push_str(&terminal_marker(agent, event));
-    sequence
-}
-
-#[cfg(unix)]
-fn emit_tty_sequence(sequence: &str) {
-    if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
-        let _ = tty.write_all(sequence.as_bytes());
-    }
-}
-
-#[cfg(windows)]
-fn emit_tty_sequence(sequence: &str) {
-    use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
-
-    unsafe {
-        AttachConsole(ATTACH_PARENT_PROCESS);
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("CONOUT$")
-    {
-        let _ = f.write_all(sequence.as_bytes());
-    }
-}
-
-pub fn run_hook_helper(agent: &str, event: &str) {
-    let spec = find(agent).ok();
-    let valid_event = spec.is_some_and(|candidate| {
-        candidate
-            .events
-            .iter()
-            .any(|(_, emitted)| *emitted == event)
-    });
-    let output = if std::env::var_os("ANBO_TERMINAL").is_none() || !valid_event {
-        hook_noop_output(agent, event)
-    } else {
-        let payload = hook_payload_from_reader(std::io::stdin().lock());
-        let session_id = payload
-            .as_ref()
-            .and_then(|value| hook_session_id_from_payload(value, agent));
-        let sequence = if should_emit_hook_event(payload.as_ref(), agent, event) {
-            hook_terminal_sequence(agent, event, session_id.as_deref())
-        } else {
-            String::new()
-        };
-        match spec.map(|candidate| candidate.delivery) {
-            Some(Delivery::TerminalSequence) => json!({ "terminalSequence": sequence }).to_string(),
-            Some(Delivery::Osc) => {
-                emit_tty_sequence(&sequence);
-                hook_noop_output(agent, event)
-            }
-            None => "{}".to_string(),
-        }
-    };
+/// Answers a hook command an older Anbo wrote (`anbo __anbo_hook <agent>
+/// <event>`, or `__anbo_notify` on Windows) that cleanup never reached, such
+/// as one in a project that is not a space: the agent's no-op reply, so the
+/// hook succeeds, changes nothing and starts no Anbo window.
+pub fn answer_leftover_hook(agent: &str, event: &str) {
     let mut stdout = std::io::stdout().lock();
-    let _ = stdout.write_all(output.as_bytes());
+    let _ = stdout.write_all(hook_noop_output(agent, event).as_bytes());
     let _ = stdout.flush();
-}
-
-#[cfg(windows)]
-pub fn emit_conout_marker(agent: &str, event: &str) {
-    if std::env::var_os("ANBO_TERMINAL").is_some() {
-        emit_tty_sequence(&terminal_marker(agent, event));
-    }
-}
-
-#[tauri::command]
-pub fn agent_hooks_status(
-    agent: String,
-    workspace_root: String,
-    workspace: Option<WorkspaceEnv>,
-    registry: tauri::State<'_, WorkspaceRegistry>,
-) -> bool {
-    let workspace = WorkspaceEnv::from_option(workspace);
-    let Ok(root) = authorize_project_root(&registry, &workspace_root, &workspace) else {
-        return false;
-    };
-    project_integration_status(&agent, &root)
-}
-
-fn project_integration_status(agent: &str, root: &Path) -> bool {
-    if agent == "pi" {
-        return project_file_path(root, PI_PROJECT_FILE, false)
-            .ok()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .is_some_and(|content| {
-                PI_STATUS_NEEDLES
-                    .iter()
-                    .all(|needle| content.contains(needle))
-            });
-    }
-    if agent == "opencode" {
-        return project_file_path(root, OPENCODE_PROJECT_FILE, false)
-            .ok()
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .is_some_and(|content| content.contains(OPENCODE_PLUGIN_MARKER));
-    }
-    let Ok(spec) = find(agent) else {
-        return false;
-    };
-    let Some(content) = project_file_path(root, spec.project_file, false)
-        .ok()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-    else {
-        return false;
-    };
-    spec.events
-        .iter()
-        .all(|(_, m)| content.contains(&status_needle(spec, m)))
 }
 
 #[derive(Serialize)]
@@ -1185,8 +681,11 @@ pub fn agent_configure_mcp(
 mod tests {
     use super::*;
 
-    fn spec(agent: &str) -> &'static AgentSpec {
-        find(agent).unwrap()
+    fn files(agent: &str) -> &'static HookFiles {
+        HOOK_FILES
+            .iter()
+            .find(|files| files.agent == agent)
+            .unwrap()
     }
 
     fn hook_count(root: &Value, event: &str) -> usize {
@@ -1200,233 +699,67 @@ mod tests {
             .to_string()
     }
 
-    #[test]
-    fn claude_adds_all_event_hooks_to_empty_config() {
-        let out = merge_hooks(json!({}), spec("claude"));
-        assert_eq!(hook_count(&out, "SessionStart"), 1);
-        assert_eq!(hook_count(&out, "UserPromptSubmit"), 1);
-        assert_eq!(hook_count(&out, "Notification"), 1);
-        assert_eq!(hook_count(&out, "Stop"), 1);
-        assert!(command(&out, "Notification", 0).contains("__anbo_hook claude attention"));
-        assert!(command(&out, "Stop", 0).contains("__anbo_hook claude finished"));
-        assert!(command(&out, "SessionStart", 0).contains("__anbo_hook claude ready"));
-        assert!(command(&out, "UserPromptSubmit", 0).contains("__anbo_hook claude working"));
-        assert!(!command(&out, "Stop", 0).contains("/dev/tty"));
+    fn anbo_command(agent: &str, event: &str) -> String {
+        format!(r#""C:\Users\me\AppData\Local\Anbo\anbo.exe" __anbo_hook {agent} {event}"#)
+    }
+
+    fn group(command: String) -> Value {
+        json!({ "hooks": [{ "type": "command", "command": command }] })
+    }
+
+    // The hook files older versions wrote, as they wrote them.
+    fn claude_hooks_as_written() -> Value {
+        json!({ "hooks": {
+            "SessionStart": [group(anbo_command("claude", "ready"))],
+            "UserPromptSubmit": [group(anbo_command("claude", "working"))],
+            "Notification": [group(anbo_command("claude", "attention"))],
+            "Stop": [group(anbo_command("claude", "finished"))]
+        } })
+    }
+
+    fn codex_hooks_as_written() -> Value {
+        let command = |event: &str| {
+            format!(
+                r#"powershell.exe -NoLogo -NoProfile -NonInteractive -Command "& 'C:\Users\me\AppData\Local\Anbo\anbo.exe' __anbo_hook codex {event}""#
+            )
+        };
+        json!({ "hooks": {
+            "SessionStart": [group(command("ready"))],
+            "UserPromptSubmit": [group(command("working"))],
+            "PermissionRequest": [group(command("attention"))],
+            "Stop": [group(command("finished"))]
+        } })
+    }
+
+    fn antigravity_hooks_as_written() -> Value {
+        let command = |event: &str| {
+            format!("if defined ANBO_HOOK_EXE (%ANBO_HOOK_EXE% __anbo_hook antigravity {event}) else (echo {{}})")
+        };
+        json!({ "anbo-desktop-agent-alerts": {
+            "enabled": true,
+            "PreInvocation": [{ "type": "command", "command": command("working") }],
+            "PreToolUse": [{
+                "matcher": "ask_question|ask_permission",
+                "hooks": [{ "type": "command", "command": command("attention") }]
+            }],
+            "Stop": [{ "type": "command", "command": command("finished") }]
+        } })
     }
 
     #[test]
-    fn is_idempotent_per_agent() {
-        for agent in ["claude", "codex", "antigravity"] {
-            let s = spec(agent);
-            let once = merge_hooks(json!({}), s);
-            let twice = merge_hooks(once.clone(), s);
-            assert_eq!(once, twice, "{agent} not idempotent");
-        }
-    }
-
-    #[test]
-    fn terminal_marker_matches_detector_format() {
-        // Exactly the bytes pty/agent_detect parses (ESC ] 777 ; ... BEL).
-        assert_eq!(
-            terminal_marker("antigravity", "attention"),
-            "\u{1b}]777;notify;Anbo;antigravity;attention\u{7}"
-        );
-    }
-
-    #[test]
-    fn hook_helper_commands_are_agent_and_event_scoped() {
-        let out = merge_hooks(json!({}), spec("codex"));
-        assert_eq!(hook_count(&out, "SessionStart"), 1);
-        assert_eq!(hook_count(&out, "UserPromptSubmit"), 1);
-        assert_eq!(hook_count(&out, "PermissionRequest"), 1);
-        assert_eq!(hook_count(&out, "Stop"), 1);
-        let start = command(&out, "SessionStart", 0);
-        assert!(start.contains("__anbo_hook codex ready"));
-        let stop = command(&out, "Stop", 0);
-        assert!(stop.contains("__anbo_hook codex finished"));
-        #[cfg(windows)]
-        {
-            assert!(start.starts_with("powershell.exe "));
-            assert!(start.contains("-Command \"& '"));
-        }
-    }
-
-    #[test]
-    fn antigravity_uses_named_hook_definition_and_camel_case_conversation_id() {
-        let out = merge_hooks(json!({ "mine": { "enabled": true } }), spec("antigravity"));
-        let definition = &out["anbo-desktop-agent-alerts"];
-        assert_eq!(definition["enabled"], true);
-        assert!(definition["PreInvocation"][0]["command"]
-            .as_str()
-            .unwrap()
-            .contains("__anbo_hook antigravity working"));
-        assert_eq!(
-            definition["PreToolUse"][0]["matcher"],
-            "ask_question|ask_permission"
-        );
-        assert!(definition["PreToolUse"][0]["hooks"][0]["command"]
-            .as_str()
-            .unwrap()
-            .contains("__anbo_hook antigravity attention"));
-        assert!(definition["Stop"][0]["command"]
-            .as_str()
-            .unwrap()
-            .contains("__anbo_hook antigravity finished"));
-        assert_eq!(out["mine"]["enabled"], true);
-
-        let id = "00000000-0000-4000-8000-000000000001";
-        let payload = json!({ "conversationId": id });
-        assert_eq!(
-            hook_session_id_from_payload(&payload, "antigravity").as_deref(),
-            Some(id)
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn antigravity_windows_hook_avoids_literal_executable_quotes() {
-        let command = hook_helper_command("antigravity", "working");
-        assert_eq!(
-            command,
-            "if defined ANBO_HOOK_EXE (%ANBO_HOOK_EXE% __anbo_hook antigravity working) else (echo {})"
-        );
-        assert!(!command.contains('"'));
-
-        let attention = hook_helper_command("antigravity", "attention");
-        assert!(attention.contains("__anbo_hook antigravity attention"));
-        assert!(attention.contains(r#"else (echo {"decision":"allow"})"#));
-    }
-
-    #[test]
-    fn hook_input_yields_only_valid_real_session_ids() {
-        let id = "00000000-0000-4000-8000-000000000001";
-        let input = format!(r#"{{"session_id":"{id}"}}"#);
-        let payload = hook_payload_from_reader(input.as_bytes()).unwrap();
-        assert_eq!(
-            hook_session_id_from_payload(&payload, "claude").as_deref(),
-            Some(id)
-        );
-        let invalid =
-            hook_payload_from_reader(br#"{"session_id":"../../bad"}"#.as_slice()).unwrap();
-        assert!(hook_session_id_from_payload(&invalid, "claude").is_none());
-
-        let codex_v7 = "01a0068e-3c06-75c3-bfdd-89323e589767";
-        let codex_payload = json!({ "session_id": codex_v7 });
-        assert_eq!(
-            hook_session_id_from_payload(&codex_payload, "codex").as_deref(),
-            Some(codex_v7)
-        );
-    }
-
-    #[test]
-    fn antigravity_stop_waits_for_background_work_to_be_idle() {
-        assert!(!should_emit_hook_event(
-            Some(&json!({ "fullyIdle": false })),
-            "antigravity",
-            "finished"
-        ));
-        assert!(should_emit_hook_event(
-            Some(&json!({ "fullyIdle": true })),
-            "antigravity",
-            "finished"
-        ));
-        assert_eq!(
-            hook_noop_output("antigravity", "finished"),
-            r#"{"decision":""}"#
-        );
+    fn leftover_hooks_get_the_agents_no_op_answer() {
+        assert_eq!(hook_noop_output("claude", "finished"), "{}");
+        assert_eq!(hook_noop_output("codex", "attention"), "{}");
         assert_eq!(hook_noop_output("antigravity", "working"), "{}");
         assert_eq!(
             hook_noop_output("antigravity", "attention"),
             r#"{"decision":"allow"}"#
         );
-    }
-
-    #[test]
-    fn hook_sequence_reports_session_before_activity() {
-        let id = "00000000-0000-4000-8000-000000000001";
         assert_eq!(
-            hook_terminal_sequence("claude", "working", Some(id)),
-            format!(
-                "{}{}",
-                terminal_marker("claude", &format!("session;{id}")),
-                terminal_marker("claude", "working")
-            )
+            hook_noop_output("antigravity", "finished"),
+            r#"{"decision":""}"#
         );
-    }
-
-    #[test]
-    fn pi_extension_emits_named_working_and_finished_markers() {
-        let path = std::path::Path::new("/x/anbo-notifications.ts");
-        let extension = pi_extension_contents(None, path).unwrap();
-        for needle in PI_STATUS_NEEDLES {
-            assert!(extension.contains(needle), "missing {needle}");
-        }
-        assert!(extension.contains("process.env.ANBO_TERMINAL"));
-        assert!(extension.contains("process.stdout.write"));
-    }
-
-    #[test]
-    fn pi_extension_only_replaces_anbo_owned_file() {
-        let path = std::path::Path::new("/x/anbo-notifications.ts");
-        assert!(pi_extension_contents(Some("export const mine = true;"), path).is_err());
-        assert!(pi_extension_contents(Some(PI_EXTENSION), path).is_ok());
-        assert!(pi_extension_contents(Some("  \n"), path).is_ok());
-    }
-
-    #[test]
-    fn pi_extension_install_is_atomic_idempotent_and_preserves_foreign_files() {
-        let dir = std::env::temp_dir().join(format!("anbo-pi-extension-{}", std::process::id()));
-        let path = dir.join("anbo-notifications.ts");
-        let _ = std::fs::remove_dir_all(&dir);
-
-        enable_pi_extension_at(&path).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), PI_EXTENSION);
-        enable_pi_extension_at(&path).unwrap();
-
-        std::fs::write(&path, "export const mine = true;").unwrap();
-        assert!(enable_pi_extension_at(&path).is_err());
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "export const mine = true;"
-        );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn opencode_plugin_emits_exact_session_marker_and_preserves_foreign_files() {
-        assert!(OPENCODE_PLUGIN.contains("session.created"));
-        assert!(OPENCODE_PLUGIN.contains("session.status"));
-        assert!(OPENCODE_PLUGIN.contains("session.idle"));
-        assert!(OPENCODE_PLUGIN.contains("permission.asked"));
-        assert!(OPENCODE_PLUGIN.contains("question.asked"));
-        assert!(OPENCODE_PLUGIN.contains("setPhase(\"working\")"));
-        assert!(OPENCODE_PLUGIN.contains("setPhase(\"finished\")"));
-        assert!(OPENCODE_PLUGIN.contains("notify;Anbo;opencode;${event}"));
-        assert!(OPENCODE_PLUGIN.contains("emit(`session;${sessionId}`)"));
-        assert!(OPENCODE_PLUGIN.contains("process.env.ANBO_TERMINAL"));
-
-        let dir = std::env::temp_dir().join(format!("anbo-opencode-plugin-{}", std::process::id()));
-        let path = dir.join("anbo-notifications.js");
-        let _ = std::fs::remove_dir_all(&dir);
-        enable_opencode_plugin_at(&path).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), OPENCODE_PLUGIN);
-        enable_opencode_plugin_at(&path).unwrap();
-
-        std::fs::write(
-            &path,
-            "// anbo-opencode-notifications-v1\nexport const legacy = true;",
-        )
-        .unwrap();
-        enable_opencode_plugin_at(&path).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), OPENCODE_PLUGIN);
-
-        std::fs::write(&path, "export const mine = true;").unwrap();
-        assert!(enable_opencode_plugin_at(&path).is_err());
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "export const mine = true;"
-        );
-        std::fs::remove_dir_all(dir).unwrap();
+        assert_eq!(hook_noop_output("", ""), "{}");
     }
 
     #[test]
@@ -1447,7 +780,7 @@ mod tests {
         });
         std::fs::write(&path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
 
-        assert!(remove_legacy_json_at(&path, spec("claude")).unwrap());
+        assert!(remove_legacy_json_at(&path, files("claude")).unwrap());
         let cleaned: Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(cleaned["theme"], "mine");
@@ -1470,7 +803,7 @@ mod tests {
         });
         std::fs::write(&path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
 
-        assert!(remove_legacy_json_at(&path, spec("codex")).unwrap());
+        assert!(remove_legacy_json_at(&path, files("codex")).unwrap());
         let cleaned: Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(hook_count(&cleaned, "Stop"), 1);
@@ -1481,10 +814,30 @@ mod tests {
     fn legacy_cleanup_deletes_anbo_only_json_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hooks.json");
-        let installed = merge_hooks(json!({}), spec("codex"));
+        let installed = codex_hooks_as_written();
         std::fs::write(&path, serde_json::to_string_pretty(&installed).unwrap()).unwrap();
 
-        assert!(remove_legacy_json_at(&path, spec("codex")).unwrap());
+        assert!(remove_legacy_json_at(&path, files("codex")).unwrap());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn legacy_cleanup_removes_the_old_dev_tty_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let legacy = json!({
+            "hooks": {
+                "Notification": [
+                    { "hooks": [ {
+                        "type": "command",
+                        "command": "[ -n \"$ANBO_TERMINAL\" ] && printf '\\033]777;anbo;notify\\033\\\\' > /dev/tty || true"
+                    } ] }
+                ]
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
+
+        assert!(remove_legacy_json_at(&path, files("claude")).unwrap());
         assert!(!path.exists());
     }
 
@@ -1518,132 +871,72 @@ mod tests {
     }
 
     #[test]
-    fn every_supported_integration_installs_inside_the_project() {
-        let dir = tempfile::tempdir().unwrap();
-        for agent in ["claude", "codex", "antigravity", "pi", "opencode"] {
-            enable_project_integration(agent, dir.path()).unwrap();
-            assert!(
-                project_integration_status(agent, dir.path()),
-                "{agent} project integration was not detected"
-            );
-        }
-        for relative in [
-            ".claude/settings.local.json",
-            ".codex/hooks.json",
-            ".agents/hooks.json",
-            PI_PROJECT_FILE,
-            OPENCODE_PROJECT_FILE,
-        ] {
-            assert!(dir.path().join(relative).is_file(), "missing {relative}");
-        }
-    }
-
-    #[test]
     fn project_cleanup_removes_only_anbo_owned_integrations() {
         let dir = tempfile::tempdir().unwrap();
-        for agent in ["claude", "codex", "antigravity", "pi", "opencode"] {
-            enable_project_integration(agent, dir.path()).unwrap();
-        }
-        let claude_path = dir.path().join(".claude/settings.local.json");
-        let mut claude: Value =
-            serde_json::from_str(&std::fs::read_to_string(&claude_path).unwrap()).unwrap();
+        let write = |relative: &str, contents: String| {
+            let path = dir.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        };
+        let mut claude = claude_hooks_as_written();
         claude["theme"] = json!("mine");
         claude["hooks"]["Stop"]
             .as_array_mut()
             .unwrap()
             .push(json!({ "hooks": [{ "type": "command", "command": "my-stop-hook" }] }));
-        std::fs::write(&claude_path, serde_json::to_string_pretty(&claude).unwrap()).unwrap();
+        write(
+            ".claude/settings.local.json",
+            serde_json::to_string_pretty(&claude).unwrap(),
+        );
+        write(
+            ".codex/hooks.json",
+            serde_json::to_string_pretty(&codex_hooks_as_written()).unwrap(),
+        );
+        write(
+            ".agents/hooks.json",
+            serde_json::to_string_pretty(&antigravity_hooks_as_written()).unwrap(),
+        );
+        write(
+            PI_PROJECT_FILE,
+            format!("// {PI_EXTENSION_MARKER}\nexport default function () {{}}\n"),
+        );
+        // A plugin from before v2 goes too.
+        write(
+            OPENCODE_PROJECT_FILE,
+            format!("// {OPENCODE_PLUGIN_LEGACY_MARKER}\nexport const legacy = true;\n"),
+        );
 
         assert_eq!(cleanup_project_integrations(dir.path()).unwrap(), 5);
+        let claude_path = dir.path().join(".claude/settings.local.json");
         let cleaned: Value =
             serde_json::from_str(&std::fs::read_to_string(&claude_path).unwrap()).unwrap();
         assert_eq!(cleaned["theme"], "mine");
         assert_eq!(hook_count(&cleaned, "Stop"), 1);
         assert_eq!(command(&cleaned, "Stop", 0), "my-stop-hook");
-        assert!(!dir.path().join(".codex/hooks.json").exists());
-        assert!(!dir.path().join(".agents/hooks.json").exists());
-        assert!(!dir.path().join(PI_PROJECT_FILE).exists());
-        assert!(!dir.path().join(OPENCODE_PROJECT_FILE).exists());
+        assert!(cleaned["hooks"].get("SessionStart").is_none());
+        for relative in [
+            ".codex/hooks.json",
+            ".agents/hooks.json",
+            PI_PROJECT_FILE,
+            OPENCODE_PROJECT_FILE,
+        ] {
+            assert!(
+                !dir.path().join(relative).exists(),
+                "{relative} is still there"
+            );
+        }
         assert_eq!(cleanup_project_integrations(dir.path()).unwrap(), 0);
     }
 
-    #[cfg(unix)]
     #[test]
-    fn pi_extension_install_preserves_symlink() {
-        use std::os::unix::fs::symlink;
+    fn project_cleanup_leaves_a_foreign_plugin_at_anbos_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(OPENCODE_PROJECT_FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "export const mine = true;").unwrap();
 
-        let dir =
-            std::env::temp_dir().join(format!("anbo-pi-extension-symlink-{}", std::process::id()));
-        let target = dir.join("managed.ts");
-        let path = dir.join("anbo-notifications.ts");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(&target, format!("// {PI_EXTENSION_MARKER}\n")).unwrap();
-        symlink(&target, &path).unwrap();
-
-        enable_pi_extension_at(&path).unwrap();
-
-        assert!(std::fs::symlink_metadata(&path)
-            .unwrap()
-            .file_type()
-            .is_symlink());
-        assert_eq!(std::fs::read_to_string(target).unwrap(), PI_EXTENSION);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn migrates_legacy_dev_tty_hook() {
-        let legacy = json!({
-            "hooks": {
-                "Notification": [
-                    { "hooks": [ {
-                        "type": "command",
-                        "command": "[ -n \"$ANBO_TERMINAL\" ] && printf '\\033]777;anbo;notify\\033\\\\' > /dev/tty || true"
-                    } ] }
-                ]
-            }
-        });
-        let out = merge_hooks(legacy, spec("claude"));
-        assert_eq!(hook_count(&out, "Notification"), 1);
-        assert!(command(&out, "Notification", 0).contains("__anbo_hook claude attention"));
-        assert!(!command(&out, "Notification", 0).contains("/dev/tty"));
-    }
-
-    #[test]
-    fn preserves_unrelated_settings_and_foreign_hooks() {
-        let input = json!({
-            "permissions": { "allow": ["Bash"] },
-            "hooks": {
-                "Notification": [
-                    { "hooks": [ { "type": "command", "command": "say hi" } ] }
-                ]
-            }
-        });
-        let out = merge_hooks(input, spec("claude"));
-        assert_eq!(out["permissions"]["allow"][0], "Bash");
-        assert_eq!(hook_count(&out, "Notification"), 2);
-        assert_eq!(command(&out, "Notification", 0), "say hi");
-    }
-
-    #[test]
-    fn replaces_non_object_root() {
-        let out = merge_hooks(json!("garbage"), spec("codex"));
-        assert_eq!(hook_count(&out, "Stop"), 1);
-    }
-
-    #[test]
-    fn prunes_empty_groups_and_collapses_duplicates() {
-        let input = json!({
-            "hooks": {
-                "Notification": [
-                    { "hooks": [] },
-                    { "hooks": [ { "type": "command", "command": hook_command(spec("claude"), "attention") } ] }
-                ]
-            }
-        });
-        let out = merge_hooks(input, spec("claude"));
-        assert_eq!(hook_count(&out, "Notification"), 1);
-        assert!(command(&out, "Notification", 0).contains("__anbo_hook claude attention"));
+        assert_eq!(cleanup_project_integrations(dir.path()).unwrap(), 0);
+        assert!(path.exists());
     }
 
     #[test]

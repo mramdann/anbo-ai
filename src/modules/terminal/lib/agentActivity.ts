@@ -64,26 +64,6 @@ function clearFinishedTimer(id: number): void {
 let onExited: ((ptyId: number) => void) | null = null;
 let bound = false;
 
-/** Maps a raw detector signal to the phase it drives, `"exited"` to drop the
- * pty, or `null` to ignore. Pure so the mapping stays unit-testable. */
-export function phaseForSignal(kind: string): AgentPhase | "exited" | null {
-  switch (kind) {
-    case "started":
-    case "working":
-      return "working";
-    case "ready":
-      return "idle";
-    case "attention":
-      return "attention";
-    case "finished":
-      return "finished";
-    case "exited":
-      return "exited";
-    default:
-      return null;
-  }
-}
-
 export function setAgentActivity(
   ptyId: number,
   agent: string,

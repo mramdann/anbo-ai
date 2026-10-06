@@ -15,10 +15,6 @@ const DEFAULT_AGENTS: &[&str] = &[
     "grok",
 ];
 
-// OSC 777 marker our agent hooks emit. Legacy 3-field `notify;Anbo;<event>`
-// (Claude) or 4-field `notify;Anbo;<agent>;<event>` (Codex/Antigravity/Pi).
-const ANBO_MARKER: &[u8] = b"notify;Anbo;";
-
 fn valid_session_id(agent: &str, session_id: &str) -> bool {
     // Kimi wraps a plain uuid in a `session_` prefix and takes the whole string
     // back on --session, so the prefix is part of the id, not decoration.
@@ -56,26 +52,13 @@ enum State {
     OscEsc,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Status {
-    Working,
-    Waiting,
-}
-
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Transition {
     Started {
         agent: String,
         session_id: Option<String>,
     },
-    Session {
-        agent: String,
-        session_id: String,
-    },
-    Ready,
-    Working,
     Attention,
-    Finished,
     Exited,
 }
 
@@ -97,33 +80,9 @@ impl Transition {
                 agent: Some(agent),
                 session_id,
             },
-            Transition::Session { agent, session_id } => AgentSignal {
-                id,
-                kind: "session",
-                agent: Some(agent),
-                session_id: Some(session_id),
-            },
-            Transition::Ready => AgentSignal {
-                id,
-                kind: "ready",
-                agent: None,
-                session_id: None,
-            },
-            Transition::Working => AgentSignal {
-                id,
-                kind: "working",
-                agent: None,
-                session_id: None,
-            },
             Transition::Attention => AgentSignal {
                 id,
                 kind: "attention",
-                agent: None,
-                session_id: None,
-            },
-            Transition::Finished => AgentSignal {
-                id,
-                kind: "finished",
                 agent: None,
                 session_id: None,
             },
@@ -142,7 +101,6 @@ pub struct AgentDetector {
     state: State,
     osc: Vec<u8>,
     armed: bool,
-    status: Status,
 }
 
 impl AgentDetector {
@@ -156,12 +114,11 @@ impl AgentDetector {
             state: State::Ground,
             osc: Vec::new(),
             armed: false,
-            status: Status::Working,
         }
     }
 
     /// Feed a chunk of raw PTY output. Transitions come only from OSC sequences
-    /// (`133` prompt boundaries, our `777` hook marker), never from raw output,
+    /// (`133` prompt boundaries, `9` and `777` notifications), never from raw output,
     /// so a TUI agent that repaints continuously never flaps working/waiting.
     pub fn process<F: FnMut(Transition)>(&mut self, input: &[u8], mut emit: F) {
         if self.state == State::Ground && !input.contains(&ESC) {
@@ -217,14 +174,9 @@ impl AgentDetector {
     /// UI doesn't leave a stale entry if the shell died mid-command.
     pub fn finish<F: FnMut(Transition)>(&mut self, mut emit: F) {
         if self.armed {
-            self.disarm();
+            self.armed = false;
             emit(Transition::Exited);
         }
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-        self.status = Status::Working;
     }
 
     fn finish_osc<F: FnMut(Transition)>(&mut self, emit: &mut F) {
@@ -237,65 +189,9 @@ impl AgentDetector {
             b"133" => self.handle_osc133(pt, emit),
             // OSC 9;4 is taskbar progress, not a notification.
             b"9" if !pt.starts_with(b"4;") && pt != b"4" => self.generic_attention(emit),
-            b"777" => self.handle_osc777(pt, emit),
+            b"777" => self.generic_attention(emit),
             _ => {}
         }
-    }
-
-    fn handle_osc777<F: FnMut(Transition)>(&mut self, pt: &[u8], emit: &mut F) {
-        if let Some(tail) = pt.strip_prefix(ANBO_MARKER) {
-            // PTY output is untrusted: only self-arm for known agents.
-            let (agent, event) = match tail.iter().position(|&c| c == b';') {
-                Some(i) => {
-                    let Ok(name) = std::str::from_utf8(&tail[..i]) else {
-                        return;
-                    };
-                    if !self.agents.iter().any(|a| a == name) {
-                        return;
-                    }
-                    (name, &tail[i + 1..])
-                }
-                None => ("claude", tail),
-            };
-            // Self-arms when no shell preexec fired (bash, Windows, tmux).
-            if let Some(session_id) = event.strip_prefix(b"session;") {
-                let Ok(session_id) = std::str::from_utf8(session_id) else {
-                    return;
-                };
-                if valid_session_id(agent, session_id) {
-                    self.ensure_armed(agent, emit);
-                    emit(Transition::Session {
-                        agent: agent.to_string(),
-                        session_id: session_id.to_string(),
-                    });
-                }
-                return;
-            }
-            match event {
-                b"ready" => {
-                    self.ensure_armed(agent, emit);
-                    self.status = Status::Waiting;
-                    emit(Transition::Ready);
-                }
-                b"working" => {
-                    self.ensure_armed(agent, emit);
-                    self.set_working(emit);
-                }
-                b"attention" => {
-                    self.ensure_armed(agent, emit);
-                    self.status = Status::Waiting;
-                    emit(Transition::Attention);
-                }
-                b"finished" => {
-                    self.ensure_armed(agent, emit);
-                    self.status = Status::Waiting;
-                    emit(Transition::Finished);
-                }
-                _ => {}
-            }
-            return;
-        }
-        self.generic_attention(emit);
     }
 
     fn handle_osc133<F: FnMut(Transition)>(&mut self, pt: &[u8], emit: &mut F) {
@@ -308,39 +204,19 @@ impl AgentDetector {
                 if let Some(agent) = self.match_agent(cmd) {
                     let session_id = Self::resume_session_id(&agent, cmd);
                     self.armed = true;
-                    self.status = Status::Working;
                     emit(Transition::Started { agent, session_id });
                 }
             }
             Some(b'D') if self.armed => {
-                self.disarm();
+                self.armed = false;
                 emit(Transition::Exited);
             }
             _ => {}
         }
     }
 
-    fn ensure_armed<F: FnMut(Transition)>(&mut self, agent: &str, emit: &mut F) {
-        if !self.armed {
-            self.armed = true;
-            self.status = Status::Working;
-            emit(Transition::Started {
-                agent: agent.to_string(),
-                session_id: None,
-            });
-        }
-    }
-
-    fn set_working<F: FnMut(Transition)>(&mut self, emit: &mut F) {
-        if self.status != Status::Working {
-            self.status = Status::Working;
-            emit(Transition::Working);
-        }
-    }
-
     fn generic_attention<F: FnMut(Transition)>(&mut self, emit: &mut F) {
         if self.armed {
-            self.status = Status::Waiting;
             emit(Transition::Attention);
         }
     }
@@ -551,167 +427,20 @@ mod tests {
     }
 
     #[test]
-    fn anbo_marker_drives_status() {
+    fn a_leftover_hook_marker_is_only_a_notification() {
+        // Older Anbo hooks and plugins wrote `notify;Anbo;...`; it no longer
+        // arms anything or drives status.
         let mut d = AgentDetector::new();
+        assert!(run(&mut d, &osc("777;notify;Anbo;claude;working")).is_empty());
+        assert!(run(
+            &mut d,
+            &osc("777;notify;Anbo;opencode;session;ses_02ed951faffexIxSGpdc5IFmZz")
+        )
+        .is_empty());
         run(&mut d, &osc("133;C;claude"));
         assert_eq!(
-            run(&mut d, &osc("777;notify;Anbo;attention")),
+            run(&mut d, &osc("777;notify;Anbo;claude;finished")),
             vec![Transition::Attention]
-        );
-        assert_eq!(
-            run(&mut d, &osc("777;notify;Anbo;working")),
-            vec![Transition::Working]
-        );
-        assert!(run(&mut d, &osc("777;notify;Anbo;working")).is_empty());
-        assert_eq!(
-            run(&mut d, &osc("777;notify;Anbo;finished")),
-            vec![Transition::Finished]
-        );
-    }
-
-    #[test]
-    fn anbo_marker_auto_arms_without_preexec() {
-        let mut d = AgentDetector::new();
-        assert_eq!(
-            run(&mut d, &osc("777;notify;Anbo;attention")),
-            vec![started("claude"), Transition::Attention]
-        );
-    }
-
-    #[test]
-    fn four_field_marker_self_arms_named_agent() {
-        // Fresh arm already implies Working, so `working` emits only Started.
-        let mut d = AgentDetector::new();
-        assert_eq!(
-            run(&mut d, &osc("777;notify;Anbo;codex;working")),
-            vec![started("codex")]
-        );
-        let mut g = AgentDetector::new();
-        assert_eq!(
-            run(&mut g, &osc("777;notify;Anbo;antigravity;finished")),
-            vec![started("antigravity"), Transition::Finished]
-        );
-    }
-
-    #[test]
-    fn ready_marker_arms_and_marks_the_initial_prompt_waiting() {
-        let mut detector = AgentDetector::new();
-        assert_eq!(
-            run(&mut detector, &osc("777;notify;Anbo;claude;ready")),
-            vec![started("claude"), Transition::Ready]
-        );
-        assert_eq!(
-            run(&mut detector, &osc("777;notify;Anbo;claude;working")),
-            vec![Transition::Working]
-        );
-    }
-
-    #[test]
-    fn opencode_session_marker_emits_exact_session_id() {
-        let mut detector = AgentDetector::new();
-        assert_eq!(
-            run(
-                &mut detector,
-                &osc("777;notify;Anbo;opencode;session;ses_02ed951faffexIxSGpdc5IFmZz"),
-            ),
-            vec![
-                started("opencode"),
-                Transition::Session {
-                    agent: "opencode".into(),
-                    session_id: "ses_02ed951faffexIxSGpdc5IFmZz".into(),
-                },
-            ]
-        );
-        assert!(run(
-            &mut detector,
-            &osc("777;notify;Anbo;opencode;session;../../bad")
-        )
-        .is_empty());
-    }
-
-    #[test]
-    fn uuid_session_marker_supports_hook_backed_agents() {
-        let id = "00000000-0000-4000-8000-000000000001";
-        for agent in ["claude", "antigravity", "pi"] {
-            let mut detector = AgentDetector::new();
-            assert_eq!(
-                run(
-                    &mut detector,
-                    &osc(&format!("777;notify;Anbo;{agent};session;{id}")),
-                ),
-                vec![
-                    started(agent),
-                    Transition::Session {
-                        agent: agent.into(),
-                        session_id: id.into(),
-                    },
-                ]
-            );
-        }
-
-        let mut detector = AgentDetector::new();
-        assert!(run(
-            &mut detector,
-            &osc("777;notify;Anbo;claude;session;../../bad")
-        )
-        .is_empty());
-
-        let mut codex = AgentDetector::new();
-        let codex_v7 = "01a0068e-3c06-75c3-bfdd-89323e589767";
-        assert_eq!(
-            run(
-                &mut codex,
-                &osc(&format!("777;notify;Anbo;codex;session;{codex_v7}")),
-            ),
-            vec![
-                started("codex"),
-                Transition::Session {
-                    agent: "codex".into(),
-                    session_id: codex_v7.into(),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn pi_marker_self_arms_and_drives_status() {
-        let mut d = AgentDetector::new();
-        assert_eq!(
-            run(&mut d, &osc("777;notify;Anbo;pi;working")),
-            vec![started("pi")]
-        );
-        assert_eq!(
-            run(&mut d, &osc("777;notify;Anbo;pi;finished")),
-            vec![Transition::Finished]
-        );
-    }
-
-    #[test]
-    fn four_field_marker_ignores_unknown_agent() {
-        let mut d = AgentDetector::new();
-        assert!(run(&mut d, &osc("777;notify;Anbo;evil;attention")).is_empty());
-        // A known agent in the same chunk still works.
-        assert_eq!(
-            run(&mut d, &osc("777;notify;Anbo;codex;attention")),
-            vec![started("codex"), Transition::Attention]
-        );
-    }
-
-    #[test]
-    fn four_field_marker_drives_status_after_preexec() {
-        let mut d = AgentDetector::new();
-        run(&mut d, &osc("133;C;agy"));
-        assert_eq!(
-            run(&mut d, &osc("777;notify;Anbo;antigravity;attention")),
-            vec![Transition::Attention]
-        );
-        assert_eq!(
-            run(&mut d, &osc("777;notify;Anbo;antigravity;working")),
-            vec![Transition::Working]
-        );
-        assert_eq!(
-            run(&mut d, &osc("777;notify;Anbo;antigravity;finished")),
-            vec![Transition::Finished]
         );
     }
 

@@ -1,7 +1,7 @@
 //! Modul anbo — diferensiator anbo yang di-inject ke atas Anbo.
 //!
 //! Anbo sudah punya: terminal ANSI, editor, git, file tree, deteksi status agen
-//! (OSC 777), auto-update. Modul ini menambah IP unik anbo:
+//! (dari layar terminal), auto-update. Modul ini menambah IP unik anbo:
 //!   - `resume` — strategi resume sesi per-CLI (discover session-id claude/opencode)
 //!   - (menyusul) telegram bridge, dispatcher multi-agen
 //!

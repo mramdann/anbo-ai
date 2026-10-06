@@ -1,26 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   isAgentActivePty,
-  phaseForSignal,
   tabAgentStatus,
   useAgentActivityStore,
 } from "./agentActivity";
-
-describe("phaseForSignal", () => {
-  it("maps lifecycle kinds to phases", () => {
-    expect(phaseForSignal("started")).toBe("working");
-    expect(phaseForSignal("ready")).toBe("idle");
-    expect(phaseForSignal("working")).toBe("working");
-    expect(phaseForSignal("attention")).toBe("attention");
-    expect(phaseForSignal("finished")).toBe("finished");
-    expect(phaseForSignal("exited")).toBe("exited");
-  });
-
-  it("ignores unknown kinds", () => {
-    expect(phaseForSignal("bogus")).toBeNull();
-    expect(phaseForSignal("")).toBeNull();
-  });
-});
 
 describe("tabAgentStatus", () => {
   it("returns null state for no matching ptys", () => {

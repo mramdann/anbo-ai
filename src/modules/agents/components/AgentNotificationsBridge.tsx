@@ -174,8 +174,8 @@ function handleLifecycleSignal(
       ctx.onExit(leafId);
       return;
     default:
-      // Hook/plugin status and session markers are intentionally ignored. The
-      // rendered screen and exact native turn evidence replace CLI hooks.
+      // An OSC 9 or 777 notification is not a status: the rendered screen and
+      // exact native turn evidence decide that.
       return;
   }
 }
