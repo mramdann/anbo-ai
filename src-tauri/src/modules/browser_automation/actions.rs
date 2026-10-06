@@ -50,6 +50,7 @@ use crate::modules::browser_automation::snapshot::{
 use crate::modules::browser_automation::timings::ActionTimings;
 use crate::modules::browser_automation::visibility::VISIBILITY_JS;
 const VALUE_ACTION_JS: &str = include_str!("valueAction.js");
+const REF_REPLACEMENT_JS: &str = include_str!("refReplacement.js");
 
 /// Per-poll timeout for `execute_script` inside readiness/wait loops. Short on
 /// purpose: while a tab is navigating, WebView2 drops the script callback, and a
@@ -221,6 +222,12 @@ pub async fn handle_action_as(
     // the generic robot until a second, tracked call arrived.
     let actor = caller.clone();
     let tab_id = params.get("tabId").and_then(Value::as_i64);
+    // A ref the page replaced is answered with what took its place.
+    let held_ref = params
+        .get("ref")
+        .and_then(Value::as_str)
+        .filter(|_| params.get("locator").is_none())
+        .map(str::to_owned);
     // endSession rides whatever call is the last of the task: closing the tab,
     // or the final read when the page stays open for the user. Measured through
     // MCP, close plus browser_end_session were the last two calls of every
@@ -275,6 +282,12 @@ pub async fn handle_action_as(
     if method.starts_with("agent_") || method.starts_with("terminal_") {
         return result;
     }
+    let result = match (result, tab_id, held_ref.as_deref()) {
+        (Err((code, message)), Some(tab), Some(ref_id)) if code == error_codes::STALE_REF => {
+            Err((code, stale_ref_hint(app, tab, ref_id, message).await))
+        }
+        (result, ..) => result,
+    };
     let mut result = result;
     if method == "open" {
         // A tab closed within its own open (closeTab) is gone already.
@@ -3822,6 +3835,67 @@ async fn native_retype(
         return Err("native input value changed".into());
     }
     Ok(true)
+}
+
+/// A stale ref whose node the page took out of the document names what took its
+/// place: the one rendered element with the same tag, input type and name, under
+/// a fresh ref. Wikipedia swaps its search field, with a new role, right after a
+/// click hands it back, and learning the new ref cost a find. The stale ref is
+/// still refused and nothing is done with the replacement.
+async fn stale_ref_hint(app: &AppHandle, tab_id: i64, ref_id: &str, message: String) -> String {
+    let Ok(webview) = get_embed_webview(app, tab_id) else {
+        return message;
+    };
+    let target = get_ref_frame_target(tab_id, ref_id);
+    let generation = peek_next_generation(tab_id);
+    let new_ref = format!("g{generation}-e1");
+    let script = format!(
+        r#"(() => {{
+            {REF_REGISTRY_JS}
+            {VISIBILITY_JS}
+            {ACCESSIBLE_NAME_JS}
+            {REF_REPLACEMENT_JS}
+            const old = typeof refRegistry.detached === 'function' ? refRegistry.detached({old}) : null;
+            const node = refReplacement(old);
+            if (!node) return JSON.stringify({{ ok: false }});
+            refRegistry.begin({generation});
+            refRegistry.remember({new_ref_json}, node);
+            const name = String(accessibleName(node) || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+            return JSON.stringify({{ ok: true, role: refRole(node), name, tag: node.localName }});
+        }})()"#,
+        old = serde_json::to_string(ref_id).unwrap_or_default(),
+        new_ref_json = serde_json::to_string(&new_ref).unwrap_or_default(),
+    );
+    let Ok(Ok(raw)) = tokio::time::timeout(
+        Duration::from_millis(1_500),
+        execute_ref_script(&webview, target.as_ref(), &script),
+    )
+    .await
+    else {
+        return message;
+    };
+    let decoded: String = serde_json::from_str(&raw).unwrap_or(raw);
+    let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+    if parsed["ok"] != json!(true) {
+        return message;
+    }
+    commit_generation(tab_id, generation);
+    if let Some(frame) = target.filter(|target| !target.is_main) {
+        record_ref_frame_targets(tab_id, HashMap::from([(new_ref.clone(), frame)]));
+    }
+    replacement_message(
+        &message,
+        &new_ref,
+        parsed["tag"].as_str().unwrap_or("element"),
+        parsed["role"].as_str().unwrap_or(""),
+        parsed["name"].as_str().unwrap_or(""),
+    )
+}
+
+fn replacement_message(message: &str, new_ref: &str, tag: &str, role: &str, name: &str) -> String {
+    format!(
+        "{message}; the page replaced that element, and the one rendered <{tag}> named \"{name}\" there now is ref {new_ref} (role {role}). Nothing was done with it: retry with that ref if it is the element you meant"
+    )
 }
 
 fn ref_failure_reason(value: &Value) -> &str {
@@ -9019,6 +9093,22 @@ mod tests {
         };
         assert!(!clock.missed(&scan(1), Some(&page(1, 1_000)), at(0), 5_000, false));
         assert!(clock.missed(&scan(1), Some(&page(1, 1_000)), at(1_000), 5_000, false));
+    }
+
+    #[test]
+    fn a_replaced_ref_names_its_successor_and_leaves_the_choice_to_the_caller() {
+        let message = replacement_message(
+            "element ref 'g12-e1' is stale or no longer valid",
+            "g13-e1",
+            "input",
+            "combobox",
+            "Search Wikipedia",
+        );
+        assert!(message.starts_with("element ref 'g12-e1' is stale"));
+        assert!(message.contains(
+            "<input> named \"Search Wikipedia\" there now is ref g13-e1 (role combobox)"
+        ));
+        assert!(message.contains("Nothing was done with it"));
     }
 
     #[test]

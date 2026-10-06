@@ -28,9 +28,11 @@ Five browser patterns:
    `exact:true` requests a full name match. Ambiguous errors carry candidate refs;
    choose the intended one without another find, never blindly the first.
    Refs survive eight scans while their node and identity survive, not navigation
-   or replacement. On `stale_ref`, rediscover; no similar target is clicked silently.
+   or replacement. On `stale_ref`, rediscover, or use the ref it names for the one
+   element that replaced it; no similar target is clicked silently.
 3. **Act and observe.** Type/click return menu or autocomplete items in `revealed`;
-   use their refs. Type verifies the immediate value; autocomplete may use guarded
+   use their refs. A click also returns status or alert text it posted in
+   `announced`. Type verifies the immediate value; autocomplete may use guarded
    native key events when a value-only fill opens nothing. Append is never replayed.
    To search, `browser_type {ref,text,submit:true,waitFor}` types and presses
    Enter in one call. A separate Enter uses `browser_press` with the input `ref`,

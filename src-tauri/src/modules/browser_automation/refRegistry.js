@@ -157,6 +157,12 @@ const refRegistry = (() => {
         hasDestination(ref) {
             return refs.get(ref)?.destination != null;
         },
+        // The node a ref held after the page took it out of the document, so a
+        // stale_ref can name what replaced it. Resolves nothing by itself.
+        detached(ref) {
+            const node = refs.get(ref)?.node.deref();
+            return node && !node.isConnected ? node : null;
+        },
         needsGuard(ref) {
             const entry = refs.get(ref);
             return !!entry && (entry.destination != null || entry.context != null);
