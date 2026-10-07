@@ -1852,7 +1852,9 @@ mod native {
             )
             .await
         {
-            log::info!("[browser_dock] the dock window stays with its page ({error}); opening another");
+            log::info!(
+                "[browser_dock] the dock window stays with its page ({error}); opening another"
+            );
             // Only extension code from before this update refuses the swap.
             if error.contains("Unsupported browser command domain")
                 || error.contains("Unknown dock command")
@@ -1917,7 +1919,12 @@ mod native {
         };
         let numbers: Vec<f64> = value["result"]["value"]
             .as_array()
-            .map(|values| values.iter().filter_map(serde_json::Value::as_f64).collect())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(serde_json::Value::as_f64)
+                    .collect()
+            })
             .unwrap_or_default();
         let [width, height, ratio] = numbers[..] else {
             return;

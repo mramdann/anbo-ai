@@ -102,6 +102,7 @@ fn changed(app: &AppHandle) {
 impl Registry {
     /// The browser runs extension code from before an update; true when that
     /// is news.
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn mark_extension_outdated(&mut self, connection_id: &str) -> bool {
         self.connections
             .get_mut(connection_id)
@@ -115,7 +116,8 @@ impl Registry {
 
 /// A command that only older extension code refuses shows that the browser
 /// still runs it, also when the manifest on disk already reports the update,
-/// so the menu asks for a reload.
+/// so the menu asks for a reload. Only the Windows dock sends such commands.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(super) fn note_outdated_extension(app: &AppHandle, connection_id: &str) {
     let news = REGISTRY
         .lock()
