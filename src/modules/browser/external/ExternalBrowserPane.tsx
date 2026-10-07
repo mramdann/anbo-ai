@@ -271,6 +271,15 @@ export default forwardRef<
           <p className="text-sm text-muted-foreground">
             The page could not be shown here.
           </p>
+        ) : dock.elsewhere ? (
+          <>
+            <p className="text-sm text-muted-foreground">
+              Another panel is showing a {browser} page. One shows at a time.
+            </p>
+            <Button size="sm" variant="outline" onClick={dock.retry}>
+              Show it here
+            </Button>
+          </>
         ) : dock.waiting ? (
           // A click brings Anbo to the front, which is all the dock waits for.
           <Button size="sm" variant="outline" onClick={dock.retry}>

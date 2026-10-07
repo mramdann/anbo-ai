@@ -1,5 +1,6 @@
 import {
   type AutoDockState,
+  createDockHolders,
   createDockLayoutOwnership,
   createDockLayoutPublisher,
   type DockLayout,
@@ -21,6 +22,7 @@ describe("automatic docking", () => {
     docked: false,
     busy: false,
     held: false,
+    elsewhere: false,
   };
 
   it("docks a shown, connected tab by itself", () => {
@@ -37,8 +39,66 @@ describe("automatic docking", () => {
     ["already docked", { docked: true }],
     ["attaching", { busy: true }],
     ["held after a failure or a move", { held: true }],
+    // The page would jump to a panel that appears beside the one showing it.
+    ["another tab's shown panel holds the page", { elsewhere: true }],
   ] as const)("waits when %s", (_name, change) => {
     expect(shouldAttachDock({ ...ready, ...change })).toBe(false);
+  });
+});
+
+describe("dock holders", () => {
+  const pane = (tabId: number, shown: boolean) => ({
+    tabId,
+    shown,
+    release: async () => {},
+  });
+
+  it("counts only another tab's shown pane as holding the page", () => {
+    const holders = createDockHolders();
+    holders.add(pane(7, true));
+    expect(holders.heldElsewhere(7)).toBe(false);
+    const hidden = holders.add(pane(8, false));
+    expect(holders.heldElsewhere(7)).toBe(false);
+    hidden();
+    holders.add(pane(8, true));
+    expect(holders.heldElsewhere(7)).toBe(true);
+  });
+
+  it("keeps a tab holding the dock until its last pane goes", () => {
+    // A tab hidden in its panel also has a pane in the background host, which
+    // goes when the tab shows again while the panel's pane still holds.
+    const holders = createDockHolders();
+    const shown = pane(8, true);
+    holders.add(shown);
+    const background = holders.add(pane(8, false));
+    background();
+    expect(holders.others(7)).toEqual([shown]);
+    expect(holders.others(7)[0]).toBe(shown);
+    expect(holders.heldElsewhere(7)).toBe(true);
+  });
+
+  it("gives each other tab's dock up once", () => {
+    const holders = createDockHolders();
+    const first = pane(8, false);
+    holders.add(first);
+    holders.add(pane(8, true));
+    holders.add(pane(7, true));
+    expect(holders.others(7)).toHaveLength(1);
+    expect(holders.others(7)[0]).toBe(first);
+    expect(holders.others(8)).toHaveLength(1);
+  });
+
+  it("tells subscribers when a pane comes or goes, once each", () => {
+    const holders = createDockHolders();
+    const changed = vi.fn();
+    const unsubscribe = holders.subscribe(changed);
+    const remove = holders.add(pane(8, true));
+    remove();
+    remove();
+    expect(changed).toHaveBeenCalledTimes(2);
+    unsubscribe();
+    holders.add(pane(9, true));
+    expect(changed).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -223,8 +223,52 @@ function syncLiveSurface(): void {
 
 // Only one page can be docked at a time. The tab that shows next takes the
 // dock over, and the previous page goes back to its own browser window.
-type DockHolder = { tabId: number; release: () => Promise<void> };
-let holder: DockHolder | null = null;
+export type DockHolder = {
+  tabId: number;
+  shown: boolean;
+  release: () => Promise<void>;
+};
+
+/** The mounted panes whose tab holds the dock. A tab hidden in its panel also
+ * has a pane in the background host, so it can have two, and it holds the dock
+ * until the last one goes. */
+export function createDockHolders() {
+  const entries = new Set<DockHolder>();
+  const listeners = new Set<() => void>();
+  const changed = () => {
+    for (const notify of listeners) notify();
+  };
+  return {
+    add(entry: DockHolder): () => void {
+      entries.add(entry);
+      changed();
+      return () => {
+        if (entries.delete(entry)) changed();
+      };
+    },
+    /** Whether a shown pane of another tab holds the page. */
+    heldElsewhere(tabId: number): boolean {
+      for (const entry of entries)
+        if (entry.tabId !== tabId && entry.shown) return true;
+      return false;
+    },
+    /** One pane of each other tab holding the dock, to give it up through. */
+    others(tabId: number): DockHolder[] {
+      const byTab = new Map<number, DockHolder>();
+      for (const entry of entries)
+        if (entry.tabId !== tabId && !byTab.has(entry.tabId))
+          byTab.set(entry.tabId, entry);
+      return [...byTab.values()];
+    },
+    subscribe(listener: () => void): () => void {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
+}
+const holders = createDockHolders();
 let dockQueue: Promise<unknown> = Promise.resolve();
 function exclusiveDock<T>(run: () => Promise<T>): Promise<T> {
   const next = dockQueue.catch(() => {}).then(run);
@@ -241,12 +285,16 @@ export type AutoDockState = {
   docked: boolean;
   busy: boolean;
   held: boolean;
+  /** A shown panel of another tab holds the page. */
+  elsewhere: boolean;
 };
 
 /** A shown, connected tab takes the dock by itself, but only while Anbo is in
  * front: a browser window opened for a dock behind another app would flash
  * over that app. A hold (a failure, or the page moved back to the browser)
- * lasts until the tab is shown again or someone clicks. */
+ * lasts until the tab is shown again or someone clicks. From another shown
+ * panel only a click or an agent's input takes the page, so it does not jump
+ * between panels side by side when one appears or the workspace shows again. */
 export function shouldAttachDock(state: AutoDockState): boolean {
   return (
     state.visible &&
@@ -256,7 +304,8 @@ export function shouldAttachDock(state: AutoDockState): boolean {
     state.checked &&
     !state.docked &&
     !state.busy &&
-    !state.held
+    !state.held &&
+    !state.elsewhere
   );
 }
 
@@ -328,6 +377,8 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
   const [hold, setHold] = useState<DockHold | null>(null);
   // A click on the panel asks for the page: Anbo is in front by definition.
   const [asked, setAsked] = useState(false);
+  const askedRef = useRef(asked);
+  askedRef.current = asked;
   const focused = useSyncExternalStore(
     subscribeAnboFocus,
     () => anboFocused,
@@ -337,6 +388,11 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     subscribePresented,
     presentedNow,
     () => true,
+  );
+  const elsewhere = useSyncExternalStore(
+    holders.subscribe,
+    () => holders.heldElsewhere(tab.id),
+    () => false,
   );
   // A dockview drag needs its drop targets over the page, like any overlay.
   const dragging = useNativeBrowserDragActive();
@@ -499,19 +555,16 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
   // The tab holding the dock gives it up when another tab needs it.
   useEffect(() => {
     if (!dockId) return;
-    const entry: DockHolder = {
+    return holders.add({
       tabId: tab.id,
+      shown: visible,
       release: async () => {
         await call("release", dockId);
         if (mounted.current && latest.current === identity)
           apply({ dockId: null, live: false, reason: null });
       },
-    };
-    holder = entry;
-    return () => {
-      if (holder === entry) holder = null;
-    };
-  }, [dockId, tab.id, call, apply, identity]);
+    });
+  }, [dockId, tab.id, call, apply, identity, visible]);
 
   const presenting = Boolean(dockId) && live && visible;
   useEffect(() => {
@@ -590,6 +643,7 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
   }, [visible]);
 
   const attach = useCallback(async () => {
+    const requested = askedRef.current;
     const started = latest.current;
     const epoch = ++requestEpoch.current;
     const current = () =>
@@ -602,11 +656,10 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     try {
       const result = await exclusiveDock(async () => {
         for (let attempt = 0; ; attempt++) {
-          if (holder && holder.tabId !== tab.id) {
-            const previous = holder;
-            holder = null;
+          // A shown panel may have kept or taken the page meanwhile.
+          if (!requested && holders.heldElsewhere(tab.id)) return null;
+          for (const previous of holders.others(tab.id))
             await previous.release().catch(() => {});
-          }
           if (!current()) return null;
           try {
             return await call("attach", null, orderedLayout(measure()));
@@ -642,6 +695,7 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     docked: Boolean(dockId),
     busy,
     held: hold !== null,
+    elsewhere: elsewhere && !asked,
   });
   const attachRef = useRef(attach);
   attachRef.current = attach;
@@ -672,6 +726,14 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     busy,
     error,
     hold,
+    // Shown and connected, but another tab's shown panel has the page.
+    elsewhere:
+      !dockId &&
+      !busy &&
+      hold === null &&
+      visible &&
+      Boolean(external?.connected) &&
+      elsewhere,
     // Shown and connected, but Anbo is not in front yet.
     waiting:
       !dockId &&
