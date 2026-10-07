@@ -23,4 +23,5 @@ pub mod shell;
 pub mod skills;
 pub mod voice_runtime;
 pub mod window_frame;
+pub mod window_open;
 pub mod workspace;

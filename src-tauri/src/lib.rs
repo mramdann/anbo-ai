@@ -8,7 +8,8 @@ extern "C" {}
 
 use modules::{
     agent, agent_cli, anbo, app_data, browser, browser_automation, fs, git, global_voice, history,
-    lsp, net, proc, project_memory, pty, secrets, shell, voice_runtime, window_frame, workspace,
+    lsp, net, proc, project_memory, pty, secrets, shell, voice_runtime, window_frame, window_open,
+    workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -142,8 +143,23 @@ fn settings_origin_over_main(app: &tauri::AppHandle) -> Option<(f64, f64)> {
     ))
 }
 
+/// Opening Settings can fail without a window or an error to show for it, so
+/// each request and its outcome are logged.
 #[tauri::command]
 async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Result<(), String> {
+    let at = tab.as_deref().filter(|tab| !tab.is_empty());
+    log::info!(
+        "[windows] opening Settings{}",
+        at.map(|tab| format!(" at {tab}")).unwrap_or_default()
+    );
+    let result = open_settings(&app, tab);
+    if let Err(error) = &result {
+        log::warn!("[windows] opening Settings failed: {error}");
+    }
+    result
+}
+
+fn open_settings(app: &tauri::AppHandle, tab: Option<String>) -> Result<(), String> {
     let url_path = match tab.as_deref() {
         Some(t) if !t.is_empty() => format!("settings.html?tab={}", t),
         _ => "settings.html".to_string(),
@@ -152,7 +168,7 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
     if let Some(window) = app.get_webview_window("settings") {
         #[cfg(target_os = "macos")]
         let _ = window.set_always_on_top(true);
-        let _ = window.show();
+        let _ = window_open::show("the Settings window", &window);
         let _ = window.set_focus();
         if let Some(t) = tab.as_deref().filter(|s| !s.is_empty()) {
             // emit() serializes via JSON — no string-escape footgun, unlike
@@ -162,7 +178,7 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
         return Ok(());
     }
 
-    let builder = WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App(url_path.into()))
+    let builder = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App(url_path.into()))
         .title("Settings")
         .inner_size(SETTINGS_SIZE.0, SETTINGS_SIZE.1)
         .min_inner_size(820.0, 620.0)
@@ -172,7 +188,7 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
     // corner on Windows. Start centered over the main window instead;
     // window-state still moves it to its saved place when it has one.
     #[cfg(target_os = "windows")]
-    let builder = match settings_origin_over_main(&app) {
+    let builder = match settings_origin_over_main(app) {
         Some((x, y)) => builder.position(x, y),
         None => builder.center(),
     };
@@ -210,7 +226,7 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     let builder = builder.decorations(false).transparent(true);
 
-    let _window = builder.build().map_err(|e| e.to_string())?;
+    let _window = window_open::build("the Settings window", || builder.build())?;
 
     // Some Linux compositors (GNOME/Mutter with CSD-by-default) ignore the
     // builder-time decorations flag — re-assert it after realize.

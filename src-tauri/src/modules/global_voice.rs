@@ -1,3 +1,4 @@
+use crate::modules::window_open;
 use serde::Serialize;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -155,7 +156,7 @@ fn ensure_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String>
     #[cfg(target_os = "windows")]
     let builder = builder.drag_and_drop(false);
 
-    let window = builder.build().map_err(|error| error.to_string())?;
+    let window = window_open::build("the AnboVoice orb", || builder.build())?;
     // Windows widens a new window that has a caption style to its minimum
     // width (136 px at 100%) before tao's limits apply, and window-state then
     // saves and restores that width. Set the designed size after both, before
@@ -182,6 +183,15 @@ pub fn global_voice_status(state: tauri::State<'_, GlobalVoiceState>) -> GlobalV
 
 #[tauri::command]
 pub async fn global_voice_set_enabled(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GlobalVoiceState>,
+    enabled: bool,
+) -> Result<GlobalVoiceStatus, String> {
+    let stage = if enabled { "enable" } else { "disable" };
+    logged(stage, set_enabled(app, state, enabled))
+}
+
+fn set_enabled(
     app: tauri::AppHandle,
     state: tauri::State<'_, GlobalVoiceState>,
     enabled: bool,
@@ -214,12 +224,12 @@ pub async fn global_voice_set_enabled(
             let _ = window.close();
             return Err(error);
         }
-        if let Err(error) = window.show() {
+        if let Err(error) = window_open::show("the AnboVoice orb", &window) {
             platform::stop_foreground_tracking();
             if registered_here {
                 let _ = app.global_shortcut().unregister(SHORTCUT);
             }
-            return Err(error.to_string());
+            return Err(error);
         }
     } else {
         shutdown(&app);
