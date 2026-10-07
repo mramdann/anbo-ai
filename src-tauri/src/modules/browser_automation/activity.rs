@@ -1016,8 +1016,8 @@ fn release_focus(app: &AppHandle, tabs: Vec<i64>) {
         if tab_held(tab_id) {
             continue;
         }
-        let Some(webview) = super::registry::find_target(app, tab_id)
-            .filter(|target| target.embedded().is_err())
+        let Some(webview) =
+            super::registry::find_target(app, tab_id).filter(|target| target.embedded().is_err())
         else {
             continue;
         };
@@ -1900,7 +1900,11 @@ mod tests {
         assert_eq!(touched, vec![801, 802]);
         assert!(release_control(9, &caller));
         if let Ok(mut guard) = TABS.lock() {
-            for surface in guard.as_mut().into_iter().flat_map(|tabs| tabs.values_mut()) {
+            for surface in guard
+                .as_mut()
+                .into_iter()
+                .flat_map(|tabs| tabs.values_mut())
+            {
                 surface.finish(9, &caller, 20);
             }
         }
