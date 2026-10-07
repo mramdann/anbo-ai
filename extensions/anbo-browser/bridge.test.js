@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDispatcher, profileLabel, tabInfo, validateCommand } from "./bridge.js";
+import { createDispatcher, profileLabel, RELOAD_RECONNECT_MS, reconnectsAfterReload, tabInfo, validateCommand } from "./bridge.js";
 
 function command(overrides = {}) {
   return { type: "command", id: 1, tabId: 10, selectionId: "lease", method: "Runtime.evaluate", params: {}, expiresAt: Date.now() + 10_000, ...overrides };
@@ -16,6 +16,22 @@ function harness(tabs = [10]) {
   let active = true;
   return { api, attached, replies, revoke: () => { active = false; }, dispatch: createDispatcher(api, attached, (reply) => replies.push(reply), () => active) };
 }
+
+describe("reload Anbo asked for", () => {
+  it("connects again on its own only while it is recent", () => {
+    const at = 1_000_000;
+    expect(reconnectsAfterReload(at, at + 500)).toBe(true);
+    expect(reconnectsAfterReload(at, at + RELOAD_RECONNECT_MS - 1)).toBe(true);
+    expect(reconnectsAfterReload(at, at + RELOAD_RECONNECT_MS)).toBe(false);
+    expect(reconnectsAfterReload(at, at - 1)).toBe(false);
+    expect(reconnectsAfterReload(undefined, at)).toBe(false);
+    expect(reconnectsAfterReload("soon", at)).toBe(false);
+  });
+  it("is a profile command, never one for a tab", () => {
+    expect(() => validateCommand(command({ tabId: 0, selectionId: undefined, method: "anbo.reloadExtension" }), new Map())).not.toThrow();
+    expect(() => validateCommand(command({ tabId: 10, method: "anbo.reloadExtension" }), new Map([[10, { selectionId: "lease" }]]))).toThrow("unselected");
+  });
+});
 
 describe("profile label", () => {
   it("may be left empty so Anbo names the profile", () => {

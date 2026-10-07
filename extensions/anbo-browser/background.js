@@ -1,4 +1,4 @@
-import { createDispatcher, profileLabel } from "./bridge.js";
+import { createDispatcher, profileLabel, reconnectsAfterReload } from "./bridge.js";
 import { NATIVE_HOST } from "./host.js";
 import { createTabManager } from "./tabs.js";
 
@@ -43,7 +43,7 @@ async function connect(name) {
       if (active()) post({ type: "tabs", tabs: [...attached.values()] }, current);
     }, (tabId, selectionId, token) => {
       if (active()) post({ type: "event", tabId, selectionId, method: "anbo.dockReleased", params: { token } }, current);
-    });
+    }, () => reloadSoon(current));
     session = current;
     const dispatch = createDispatcher(chrome, attached, (message) => post(message, current), active, current.tabs);
     port.onMessage.addListener((message) => {
@@ -67,6 +67,26 @@ async function connect(name) {
     connecting = false;
   }
 }
+
+// Anbo asked for it after an update. Once the reply is out, the dock and the
+// tabs are let go as on a disconnect, and the reload connects again on its own.
+function reloadSoon(current) {
+  setTimeout(() => {
+    if (session !== current) return;
+    void chrome.storage.local.set({ selfReloadAt: Date.now() })
+      .then(() => disconnect())
+      .finally(() => chrome.runtime.reload());
+  }, 50);
+}
+
+// A reload Anbo asked for connects again on its own; any other start of the
+// extension waits for the user to connect the profile.
+void (async () => {
+  const { selfReloadAt, profileName } = await chrome.storage.local.get(["selfReloadAt", "profileName"]);
+  if (selfReloadAt === undefined) return;
+  await chrome.storage.local.remove("selfReloadAt");
+  if (reconnectsAfterReload(selfReloadAt)) await connect(profileName ?? "");
+})().catch((cause) => { error = String(cause?.message ?? cause); });
 
 chrome.debugger.onDetach.addListener(({ tabId }) => session?.tabs.detached(tabId));
 chrome.debugger.onEvent.addListener((source, method, params) => {

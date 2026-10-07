@@ -16,14 +16,17 @@ use crate::modules::workspace::WorkspaceRegistry;
 use protocol::{Profile, Tab, MAX_CONNECTIONS, MAX_PENDING};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{LazyLock, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, State, Webview};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, Manager, State, Webview};
 use tokio::sync::{mpsc, oneshot};
 
 const EVENT: &str = "anbo:external-browser-changed";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a profile asked to reload its extension has to connect again and
+/// get its approval back.
+const RELOAD_RECONNECT: Duration = Duration::from_secs(60);
 type Reply = oneshot::Sender<Result<Value, String>>;
 
 struct Connection {
@@ -45,6 +48,22 @@ struct Registry {
     bindings: BTreeMap<i64, ExternalTarget>,
     retired: Vec<i64>,
     navigated: std::collections::BTreeSet<i64>,
+    /// Profiles asked to reload their extension, until they connect again.
+    reloads: Vec<ReloadedProfile>,
+    /// Profiles asked this session. One that still runs old code after its
+    /// reload gets the Reload note instead of another request.
+    reload_asked: BTreeSet<String>,
+}
+
+/// A profile Anbo asked to reload its extension after an update.
+struct ReloadedProfile {
+    key: String,
+    workspace: String,
+    asked: Instant,
+}
+
+fn profile_key(profile: &Profile) -> String {
+    format!("{:?}/{}", profile.browser, profile.profile_id)
 }
 
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| Mutex::new(Registry::default()));
@@ -111,6 +130,55 @@ impl Registry {
                 connection.extension = Some(String::new());
                 news
             })
+    }
+}
+
+impl Registry {
+    /// Records a reload request when an approved profile's extension runs code
+    /// older than the files Anbo ships and was not asked this session; true
+    /// when Anbo should ask it.
+    fn plan_reload(&mut self, id: &str) -> bool {
+        let Some(connection) = self.connections.get(id) else {
+            return false;
+        };
+        let Some(workspace) = connection.workspace.clone() else {
+            return false;
+        };
+        // Code too old to name its version cannot reload itself either.
+        if !connection.extension_outdated() || connection.extension.as_deref() == Some("") {
+            return false;
+        }
+        let key = profile_key(&connection.profile);
+        if !self.reload_asked.insert(key.clone()) {
+            return false;
+        }
+        self.reloads.retain(|reload| reload.key != key);
+        self.reloads.push(ReloadedProfile {
+            key,
+            workspace,
+            asked: Instant::now(),
+        });
+        true
+    }
+
+    /// The request a profile connecting again answers, once, while it is fresh.
+    fn take_reload(&mut self, profile: &Profile) -> Option<ReloadedProfile> {
+        self.reloads
+            .retain(|reload| reload.asked.elapsed() < RELOAD_RECONNECT);
+        let key = profile_key(profile);
+        let index = self.reloads.iter().position(|reload| reload.key == key)?;
+        Some(self.reloads.swap_remove(index))
+    }
+
+    /// Ends a request the extension refused: its code is too old to know it.
+    fn forget_reload(&mut self, id: &str) {
+        if let Some(key) = self
+            .connections
+            .get(id)
+            .map(|connection| profile_key(&connection.profile))
+        {
+            self.reloads.retain(|reload| reload.key != key);
+        }
     }
 }
 
@@ -192,7 +260,9 @@ impl Registry {
         let connection = self.connection_mut(id)?;
         connection.pending.retain(|_, sender| !sender.is_closed());
         let target_allowed = match method {
-            "anbo.listTabs" | "anbo.openTab" | "anbo.version" => tab_id == 0,
+            "anbo.listTabs" | "anbo.openTab" | "anbo.version" | "anbo.reloadExtension" => {
+                tab_id == 0
+            }
             "anbo.selectTab" | "anbo.releaseTab" => protocol::valid_tab_id(tab_id),
             _ => connection.tabs.iter().any(|tab| tab.id == tab_id),
         };
@@ -386,10 +456,25 @@ where
     let id = random_id()?;
     let (sender, mut commands) = mpsc::channel(MAX_PENDING);
     let (stop, stopped) = oneshot::channel();
-    REGISTRY
-        .lock()
-        .map_err(|_| "browser registry unavailable")?
-        .insert(
+    let resumed = {
+        let mut registry = REGISTRY
+            .lock()
+            .map_err(|_| "browser registry unavailable")?;
+        let resumed = registry.take_reload(&profile);
+        if resumed.is_some() {
+            // The connection that reloaded can still be closing.
+            let key = profile_key(&profile);
+            let stale: Vec<String> = registry
+                .connections
+                .iter()
+                .filter(|(_, connection)| profile_key(&connection.profile) == key)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for stale in stale {
+                registry.remove(&stale);
+            }
+        }
+        registry.insert(
             id.clone(),
             Connection {
                 profile,
@@ -402,6 +487,8 @@ where
                 stop: Some(stop),
             },
         )?;
+        resumed
+    };
     struct ConnectionGuard(AppHandle, String);
     impl Drop for ConnectionGuard {
         fn drop(&mut self) {
@@ -413,6 +500,9 @@ where
     }
     let _guard = ConnectionGuard(app.clone(), id.clone());
     changed(&app);
+    if let Some(reload) = resumed {
+        resume_after_reload(app.clone(), id.clone(), reload);
+    }
     let read = async {
         while let Some(bytes) = wire::read_frame(&mut reader, wire::FROM_BROWSER_LIMIT).await? {
             let message = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
@@ -491,6 +581,18 @@ pub fn browser_external_approve(
     workspace: String,
 ) -> Result<(), String> {
     ensure_main(&webview)?;
+    let workspace = authorized_workspace(&registry, &workspace)?;
+    REGISTRY
+        .lock()
+        .map_err(|_| "browser registry unavailable")?
+        .approve(&connection_id, workspace)?;
+    changed(&app);
+    check_extension(app, connection_id);
+    Ok(())
+}
+
+/// The canonical root of a workspace a browser profile may be approved for.
+fn authorized_workspace(registry: &WorkspaceRegistry, workspace: &str) -> Result<String, String> {
     if workspace.len() > 4096 {
         return Err("invalid workspace path".into());
     }
@@ -498,29 +600,73 @@ pub fn browser_external_approve(
     if !root.is_dir() || !registry.is_authorized_root(&root) {
         return Err("browser connection requires an authorized workspace".into());
     }
-    REGISTRY
-        .lock()
-        .map_err(|_| "browser registry unavailable")?
-        .approve(&connection_id, crate::modules::fs::to_canon(&root))?;
-    changed(&app);
-    // Ask which extension version the browser runs, so the menu can ask for
-    // a reload when an update has refreshed the files on disk.
+    Ok(crate::modules::fs::to_canon(&root))
+}
+
+/// Asks which extension version an approved browser runs, so the menu can ask
+/// for a reload when an update has refreshed the files on disk. Code that can
+/// reload itself is asked to instead, once per profile and session.
+fn check_extension(app: AppHandle, connection_id: String) {
     tauri::async_runtime::spawn(async move {
         let Some(version) = extension_version(&connection_id).await else {
             return;
         };
-        let stored = REGISTRY.lock().is_ok_and(|mut registry| {
-            registry
-                .connections
-                .get_mut(&connection_id)
-                .map(|connection| connection.extension = Some(version))
-                .is_some()
+        let reload = REGISTRY.lock().ok().and_then(|mut registry| {
+            registry.connections.get_mut(&connection_id)?.extension = Some(version);
+            Some(registry.plan_reload(&connection_id))
         });
-        if stored {
-            changed(&app);
+        let Some(reload) = reload else {
+            return;
+        };
+        changed(&app);
+        if reload {
+            ask_reload(&connection_id).await;
         }
     });
-    Ok(())
+}
+
+async fn ask_reload(connection_id: &str) {
+    match request(connection_id, 0, "anbo.reloadExtension", json!({})).await {
+        Ok(_) => log::info!(
+            "[browser_bridge] asked the browser to reload the extension it ran from before this update"
+        ),
+        Err(error) => {
+            if let Ok(mut registry) = REGISTRY.lock() {
+                registry.forget_reload(connection_id);
+            }
+            log::info!(
+                "[browser_bridge] the extension cannot reload itself ({error}); the browser menu asks for a reload"
+            );
+        }
+    }
+}
+
+/// The profile Anbo asked to reload has connected again, and is approved for
+/// the same workspace while that is still authorized. Anbo asks right after an
+/// approval, before any tab is selected, so there are no tabs to take back.
+fn resume_after_reload(app: AppHandle, id: String, reload: ReloadedProfile) {
+    let workspace = app
+        .try_state::<WorkspaceRegistry>()
+        .and_then(|registry| authorized_workspace(&registry, &reload.workspace).ok());
+    let approved = workspace
+        .ok_or_else(|| "its workspace is no longer authorized".to_string())
+        .and_then(|workspace| {
+            REGISTRY
+                .lock()
+                .map_err(|_| "browser registry unavailable".to_string())?
+                .approve(&id, workspace)
+        });
+    if let Err(error) = approved {
+        log::info!(
+            "[browser_bridge] the profile connected again after its extension reload, but {error}; approve it in the browser menu"
+        );
+        return;
+    }
+    log::info!(
+        "[browser_bridge] the profile connected again after its extension reload and is approved for its workspace again"
+    );
+    changed(&app);
+    check_extension(app, id);
 }
 
 /// The version an approved extension reports; empty when it is too old to
@@ -708,6 +854,72 @@ mod tests {
         assert!(registry.connections["first"].extension_outdated());
         assert!(!registry.mark_extension_outdated("first"));
         assert!(!registry.mark_extension_outdated("missing"));
+    }
+
+    #[test]
+    fn an_outdated_profile_is_asked_to_reload_once_and_resumes_within_a_minute() {
+        let mut registry = Registry::default();
+        let (first, _receiver) = connection("profile-one");
+        registry.insert("first".into(), first).unwrap();
+        registry.connections.get_mut("first").unwrap().extension = Some("0.0.1".into());
+        assert!(
+            !registry.plan_reload("first"),
+            "only an approved profile is asked"
+        );
+        share(&mut registry, "first");
+        let bundled = BUNDLED_EXTENSION.clone().unwrap();
+        registry.connections.get_mut("first").unwrap().extension = Some(bundled);
+        assert!(
+            !registry.plan_reload("first"),
+            "an up-to-date extension stays"
+        );
+        registry.connections.get_mut("first").unwrap().extension = Some(String::new());
+        assert!(
+            !registry.plan_reload("first"),
+            "code too old to name its version cannot reload itself"
+        );
+        registry.connections.get_mut("first").unwrap().extension = Some("0.0.1".into());
+        assert!(registry.plan_reload("first"));
+        assert!(!registry.plan_reload("first"), "asked once per session");
+
+        let profile = registry.connections["first"].profile.clone();
+        let mut other = profile.clone();
+        other.profile_id = "profile-two".into();
+        assert!(registry.take_reload(&other).is_none());
+        let reload = registry
+            .take_reload(&profile)
+            .expect("the same profile resumes");
+        assert_eq!(reload.workspace, "D:/workspace");
+        assert!(registry.take_reload(&profile).is_none(), "it resumes once");
+        assert!(registry
+            .queue("first", 0, "anbo.reloadExtension", json!({}))
+            .is_ok());
+        assert!(registry
+            .queue("first", 1, "anbo.reloadExtension", json!({}))
+            .is_err());
+    }
+
+    #[test]
+    fn a_reload_request_ends_when_refused_or_after_a_minute() {
+        let mut registry = Registry::default();
+        let (first, _receiver) = connection("profile-one");
+        registry.insert("first".into(), first).unwrap();
+        share(&mut registry, "first");
+        registry.connections.get_mut("first").unwrap().extension = Some("0.0.1".into());
+        let profile = registry.connections["first"].profile.clone();
+        assert!(registry.plan_reload("first"));
+        registry.forget_reload("first");
+        assert!(
+            registry.take_reload(&profile).is_none(),
+            "refused by old code"
+        );
+
+        registry.reload_asked.clear();
+        assert!(registry.plan_reload("first"));
+        registry.reloads[0].asked = Instant::now()
+            .checked_sub(RELOAD_RECONNECT + Duration::from_secs(1))
+            .unwrap();
+        assert!(registry.take_reload(&profile).is_none(), "too late");
     }
 
     #[tokio::test]

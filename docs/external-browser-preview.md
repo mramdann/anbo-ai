@@ -602,3 +602,10 @@ or a desktop workspace-switch acceptance test.
   Include browser and native-host processes, not only Anbo.
 - Resolve the remaining feature matrix. The dev-only gate was lifted on 2026-10-05
   with these items still open; they are the preview's known limits.
+
+## Dock window handover and extension self-reload (2026-10-07/08)
+
+- **Handover (extension 0.5.2).** Showing another tab of the same profile moves its page into the dock window that is already in place (`anbo.dockSwap`), and the page shown before goes back to its own window and index. Measured in Dev and prod with disposable Chrome 154 and Edge 156: 23 of 23 switches swapped in 90-101 ms on average (prod: 24 of 24, 71 ms), with no dark frame, where each switch used to be dark for 0.4-0.7 s. Another profile, a pinned or grouped tab, a closed original window, or older extension code falls back to release and attach.
+- **Frame without the page window.** After agent input Chromium often keeps the docked page's render window hidden at 1x1, which used to leave the panel on "Opening the page from Chrome..." for good. The frame now also comes from the page's own size, and the last frame per browser and scale seeds the next dock window.
+- **Focus emulation.** An agent's input turns on `Emulation.setFocusEmulationEnabled`; for Chrome and Edge tabs it is turned off when the agent's session ends and no other session holds the tab. A page counts as shown before pointer input only while its tab is in front of its window (`anbo.tabState`).
+- **Self-reload (extension 0.5.3).** After an update the browser keeps running the old extension code until it reloads. Anbo asks an approved profile whose code reports an older version to reload itself (`anbo.reloadExtension`), once per profile and session. The extension lets go of its tabs and dock, reloads, and connects again within 60 s; Anbo approves the same profile for the same workspace again. Extension 0.5.2 and older do not know the request: those need one manual Reload at chrome://extensions or edge://extensions (the browser menu says so), and later updates reload on their own.

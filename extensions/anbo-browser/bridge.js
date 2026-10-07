@@ -8,7 +8,7 @@ const COOKIE_METHODS = new Set([
   "Network.getCookies", "Network.getAllCookies", "Network.setCookie", "Network.setCookies",
   "Network.deleteCookies", "Network.clearBrowserCookies", "Page.getCookies", "Page.deleteCookie",
 ]);
-const PROFILE_METHODS = new Set(["anbo.listTabs", "anbo.openTab", "anbo.version"]);
+const PROFILE_METHODS = new Set(["anbo.listTabs", "anbo.openTab", "anbo.version", "anbo.reloadExtension"]);
 const TAB_METHODS = new Set(["anbo.selectTab", "anbo.releaseTab", "anbo.closeTab"]);
 
 export function validateCommand(message, attached, now = Date.now()) {
@@ -40,6 +40,16 @@ export function validateCommand(message, attached, now = Date.now()) {
     throw new Error("Cross-target commands are not enabled in this preview");
   }
   return message;
+}
+
+// After Anbo asks the extension to reload itself, the profile connects again
+// on its own within this long. A browser started later waits for the user.
+export const RELOAD_RECONNECT_MS = 60_000;
+
+/** Whether a reload Anbo asked for at `at` is recent enough for the profile
+ * to connect again on its own. */
+export function reconnectsAfterReload(at, now = Date.now()) {
+  return Number.isSafeInteger(at) && now >= at && now - at < RELOAD_RECONNECT_MS;
 }
 
 // An empty label lets Anbo name the profile the way the browser does.

@@ -5,11 +5,11 @@ import { createDockManager } from "./dock.js";
 // The version this code is, kept equal to manifest.json. After an update the
 // browser reads the new manifest but can keep running the old scripts until the
 // extension reloads, so the manifest alone would hide that a reload is due.
-export const EXTENSION_VERSION = "0.5.2";
+export const EXTENSION_VERSION = "0.5.3";
 
 const MAX_TABS = 128;
 
-export function createTabManager(api, attached, publish, dockChanged) {
+export function createTabManager(api, attached, publish, dockChanged, reload = () => {}) {
   const dock = createDockManager(api, dockChanged);
   const pending = new Map();
   const attaching = new Map();
@@ -200,6 +200,13 @@ export function createTabManager(api, attached, publish, dockChanged) {
     } else if (message.method === "anbo.version") {
       // Anbo compares it with the files it ships, to ask for a reload after an update.
       operation = async () => ({ version: EXTENSION_VERSION });
+    } else if (message.method === "anbo.reloadExtension") {
+      // An update replaced the files this code came from. The reply goes out
+      // first; then the profile lets go of its tabs, reloads, and connects again.
+      operation = async () => {
+        reload();
+        return { reloading: true };
+      };
     } else {
       throw new Error("Unknown tab selection action");
     }

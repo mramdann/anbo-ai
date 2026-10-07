@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Anbo Browser Bridge",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1UV6bxEnNbYsUFm4yGxfbjBkujmnxy6p1DBvA64WzKMDsWYonrOPzL7UtG5URWqrFF3lpelc/7gamaFxIOoM7W8gG+A3FvmZKwCWfi94iUIAOCq4RGDAaeLP1P+KAH6kf2OatowZqlc33p+Z0qFODwxYtheJLdq5IM3sYWanglQBKTf4liJQsRjR1l/IkuDUD8Ysra3UOu8oYAJCsFSjj5LnOPufyc4QcGplGM1+R3sbyii70OxtpCkLGnG+bVfgygAmEmz9pTbaNZYWCxacLr3Aqp9q9tNVMmsAscwcnYzuTKXyhdPGhc+SjYttu26Va2LU82VrMlw2opH7D5YoPwIDAQAB",
   "description": "Explicitly connect a Chrome or Edge profile and selected tabs to Anbo.",
   "minimum_chrome_version": "125",

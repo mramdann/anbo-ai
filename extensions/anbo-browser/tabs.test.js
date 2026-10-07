@@ -9,7 +9,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-function harness() {
+function harness(reload) {
   const tabs = new Map([
     [10, { id: 10, title: "Work", url: "https://example.com/", windowId: 20 }],
     [11, { id: 11, title: "Other", url: "https://other.example/", windowId: 20 }],
@@ -51,7 +51,7 @@ function harness() {
     },
   };
   api.runtime = { getManifest: () => ({ version: "0.5.1" }) };
-  const manager = createTabManager(api, selected, () => publications.push([...selected.values()].map((tab) => ({ ...tab }))));
+  const manager = createTabManager(api, selected, () => publications.push([...selected.values()].map((tab) => ({ ...tab }))), undefined, reload);
   const dispatch = createDispatcher(api, selected, (reply) => replies.push(reply), () => active, manager);
   const run = async (method, tabId = 0, params = {}) => {
     const id = ++nextId;
@@ -131,6 +131,14 @@ describe("tabs selected directly from Anbo", () => {
     expect(EXTENSION_VERSION).toBe(manifest.version);
     expect(state.api.debugger.attach).not.toHaveBeenCalled();
     expect(state.api.tabs.query).not.toHaveBeenCalled();
+  });
+
+  it("answers a reload request before it reloads", async () => {
+    const reload = vi.fn();
+    const state = harness(reload);
+    expect((await state.run("anbo.reloadExtension")).result).toEqual({ reloading: true });
+    expect(reload).toHaveBeenCalledOnce();
+    expect(state.api.debugger.attach).not.toHaveBeenCalled();
   });
 
   it("lists only normal web tab metadata on demand without attaching", async () => {
