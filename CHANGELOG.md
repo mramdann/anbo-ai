@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.35.3](https://github.com/mramdann/anbo-ai/compare/v0.35.2...v0.35.3) (2026-10-07)
+
+
+### Bug Fixes
+
+* **agents:** never restart an agent the user just exited ([7a95465](https://github.com/mramdann/anbo-ai/commit/7a954651efd7cdb8fb8794ec959c220414c09717))
+* **browser:** build the outdated-extension check on every host ([7186b03](https://github.com/mramdann/anbo-ai/commit/7186b03c99edcdffbfd2281f7d3cd8fa5b19fc98))
+* **browser:** end an agent's focus emulation in Chrome and Edge tabs ([3181e42](https://github.com/mramdann/anbo-ai/commit/3181e423641f3484d881b9ec9ca9f075848e349d))
+* **browser:** keep the dock window when another tab of the same profile shows ([36ddec6](https://github.com/mramdann/anbo-ai/commit/36ddec6ecae0c05ff7c47c6dd33303322f85a2e4))
+* **browser:** keep the docked page in its panel when another panel shows one ([0cd7ca3](https://github.com/mramdann/anbo-ai/commit/0cd7ca3bc2e429fe7b9013588df429718dd7129a))
+* **browser:** show a docked Chrome page whose page window stays hidden ([70dcf06](https://github.com/mramdann/anbo-ai/commit/70dcf0641ab41313e23c067e2b80fb64bc9eb391))
+
 ## [0.35.2](https://github.com/mramdann/anbo-ai/compare/v0.35.1...v0.35.2) (2026-10-06)
 
 
