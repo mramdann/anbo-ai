@@ -176,6 +176,80 @@ describe("dedicated native dock window", () => {
     expect(state.tabs.get(10).windowId).toBe(20);
     await expect(state.run("Prepare")).rejects.toThrow("Invalid dock request");
   });
+  it("hands the dock window to another tab of the profile and sends the first page home", async () => {
+    const state = fixture();
+    await state.run("Prepare");
+    await state.run("Commit");
+    state.api.windows.create.mockClear();
+    await state.run("Swap", { tabId: 11, selectionId: "other lease" });
+    expect(state.api.windows.create).not.toHaveBeenCalled();
+    expect(state.tabs.get(11)).toMatchObject({ windowId: 40, active: true });
+    expect(state.tabs.get(10)).toMatchObject({ windowId: 20, index: 1 });
+    expect(state.changed).not.toHaveBeenCalled();
+    // The dock now belongs to the second tab, under its own lease.
+    await expect(state.run("Release")).resolves.toEqual({});
+    expect(state.tabs.get(11).windowId).toBe(40);
+    await state.run("Release", { tabId: 11, selectionId: "other lease" });
+    expect(state.tabs.get(11)).toMatchObject({ windowId: 20, index: 0 });
+  });
+  it("keeps the swap when the browser reports the tabs it moved", async () => {
+    const state = fixture();
+    await state.run("Prepare");
+    await state.run("Commit");
+    state.api.tabs.update.mockImplementationOnce(async (id, options) => {
+      Object.assign(state.tabs.get(id), options);
+      state.manager.topology({ kind: "activated", tabId: 11, windowId: 40 });
+      return { ...state.tabs.get(id) };
+    });
+    state.api.tabs.move.mockImplementation(async (id, options) => {
+      const from = state.tabs.get(id).windowId;
+      Object.assign(state.tabs.get(id), options);
+      state.manager.topology({ kind: "detached", tabId: id, windowId: from });
+      return { ...state.tabs.get(id) };
+    });
+    await state.run("Swap", { tabId: 11, selectionId: "other lease" });
+    state.manager.topology({ kind: "activated", tabId: 11, windowId: 40 });
+    state.manager.topology({ kind: "detached", tabId: 10, windowId: 40 });
+    expect(state.changed).not.toHaveBeenCalled();
+    expect(state.tabs.get(11).windowId).toBe(40);
+  });
+  it("keeps the first page docked when the other tab cannot be moved", async () => {
+    const state = fixture();
+    await state.run("Prepare");
+    await state.run("Commit");
+    state.tabs.get(11).pinned = true;
+    await expect(state.run("Swap", { tabId: 11 })).rejects.toThrow("unpinned, ungrouped");
+    expect(state.tabs.get(10).windowId).toBe(40);
+    expect(state.tabs.get(11).windowId).toBe(20);
+    await expect(state.run("Swap", { tabId: 11, params: { token: "b".repeat(64) } })).rejects.toThrow("identity");
+  });
+  it("puts the new page back when the swap fails half way", async () => {
+    const state = fixture();
+    await state.run("Prepare");
+    await state.run("Commit");
+    state.api.tabs.move.mockImplementation(async (id, options) => {
+      if (id === 10) throw new Error("tab is being dragged");
+      Object.assign(state.tabs.get(id), options);
+      return { ...state.tabs.get(id) };
+    });
+    await expect(state.run("Swap", { tabId: 11 })).rejects.toThrow("dragged");
+    expect(state.tabs.get(11).windowId).toBe(20);
+    expect(state.tabs.get(10)).toMatchObject({ windowId: 40, active: true });
+  });
+  it("keeps a window the swapped-in tab leaves empty, and the first page's placeholder goes", async () => {
+    const state = fixture();
+    state.tabs.delete(11);
+    state.tabs.set(12, { id: 12, windowId: 21, index: 0, url: "https://example.net/" });
+    state.windows.set(21, { id: 21, type: "normal", incognito: false });
+    await state.run("Prepare");
+    await state.run("Commit");
+    const first = [...state.tabs.values()].find((tab) => tab.windowId === 20 && tab.url === "about:blank");
+    await state.run("Swap", { tabId: 12 });
+    expect(state.tabs.has(first.id)).toBe(false);
+    expect([...state.tabs.values()].filter((tab) => tab.windowId === 21)).toEqual([expect.objectContaining({ url: "about:blank" })]);
+    await state.run("Release", { tabId: 12 });
+    expect([...state.tabs.values()].filter((tab) => tab.windowId === 21)).toEqual([expect.objectContaining({ id: 12 })]);
+  });
   it("never grants docking control to an unselected tab", () => {
     const message = { type: "command", id: 1, tabId: 10, method: "anbo.dockPrepare", params: { token }, selectionId: "lease", expiresAt: Date.now() + 10000 };
     expect(() => validateCommand(message, new Map())).toThrow("unselected");

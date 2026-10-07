@@ -9,8 +9,8 @@ function harness(tabs = [10]) {
   const attached = new Map(tabs.map((id) => [id, { selectionId: "lease" }]));
   const api = {
     debugger: { sendCommand: vi.fn(async () => ({ value: "ok" })), detach: vi.fn(async () => {}) },
-    tabs: { update: vi.fn(async () => ({ windowId: 20 })) },
-    windows: { update: vi.fn(async () => ({})) },
+    tabs: { update: vi.fn(async () => ({ windowId: 20 })), get: vi.fn(async (id) => ({ id, windowId: 20, active: false })) },
+    windows: { update: vi.fn(async () => ({})), get: vi.fn(async (id) => ({ id, state: "normal" })) },
   };
   const replies = [];
   let active = true;
@@ -134,6 +134,19 @@ describe("external browser bridge", () => {
     await state.dispatch(command({ method: "anbo.focusTab" }));
     expect(state.api.tabs.update).toHaveBeenCalledWith(10, { active: true });
     expect(state.api.windows.update).toHaveBeenCalledWith(20, { focused: true });
+  });
+
+  it("says whether the browser shows the tab, and changes nothing", async () => {
+    const state = harness();
+    await state.dispatch(command({ method: "anbo.tabState" }));
+    expect(state.replies.at(-1)).toMatchObject({ result: { active: false, split: false, minimized: false } });
+    state.api.tabs.get.mockResolvedValueOnce({ id: 10, windowId: 20, active: false, splitViewId: 3 });
+    state.api.windows.get.mockResolvedValueOnce({ id: 20, state: "minimized" });
+    await state.dispatch(command({ id: 2, method: "anbo.tabState" }));
+    expect(state.replies.at(-1)).toMatchObject({ result: { active: false, split: true, minimized: true } });
+    expect(state.api.tabs.update).not.toHaveBeenCalled();
+    expect(state.api.windows.update).not.toHaveBeenCalled();
+    expect(state.api.debugger.sendCommand).not.toHaveBeenCalled();
   });
 
   it("allocates no polling timer on idle connections", () => {

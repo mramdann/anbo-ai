@@ -33,7 +33,7 @@ export function validateCommand(message, attached, now = Date.now()) {
   if (COOKIE_METHODS.has(message.method)) {
     throw new Error("Cookie access is not available to agents");
   }
-  if (!profile && !selection && !["anbo.focusTab", "anbo.dockPrepare", "anbo.dockCommit", "anbo.dockRelease"].includes(message.method) && !ALLOWED_DOMAINS.has(message.method.split(".")[0])) {
+  if (!profile && !selection && !["anbo.focusTab", "anbo.tabState", "anbo.dockPrepare", "anbo.dockCommit", "anbo.dockRelease", "anbo.dockSwap"].includes(message.method) && !ALLOWED_DOMAINS.has(message.method.split(".")[0])) {
     throw new Error("Unsupported browser command domain");
   }
   if (message.method.startsWith("Target.")) {
@@ -128,6 +128,14 @@ export function createDispatcher(api, attached, send, active, controls) {
           check();
           await api.windows.update(tab.windowId, { focused: true });
           return {};
+        }
+        if (message.method === "anbo.tabState") {
+          // Whether the browser shows the tab at all. While an agent's focus
+          // emulation is on, a page behind another tab of its window reads as
+          // visible and draws.
+          const tab = await api.tabs.get(message.tabId);
+          const window = await api.windows.get(tab.windowId);
+          return { active: tab.active === true, split: tab.splitViewId != null && tab.splitViewId !== -1, minimized: window.state === "minimized" };
         }
         return controls?.command ? await controls.command(message, check) : await api.debugger.sendCommand({ tabId: message.tabId }, message.method, message.params);
       })();

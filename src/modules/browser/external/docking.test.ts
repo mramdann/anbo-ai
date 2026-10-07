@@ -6,6 +6,7 @@ import {
   type DockLayout,
   type DockStatus,
   dockMutationAffectsLayout,
+  handoverFrom,
   orderedLayout,
   panelLayout,
   shouldAttachDock,
@@ -47,9 +48,11 @@ describe("automatic docking", () => {
 });
 
 describe("dock holders", () => {
-  const pane = (tabId: number, shown: boolean) => ({
+  const pane = (tabId: number, shown: boolean, connectionId = "chrome") => ({
     tabId,
     shown,
+    connectionId,
+    dockId: `dock-${tabId}`,
     release: async () => {},
   });
 
@@ -86,6 +89,18 @@ describe("dock holders", () => {
     expect(holders.others(7)).toHaveLength(1);
     expect(holders.others(7)[0]).toBe(first);
     expect(holders.others(8)).toHaveLength(1);
+  });
+
+  it("hands the dock window over only within one browser connection", () => {
+    // The page gives way in the same window: no new window, no blank panel.
+    expect(handoverFrom([pane(8, true)], "chrome")?.tabId).toBe(8);
+    expect(handoverFrom([pane(8, false)], "chrome")?.dockId).toBe("dock-8");
+    // Another profile's window cannot take this tab's page.
+    expect(handoverFrom([pane(8, true, "edge")], "chrome")).toBeNull();
+    expect(handoverFrom([pane(8, true)], undefined)).toBeNull();
+    expect(handoverFrom([], "chrome")).toBeNull();
+    // Two tabs holding at once is not a state to hand over from.
+    expect(handoverFrom([pane(8, true), pane(9, true)], "chrome")).toBeNull();
   });
 
   it("tells subscribers when a pane comes or goes, once each", () => {

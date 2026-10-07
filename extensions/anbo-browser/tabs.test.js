@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDispatcher } from "./bridge.js";
-import { createTabManager } from "./tabs.js";
+import { createTabManager, EXTENSION_VERSION } from "./tabs.js";
+import manifest from "./manifest.json";
 
 function deferred() {
   let resolve;
@@ -125,7 +126,9 @@ describe("tabs selected directly from Anbo", () => {
   });
   it("tells Anbo which extension version runs", async () => {
     const state = harness();
-    expect((await state.run("anbo.version")).result).toEqual({ version: "0.5.1" });
+    expect((await state.run("anbo.version")).result).toEqual({ version: EXTENSION_VERSION });
+    // The code says its own version, which a release keeps equal to the manifest.
+    expect(EXTENSION_VERSION).toBe(manifest.version);
     expect(state.api.debugger.attach).not.toHaveBeenCalled();
     expect(state.api.tabs.query).not.toHaveBeenCalled();
   });

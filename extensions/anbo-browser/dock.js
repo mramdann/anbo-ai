@@ -42,12 +42,61 @@ export function createDockManager(api, changed = () => {}) {
     return {};
   }
 
+  // Another tab of the profile takes the docked page's place in the same dock
+  // window. The window stays where Anbo shows it, so the panel never goes blank
+  // and no new window opens; the page shown before goes back to its own window.
+  async function swap(tabId, selectionId, token, check) {
+    const found = [...entries].find(([, entry]) => entry.token === token);
+    if (!found || found[0] === tabId || !found[1].committed) throw new Error("Dock identity changed");
+    const [previous, entry] = found;
+    const original = await api.tabs.get(tabId);
+    const source = await api.windows.get(original.windowId);
+    if (original.windowId === entry.windowId || source.type !== "normal" || source.incognito || original.pinned || (original.groupId != null && original.groupId !== -1) || (original.splitViewId != null && original.splitViewId !== -1)) throw new Error("Preview docking requires an unpinned, ungrouped tab outside split view in a normal browser window");
+    check();
+    // Both tabs change windows here; that is the swap, not a reason to release.
+    entry.moving.add(tabId);
+    entry.moving.add(previous);
+    let placeholderId;
+    try {
+      const siblings = await api.tabs.query({ windowId: original.windowId });
+      if (siblings.length === 1) placeholderId = (await api.tabs.create({ windowId: original.windowId, url: "about:blank", active: false })).id;
+      check();
+      await api.tabs.move(tabId, { windowId: entry.windowId, index: 0 });
+      await api.tabs.update(tabId, { active: true });
+      const back = await api.windows.get(entry.originalWindow).catch(() => null);
+      if (back && !back.incognito) await api.tabs.move(previous, { windowId: entry.originalWindow, index: entry.originalIndex });
+      else await api.windows.create({ tabId: previous, focused: false });
+      if (entry.placeholderId) {
+        const placeholder = await api.tabs.get(entry.placeholderId).catch(() => null);
+        if (placeholder?.windowId === entry.originalWindow && placeholder.url === "about:blank" && !placeholder.pendingUrl) await api.tabs.remove(placeholder.id).catch(() => {});
+      }
+      const current = await api.tabs.query({ windowId: entry.windowId });
+      if (current.length !== 1 || current[0].id !== tabId || !current[0].active) throw new Error("Dock window tabs changed during the swap");
+      check();
+      entries.delete(previous);
+      entries.set(tabId, { ...entry, selectionId, originalWindow: original.windowId, originalIndex: original.index ?? 0, placeholderId, moving: new Set(), committed: true });
+      return { windowId: entry.windowId };
+    } catch (error) {
+      // The page shown before keeps the dock; the new page goes back where it was.
+      const moved = await api.tabs.get(tabId).catch(() => null);
+      if (moved?.windowId === entry.windowId) await api.tabs.move(tabId, { windowId: original.windowId, index: original.index ?? -1 }).catch(() => {});
+      if (placeholderId) await api.tabs.remove(placeholderId).catch(() => {});
+      const kept = await api.tabs.get(previous).catch(() => null);
+      if (kept?.windowId === entry.windowId) await api.tabs.update(previous, { active: true }).catch(() => {});
+      throw error;
+    } finally {
+      entry.moving.delete(tabId);
+      entry.moving.delete(previous);
+    }
+  }
+
   async function command(message, check) {
     const { tabId, selectionId, params, method } = message;
     const token = params.token;
     if (closed || !/^[a-f0-9]{64}$/.test(token ?? "")) throw new Error("Invalid dock request");
     check();
     if (method === "anbo.dockRelease") return releaseNow(tabId, token);
+    if (method === "anbo.dockSwap") return swap(tabId, selectionId, token, check);
     if (method === "anbo.dockPrepare") {
       if (entries.size) throw new Error("Release the existing dock before docking another tab");
       const original = await api.tabs.get(tabId);

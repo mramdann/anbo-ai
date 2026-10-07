@@ -2,6 +2,11 @@ import { tabInfo, webUrl } from "./bridge.js";
 import { createFrameTransport } from "./frames.js";
 import { createDockManager } from "./dock.js";
 
+// The version this code is, kept equal to manifest.json. After an update the
+// browser reads the new manifest but can keep running the old scripts until the
+// extension reloads, so the manifest alone would hide that a reload is due.
+export const EXTENSION_VERSION = "0.5.2";
+
 const MAX_TABS = 128;
 
 export function createTabManager(api, attached, publish, dockChanged) {
@@ -194,7 +199,7 @@ export function createTabManager(api, attached, publish, dockChanged) {
       };
     } else if (message.method === "anbo.version") {
       // Anbo compares it with the files it ships, to ask for a reload after an update.
-      operation = async () => ({ version: api.runtime.getManifest().version });
+      operation = async () => ({ version: EXTENSION_VERSION });
     } else {
       throw new Error("Unknown tab selection action");
     }
@@ -274,7 +279,7 @@ export function createTabManager(api, attached, publish, dockChanged) {
   }
 
   function command(message, check) {
-    if (["anbo.dockPrepare", "anbo.dockCommit", "anbo.dockRelease"].includes(message.method)) return dock.command(message, check);
+    if (["anbo.dockPrepare", "anbo.dockCommit", "anbo.dockRelease", "anbo.dockSwap"].includes(message.method)) return dock.command(message, check);
     const transport = transports.get(message.tabId);
     if (!transport) throw new Error("Browser tab transport unavailable");
     return transport.command(message.method, message.params);

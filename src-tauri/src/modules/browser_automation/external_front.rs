@@ -78,12 +78,34 @@ fn docked_live(tab_id: i64) -> bool {
 }
 
 async fn page_shown(target: &BrowserTarget) -> bool {
-    tokio::time::timeout(
+    let drawn = tokio::time::timeout(
         Duration::from_millis(600),
         super::ref_context::execute_awaited(target, None, DRAWN_JS),
     )
     .await
-    .is_ok_and(|state| state.is_ok_and(|state| state == "\"drawn\""))
+    .is_ok_and(|state| state.is_ok_and(|state| state == "\"drawn\""));
+    drawn && in_front(target).await
+}
+
+/// Whether the browser has the tab in front in its window. While an agent's
+/// focus emulation is on, a tab behind another one reads as visible and
+/// draws, as the page does that has just handed the dock window to another
+/// tab, yet the browser shows it nowhere. An extension too old to answer
+/// leaves it to the drawing.
+async fn in_front(target: &BrowserTarget) -> bool {
+    let BrowserTarget::External { target, .. } = target else {
+        return true;
+    };
+    target
+        .call("anbo.tabState", json!({}), Duration::from_millis(600))
+        .await
+        .map_or(true, |state| shown_in_window(&state))
+}
+
+/// A tab shares the front of its window with the other half of a split view.
+fn shown_in_window(state: &serde_json::Value) -> bool {
+    let flag = |name: &str, otherwise: bool| state[name].as_bool().unwrap_or(otherwise);
+    (flag("active", true) || flag("split", false)) && !flag("minimized", false)
 }
 
 async fn request_show(app: &AppHandle, tab_id: i64) -> Result<ShowResponse, (String, String)> {
@@ -187,6 +209,23 @@ mod tests {
         ] {
             assert!(!needs_shown_page(method), "{method}");
         }
+    }
+
+    #[test]
+    fn a_tab_behind_another_in_its_window_is_not_shown() {
+        assert!(shown_in_window(
+            &json!({"active":true,"split":false,"minimized":false})
+        ));
+        assert!(!shown_in_window(
+            &json!({"active":false,"split":false,"minimized":false})
+        ));
+        assert!(shown_in_window(
+            &json!({"active":false,"split":true,"minimized":false})
+        ));
+        assert!(!shown_in_window(
+            &json!({"active":true,"split":false,"minimized":true})
+        ));
+        assert!(shown_in_window(&json!({})));
     }
 
     #[test]

@@ -226,6 +226,8 @@ function syncLiveSurface(): void {
 export type DockHolder = {
   tabId: number;
   shown: boolean;
+  connectionId?: string;
+  dockId: string;
   release: () => Promise<void>;
 };
 
@@ -269,6 +271,61 @@ export function createDockHolders() {
   };
 }
 const holders = createDockHolders();
+
+/** The holder whose dock window a tab of the same browser profile takes over:
+ * its page gives way in that window, so no new window opens and the panel
+ * never goes blank. */
+export function handoverFrom(
+  others: DockHolder[],
+  connectionId: string | undefined,
+): DockHolder | null {
+  const [only, ...rest] = others;
+  return connectionId &&
+    only &&
+    rest.length === 0 &&
+    only.connectionId === connectionId
+    ? only
+    : null;
+}
+
+// The shown panes by tab, with their browser connection, and the takeovers
+// under way. A page leaving its panel while another tab of its browser comes
+// into view stays there until that tab has taken the dock window over.
+const shownPanes = new Map<number, string>();
+const handovers = new Set<{ connectionId: string; done: Promise<void> }>();
+const HANDOVER_START_MS = 400;
+const HANDOVER_LIMIT_MS = 1500;
+
+/** Resolves when a page leaving its panel may hide: at once without another
+ * shown tab of its browser, else once that tab has taken the dock window over
+ * or has not begun to within a moment. */
+async function handedOver(
+  tabId: number,
+  connectionId: string | undefined,
+): Promise<void> {
+  if (!connectionId) return;
+  const taker = [...shownPanes].some(
+    ([id, connection]) => id !== tabId && connection === connectionId,
+  );
+  if (!taker) return;
+  const sleep = (ms: number) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+  const deadline = Date.now() + HANDOVER_START_MS;
+  for (;;) {
+    const pending = [...handovers].filter(
+      (handover) => handover.connectionId === connectionId,
+    );
+    if (pending.length > 0) {
+      await Promise.race([
+        Promise.allSettled(pending.map((handover) => handover.done)),
+        sleep(HANDOVER_LIMIT_MS),
+      ]);
+      return;
+    }
+    if (Date.now() >= deadline) return;
+    await sleep(16);
+  }
+}
 let dockQueue: Promise<unknown> = Promise.resolve();
 function exclusiveDock<T>(run: () => Promise<T>): Promise<T> {
   const next = dockQueue.catch(() => {}).then(run);
@@ -398,6 +455,7 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
   const dragging = useNativeBrowserDragActive();
   const draggingRef = useRef(dragging);
   const external = tab.external;
+  const connectionId = external?.connectionId;
   const identity = `${tab.id}:${external?.connectionId}:${external?.selectionId}`;
   const latest = useRef(identity);
   const requestEpoch = useRef(0);
@@ -411,7 +469,12 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
   );
 
   const call = useCallback(
-    (action: string, id: string | null, layout?: OrderedLayout) =>
+    (
+      action: string,
+      id: string | null,
+      layout?: OrderedLayout,
+      takeover?: string,
+    ) =>
       invoke<DockStatus>("browser_external_dock", {
         request: {
           action,
@@ -420,6 +483,7 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
           selectionId: external?.selectionId,
           dockId: id,
           layout,
+          takeover,
         },
       }),
     [tab.id, external?.connectionId, external?.selectionId],
@@ -558,13 +622,25 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     return holders.add({
       tabId: tab.id,
       shown: visible,
+      connectionId,
+      dockId,
       release: async () => {
         await call("release", dockId);
         if (mounted.current && latest.current === identity)
           apply({ dockId: null, live: false, reason: null });
       },
     });
-  }, [dockId, tab.id, call, apply, identity, visible]);
+  }, [dockId, tab.id, call, apply, identity, visible, connectionId]);
+
+  // A page of the same browser leaving its panel as this one comes into view
+  // waits for this tab to take the dock window over.
+  useEffect(() => {
+    if (!visible || !external?.connected || !connectionId) return;
+    shownPanes.set(tab.id, connectionId);
+    return () => {
+      if (shownPanes.get(tab.id) === connectionId) shownPanes.delete(tab.id);
+    };
+  }, [visible, external?.connected, connectionId, tab.id]);
 
   const presenting = Boolean(dockId) && live && visible;
   useEffect(() => {
@@ -631,9 +707,25 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
       observer.disconnect();
       mutations.disconnect();
       unsubscribe();
-      void publisher.stop(measure());
+      const layout = measure();
+      // Another tab of this browser coming into view takes the dock window
+      // over, and this page stays in it until that tab's page replaces it.
+      queueMicrotask(() => {
+        void handedOver(tab.id, connectionId).then(() =>
+          publisher.stop(layout),
+        );
+      });
     };
-  }, [dockId, external?.connected, measure, call, apply, visible]);
+  }, [
+    dockId,
+    external?.connected,
+    measure,
+    call,
+    apply,
+    visible,
+    tab.id,
+    connectionId,
+  ]);
 
   // Showing the tab again is the natural retry.
   const shown = useRef(visible);
@@ -653,16 +745,42 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     setBusy(true);
     setError(null);
     setAsked(false);
+    // Taking the dock window over from a tab of the same browser: that tab's
+    // page stays in view until this one replaces it.
+    let finish = () => {};
+    if (connectionId && handoverFrom(holders.others(tab.id), connectionId)) {
+      const handover = {
+        connectionId,
+        done: new Promise<void>((resolve) => {
+          finish = () => resolve();
+        }),
+      };
+      handovers.add(handover);
+      const settle = finish;
+      finish = () => {
+        handovers.delete(handover);
+        settle();
+      };
+    }
     try {
       const result = await exclusiveDock(async () => {
         for (let attempt = 0; ; attempt++) {
           // A shown panel may have kept or taken the page meanwhile.
           if (!requested && holders.heldElsewhere(tab.id)) return null;
-          for (const previous of holders.others(tab.id))
-            await previous.release().catch(() => {});
+          const others = holders.others(tab.id);
+          const from =
+            attempt === 0 ? handoverFrom(others, connectionId) : null;
+          if (!from)
+            for (const previous of others)
+              await previous.release().catch(() => {});
           if (!current()) return null;
           try {
-            return await call("attach", null, orderedLayout(measure()));
+            return await call(
+              "attach",
+              null,
+              orderedLayout(measure()),
+              from?.dockId,
+            );
           } catch (cause) {
             // A dock this window has not heard of yet, as right after a
             // reload: its own tab reports it within a moment.
@@ -682,9 +800,10 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
         setHold("failed");
       }
     } finally {
+      finish();
       if (current()) setBusy(false);
     }
-  }, [call, apply, measure, tab.id]);
+  }, [call, apply, measure, tab.id, connectionId]);
 
   const wanted = shouldAttachDock({
     visible,

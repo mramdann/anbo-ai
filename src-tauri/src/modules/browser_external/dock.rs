@@ -109,6 +109,10 @@ pub struct Request {
     dock_id: Option<String>,
     action: Action,
     layout: Option<Layout>,
+    /// For an attach: the dock this tab takes over when the same browser
+    /// profile holds it, keeping its window.
+    #[serde(default)]
+    takeover: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -535,7 +539,7 @@ mod native {
     use crate::modules::browser_automation::{activity, registry};
     use crate::modules::browser_external::{
         dock_window::{window_bounds, Lease},
-        get_target, ExternalTarget,
+        get_target, note_outdated_extension, ExternalTarget,
     };
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
@@ -1670,6 +1674,11 @@ mod native {
             }
             return Ok(Status::default());
         }
+        if let Some(from) = request.takeover.as_deref() {
+            if let Some(status) = take_over(&request, &target, from).await {
+                return Ok(status);
+            }
+        }
         if DOCK
             .lock()
             .map_err(|_| "Dock registry unavailable")?
@@ -1817,6 +1826,68 @@ mod native {
             live: false,
             reason: Some("measuring"),
         })
+    }
+
+    /// Hands the dock window to another tab of the same browser profile. The
+    /// window stays where Anbo shows it and the extension swaps the pages in it,
+    /// so the panel never goes blank and no new window opens; the page shown
+    /// before goes back to its own window. Without the swap the dock is released
+    /// and the tab attaches the usual way.
+    async fn take_over(request: &Request, target: &ExternalTarget, from: &str) -> Option<Status> {
+        let started = Instant::now();
+        let previous = DOCK.lock().ok()?.as_ref().cloned().filter(|dock| {
+            dock.lease.token == from
+                && dock.committed
+                && dock.target.tab_id != request.tab_id
+                && dock.target.connection_id == target.connection_id
+        })?;
+        if !previous.lease.live() {
+            return None;
+        }
+        if let Err(error) = target
+            .call(
+                "anbo.dockSwap",
+                json!({"token":from}),
+                Duration::from_secs(5),
+            )
+            .await
+        {
+            log::info!("[browser_dock] the dock window stays with its page ({error}); opening another");
+            // Only extension code from before this update refuses the swap.
+            if error.contains("Unsupported browser command domain")
+                || error.contains("Unknown dock command")
+            {
+                note_outdated_extension(&previous.app, &target.connection_id);
+            }
+            if let Some(dock) = take_token(from) {
+                let _ = release(dock).await;
+            }
+            return None;
+        }
+        let status = {
+            let mut state = DOCK.lock().ok()?;
+            let dock = state.as_mut().filter(|dock| dock.lease.token == from)?;
+            dock.target = target.clone();
+            if let Some(layout) = request.layout.clone() {
+                dock.layout = layout;
+            }
+            dock.started = started;
+            status(dock)
+        };
+        log::info!(
+            "[browser_dock] page swapped into the dock window in {} ms",
+            started.elapsed().as_millis()
+        );
+        let _ = previous.app.emit_to(
+            "main",
+            "anbo:browser-dock-released",
+            json!({"tabId":previous.target.tab_id,"dockId":from}),
+        );
+        if let Some(handle) = registry::find_target(&previous.app, previous.target.tab_id) {
+            activity::restore(&handle);
+        }
+        signal();
+        Some(status)
     }
 
     /// Chromium can keep the page's own window hidden in the dock window, as it

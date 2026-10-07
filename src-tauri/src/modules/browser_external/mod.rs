@@ -99,6 +99,32 @@ fn changed(app: &AppHandle) {
     let _ = app.emit_to("main", EVENT, ());
 }
 
+impl Registry {
+    /// The browser runs extension code from before an update; true when that
+    /// is news.
+    fn mark_extension_outdated(&mut self, connection_id: &str) -> bool {
+        self.connections
+            .get_mut(connection_id)
+            .is_some_and(|connection| {
+                let news = connection.extension.as_deref() != Some("");
+                connection.extension = Some(String::new());
+                news
+            })
+    }
+}
+
+/// A command that only older extension code refuses shows that the browser
+/// still runs it, also when the manifest on disk already reports the update,
+/// so the menu asks for a reload.
+pub(super) fn note_outdated_extension(app: &AppHandle, connection_id: &str) {
+    let news = REGISTRY
+        .lock()
+        .is_ok_and(|mut registry| registry.mark_extension_outdated(connection_id));
+    if news {
+        changed(app);
+    }
+}
+
 fn random_id() -> Result<String, String> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes).map_err(|error| error.to_string())?;
@@ -675,6 +701,11 @@ mod tests {
         connection.extension = Some(bundled);
         assert!(!connection.extension_outdated());
         assert!(!valid_extension_version("1.0<script>"));
+        // Old code refusing a newer dock command marks the profile, once.
+        assert!(registry.mark_extension_outdated("first"));
+        assert!(registry.connections["first"].extension_outdated());
+        assert!(!registry.mark_extension_outdated("first"));
+        assert!(!registry.mark_extension_outdated("missing"));
     }
 
     #[tokio::test]
