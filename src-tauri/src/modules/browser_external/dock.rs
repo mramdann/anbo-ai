@@ -174,6 +174,27 @@ fn page_insets(window: Rect, page: Rect) -> Option<Insets> {
     (inside && framed && !page.is_empty()).then_some(insets)
 }
 
+/// The frame from the page's own size, for a page whose window Chromium keeps
+/// hidden: the sides and the bottom are the same border, and the bars fill the
+/// rest of the top. A page smaller than its window, as under device emulation,
+/// gives no frame.
+fn viewport_insets(window: Rect, page_width: i32, page_height: i32) -> Option<Insets> {
+    let sides = window.width - page_width;
+    let border = sides / 2;
+    let insets = Insets {
+        left: border,
+        top: window.height - page_height - border,
+        right: sides - border,
+        bottom: border,
+    };
+    let plausible = page_width > 0
+        && page_height > 0
+        && (0..=32).contains(&border)
+        && insets.right - insets.left <= 1
+        && (insets.bottom..=640).contains(&insets.top);
+    plausible.then_some(insets)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum BrowserRegion {
     /// No region: the browser owns its whole window again.
@@ -561,6 +582,10 @@ mod native {
         exited: std::sync::Arc<tokio::sync::Notify>,
         /// The selected page is in the dock window.
         committed: bool,
+        /// The frame was read from the page's own window since the dock opened.
+        measured: bool,
+        /// Anbo's scale in percent when the dock opened, for `KNOWN_INSETS`.
+        scale: u32,
         started: Instant,
     }
 
@@ -580,6 +605,29 @@ mod native {
     static HOST: AtomicUsize = AtomicUsize::new(0);
     static BROWSER: AtomicUsize = AtomicUsize::new(0);
     static QUEUED: AtomicBool = AtomicBool::new(false);
+    /// The frame each browser last had around a docked page, by Anbo's scale in
+    /// percent. A new dock window has the same frame, so its page shows at once,
+    /// also when the page's own window never shows.
+    static KNOWN_INSETS: Mutex<Vec<(String, u32, Insets)>> = Mutex::new(Vec::new());
+
+    fn known_insets(browser: &str, scale: u32) -> Option<Insets> {
+        KNOWN_INSETS
+            .lock()
+            .ok()?
+            .iter()
+            .find(|(name, at, _)| name == browser && *at == scale)
+            .map(|(_, _, insets)| *insets)
+    }
+
+    fn remember_insets(browser: &str, scale: u32, insets: Insets) {
+        if let Ok(mut known) = KNOWN_INSETS.lock() {
+            known.retain(|(name, at, _)| !(name == browser && *at == scale));
+            known.push((browser.to_owned(), scale, insets));
+            if known.len() > 8 {
+                known.remove(0);
+            }
+        }
+    }
 
     fn rect(value: RECT) -> Rect {
         Rect {
@@ -1145,7 +1193,8 @@ mod native {
         page
     }
 
-    fn scene(dock: &Dock) -> Option<Scene> {
+    /// The scene, and the frame read from the page's own window on this pass.
+    fn scene(dock: &Dock) -> Option<(Scene, Option<Insets>)> {
         let host = HWND(dock.host as *mut _);
         let browser = dock.lease.hwnd();
         let host_window = window_rect(host)?;
@@ -1159,14 +1208,13 @@ mod native {
         let browser_aside = zoomed || full_screen;
         // Read on every pass: the browser lays the page out before a move
         // returns, and reports it with a location change when its bars change.
-        let insets = if browser_aside {
-            dock.insets
+        let measured = if browser_aside {
+            None
         } else {
-            page_rect(browser)
-                .and_then(|page| page_insets(browser_window, page))
-                .or(dock.insets)
+            page_rect(browser).and_then(|page| page_insets(browser_window, page))
         };
-        Some(Scene {
+        let insets = measured.or(dock.insets);
+        let scene = Scene {
             host_shown,
             host_window,
             client,
@@ -1180,7 +1228,8 @@ mod native {
             ready: dock.committed,
             min_width: dock.min_width,
             regions: !dock.regions_refused,
-        })
+        };
+        Some((scene, measured))
     }
 
     struct Outcome {
@@ -1317,7 +1366,7 @@ mod native {
             }
             return;
         }
-        let Some(scene) = scene(&dock) else {
+        let Some((scene, measured)) = scene(&dock) else {
             return;
         };
         let plan = plan(&scene);
@@ -1372,6 +1421,10 @@ mod native {
                 if current.insets != scene.insets {
                     log::info!("[browser_dock] browser frame {:?}", scene.insets);
                     current.insets = scene.insets;
+                }
+                if let Some(insets) = measured {
+                    current.measured = true;
+                    remember_insets(&current.lease.browser, current.scale, insets);
                 }
                 if plan.live {
                     current.panel = Some(current.layout.panel());
@@ -1626,6 +1679,8 @@ mod native {
         }
         let window = main_window(app)?;
         let host = window.hwnd().map_err(|error| error.to_string())?.0 as usize;
+        let scale_factor = window.scale_factor().unwrap_or(1.0);
+        let scale = (scale_factor * 100.0).round() as u32;
         let browser = target
             .profile()
             .and_then(|profile| profile["browser"].as_str().map(str::to_owned))
@@ -1640,7 +1695,7 @@ mod native {
         // where the page will be, below Anbo while Anbo is in front.
         let front = KeepInFront::new(host);
         let bounds = opening_bounds(host, request.layout.as_ref())
-            .map(|bounds| to_dips(bounds, window.scale_factor().unwrap_or(1.0)))
+            .map(|bounds| to_dips(bounds, scale_factor))
             .map(|bounds| {
                 json!({"left":bounds.x,"top":bounds.y,"width":bounds.width,"height":bounds.height})
             });
@@ -1682,6 +1737,7 @@ mod native {
                     return Err(error);
                 }
             };
+            let insets = known_insets(&browser, scale);
             HOST.store(host, Ordering::Release);
             BROWSER.store(lease.handle as usize, Ordering::Release);
             QUEUED.store(false, Ordering::Release);
@@ -1694,7 +1750,7 @@ mod native {
                 thread,
                 layout: request.layout.clone().unwrap_or_default(),
                 panel: None,
-                insets: None,
+                insets,
                 min_width: 0,
                 refused_width: None,
                 applied: Applied::default(),
@@ -1704,12 +1760,17 @@ mod native {
                 last_error: None,
                 exited,
                 committed: false,
+                measured: false,
+                scale,
                 started,
             });
             log::info!(
                 "[browser_dock] dock window found and tucked below Anbo at {} ms",
                 started.elapsed().as_millis()
             );
+            if let Some(insets) = insets {
+                log::info!("[browser_dock] browser frame from the last dock window {insets:?}");
+            }
             signal();
             target
                 .call(
@@ -1750,11 +1811,70 @@ mod native {
         }
         drop(front);
         signal();
+        tauri::async_runtime::spawn(measure_from_page(token.clone(), target.clone()));
         Ok(Status {
             dock_id: Some(token),
             live: false,
             reason: Some("measuring"),
         })
+    }
+
+    /// Chromium can keep the page's own window hidden in the dock window, as it
+    /// does after focus emulation, and then no pass reads the frame. Without a
+    /// reading soon after the page arrives, the page's size gives it.
+    async fn measure_from_page(token: String, target: ExternalTarget) {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let unmeasured =
+            |dock: &Dock| dock.lease.token == token && dock.committed && !dock.measured;
+        let Some(window) = DOCK.lock().ok().and_then(|state| {
+            state
+                .as_ref()
+                .filter(|dock| unmeasured(dock))
+                .map(|dock| dock.lease.handle)
+        }) else {
+            return;
+        };
+        let Ok(value) = target
+            .call(
+                "Runtime.evaluate",
+                json!({"expression":"[innerWidth, innerHeight, devicePixelRatio]","returnByValue":true}),
+                Duration::from_secs(1),
+            )
+            .await
+        else {
+            return;
+        };
+        let numbers: Vec<f64> = value["result"]["value"]
+            .as_array()
+            .map(|values| values.iter().filter_map(serde_json::Value::as_f64).collect())
+            .unwrap_or_default();
+        let [width, height, ratio] = numbers[..] else {
+            return;
+        };
+        let Some(bounds) = window_rect(HWND(window as usize as *mut _)) else {
+            return;
+        };
+        let insets = (0.25..=8.0).contains(&ratio).then(|| {
+            viewport_insets(
+                bounds,
+                (width * ratio).round() as i32,
+                (height * ratio).round() as i32,
+            )
+        });
+        let Some(insets) = insets.flatten() else {
+            log::info!("[browser_dock] the page's size gives no browser frame");
+            return;
+        };
+        if let Ok(mut state) = DOCK.lock() {
+            if let Some(dock) = state.as_mut().filter(|dock| unmeasured(dock)) {
+                if dock.insets != Some(insets) {
+                    log::info!("[browser_dock] browser frame from the page size {insets:?}");
+                    dock.insets = Some(insets);
+                }
+                remember_insets(&dock.lease.browser, dock.scale, insets);
+            }
+        }
+        signal();
     }
 
     /// Where the dock window will sit, from the panel and an estimated frame.
@@ -2220,6 +2340,42 @@ mod tests {
                 bottom: 8,
             })
         );
+    }
+
+    #[test]
+    fn the_page_size_gives_the_frame_when_its_window_cannot() {
+        let window = Rect {
+            x: 956,
+            y: 11,
+            width: 971,
+            height: 910,
+        };
+        // Chrome 154 at 100% with the debugging bar: the frame its page window
+        // gives when it shows.
+        assert_eq!(
+            viewport_insets(window, 955, 759),
+            Some(Insets {
+                left: 8,
+                top: 143,
+                right: 8,
+                bottom: 8,
+            })
+        );
+        // A page width rounded from CSS pixels can leave one pixel over.
+        assert_eq!(
+            viewport_insets(window, 954, 759),
+            Some(Insets {
+                left: 8,
+                top: 143,
+                right: 9,
+                bottom: 8,
+            })
+        );
+        // A device-emulated page is smaller than the window.
+        assert_eq!(viewport_insets(window, 390, 759), None);
+        assert_eq!(viewport_insets(window, 955, 905), None);
+        assert_eq!(viewport_insets(window, 0, 759), None);
+        assert_eq!(viewport_insets(window, 980, 759), None);
     }
 
     #[test]
