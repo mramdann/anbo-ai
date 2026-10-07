@@ -955,9 +955,79 @@ pub fn begin_session(app: &AppHandle, tab_id: Option<i64>, caller: &Caller) -> O
 /// real but nothing had been painted yet, which read to agents as a failure and
 /// sent them retrying an id that was never going to work.
 pub fn end_session(app: &AppHandle, control_id: u64, caller: &Caller) -> bool {
+    let touched = session_tabs(control_id);
     let held = release_control(control_id, caller);
     let painted = finish_all(app, control_id, caller);
+    release_focus(app, touched);
     held || painted
+}
+
+/// Every tab this session touched.
+fn session_tabs(control_id: u64) -> Vec<i64> {
+    TABS.lock()
+        .ok()
+        .and_then(|guard| {
+            Some(
+                guard
+                    .as_ref()?
+                    .iter()
+                    .filter(|(_, surface)| {
+                        surface.members.get(control_id).is_some()
+                            || surface
+                                .last
+                                .as_ref()
+                                .is_some_and(|(event, _)| event.control_id == control_id)
+                    })
+                    .map(|(id, _)| *id)
+                    .collect(),
+            )
+        })
+        .unwrap_or_default()
+}
+
+/// Whether a session that is still open works in this tab.
+fn tab_held(tab_id: i64) -> bool {
+    let live: std::collections::HashSet<u64> = CONTROL
+        .lock()
+        .ok()
+        .and_then(|guard| Some(guard.as_ref()?.keys().copied().collect()))
+        .unwrap_or_default();
+    TABS.lock()
+        .ok()
+        .and_then(|guard| {
+            let surface = guard.as_ref()?.get(&tab_id)?;
+            Some(
+                surface
+                    .members
+                    .values()
+                    .any(|event| event.phase != "ended" && live.contains(&event.control_id)),
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// An agent's input left focus emulation on in the Chrome and Edge tabs it
+/// worked in. Once no session holds such a tab, its page gets its real focus
+/// and visibility back: Chromium counts an emulated-focus page as shown, so a
+/// hidden tab kept running, and one moved into the dock window could keep its
+/// page window hidden. Anbo's own browser keeps the emulation as before.
+fn release_focus(app: &AppHandle, tabs: Vec<i64>) {
+    for tab_id in tabs {
+        if tab_held(tab_id) {
+            continue;
+        }
+        let Some(webview) = super::registry::find_target(app, tab_id)
+            .filter(|target| target.embedded().is_err())
+        else {
+            continue;
+        };
+        tauri::async_runtime::spawn(async move {
+            // A session that has just begun in the tab keeps its emulation.
+            if !tab_held(tab_id) {
+                super::ref_context::release_focus(&webview).await;
+            }
+        });
+    }
 }
 
 fn publish_end(app: &AppHandle, event: &Activity) {
@@ -995,8 +1065,10 @@ pub fn end_observed(app: &AppHandle, target: &TurnEnd) -> bool {
     publish_end(app, &event);
     // The turn ended, so the whole session goes with it -- not only the tab that
     // happened to be painted last. A session spans every tab the agent touched.
+    let touched = session_tabs(control_id);
     release_control(control_id, &caller);
     finish_all(app, control_id, &caller);
+    release_focus(app, touched);
     true
 }
 
@@ -1788,6 +1860,54 @@ mod tests {
         assert_eq!(session_current(9), Some(703));
         // Another session's tabs are none of its business.
         assert_eq!(session_current(8), None);
+        if let Ok(mut guard) = TABS.lock() {
+            if let Some(tabs) = guard.as_mut() {
+                tabs.clear();
+            }
+        }
+    }
+
+    #[test]
+    fn an_ended_session_frees_the_tabs_no_other_session_works_in() {
+        let _serial = CONTROL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_controls();
+        let caller = Caller::default();
+        seed_control(9, &caller, Duration::ZERO);
+        seed_control(8, &caller, Duration::ZERO);
+        if let Ok(mut guard) = TABS.lock() {
+            let tabs = guard.get_or_insert_with(HashMap::new);
+            tabs.clear();
+            let mut alone = event(9, "done", 10);
+            alone.tab_id = 801;
+            let mut surface = Surface::default();
+            surface.members.record(&alone);
+            surface.last = Some((alone, Instant::now()));
+            tabs.insert(801, surface);
+            let mut ours = event(9, "done", 11);
+            ours.tab_id = 802;
+            let mut theirs = event(8, "running", 12);
+            theirs.tab_id = 802;
+            let mut shared = Surface::default();
+            shared.members.record(&ours);
+            shared.members.record(&theirs);
+            shared.last = Some((theirs, Instant::now()));
+            tabs.insert(802, shared);
+        }
+        let mut touched = session_tabs(9);
+        touched.sort_unstable();
+        assert_eq!(touched, vec![801, 802]);
+        assert!(release_control(9, &caller));
+        if let Ok(mut guard) = TABS.lock() {
+            for surface in guard.as_mut().into_iter().flat_map(|tabs| tabs.values_mut()) {
+                surface.finish(9, &caller, 20);
+            }
+        }
+        assert!(!tab_held(801), "no session works in it any more");
+        assert!(tab_held(802), "the other session still works in it");
+        reset_controls();
+        assert!(!tab_held(802), "a session that ended holds nothing");
         if let Ok(mut guard) = TABS.lock() {
             if let Some(tabs) = guard.as_mut() {
                 tabs.clear();

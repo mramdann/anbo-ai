@@ -22,6 +22,10 @@ static LAYOUT_CHANGES: Mutex<Option<HashMap<i64, Instant>>> = Mutex::new(None);
 /// How old the newest document or viewport must be before a key goes out: the
 /// 100 ms that held, with margin.
 const KEY_SETTLE: Duration = Duration::from_millis(150);
+/// Tabs whose focus emulation an agent's input turned on. Chromium counts such
+/// a page as shown: a hidden tab keeps running as if in view, and a Chrome tab
+/// moved into another window can keep its page window hidden there.
+static FOCUS_EMULATED: Mutex<Option<HashSet<i64>>> = Mutex::new(None);
 
 #[derive(Default)]
 struct PreparedDocument {
@@ -78,10 +82,53 @@ pub async fn ensure_focus(webview: &Webview) -> Result<(), String> {
         CONTEXT_TIMEOUT,
     )
     .await?;
+    note_focus_emulated(tab);
     if active_navigation_generation(tab) == Some(navigation) {
         with_prepared(tab, navigation, |entry| entry.focus = true);
     }
     Ok(())
+}
+
+fn note_focus_emulated(tab: i64) {
+    if let Ok(mut guard) = FOCUS_EMULATED.lock() {
+        let tabs = guard.get_or_insert_with(HashSet::new);
+        if tabs.len() < 256 {
+            tabs.insert(tab);
+        }
+    }
+}
+
+/// Forgets that the tab's focus is emulated, so the next input turns it on
+/// again; true when it was.
+fn take_focus_emulated(tab: i64) -> bool {
+    let emulated = FOCUS_EMULATED
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.as_mut().map(|tabs| tabs.remove(&tab)))
+        .unwrap_or(false);
+    if let Ok(mut guard) = PREPARED.lock() {
+        if let Some(entry) = guard.as_mut().and_then(|entries| entries.get_mut(&tab)) {
+            entry.focus = false;
+        }
+    }
+    emulated
+}
+
+/// Ends the focus emulation an agent's input turned on, for a tab no agent
+/// holds any more: the page gets its real focus and visibility back.
+pub async fn release_focus(webview: &Webview) {
+    let Ok(tab) = tab_id(webview) else {
+        return;
+    };
+    if take_focus_emulated(tab) {
+        let _ = call_devtools_protocol_method(
+            webview,
+            "Emulation.setFocusEmulationEnabled",
+            r#"{"enabled":false}"#,
+            CONTEXT_TIMEOUT,
+        )
+        .await;
+    }
 }
 
 /// Record that a tab got a new document or viewport, so its next key waits.
@@ -135,6 +182,11 @@ pub fn remove(tab_id: i64) {
             changes.remove(&tab_id);
         }
     }
+    if let Ok(mut guard) = FOCUS_EMULATED.lock() {
+        if let Some(tabs) = guard.as_mut() {
+            tabs.remove(&tab_id);
+        }
+    }
 }
 
 pub fn clear() {
@@ -145,6 +197,9 @@ pub fn clear() {
         *guard = None;
     }
     if let Ok(mut guard) = LAYOUT_CHANGES.lock() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = FOCUS_EMULATED.lock() {
         *guard = None;
     }
 }
@@ -293,6 +348,20 @@ mod tests {
         assert!(warm.len() < 150);
         assert_eq!(warm.matches("resolve('g1-e1')").count(), 1);
         assert!(matches!(ref_expression("42", false), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn released_focus_is_turned_on_again_by_the_next_input() {
+        let tab = -920007;
+        with_prepared(tab, 1, |entry| entry.focus = true);
+        note_focus_emulated(tab);
+        assert!(take_focus_emulated(tab));
+        // The page's next input sends the emulation again.
+        assert_eq!(with_prepared(tab, 1, |entry| entry.focus), Some(false));
+        // Nothing to end twice, and nothing for a tab Anbo never emulated.
+        assert!(!take_focus_emulated(tab));
+        assert!(!take_focus_emulated(-920008));
+        remove(tab);
     }
 
     #[test]
