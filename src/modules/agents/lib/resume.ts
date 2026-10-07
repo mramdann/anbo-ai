@@ -47,6 +47,11 @@ export class AgentExitResumeGuard {
     this.pending.delete(leafId);
   }
 
+  /** Whether this leaf's agent exited and its grace period has not ended. */
+  isPending(leafId: number): boolean {
+    return this.pending.has(leafId);
+  }
+
   schedule(
     leafId: number,
     hasReplacement: () => boolean,

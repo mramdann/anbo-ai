@@ -1159,7 +1159,11 @@ export default function App() {
       for (const leaf of agentLeaves) {
         if (
           !leaf.resume.resumeOnStart ||
-          resumedAgentLeavesRef.current.has(leaf.id)
+          resumedAgentLeavesRef.current.has(leaf.id) ||
+          // Its agent just exited. Resume stays on through the grace period so
+          // quitting Anbo keeps it for the next start, but any tab change in
+          // that window would otherwise start the agent the user just ended.
+          agentExitResumeGuardRef.current.isPending(leaf.id)
         ) {
           continue;
         }

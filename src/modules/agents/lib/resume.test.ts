@@ -67,6 +67,26 @@ describe("agent exit resume guard", () => {
     expect(deactivate).not.toHaveBeenCalled();
   });
 
+  it("holds an exited leaf as pending until its grace period ends", () => {
+    vi.useFakeTimers();
+    const guard = new AgentExitResumeGuard(1_000);
+
+    expect(guard.isPending(6)).toBe(false);
+    guard.schedule(6, () => false, vi.fn());
+    expect(guard.isPending(6)).toBe(true);
+    expect(guard.isPending(7)).toBe(false);
+    vi.advanceTimersByTime(1_000);
+    expect(guard.isPending(6)).toBe(false);
+
+    guard.schedule(6, () => false, vi.fn());
+    guard.cancel(6);
+    expect(guard.isPending(6)).toBe(false);
+
+    guard.schedule(6, () => false, vi.fn());
+    guard.dispose();
+    expect(guard.isPending(6)).toBe(false);
+  });
+
   it("clears pending deactivation when the app lifecycle ends", () => {
     vi.useFakeTimers();
     const deactivate = vi.fn();
