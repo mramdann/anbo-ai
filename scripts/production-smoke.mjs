@@ -94,7 +94,60 @@ if (!address || typeof address === "string") {
 
 const url = `http://127.0.0.1:${address.port}/`;
 
+const BROWSER_TIMEOUT_MS = 30_000;
+// A launch slower than this prints Chrome's own log, so a CI run shows what
+// the browser waited on.
+const SLOW_LAUNCH_MS = 10_000;
+
 async function dumpPage(pageUrl, label) {
+  // A headless launch on a CI runner now and then stalls past the timeout;
+  // one fresh try tells that apart from a page that never finishes.
+  for (let attempt = 1; ; attempt += 1) {
+    const started = Date.now();
+    const { code, timedOut, stdout, stderr } = await runBrowser(pageUrl, label);
+    const elapsed = Date.now() - started;
+    if (timedOut) {
+      const message = `${label} headless browser timed out after ${BROWSER_TIMEOUT_MS / 1000} s`;
+      if (attempt > 1) {
+        throw new Error(`${message} twice\n${stderr.slice(-4000)}`);
+      }
+      console.warn(
+        `${message}; trying once more. Chrome's last output:\n${stderr.slice(-3000)}`,
+      );
+      continue;
+    }
+    console.log(
+      `${label}: ${(elapsed / 1000).toFixed(1)} s${attempt > 1 ? " (second try)" : ""}`,
+    );
+    if (elapsed > SLOW_LAUNCH_MS) {
+      console.warn(`${label} was slow. Chrome's last output:\n${stderr.slice(-3000)}`);
+    }
+
+    if (code !== 0) {
+      throw new Error(`${label} headless browser exited with ${code}\n${stderr}`);
+    }
+    if (!stdout.includes('data-anbo-bundle-ready="true"')) {
+      throw new Error(
+        `${label} production entry bundle did not finish evaluating\n${stderr.slice(-4000)}`,
+      );
+    }
+    if (stdout.includes('id="anbo-startup"')) {
+      throw new Error(
+        `${label} startup surface remained after bundle evaluation\n${stderr.slice(-4000)}`,
+      );
+    }
+    if (stderr.includes("Class extends value undefined")) {
+      throw new Error(
+        `${label} production bundle contains a chunk cycle\n${stderr.slice(-4000)}`,
+      );
+    }
+    return { stdout, stderr };
+  }
+}
+
+// One headless Chrome run of the page in a fresh profile. Resolves with what
+// Chrome printed; timedOut is set when it had to be killed.
+async function runBrowser(pageUrl, label) {
   const profile = mkdtempSync(join(tmpdir(), "anbo-production-smoke-"));
   let stdout = "";
   let stderr = "";
@@ -109,6 +162,10 @@ async function dumpPage(pageUrl, label) {
         "--disable-gpu",
         "--no-first-run",
         "--no-sandbox",
+        // As Puppeteer and Playwright do: a fresh profile must not wait on
+        // the system keyring, which goes through D-Bus on Linux.
+        "--password-store=basic",
+        "--use-mock-keychain",
         `--user-data-dir=${profile}`,
         "--virtual-time-budget=5000",
         "--enable-logging=stderr",
@@ -128,42 +185,24 @@ async function dumpPage(pageUrl, label) {
       stderr += chunk;
     });
 
-    const exitCode = await new Promise((resolveExit, rejectExit) => {
+    const exit = await new Promise((resolveExit, rejectExit) => {
+      let timedOut = false;
       const timeout = setTimeout(() => {
+        timedOut = true;
         child.kill();
-        rejectExit(new Error(`${label} headless browser timed out`));
-      }, 30_000);
+        // A browser that ignores the kill must not hold the smoke forever.
+        setTimeout(() => resolveExit({ code: null, timedOut }), 5_000).unref();
+      }, BROWSER_TIMEOUT_MS);
       child.once("error", (error) => {
         clearTimeout(timeout);
         rejectExit(error);
       });
       child.once("close", (code) => {
         clearTimeout(timeout);
-        resolveExit(code);
+        resolveExit({ code, timedOut });
       });
     });
-
-    if (exitCode !== 0) {
-      throw new Error(
-        `${label} headless browser exited with ${exitCode}\n${stderr}`,
-      );
-    }
-    if (!stdout.includes('data-anbo-bundle-ready="true"')) {
-      throw new Error(
-        `${label} production entry bundle did not finish evaluating\n${stderr.slice(-4000)}`,
-      );
-    }
-    if (stdout.includes('id="anbo-startup"')) {
-      throw new Error(
-        `${label} startup surface remained after bundle evaluation\n${stderr.slice(-4000)}`,
-      );
-    }
-    if (stderr.includes("Class extends value undefined")) {
-      throw new Error(
-        `${label} production bundle contains a chunk cycle\n${stderr.slice(-4000)}`,
-      );
-    }
-    return { stdout, stderr };
+    return { ...exit, stdout, stderr };
   } finally {
     // Chrome's helper processes can still write into the profile for a moment
     // after the browser exits (ENOTEMPTY on the Linux runner), and a failed
