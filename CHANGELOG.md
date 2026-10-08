@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.36.0](https://github.com/mramdann/anbo-ai/compare/v0.35.3...v0.36.0) (2026-10-08)
+
+
+### Features
+
+* **browser:** reload the extension by itself after an update ([877a9c5](https://github.com/mramdann/anbo-ai/commit/877a9c5a319238af6149f5d316ff0def966a8963))
+
+
+### Bug Fixes
+
+* **settings:** log why Settings or the AnboVoice orb does not open ([49dfd53](https://github.com/mramdann/anbo-ai/commit/49dfd530a25bf717f47296960b7e9d7c522ff15c))
+* **terminal:** paste once and reliably on Windows ([9950ccd](https://github.com/mramdann/anbo-ai/commit/9950ccda9ebf76a71923e9ac3ea96f665a18a244))
+* **window:** square the window when maximized and round it by 8 px on Windows ([3e8d96f](https://github.com/mramdann/anbo-ai/commit/3e8d96f234b61b55968a807b68cbb189c595090b))
+
+
+### Performance Improvements
+
+* **browser:** let an open's own find run before the dock takes the tab ([a0cb8f3](https://github.com/mramdann/anbo-ai/commit/a0cb8f3af3630075c491d83dd4d070183051eae8))
+
 ## [0.35.3](https://github.com/mramdann/anbo-ai/compare/v0.35.2...v0.35.3) (2026-10-07)
 
 
