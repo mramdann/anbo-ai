@@ -5,6 +5,8 @@ const native = vi.hoisted(() => ({
   writeText: vi.fn<(t: string) => Promise<void>>(),
 }));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => native);
+const core = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => core);
 
 const web = {
   readText: vi.fn<() => Promise<string>>(),
@@ -13,7 +15,10 @@ const web = {
 
 const original = globalThis.navigator;
 const LINUX = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15";
-const MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15";
+const MAC =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15";
+const WINDOWS =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Edg/155.0.0.0";
 
 function platform(userAgent: string) {
   Object.defineProperty(globalThis, "navigator", {
@@ -33,6 +38,7 @@ describe("terminalClipboard", () => {
     native.writeText.mockReset();
     web.readText.mockReset();
     web.writeText.mockReset();
+    core.invoke.mockReset();
   });
 
   afterEach(() => {
@@ -68,6 +74,23 @@ describe("terminalClipboard", () => {
     expect(native.readText).not.toHaveBeenCalled();
     expect(native.writeText).not.toHaveBeenCalled();
     expect(web.writeText).toHaveBeenCalledWith("x");
+  });
+
+  it("reads Windows' clipboard natively, never through the permission prompt", async () => {
+    platform(WINDOWS);
+    core.invoke
+      .mockResolvedValueOnce("native text")
+      .mockResolvedValueOnce(null);
+    const { readTerminalClipboard } = await load();
+    await expect(readTerminalClipboard()).resolves.toBe("native text");
+    // No text on the clipboard (an image) reads as null.
+    await expect(readTerminalClipboard()).resolves.toBeNull();
+    expect(core.invoke).toHaveBeenCalledWith("clipboard_read_text");
+    expect(web.readText).not.toHaveBeenCalled();
+    core.invoke.mockRejectedValueOnce("another program holds the clipboard");
+    await expect(readTerminalClipboard()).rejects.toBe(
+      "another program holds the clipboard",
+    );
   });
 
   it("writes the native clipboard first on Linux", async () => {

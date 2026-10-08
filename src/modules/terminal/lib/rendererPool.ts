@@ -22,7 +22,11 @@ import {
   readTerminalClipboard,
   writeTerminalClipboard,
 } from "./terminalClipboard";
-import { pasteIntoTerminal } from "./terminalPaste";
+import {
+  ctrlVPasteAction,
+  pasteIntoTerminal,
+  textPasteAction,
+} from "./terminalPaste";
 import { chooseTerminalBuffer, WEBGL_CONTEXT_LIMIT } from "./rendererCapacity";
 
 const FIT_DEBOUNCE_MS = 8;
@@ -517,14 +521,15 @@ function createSlot(): Slot {
       event.preventDefault();
       return false;
     }
-    if (isTerminalPaste(event)) {
-      if (event.type === "keydown") {
-        const targetLeafId = slot.currentLeafId;
-        void readTerminalClipboard().then((text) => {
-          if (text && slot.currentLeafId === targetLeafId)
-            slot.term.paste(text);
-        });
-      }
+    // Ctrl+V on Windows pastes, as Windows Terminal does, instead of sending
+    // ^V that each program reads its own way (see ctrlVPasteAction).
+    const paste = isTerminalPaste(event)
+      ? "text"
+      : isWindowsCtrlV(event)
+        ? "ctrlv"
+        : null;
+    if (paste) {
+      if (event.type === "keydown") pasteClipboard(slot, paste);
       event.preventDefault();
       return false;
     }
@@ -536,6 +541,22 @@ function createSlot(): Slot {
     if (leafId === null) return;
     adapter?.resolveLeaf(leafId)?.writeToPty(data);
   });
+
+  // The context menu's Paste and Shift+Insert read the clipboard through
+  // Chromium, which gives up after a few milliseconds while another program
+  // holds it and pastes nothing. Such an empty paste is read again natively.
+  if (IS_WINDOWS) {
+    host.addEventListener(
+      "paste",
+      (event) => {
+        if (event.clipboardData?.getData("text/plain")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        pasteClipboard(slot, "text");
+      },
+      true,
+    );
+  }
 
   slots.push(slot);
   return slot;
@@ -1396,6 +1417,50 @@ export function getLiveSlotForLeaf(leafId: number): Slot | null {
 const IS_MAC =
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad/.test(navigator.userAgent);
+const IS_WINDOWS =
+  typeof navigator !== "undefined" && /Windows/.test(navigator.userAgent);
+
+// A clipboard read that a newer paste overtook, whose slot moved to another
+// leaf, or that took longer than this is dropped, so one key never pastes
+// twice or late.
+const PASTE_STALE_MS = 2_000;
+let pasteRequest = 0;
+
+function pasteClipboard(slot: Slot, mode: "text" | "ctrlv"): void {
+  const leafId = slot.currentLeafId;
+  if (leafId === null) return;
+  const request = ++pasteRequest;
+  const started = performance.now();
+  void readTerminalClipboard().then(
+    (text) => {
+      if (
+        request !== pasteRequest ||
+        slot.currentLeafId !== leafId ||
+        performance.now() - started > PASTE_STALE_MS
+      )
+        return;
+      const action =
+        mode === "text"
+          ? textPasteAction(text)
+          : ctrlVPasteAction(text, slot.term.modes.bracketedPasteMode);
+      if (action.kind === "paste") slot.term.paste(action.text);
+      else if (action.kind === "key")
+        adapter?.resolveLeaf(leafId)?.writeToPty("\x16");
+    },
+    (error) => console.warn("[terminal] clipboard read failed:", error),
+  );
+}
+
+function isWindowsCtrlV(e: KeyboardEvent): boolean {
+  return (
+    IS_WINDOWS &&
+    e.ctrlKey &&
+    !e.shiftKey &&
+    !e.altKey &&
+    !e.metaKey &&
+    (e.code === "KeyV" || e.key === "v" || e.key === "V")
+  );
+}
 
 function isTerminalCopy(e: KeyboardEvent): boolean {
   return (
