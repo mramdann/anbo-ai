@@ -125,7 +125,7 @@
   "devDependencies": {
     "@babel/core": "^7.29.7",
     "@biomejs/biome": "^2.5.15",
-    "@iconify-json/material-icon-theme": "^1.2.70",
+    "@iconify-json/material-icon-theme": "^1.2.71",
     "@rolldown/plugin-babel": "^0.2.4",
     "@size-limit/file": "^14.1.0",
     "@tailwindcss/vite": "^4.3.3",
