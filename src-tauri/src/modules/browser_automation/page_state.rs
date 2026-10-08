@@ -263,11 +263,16 @@ mod tests {
     fn unfocusable_targets_hand_the_key_to_a_focusable_ancestor_only_without_a_value_guard() {
         let body = input_guard_body(None);
         // A value-guarded input must take the key itself.
-        assert!(body.contains("if (expected !== null) return JSON.stringify({ok:false,error:'input_not_ready'});"));
+        assert!(body.contains(
+            "if (expected !== null) return JSON.stringify({ok:false,error:'input_not_ready'});"
+        ));
         // The walk is bounded, composed, stops at the document and reports what took focus.
         assert!(body.contains("depth < 8"));
-        assert!(body.contains("node.assignedSlot || node.parentElement || node.getRootNode?.().host"));
-        assert!(body.contains("if (node === document.body || node === document.documentElement) break;"));
+        assert!(
+            body.contains("node.assignedSlot || node.parentElement || node.getRootNode?.().host")
+        );
+        assert!(body
+            .contains("if (node === document.body || node === document.documentElement) break;"));
         assert!(body.contains("focusedAncestor: {"));
     }
 

@@ -137,7 +137,9 @@ fn without_frontmatter(source: &str) -> &str {
 }
 
 fn section_title(line: &str) -> Option<&str> {
-    line.strip_prefix("## ").map(str::trim).filter(|t| !t.is_empty())
+    line.strip_prefix("## ")
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
 }
 
 /// Every `## ` heading, in document order.
@@ -470,7 +472,12 @@ mod tests {
         let rollback = read_skill(temp.path(), "deploy", Some("Rollback")).unwrap();
         assert_eq!(rollback.body, "## Rollback\n\nsecond");
         let listed = list_skills(temp.path()).unwrap();
-        assert!(listed.iter().find(|s| s.name == "deploy").unwrap().sections.is_empty());
+        assert!(listed
+            .iter()
+            .find(|s| s.name == "deploy")
+            .unwrap()
+            .sections
+            .is_empty());
     }
 
     #[test]

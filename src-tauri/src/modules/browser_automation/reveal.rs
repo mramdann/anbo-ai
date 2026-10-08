@@ -148,10 +148,16 @@ mod tests {
 
     #[test]
     fn a_live_region_message_rides_along_and_an_empty_list_does_not() {
-        let posted = parse_reveal(&serde_json::to_string(&json!({
-            "ok": true, "surface": null, "count": 0, "items": [], "observed": {},
-            "announced": [{"role": "status", "text": "Terdaftar: Rina"}]
-        }).to_string()).unwrap())
+        let posted = parse_reveal(
+            &serde_json::to_string(
+                &json!({
+                    "ok": true, "surface": null, "count": 0, "items": [], "observed": {},
+                    "announced": [{"role": "status", "text": "Terdaftar: Rina"}]
+                })
+                .to_string(),
+            )
+            .unwrap(),
+        )
         .unwrap();
         assert_eq!(posted.value["announced"][0]["text"], "Terdaftar: Rina");
         let quiet = parse_reveal(&serde_json::to_string(&json!({
@@ -166,7 +172,14 @@ mod tests {
 
     #[test]
     fn baseline_lookup_is_only_included_for_a_captured_input() {
-        let captured = build_reveal_js("g1-e1", 2, 400, Some(&json!({"revealToken": 1})), false, None);
+        let captured = build_reveal_js(
+            "g1-e1",
+            2,
+            400,
+            Some(&json!({"revealToken": 1})),
+            false,
+            None,
+        );
         assert!(captured.contains("function readRevealBaseline"));
         let click = build_reveal_js("g1-e1", 2, 400, None, true, None);
         assert!(!click.contains("function readRevealBaseline"));
@@ -213,8 +226,12 @@ mod tests {
 
     #[test]
     fn a_click_waits_only_on_a_control_that_declares_a_popup() {
-        assert!(build_reveal_js("g1-e1", 2, 400, None, true, None).contains("\"declaredOnly\":true"));
-        assert!(build_reveal_js("g1-e1", 2, 400, None, false, None).contains("\"declaredOnly\":false"));
+        assert!(
+            build_reveal_js("g1-e1", 2, 400, None, true, None).contains("\"declaredOnly\":true")
+        );
+        assert!(
+            build_reveal_js("g1-e1", 2, 400, None, false, None).contains("\"declaredOnly\":false")
+        );
     }
 
     #[test]

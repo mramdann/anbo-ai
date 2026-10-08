@@ -1387,9 +1387,7 @@ mod native {
                 } else if outcome.reset {
                     current.region_resets = current.region_resets.saturating_add(1);
                 }
-                if !current.regions_refused
-                    && (scene.full_screen || current.region_resets >= 3)
-                {
+                if !current.regions_refused && (scene.full_screen || current.region_resets >= 3) {
                     log::info!("[browser_dock] the browser resets window regions from now on; its frame stays out of sight by position alone");
                     current.regions_refused = true;
                     again = true;

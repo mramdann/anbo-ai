@@ -587,7 +587,10 @@ mod tests {
         // builder installed a provider first.
         assert!(client_builder().https_only(true).build().is_ok());
         assert!(rustls::crypto::CryptoProvider::get_default().is_some());
-        assert!(client_builder().build().is_ok(), "a second install is a no-op");
+        assert!(
+            client_builder().build().is_ok(),
+            "a second install is a no-op"
+        );
     }
 
     #[test]

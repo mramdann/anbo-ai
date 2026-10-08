@@ -334,15 +334,14 @@ async fn handle_client(
         }
 
         if req.method == "external_browser_connect" {
-            if let Err(error) =
-                crate::modules::browser_external::serve(
-                    app.clone(),
-                    buf_reader,
-                    writer,
-                    req.params,
-                    client,
-                )
-                .await
+            if let Err(error) = crate::modules::browser_external::serve(
+                app.clone(),
+                buf_reader,
+                writer,
+                req.params,
+                client,
+            )
+            .await
             {
                 log::debug!("external browser disconnected: {error}");
             }

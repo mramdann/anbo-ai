@@ -82,7 +82,10 @@ pub fn wait_count_state(
     visible: usize,
     complete: bool,
 ) -> Result<bool, TargetError> {
-    if !matches!(state, "attached" | "visible" | "hidden" | "absent" | "detached") {
+    if !matches!(
+        state,
+        "attached" | "visible" | "hidden" | "absent" | "detached"
+    ) {
         return Err((
             error_codes::INVALID_REQUEST.into(),
             "minCount waits support attached, visible, hidden, absent and detached; the per-element states assert about one element".into(),

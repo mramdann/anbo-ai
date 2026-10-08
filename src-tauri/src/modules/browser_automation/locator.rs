@@ -1231,7 +1231,10 @@ mod tests {
         // An attribute alone never loses its tag: `[name]` would match every
         // named field on the page.
         assert_eq!(css_relaxations("div.foo span"), vec![".foo span"]);
-        assert_eq!(css_relaxations("input[name=\"q\"]"), vec!["input[name]", "input"]);
+        assert_eq!(
+            css_relaxations("input[name=\"q\"]"),
+            vec!["input[name]", "input"]
+        );
         assert!(css_relaxations("canvas").is_empty());
         // Values inside :not() are dropped too, and a quoted comma does not split.
         assert_eq!(
