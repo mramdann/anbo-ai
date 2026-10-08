@@ -4,6 +4,10 @@ import { describe, expect, it } from "vitest";
 
 const html = readFileSync(path.resolve("index.html"), "utf8");
 const entry = readFileSync(path.resolve("src/main.tsx"), "utf8");
+const startupRoot = readFileSync(
+  path.resolve("src/app/StartupRoot.tsx"),
+  "utf8",
+);
 
 describe("startup surface", () => {
   it("renders status content before the React bundle loads", () => {
@@ -22,11 +26,19 @@ describe("startup surface", () => {
   });
 
   it("keeps React render failures visible instead of leaving a blank window", () => {
-    expect(entry).toContain("class RootErrorBoundary");
     expect(entry).toContain("function reportStartupProgress");
-    expect(entry).toContain("function StartupReady");
-    expect(entry).toContain('new CustomEvent("anbo:startup-ready")');
-    expect(entry).toContain("Anbo could not open this workspace");
-    expect(entry).toContain('data-testid="root-error-detail"');
+    expect(entry).toContain("<RootErrorBoundary>");
+    expect(entry).toContain("<StartupReady>");
+    expect(startupRoot).toContain("export class RootErrorBoundary");
+    expect(startupRoot).toContain("export function StartupReady");
+    expect(startupRoot).toContain('new CustomEvent("anbo:startup-ready")');
+    expect(startupRoot).toContain("Anbo could not open this workspace");
+    expect(startupRoot).toContain('data-testid="root-error-detail"');
+  });
+
+  it("defines no components in the entry, so Dev reloads instead of running it twice", () => {
+    const component =
+      /^\s*(?:export\s+(?:default\s+)?)?(?:(?:async\s+)?function|class|const|let)\s+[A-Z][a-z0-9]\w*/m;
+    expect(entry).not.toMatch(component);
   });
 });
