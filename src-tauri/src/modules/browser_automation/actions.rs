@@ -88,6 +88,8 @@ const MAX_SCREENSHOT_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const SUBMISSION_OBSERVATION_MS: u64 = 3_000;
 const BROWSER_OPEN_REQUEST_EVENT: &str = "anbo:browser-open-request";
 const BROWSER_OPEN_RESPONSE_EVENT: &str = "anbo:browser-open-response";
+/// The open's own find is done, so its Chrome or Edge tab may dock.
+const BROWSER_DOCK_HOLD_RELEASE_EVENT: &str = "anbo:browser-dock-hold-release";
 const BROWSER_CLOSE_REQUEST_EVENT: &str = "anbo:browser-close-request";
 const BROWSER_CLOSE_RESPONSE_EVENT: &str = "anbo:browser-close-response";
 const BROWSER_TABS_REQUEST_EVENT: &str = "anbo:browser-tabs-request";
@@ -956,7 +958,8 @@ async fn handle_action_inner(
     match method {
         "open" => {
             let read = open_read_request(&params)?;
-            let mut result = open_browser(app, &params, caller, timings).await?;
+            let hold_dock = open_holds_dock(read.as_ref());
+            let mut result = open_browser(app, &params, caller, timings, hold_dock).await?;
             // The tab an agent just opened is the tab it is about to work, and
             // the open response is the first thing it reads. Naming the session
             // here spares it hunting for the id in some later call's payload,
@@ -1019,6 +1022,11 @@ async fn handle_action_inner(
                             }
                         }
                     }
+                }
+            }
+            if hold_dock {
+                if let Some(id) = result["tabId"].as_i64() {
+                    let _ = app.emit(BROWSER_DOCK_HOLD_RELEASE_EVENT, json!({"tabId":id}));
                 }
             }
             Ok(result)
@@ -7368,6 +7376,15 @@ fn open_read_request(params: &Value) -> Result<Option<(&'static str, Value)>, (S
     Ok(read)
 }
 
+/// Whether an open's own read keeps a Chrome or Edge tab out of the dock until
+/// it is done. Chrome holds a tab's commands while the dock moves it, which
+/// made an open with find about three times slower. A find reads the DOM and
+/// runs as well on the page where the browser opened it; a snapshot waits for
+/// the page to settle and wants it drawn, so it docks as before.
+fn open_holds_dock(read: Option<&(&'static str, Value)>) -> bool {
+    read.is_some_and(|(method, _)| *method == "find")
+}
+
 /// A snapshot that goes on past this read still holds what the caller came
 /// for: agy's snapshot of a Wikipedia article stopped at item 254, closeTab
 /// closed the tab with it, and the next read had to open the page again.
@@ -7542,6 +7559,7 @@ async fn open_browser(
     params: &Value,
     caller: &super::caller::Caller,
     timings: &mut ActionTimings,
+    hold_dock: bool,
 ) -> Result<Value, (String, String)> {
     let (url, workspace) = extract_browser_open_params(params)?;
     timings
@@ -7574,6 +7592,8 @@ async fn open_browser(
             // Identity travels with the request so the tab carries its
             // controller from the first frame it is drawn.
             "actor": caller,
+            // The open's find reads the page before the dock takes it.
+            "holdDock": hold_dock,
         }),
     ) {
         app.unlisten(listener_id);
@@ -9144,6 +9164,15 @@ mod tests {
             "find",
             &json!({"matches":[],"nextOffset":5})
         ));
+    }
+
+    #[test]
+    fn only_an_open_that_finds_keeps_its_tab_out_of_the_dock() {
+        let find = open_read_request(&json!({"find":{"by":"text","value":"India"}})).unwrap();
+        assert!(open_holds_dock(find.as_ref()));
+        let snapshot = open_read_request(&json!({"snapshot":true})).unwrap();
+        assert!(!open_holds_dock(snapshot.as_ref()));
+        assert!(!open_holds_dock(None));
     }
 
     #[test]

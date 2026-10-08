@@ -4,6 +4,10 @@ import {
   savedExternalBrowser,
 } from "@/modules/browser/external/model";
 import {
+  openReadHoldsDock,
+  releaseDockForOpenRead,
+} from "@/modules/browser/external/openReads";
+import {
   createExternalBrowserSync,
   openExternalBrowser,
 } from "@/modules/browser/external/sync";
@@ -517,6 +521,53 @@ describe("external browser workspace synchronization", () => {
       "browser_external_open_tab",
       expect.objectContaining({ activate: false }),
     );
+  });
+
+  it("holds the dock for the tab an agent's open reads, and only for it", async () => {
+    const open = (holdDock: boolean) => {
+      const state = harness();
+      // The browser lists the new tab once it has opened it.
+      let listed: ExternalConnection[] = [{ ...connection(), tabs: [] }];
+      state.calls.mockImplementation(async (command: string) => {
+        if (command === "browser_external_connections") return listed;
+        if (command === "browser_external_open_tab") {
+          listed = [connection()];
+          return connection().tabs[0];
+        }
+        return undefined;
+      });
+      return state.service.open("https://example.com/", "D:/work", holdDock);
+    };
+    expect(await open(true)).toBe(100);
+    expect(openReadHoldsDock(100)).toBe(true);
+    releaseDockForOpenRead(100);
+    expect(await open(false)).toBe(100);
+    expect(openReadHoldsDock(100)).toBe(false);
+  });
+
+  it("holds the dock for a read tab the browser announced before the open's reply", async () => {
+    const state = harness();
+    let listed: ExternalConnection[] = [{ ...connection(), tabs: [] }];
+    const reply = deferred<ExternalConnection["tabs"][number]>();
+    state.calls.mockImplementation(async (command: string) => {
+      if (command === "browser_external_connections") return listed;
+      if (command === "browser_external_open_tab") return reply.promise;
+      return undefined;
+    });
+    const opening = state.service.open("https://example.com/", "D:/work", true);
+    await vi.waitFor(() =>
+      expect(state.calls).toHaveBeenCalledWith(
+        "browser_external_open_tab",
+        expect.objectContaining({ activate: false }),
+      ),
+    );
+    listed = [connection()];
+    await state.service.refresh();
+    expect(openReadHoldsDock(100)).toBe(true);
+    reply.resolve(connection().tabs[0]);
+    await expect(opening).resolves.toBe(100);
+    expect(state.create).toHaveBeenCalledTimes(1);
+    releaseDockForOpenRead(100);
   });
 
   it("does not bind unapproved profiles or allocate idle timers", async () => {

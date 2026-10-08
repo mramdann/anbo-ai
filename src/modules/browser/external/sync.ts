@@ -4,6 +4,10 @@ import {
   sameWorkspace,
   selectionKey,
 } from "@/modules/browser/external/model";
+import {
+  holdDockForOpenRead,
+  releaseDockForOpenRead,
+} from "@/modules/browser/external/openReads";
 import { useExternalBrowsers } from "@/modules/browser/external/store";
 import type { BrowserTab, Tab, TabPatch } from "@/modules/tabs/lib/useTabs";
 import { invoke } from "@tauri-apps/api/core";
@@ -61,6 +65,10 @@ export function createExternalBrowserSync(
   // Until the claim exists, that profile's new selections wait, so the event
   // that announces the selection cannot create a second tab for it.
   const opening = new Set<string>();
+  // Agent opens whose read holds the dock, by profile connection. The browser's
+  // change event can make the new tab before the open learns its selection, so
+  // the next tab made for that profile is taken as the page the open reads.
+  const reading = new Set<string>();
   // Opens and selections run one at a time, so a waiting selection is always
   // the one being opened.
   let queue: Promise<unknown> = Promise.resolve();
@@ -209,6 +217,9 @@ export function createExternalBrowserSync(
             claimedTab?.id ??
             saved?.id ??
             host.create(remote.url, false, space.id, external);
+          // The agent's open reads this page before it answers, and a dock
+          // move would stall that read, so the dock waits for it.
+          if (reading.delete(connection.connectionId)) holdDockForOpenRead(id);
           binding = {
             id,
             spaceId: space.id,
@@ -289,12 +300,13 @@ export function createExternalBrowserSync(
       );
   };
 
-  const open = (url: string, workspace: string) =>
-    exclusive(() => openNow(url, workspace));
+  const open = (url: string, workspace: string, holdDock = false) =>
+    exclusive(() => openNow(url, workspace, holdDock));
 
   const openNow = async (
     url: string,
     workspace: string,
+    holdDock: boolean,
   ): Promise<number | null> => {
     ensureRunning();
     await refresh();
@@ -321,21 +333,26 @@ export function createExternalBrowserSync(
       return null;
     }
     const connection = profiles[0];
-    const remote = await call<{ selectionId: string }>(
-      "browser_external_open_tab",
-      { connectionId: connection.connectionId, url, activate: false },
-    );
-    ensureRunning();
-    await refresh();
-    ensureRunning();
-    const binding = bindings.get(
-      selectionKey(connection.connectionId, remote.selectionId),
-    );
-    if (!binding?.ready)
-      throw new Error(
-        "The browser tab opened but could not bind to Anbo. Check browser connections; the action was not replayed.",
+    if (holdDock) reading.add(connection.connectionId);
+    try {
+      const remote = await call<{ selectionId: string }>(
+        "browser_external_open_tab",
+        { connectionId: connection.connectionId, url, activate: false },
       );
-    return binding.id;
+      ensureRunning();
+      await refresh();
+      ensureRunning();
+      const binding = bindings.get(
+        selectionKey(connection.connectionId, remote.selectionId),
+      );
+      if (!binding?.ready)
+        throw new Error(
+          "The browser tab opened but could not bind to Anbo. Check browser connections; the action was not replayed.",
+        );
+      return binding.id;
+    } finally {
+      reading.delete(connection.connectionId);
+    }
   };
 
   /** Opens a page in a profile approved for the workspace and turns this Anbo
@@ -435,13 +452,20 @@ export async function startExternalBrowserSync(host: Host) {
   });
   current = service;
   let stopListening: (() => void) | undefined;
+  let stopReads: (() => void) | undefined;
   try {
     stopListening = await listen("anbo:external-browser-changed", () => {
       void service.refresh().catch(() => {});
     });
+    // An agent open's read is done: its tab may dock now.
+    stopReads = await listen<{ tabId: number }>(
+      "anbo:browser-dock-hold-release",
+      ({ payload }) => releaseDockForOpenRead(payload.tabId),
+    );
     await service.refresh();
   } catch (cause) {
     stopListening?.();
+    stopReads?.();
     service.stop();
     if (current === service) current = undefined;
     void warn(`external browser sync did not start: ${String(cause)}`).catch(
@@ -451,6 +475,7 @@ export async function startExternalBrowserSync(host: Host) {
   }
   return () => {
     stopListening?.();
+    stopReads?.();
     service.stop();
     if (current === service) {
       current = undefined;
@@ -478,8 +503,9 @@ export async function openExternalBrowser(
   workspace: string,
   tabs: Tab[],
   spaceId: string,
+  holdDock = false,
 ) {
-  if (current) return current.open(url, workspace);
+  if (current) return current.open(url, workspace, holdDock);
   if (showsExternalTabs(tabs, spaceId)) throw new Error(NOT_READY);
   const approvedHere = await invoke<ExternalConnection[]>(
     "browser_external_connections",

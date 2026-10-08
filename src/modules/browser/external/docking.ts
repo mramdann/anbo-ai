@@ -3,6 +3,10 @@ import {
   isWindowPresentationDocumentVisible,
   subscribeWindowPresentation,
 } from "@/lib/windowPresentation";
+import {
+  openReadHoldsDock,
+  subscribeOpenReads,
+} from "@/modules/browser/external/openReads";
 import { toPhysicalBounds } from "@/modules/browser/native";
 import {
   FLOATING_SURFACE_SELECTOR,
@@ -344,6 +348,8 @@ export type AutoDockState = {
   held: boolean;
   /** A shown panel of another tab holds the page. */
   elsewhere: boolean;
+  /** An agent's open still reads the new page (see openReads.ts). */
+  reading: boolean;
 };
 
 /** A shown, connected tab takes the dock by itself, but only while Anbo is in
@@ -362,7 +368,8 @@ export function shouldAttachDock(state: AutoDockState): boolean {
     !state.docked &&
     !state.busy &&
     !state.held &&
-    !state.elsewhere
+    !state.elsewhere &&
+    !state.reading
   );
 }
 
@@ -449,6 +456,11 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
   const elsewhere = useSyncExternalStore(
     holders.subscribe,
     () => holders.heldElsewhere(tab.id),
+    () => false,
+  );
+  const reading = useSyncExternalStore(
+    subscribeOpenReads,
+    () => openReadHoldsDock(tab.id),
     () => false,
   );
   // A dockview drag needs its drop targets over the page, like any overlay.
@@ -815,6 +827,8 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     busy,
     held: hold !== null,
     elsewhere: elsewhere && !asked,
+    // A click on the panel or an agent's pointer input asks for the page.
+    reading: reading && !asked,
   });
   const attachRef = useRef(attach);
   attachRef.current = attach;

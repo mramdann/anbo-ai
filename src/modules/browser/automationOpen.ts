@@ -17,6 +17,9 @@ export type BrowserOpenRequest = {
   // Who asked. browser_open is not tracked, so this is the only chance the tab
   // gets to know its controller before the first tracked action arrives.
   actor?: { brand: string; label: string } | null;
+  // The open reads the new page with find before it answers. The dock waits
+  // for that read, which a dock move would stall.
+  holdDock?: boolean;
 };
 
 export type BrowserCloseRequest = {
