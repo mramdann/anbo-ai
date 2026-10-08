@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.36.1](https://github.com/mramdann/anbo-ai/compare/v0.36.0...v0.36.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **window:** keep the main window and Settings inside the screen ([40dc4d7](https://github.com/mramdann/anbo-ai/commit/40dc4d726ca2f08b2e98f9288abd6c30dc258299))
+
+
+### Performance Improvements
+
+* **build:** ship one marked instead of two ([898ad3e](https://github.com/mramdann/anbo-ai/commit/898ad3e0259b36f3e173b271a0c4d127581f80c9))
+
 ## [0.36.0](https://github.com/mramdann/anbo-ai/compare/v0.35.3...v0.36.0) (2026-10-08)
 
 
