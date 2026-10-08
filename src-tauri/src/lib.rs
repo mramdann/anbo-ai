@@ -8,8 +8,8 @@ extern "C" {}
 
 use modules::{
     agent, agent_cli, anbo, app_data, browser, browser_automation, fs, git, global_voice, history,
-    lsp, net, proc, project_memory, pty, secrets, shell, voice_runtime, window_frame, window_open,
-    workspace,
+    lsp, net, proc, project_memory, pty, secrets, shell, voice_runtime, window_fit, window_frame,
+    window_open, workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -168,6 +168,8 @@ fn open_settings(app: &tauri::AppHandle, tab: Option<String>) -> Result<(), Stri
     if let Some(window) = app.get_webview_window("settings") {
         #[cfg(target_os = "macos")]
         let _ = window.set_always_on_top(true);
+        // The screen may have changed while Settings stayed open but hidden.
+        window_fit::fit(&window.as_ref().window());
         let _ = window_open::show("the Settings window", &window);
         let _ = window.set_focus();
         if let Some(t) = tab.as_deref().filter(|s| !s.is_empty()) {
@@ -313,6 +315,9 @@ pub fn run() {
                 .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
                 .build(),
         )
+        // After window-state: a window is fitted to its screen where that
+        // plugin put it (see window_fit).
+        .plugin(window_fit::init())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_os::init())
