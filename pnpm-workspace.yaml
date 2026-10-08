@@ -5,5 +5,10 @@ allowBuilds:
   msgpackr-extract: false
   msw: true
 overrides:
+  # codemirror-languageserver renders LSP hover text with marked.parse on
+  # marked 16, while streamdown needs 18: one marked ships instead of two
+  # (48 KB raw in the LSP chunk). 17 and 18 only change list and blank-line
+  # token details.
+  codemirror-languageserver>marked: ^18.0.14
   dompurify: 3.4.13
   mermaid: 11.16.1
