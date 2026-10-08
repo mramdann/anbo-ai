@@ -99,6 +99,40 @@ const BROWSER_TIMEOUT_MS = 30_000;
 // the browser waited on.
 const SLOW_LAUNCH_MS = 10_000;
 
+// Chrome's log lines start with [pid:tid:MMDD/HHMMSS.fraction:...] in local
+// time (milliseconds on Windows, microseconds on Linux). The widest gap
+// between two of them shows where a slow launch waited.
+function chromeLogReport(log, started) {
+  const clock = (date) =>
+    [date.getHours(), date.getMinutes(), date.getSeconds()]
+      .map((part) => String(part).padStart(2, "0"))
+      .join("");
+  let previous = null;
+  let widest = null;
+  for (const line of log.split("\n")) {
+    const stamp = /^\[\d+:\d+:\d{4}\/(\d{2})(\d{2})(\d{2})\.(\d+):/.exec(line);
+    if (!stamp) continue;
+    const at =
+      Number(stamp[1]) * 3600 +
+      Number(stamp[2]) * 60 +
+      Number(stamp[3]) +
+      Number(`0.${stamp[4]}`);
+    if (previous && (!widest || at - previous.at > widest.seconds)) {
+      widest = { seconds: at - previous.at, before: previous.line, after: line };
+    }
+    previous = { at, line };
+  }
+  return [
+    `Chrome was launched at ${clock(new Date(started))}. Its first output:`,
+    log.slice(0, 1500),
+    widest
+      ? `Its log was quiet longest for ${widest.seconds.toFixed(1)} s, between:\n${widest.before.slice(0, 300)}\n${widest.after.slice(0, 300)}`
+      : "Its log has no timestamped lines.",
+    "Its last output:",
+    log.slice(-1500),
+  ].join("\n");
+}
+
 async function dumpPage(pageUrl, label) {
   // A headless launch on a CI runner now and then stalls past the timeout;
   // one fresh try tells that apart from a page that never finishes.
@@ -109,10 +143,10 @@ async function dumpPage(pageUrl, label) {
     if (timedOut) {
       const message = `${label} headless browser timed out after ${BROWSER_TIMEOUT_MS / 1000} s`;
       if (attempt > 1) {
-        throw new Error(`${message} twice\n${stderr.slice(-4000)}`);
+        throw new Error(`${message} twice\n${chromeLogReport(stderr, started)}`);
       }
       console.warn(
-        `${message}; trying once more. Chrome's last output:\n${stderr.slice(-3000)}`,
+        `${message}; trying once more.\n${chromeLogReport(stderr, started)}`,
       );
       continue;
     }
@@ -120,7 +154,7 @@ async function dumpPage(pageUrl, label) {
       `${label}: ${(elapsed / 1000).toFixed(1)} s${attempt > 1 ? " (second try)" : ""}`,
     );
     if (elapsed > SLOW_LAUNCH_MS) {
-      console.warn(`${label} was slow. Chrome's last output:\n${stderr.slice(-3000)}`);
+      console.warn(`${label} was slow.\n${chromeLogReport(stderr, started)}`);
     }
 
     if (code !== 0) {
