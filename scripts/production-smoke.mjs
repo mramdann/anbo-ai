@@ -181,7 +181,7 @@ async function dumpPage(pageUrl, label) {
 
 // One headless Chrome run of the page in a fresh profile. Resolves with what
 // Chrome printed; timedOut is set when it had to be killed.
-async function runBrowser(pageUrl, label) {
+async function runBrowser(pageUrl, label, timeoutMs = BROWSER_TIMEOUT_MS) {
   const profile = mkdtempSync(join(tmpdir(), "anbo-production-smoke-"));
   let stdout = "";
   let stderr = "";
@@ -226,7 +226,7 @@ async function runBrowser(pageUrl, label) {
         child.kill();
         // A browser that ignores the kill must not hold the smoke forever.
         setTimeout(() => resolveExit({ code: null, timedOut }), 5_000).unref();
-      }, BROWSER_TIMEOUT_MS);
+      }, timeoutMs);
       child.once("error", (error) => {
         clearTimeout(timeout);
         rejectExit(error);
@@ -250,6 +250,16 @@ async function runBrowser(pageUrl, label) {
 }
 
 try {
+  // Chrome's first start on a fresh CI runner reads the browser from a cold
+  // disk: 1.4 to 14.3 s on Oct 8, with 8 s before its first log line, while
+  // every later start took about 1 s. One untimed start of a blank page
+  // keeps that out of the pages' 30 s limit.
+  const warmUpStarted = Date.now();
+  const warmUp = await runBrowser("about:blank", "browser warm-up", 120_000);
+  console.log(
+    `browser warm-up: ${((Date.now() - warmUpStarted) / 1000).toFixed(1)} s${warmUp.timedOut ? ", timed out" : ""}`,
+  );
+
   await dumpPage(url, "main window");
   const editor = await dumpPage(
     `${url}?anbo-production-editor-smoke=1`,
