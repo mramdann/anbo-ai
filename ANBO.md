@@ -164,6 +164,7 @@ BYOK. Cloud providers via `@ai-sdk/*`: **OpenAI, Anthropic, Google, xAI, Cerebra
 - macOS: `titleBarStyle: Overlay` + `hiddenTitle: true` in `tauri.conf.json` (native traffic lights via overlay).
 - Linux: `decorations: false` + `transparent: true` from `tauri.linux.conf.json`; re-asserted post-realize for GNOME/Mutter CSD.
 - Windows: same as Linux via `tauri.windows.conf.json`. React renders custom `WindowControls`.
+- Borderless windows paint their own corners and 1 px edge (`globals.css`): 8 px on Windows, as Windows 11 rounds its own windows, and 12 px on Linux. A maximized window fills the screen, where rounded corners would show the desktop, so it is square and without the edge. `lib/windowShape.ts` keeps `data-window-maximized` on `<html>`, asks for the state at most once per frame while the window resizes, and `WindowControls` reads the same state.
 - Window restore presentation keeps its opaque cover until layout is ready, but a bounded fallback must remove it when animation frames are suspended during an RDP or display-session transition. A focused native window overrides stale document visibility, and the final restore signal refreshes the main WebView2 plus any visible native browser surface without changing background lifecycle.
 
 ### Tauri capabilities

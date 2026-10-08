@@ -167,7 +167,7 @@
 }
 
 html[data-chrome="borderless"] .anbo-bg-surface {
-  border-radius: 12px;
+  border-radius: var(--anbo-window-radius);
 }
 .zoom-content {
   zoom: var(--app-zoom);
@@ -206,10 +206,29 @@ html[data-chrome="borderless"] body {
 html[data-chrome="borderless"] #root,
 html[data-chrome="borderless"] #settings-root {
   height: 100%;
-  border-radius: 12px;
+  border-radius: var(--anbo-window-radius);
   overflow: hidden;
   border: 1px solid var(--border);
   background: var(--background);
+}
+
+/* Windows 11 rounds its own windows by 8 px, so Anbo does too there; Linux
+ * keeps 12 px. A maximized window fills the screen, where rounded corners
+ * would show the desktop at the screen's corners: it is square and without
+ * the edge, the way Windows draws its own maximized windows
+ * (lib/windowShape.ts sets both attributes). */
+html[data-chrome="borderless"] {
+  --anbo-window-radius: 12px;
+}
+html[data-chrome="borderless"][data-window-corners="windows"] {
+  --anbo-window-radius: 8px;
+}
+html[data-chrome="borderless"][data-window-maximized] {
+  --anbo-window-radius: 0px;
+}
+html[data-chrome="borderless"][data-window-maximized] #root,
+html[data-chrome="borderless"][data-window-maximized] #settings-root {
+  border-width: 0;
 }
 
 /* Windows can expose several intermediate layouts while minimizing/restoring

@@ -15,9 +15,11 @@ import App from "./app/App";
 import { initLaunchDir } from "./lib/launchDir";
 import { USE_CUSTOM_WINDOW_CONTROLS } from "./lib/platform";
 import { initializeWindowPresentation } from "./lib/windowPresentation";
+import { initializeWindowShape } from "./lib/windowShape";
 
 if (USE_CUSTOM_WINDOW_CONTROLS) {
   document.documentElement.dataset.chrome = "borderless";
+  initializeWindowShape();
 }
 
 initializeWindowPresentation();

@@ -5,6 +5,7 @@ import {
   resumeWindowPresentation,
   suspendWindowPresentation,
 } from "@/lib/windowPresentation";
+import { isWindowMaximized, subscribeWindowMaximized } from "@/lib/windowShape";
 import {
   Cancel01Icon,
   Copy01Icon,
@@ -13,7 +14,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 type Props = {
   /** Render only the close button (used by the settings window). */
@@ -21,22 +22,12 @@ type Props = {
 };
 
 export function WindowControls({ closeOnly = false }: Props) {
-  const [maximized, setMaximized] = useState(false);
-
-  useEffect(() => {
-    if (!USE_CUSTOM_WINDOW_CONTROLS || closeOnly) return;
-    const w = getCurrentWindow();
-    let unlisten: (() => void) | undefined;
-    void w.isMaximized().then(setMaximized);
-    void w
-      .onResized(() => {
-        void w.isMaximized().then(setMaximized);
-      })
-      .then((un) => {
-        unlisten = un;
-      });
-    return () => unlisten?.();
-  }, [closeOnly]);
+  // lib/windowShape.ts follows the window's state for its corners as well.
+  const maximized = useSyncExternalStore(
+    subscribeWindowMaximized,
+    isWindowMaximized,
+    () => false,
+  );
 
   if (!USE_CUSTOM_WINDOW_CONTROLS) return null;
 
