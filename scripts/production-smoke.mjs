@@ -165,7 +165,14 @@ async function dumpPage(pageUrl, label) {
     }
     return { stdout, stderr };
   } finally {
-    rmSync(profile, { recursive: true, force: true });
+    // Chrome's helper processes can still write into the profile for a moment
+    // after the browser exits (ENOTEMPTY on the Linux runner), and a failed
+    // cleanup must not replace the smoke's own result.
+    try {
+      rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch (error) {
+      console.warn(`${label}: could not remove ${profile}: ${error.message}`);
+    }
   }
 }
 
