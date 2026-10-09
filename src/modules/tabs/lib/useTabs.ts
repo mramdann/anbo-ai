@@ -36,6 +36,7 @@ import {
 import { disposeSession } from "@/modules/terminal/lib/useTerminalSession";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  type RuntimeIdAllocator,
   reserveRuntimeIds,
   runtimeTabIdAllocator,
   takeRuntimeId,
@@ -418,6 +419,166 @@ export function planGitDiffOpen(
   const next = [...tabs];
   next[previewIndex] = tab;
   return { tabs: next, targetId: id };
+}
+
+type TabOpenPlan = { tabs: Tab[]; targetId: number };
+
+/** The plan behind `openFileTab`, whose comment describes `pin`. */
+export function planFileOpen(
+  tabs: Tab[],
+  path: string,
+  pin: boolean,
+  spaceId: string,
+  allocId: () => number,
+): TabOpenPlan {
+  if (pin) {
+    const existing = tabs.find((t) => t.kind === "editor" && t.path === path);
+    if (existing) {
+      if ((existing as EditorTab).preview) {
+        return {
+          tabs: tabs.map((t) =>
+            t.id === existing.id ? { ...t, preview: false } : t,
+          ),
+          targetId: existing.id,
+        };
+      }
+      return { tabs, targetId: existing.id };
+    }
+    const id = allocId();
+    return {
+      tabs: [
+        ...tabs,
+        {
+          id,
+          kind: "editor",
+          spaceId,
+          title: basename(path),
+          path,
+          dirty: false,
+          preview: false,
+        } satisfies EditorTab,
+      ],
+      targetId: id,
+    };
+  }
+  const persistent = tabs.find(
+    (t) => t.kind === "editor" && t.path === path && !(t as EditorTab).preview,
+  );
+  if (persistent) return { tabs, targetId: persistent.id };
+  // Reuse the slot if it already shows the same path.
+  const existingPreview = tabs.find(
+    (t) => t.kind === "editor" && t.path === path && (t as EditorTab).preview,
+  );
+  if (existingPreview) return { tabs, targetId: existingPreview.id };
+  // Replace the current preview slot, or append a new one.
+  const previewIdx = tabs.findIndex(
+    (t) => t.kind === "editor" && (t as EditorTab).preview,
+  );
+  const id = allocId();
+  const tab: EditorTab = {
+    id,
+    kind: "editor",
+    spaceId,
+    title: basename(path),
+    path,
+    dirty: false,
+    preview: true,
+  };
+  if (previewIdx === -1) return { tabs: [...tabs, tab], targetId: id };
+  const next = [...tabs];
+  next[previewIdx] = tab;
+  return { tabs: next, targetId: id };
+}
+
+export function planMarkdownOpen(
+  tabs: Tab[],
+  path: string,
+  spaceId: string,
+  allocId: () => number,
+): TabOpenPlan {
+  const existing = tabs.find((t) => t.kind === "markdown" && t.path === path);
+  if (existing) return { tabs, targetId: existing.id };
+  const id = allocId();
+  const tab: MarkdownTab = {
+    id,
+    kind: "markdown",
+    spaceId,
+    title: basename(path),
+    path,
+  };
+  return { tabs: [...tabs, tab], targetId: id };
+}
+
+type AiDiffOpenInput = {
+  path: string;
+  originalContent: string;
+  proposedContent: string;
+  approvalId: string;
+  isNewFile: boolean;
+};
+
+export function planAiDiffOpen(
+  tabs: Tab[],
+  input: AiDiffOpenInput,
+  spaceId: string,
+  allocId: () => number,
+): TabOpenPlan {
+  const existing = tabs.find(
+    (t) => t.kind === "ai-diff" && t.approvalId === input.approvalId,
+  );
+  if (existing) return { tabs, targetId: existing.id };
+  const id = allocId();
+  const tab: AiDiffTab = {
+    id,
+    kind: "ai-diff",
+    spaceId,
+    title: `${basename(input.path)} (AI diff)`,
+    path: input.path,
+    originalContent: input.originalContent,
+    proposedContent: input.proposedContent,
+    approvalId: input.approvalId,
+    status: "pending",
+    isNewFile: input.isNewFile,
+  };
+  return { tabs: [...tabs, tab], targetId: id };
+}
+
+/** One new tab id per open, however often React runs its plan. */
+export function onceId(allocator: RuntimeIdAllocator): () => number {
+  let id: number | null = null;
+  return () => {
+    id ??= takeRuntimeId(allocator);
+    return id;
+  };
+}
+
+/**
+ * Applies an open plan and activates its tab. React runs a state updater at
+ * once only while the component has no pending update, otherwise at its next
+ * render, so an id assigned inside one could still be null right after the
+ * call: the tab was added but never activated (a file opened after the window
+ * came back from minimized stayed behind the current tab). The plan runs on
+ * the tabs already known, for an id the caller gets at once, and again inside
+ * the updater on whatever is current then. The activation reads the updater's
+ * choice: React runs it after the tabs updater, as the tabs state is declared
+ * before `activeId`.
+ */
+export function applyTabOpen(
+  plan: (tabs: Tab[]) => TabOpenPlan,
+  tabsRef: { current: Tab[] },
+  setTabs: (update: (tabs: Tab[]) => Tab[]) => void,
+  setActiveId: (update: (id: number) => number) => void,
+): number {
+  const now = plan(tabsRef.current);
+  tabsRef.current = now.tabs;
+  let targetId = now.targetId;
+  setTabs((tabs) => {
+    const next = plan(tabs);
+    targetId = next.targetId;
+    return next.tabs;
+  });
+  setActiveId(() => targetId);
+  return now.targetId;
 }
 
 export function createTerminalTab(
@@ -965,78 +1126,14 @@ export function useTabs(initial?: Partial<TerminalTab>) {
    *   otherwise the current preview slot is replaced with the new path.
    */
   const openFileTab = useCallback((path: string, pin = true) => {
-    let targetId: number | null = null;
-    setTabs((curr) => {
-      if (pin) {
-        // Persistent open: find any existing editor tab, pin it if needed.
-        const existing = curr.find(
-          (t) => t.kind === "editor" && t.path === path,
-        );
-        if (existing) {
-          targetId = existing.id;
-          if ((existing as EditorTab).preview) {
-            return curr.map((t) =>
-              t.id === existing.id ? { ...t, preview: false } : t,
-            );
-          }
-          return curr;
-        }
-        const id = nextIdRef.current++;
-        targetId = id;
-        return [
-          ...curr,
-          {
-            id,
-            kind: "editor",
-            spaceId: activeSpaceIdRef.current,
-            title: basename(path),
-            path,
-            dirty: false,
-            preview: false,
-          } satisfies EditorTab,
-        ];
-      } else {
-        // Preview open: persistent tab for this path takes priority.
-        const persistent = curr.find(
-          (t) =>
-            t.kind === "editor" && t.path === path && !(t as EditorTab).preview,
-        );
-        if (persistent) {
-          targetId = persistent.id;
-          return curr;
-        }
-        // Reuse the slot if it already shows the same path.
-        const existingPreview = curr.find(
-          (t) =>
-            t.kind === "editor" && t.path === path && (t as EditorTab).preview,
-        );
-        if (existingPreview) {
-          targetId = existingPreview.id;
-          return curr;
-        }
-        // Replace the current preview slot, or append a new one.
-        const previewIdx = curr.findIndex(
-          (t) => t.kind === "editor" && (t as EditorTab).preview,
-        );
-        const id = nextIdRef.current++;
-        targetId = id;
-        const tab: EditorTab = {
-          id,
-          kind: "editor",
-          spaceId: activeSpaceIdRef.current,
-          title: basename(path),
-          path,
-          dirty: false,
-          preview: true,
-        };
-        if (previewIdx === -1) return [...curr, tab];
-        const next = [...curr];
-        next[previewIdx] = tab;
-        return next;
-      }
-    });
-    if (targetId !== null) setActiveId(targetId);
-    return targetId as number | null;
+    const spaceId = activeSpaceIdRef.current;
+    const allocId = onceId(nextIdRef);
+    return applyTabOpen(
+      (tabs) => planFileOpen(tabs, path, pin, spaceId, allocId),
+      tabsRef,
+      setTabs,
+      setActiveId,
+    );
   }, []);
 
   /**
@@ -1055,47 +1152,16 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     );
   }, []);
 
-  const openAiDiffTab = useCallback(
-    (input: {
-      path: string;
-      originalContent: string;
-      proposedContent: string;
-      approvalId: string;
-      isNewFile: boolean;
-    }) => {
-      let targetId: number | null = null;
-      setTabs((curr) => {
-        const existing = curr.find(
-          (t) => t.kind === "ai-diff" && t.approvalId === input.approvalId,
-        );
-        if (existing) {
-          targetId = existing.id;
-          return curr;
-        }
-        const id = nextIdRef.current++;
-        targetId = id;
-        const title = `${basename(input.path)} (AI diff)`;
-        return [
-          ...curr,
-          {
-            id,
-            kind: "ai-diff",
-            spaceId: activeSpaceIdRef.current,
-            title,
-            path: input.path,
-            originalContent: input.originalContent,
-            proposedContent: input.proposedContent,
-            approvalId: input.approvalId,
-            status: "pending",
-            isNewFile: input.isNewFile,
-          },
-        ];
-      });
-      if (targetId !== null) setActiveId(targetId);
-      return targetId as number | null;
-    },
-    [],
-  );
+  const openAiDiffTab = useCallback((input: AiDiffOpenInput) => {
+    const spaceId = activeSpaceIdRef.current;
+    const allocId = onceId(nextIdRef);
+    return applyTabOpen(
+      (tabs) => planAiDiffOpen(tabs, input, spaceId, allocId),
+      tabsRef,
+      setTabs,
+      setActiveId,
+    );
+  }, []);
 
   const setAiDiffStatus = useCallback(
     (approvalId: string, status: AiDiffStatus) => {
@@ -1151,30 +1217,14 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   );
 
   const newMarkdownTab = useCallback((path: string) => {
-    let targetId: number | null = null;
-    setTabs((curr) => {
-      const existing = curr.find(
-        (t) => t.kind === "markdown" && t.path === path,
-      );
-      if (existing) {
-        targetId = existing.id;
-        return curr;
-      }
-      const id = nextIdRef.current++;
-      targetId = id;
-      return [
-        ...curr,
-        {
-          id,
-          kind: "markdown",
-          spaceId: activeSpaceIdRef.current,
-          title: basename(path),
-          path,
-        },
-      ];
-    });
-    if (targetId !== null) setActiveId(targetId);
-    return targetId;
+    const spaceId = activeSpaceIdRef.current;
+    const allocId = onceId(nextIdRef);
+    return applyTabOpen(
+      (tabs) => planMarkdownOpen(tabs, path, spaceId, allocId),
+      tabsRef,
+      setTabs,
+      setActiveId,
+    );
   }, []);
 
   const setOverrideLanguage = useCallback((id: number, lang: string | null) => {
