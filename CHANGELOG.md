@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.36.2](https://github.com/mramdann/anbo-ai/compare/v0.36.1...v0.36.2) (2026-10-09)
+
+
+### Bug Fixes
+
+* **dev:** reload the page once when a module the entry imports changes ([c409043](https://github.com/mramdann/anbo-ai/commit/c409043852fb63b21ef732aa4113faac43348ba9))
+* **explorer:** use Windows names for the file manager and Recycle Bin ([80451f1](https://github.com/mramdann/anbo-ai/commit/80451f15d4dd8410d7c970d4fddc981c5d8da6ca))
+* hand a second Anbo launch to the running window ([fd2a3a0](https://github.com/mramdann/anbo-ai/commit/fd2a3a0368f9f77e073420eef562dd4f13b7f47f))
+* keep the window title on the shown space ([954a835](https://github.com/mramdann/anbo-ai/commit/954a83551723f462e4f9f1327b3021d62e566d81))
+* open launch files after the saved spaces come back ([e314eb4](https://github.com/mramdann/anbo-ai/commit/e314eb41323fbfe8af3f18dddeee99b0ff70871e))
+* **shortcuts:** match Shift symbol shortcuts by the physical key ([ffc4939](https://github.com/mramdann/anbo-ai/commit/ffc4939534233730cbfc31ad46a2e4c1dd517818))
+* **tabs:** activate a file tab opened while another update is pending ([09e55b3](https://github.com/mramdann/anbo-ai/commit/09e55b327d81cb3d3fcf71070274d19fca93c38c))
+
 ## [0.36.1](https://github.com/mramdann/anbo-ai/compare/v0.36.0...v0.36.1) (2026-10-08)
 
 
