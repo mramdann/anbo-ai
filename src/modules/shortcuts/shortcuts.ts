@@ -400,7 +400,8 @@ const CODE_TO_KEY: Record<string, string> = {
   Space: " ",
 };
 
-// macOS Option combinations rewrite e.key ("«", "…", dead keys); the
+// Shift rewrites e.key for symbol keys ("]" arrives as "}", "'" as '"'), and
+// macOS Option combinations rewrite it too ("«", "…", dead keys); the
 // physical key survives in e.code.
 function keyFromCode(code: string): string | null {
   if (code.startsWith("Key")) return code.slice(3).toLowerCase();
@@ -420,7 +421,8 @@ export function matchBinding(
   if (id === "tab.selectByIndex") {
     if (!/^[1-9]$/.test(e.key)) return false;
   } else if (eventKey !== bindingKey) {
-    if (!binding.alt || keyFromCode(e.code) !== bindingKey) return false;
+    const rewritten = binding.alt || binding.shift;
+    if (!rewritten || keyFromCode(e.code) !== bindingKey) return false;
   }
 
   return (

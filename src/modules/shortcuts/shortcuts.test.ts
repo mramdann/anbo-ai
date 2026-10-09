@@ -93,6 +93,49 @@ describe("matchBinding", () => {
     ).toBe(false);
   });
 
+  it("matches shift symbol bindings by the physical key", () => {
+    // WebView2 reports what Shift types: "]" arrives as "}", "[" as "{" and
+    // "'" as '"', so Next space, Previous space and zen mode never fired.
+    const shifted = (key: string, code: string) =>
+      event({ key, code, ctrlKey: true, shiftKey: true });
+    expect(
+      matchBinding(shifted("}", "BracketRight"), {
+        key: "]",
+        ctrl: true,
+        shift: true,
+      }),
+    ).toBe(true);
+    expect(
+      matchBinding(shifted("{", "BracketLeft"), {
+        key: "[",
+        ctrl: true,
+        shift: true,
+      }),
+    ).toBe(true);
+    expect(
+      matchBinding(shifted('"', "Quote"), {
+        key: "'",
+        ctrl: true,
+        shift: true,
+      }),
+    ).toBe(true);
+    expect(
+      matchBinding(shifted("{", "BracketLeft"), {
+        key: "]",
+        ctrl: true,
+        shift: true,
+      }),
+    ).toBe(false);
+    // Without Shift the binding still wants Shift.
+    expect(
+      matchBinding(event({ key: "]", code: "BracketRight", ctrlKey: true }), {
+        key: "]",
+        ctrl: true,
+        shift: true,
+      }),
+    ).toBe(false);
+  });
+
   it("only accepts digit keys for the jump-to-tab shortcut", () => {
     expect(
       matchBinding(event({ key: "3" }), { key: "1" }, "tab.selectByIndex"),
