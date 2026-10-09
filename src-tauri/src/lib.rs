@@ -619,6 +619,7 @@ pub fn run() {
             voice_runtime::whisper_runtime_uninstall,
             global_voice::global_voice_status,
             global_voice::global_voice_set_enabled,
+            global_voice::global_voice_set_push_to_talk,
             global_voice::global_voice_capture_target,
             global_voice::global_voice_clear_target,
             global_voice::global_voice_remember_foreground,

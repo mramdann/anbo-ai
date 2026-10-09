@@ -1,3 +1,4 @@
+use crate::modules::voice_push_to_talk::{self as ptt, PttKey};
 use crate::modules::window_open;
 use serde::Serialize;
 use std::sync::Mutex;
@@ -23,6 +24,9 @@ struct GlobalVoiceInner {
     enabled: bool,
     target: Option<platform::CapturedTarget>,
     pending_internal_target: Option<PendingInternalTarget>,
+    push_to_talk: PttKey,
+    /// Runs only while the orb is enabled and `push_to_talk` is not Off.
+    listener: Option<ptt::Listener>,
 }
 
 struct PendingInternalTarget {
@@ -37,6 +41,7 @@ pub struct GlobalVoiceStatus {
     supported: bool,
     enabled: bool,
     shortcut: &'static str,
+    push_to_talk: PttKey,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +75,7 @@ pub fn shutdown(app: &tauri::AppHandle) {
             inner.enabled = false;
             inner.target = None;
             inner.pending_internal_target = None;
+            inner.listener = None;
         }
     }
     if app.global_shortcut().is_registered(SHORTCUT) {
@@ -167,18 +173,67 @@ fn ensure_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String>
     Ok(window)
 }
 
-#[tauri::command]
-pub fn global_voice_status(state: tauri::State<'_, GlobalVoiceState>) -> GlobalVoiceStatus {
-    let enabled = state
-        .inner
-        .lock()
-        .map(|inner| inner.enabled)
-        .unwrap_or(false);
+fn status_of(inner: &GlobalVoiceInner) -> GlobalVoiceStatus {
     GlobalVoiceStatus {
         supported: platform::supported(),
-        enabled,
+        enabled: inner.enabled,
         shortcut: SHORTCUT,
+        push_to_talk: inner.push_to_talk,
     }
+}
+
+#[tauri::command]
+pub fn global_voice_status(
+    state: tauri::State<'_, GlobalVoiceState>,
+) -> Result<GlobalVoiceStatus, String> {
+    state
+        .inner
+        .lock()
+        .map(|inner| status_of(&inner))
+        .map_err(|_| "Global AnboVoice state is unavailable.".to_string())
+}
+
+/// A hook that cannot start costs only hold to talk: the orb and its
+/// Ctrl+Alt+Space toggle keep working, so the failure is logged, not raised.
+fn start_listener(app: &tauri::AppHandle, key: PttKey) -> Option<ptt::Listener> {
+    let handle = app.clone();
+    let emit = move |phase: ptt::PttPhase| {
+        let _ = handle.emit_to(WINDOW_LABEL, ptt::EVENT, phase);
+    };
+    match ptt::Listener::start(key, emit) {
+        Ok(listener) => {
+            if listener.is_some() {
+                log::info!("global voice push to talk listening ({key:?})");
+            }
+            listener
+        }
+        Err(error) => {
+            log::warn!("global voice push to talk failed: {error}");
+            None
+        }
+    }
+}
+
+#[tauri::command]
+pub fn global_voice_set_push_to_talk(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GlobalVoiceState>,
+    key: PttKey,
+) -> Result<GlobalVoiceStatus, String> {
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "Global AnboVoice state is unavailable.".to_string())?;
+    if inner.push_to_talk != key || (inner.enabled && inner.listener.is_none()) {
+        inner.push_to_talk = key;
+        // The old hook goes before the new one is installed, so a release
+        // never reaches two of them.
+        inner.listener = None;
+        if inner.enabled {
+            inner.listener = start_listener(&app, key);
+        }
+    }
+    Ok(status_of(&inner))
 }
 
 #[tauri::command]
@@ -240,15 +295,16 @@ fn set_enabled(
         .lock()
         .map_err(|_| "Global AnboVoice state is unavailable.".to_string())?;
     inner.enabled = enabled;
-    if !enabled {
+    if enabled {
+        if inner.listener.is_none() {
+            inner.listener = start_listener(&app, inner.push_to_talk);
+        }
+    } else {
         inner.target = None;
         inner.pending_internal_target = None;
+        inner.listener = None;
     }
-    Ok(GlobalVoiceStatus {
-        supported: platform::supported(),
-        enabled,
-        shortcut: SHORTCUT,
-    })
+    Ok(status_of(&inner))
 }
 
 /// The orb shows a failure only as its colour, so every one is written down

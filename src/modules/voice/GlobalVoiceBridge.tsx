@@ -1,6 +1,9 @@
 import { afterPageWork } from "@/lib/nativeWorkOrder";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { setGlobalVoiceRuntimeEnabled } from "@/modules/voice/lib/globalVoice";
+import {
+  setGlobalVoicePushToTalk,
+  setGlobalVoiceRuntimeEnabled,
+} from "@/modules/voice/lib/globalVoice";
 import { useEffect, useRef } from "react";
 
 const INTERNAL_VOICE_TARGET_ATTRIBUTE = "data-anbo-voice-target";
@@ -25,6 +28,9 @@ function clearInternalVoiceTarget() {
 export function GlobalVoiceBridge({ configured }: { configured: boolean }) {
   const hydrated = usePreferencesStore((state) => state.hydrated);
   const enabled = usePreferencesStore((state) => state.globalVoiceEnabled);
+  const pushToTalk = usePreferencesStore(
+    (state) => state.globalVoicePushToTalk,
+  );
   // An orb that cannot transcribe is worse than no orb: the take is recorded
   // and then lost. Keep it away until voice has been set up.
   const runtimeEnabled = enabled && configured;
@@ -67,6 +73,15 @@ export function GlobalVoiceBridge({ configured }: { configured: boolean }) {
       clearInternalVoiceTarget();
     };
   }, [runtimeEnabled]);
+
+  // The shell keeps the chord and installs its keyboard hook only while the
+  // orb runs, so this can go ahead of the orb turning on below.
+  useEffect(() => {
+    if (!hydrated || !enabled) return;
+    void setGlobalVoicePushToTalk(pushToTalk).catch((error) => {
+      console.error("AnboVoice push to talk failed", error);
+    });
+  }, [hydrated, enabled, pushToTalk]);
 
   useEffect(() => {
     if (!hydrated || appliedRef.current === runtimeEnabled) return;

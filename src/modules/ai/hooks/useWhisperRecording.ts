@@ -5,6 +5,8 @@ import { toast } from "sonner";
 import { type SttProvider, WHISPERCPP_DEFAULT_BASE_URL } from "../config";
 import { createAudioMeter } from "../lib/audioMeter";
 import {
+  peakLevel,
+  SILENCE_RMS,
   type SttOptions,
   transcribeAudio,
   whisperCppReachable,
@@ -53,10 +55,15 @@ export function useWhisperRecording({
   onResult,
   onError,
   onSettled,
+  skipSilence = false,
 }: {
   onResult: (text: string) => void | Promise<void>;
   onError?: (message: string) => void;
   onSettled?: () => void;
+  /** Drop a take with nothing above room noise instead of transcribing it:
+   * Whisper writes words into silence ("Thank you."), and a hold to talk can
+   * end without a word said. */
+  skipSilence?: boolean;
 }) {
   const apiKeys = useChatStore((s) => s.apiKeys);
   const sttProvider = usePreferencesStore((s) => s.sttProvider);
@@ -70,6 +77,7 @@ export function useWhisperRecording({
   const resultRef = useRef(onResult);
   const errorRef = useRef(onError);
   const settledRef = useRef(onSettled);
+  const skipSilenceRef = useRef(skipSilence);
   const sessionResultRef = useRef(onResult);
   const cancelledRef = useRef(false);
   const mountedRef = useRef(true);
@@ -81,6 +89,7 @@ export function useWhisperRecording({
   resultRef.current = onResult;
   errorRef.current = onError;
   settledRef.current = onSettled;
+  skipSilenceRef.current = skipSilence;
 
   const needsKey = providerNeedsKey(sttProvider);
   const providerKey = needsKey ? getApiKeyForStt(apiKeys, sttProvider) : null;
@@ -227,6 +236,13 @@ export function useWhisperRecording({
           }
           if (mountedRef.current) setState("transcribing");
           try {
+            // A recording that cannot be decoded here still goes to Whisper.
+            if (
+              skipSilenceRef.current &&
+              (await peakLevel(blob).catch(() => 1)) < SILENCE_RMS
+            ) {
+              return;
+            }
             const text = await transcribeAudio(
               blob,
               sttProvider,

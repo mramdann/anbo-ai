@@ -41,6 +41,10 @@ import {
   type WhispercppModelChoice,
 } from "@/modules/ai/config";
 import type { KeyBinding, ShortcutId } from "@/modules/shortcuts/shortcuts";
+import {
+  isPushToTalkKey,
+  type PushToTalkKey,
+} from "@/modules/voice/lib/globalVoice";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 
@@ -176,6 +180,7 @@ export type Preferences = {
   openLinksInAnbo: boolean;
   whispercppAutoStart: boolean;
   globalVoiceEnabled: boolean;
+  globalVoicePushToTalk: PushToTalkKey;
   favoriteModelIds: string[];
   recentModelIds: string[];
   vimMode: boolean;
@@ -277,6 +282,7 @@ const KEY_OPEN_LINKS_IN_ANBO = "openLinksInAnbo";
 const KEY_WHISPERCPP_MODEL = "whispercppModel";
 const KEY_WHISPERCPP_AUTO_START = "whispercppAutoStart";
 const KEY_GLOBAL_VOICE_ENABLED = "globalVoiceEnabled";
+const KEY_GLOBAL_VOICE_PUSH_TO_TALK = "globalVoicePushToTalk";
 const KEY_FAVORITE_MODELS = "favoriteModelIds";
 const KEY_RECENT_MODELS = "recentModelIds";
 const KEY_VIM_MODE = "vimMode";
@@ -374,6 +380,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   openLinksInAnbo: DEFAULT_OPEN_LINKS_IN_ANBO,
   whispercppAutoStart: true,
   globalVoiceEnabled: false,
+  globalVoicePushToTalk: "win",
   favoriteModelIds: [],
   recentModelIds: [],
   vimMode: false,
@@ -548,6 +555,12 @@ export async function loadPreferences(): Promise<Preferences> {
     globalVoiceEnabled:
       get<boolean>(KEY_GLOBAL_VOICE_ENABLED) ??
       DEFAULT_PREFERENCES.globalVoiceEnabled,
+    globalVoicePushToTalk: (() => {
+      const stored = get<unknown>(KEY_GLOBAL_VOICE_PUSH_TO_TALK);
+      return isPushToTalkKey(stored)
+        ? stored
+        : DEFAULT_PREFERENCES.globalVoicePushToTalk;
+    })(),
     favoriteModelIds: storedModelList(
       get<string[]>(KEY_FAVORITE_MODELS) ??
         DEFAULT_PREFERENCES.favoriteModelIds,
@@ -870,6 +883,12 @@ export async function setGlobalVoiceEnabled(value: boolean): Promise<void> {
   await writePref(KEY_GLOBAL_VOICE_ENABLED, value);
 }
 
+export async function setGlobalVoicePushToTalk(
+  value: PushToTalkKey,
+): Promise<void> {
+  await writePref(KEY_GLOBAL_VOICE_PUSH_TO_TALK, value);
+}
+
 export async function setFavoriteModelIds(value: string[]): Promise<void> {
   await writePref(KEY_FAVORITE_MODELS, value);
 }
@@ -1104,6 +1123,7 @@ export async function onPreferencesChange(
     [KEY_WHISPERCPP_MODEL]: "whispercppModel",
     [KEY_WHISPERCPP_AUTO_START]: "whispercppAutoStart",
     [KEY_GLOBAL_VOICE_ENABLED]: "globalVoiceEnabled",
+    [KEY_GLOBAL_VOICE_PUSH_TO_TALK]: "globalVoicePushToTalk",
     [KEY_FAVORITE_MODELS]: "favoriteModelIds",
     [KEY_RECENT_MODELS]: "recentModelIds",
     [KEY_VIM_MODE]: "vimMode",

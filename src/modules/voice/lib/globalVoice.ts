@@ -1,9 +1,28 @@
 import { invoke } from "@tauri-apps/api/core";
 
+/** The chord held to talk; the names are the Rust enum's (`PttKey`). */
+export const PUSH_TO_TALK_KEYS = [
+  "win",
+  "ctrl_win",
+  "right_alt",
+  "off",
+] as const;
+export type PushToTalkKey = (typeof PUSH_TO_TALK_KEYS)[number];
+
+export function isPushToTalkKey(value: unknown): value is PushToTalkKey {
+  return (
+    typeof value === "string" &&
+    (PUSH_TO_TALK_KEYS as readonly string[]).includes(value)
+  );
+}
+
+export type PushToTalkPhase = "start" | "stop" | "cancel";
+
 export type GlobalVoiceStatus = {
   supported: boolean;
   enabled: boolean;
   shortcut: string;
+  pushToTalk: PushToTalkKey;
 };
 
 export type GlobalVoiceTarget = {
@@ -16,6 +35,7 @@ export type GlobalVoiceInsertResult = {
 };
 
 export const GLOBAL_VOICE_TOGGLE_EVENT = "anbo://global-voice-toggle";
+export const GLOBAL_VOICE_PTT_EVENT = "anbo://global-voice-ptt";
 
 export function getGlobalVoiceStatus(): Promise<GlobalVoiceStatus> {
   return invoke("global_voice_status");
@@ -25,6 +45,12 @@ export function setGlobalVoiceRuntimeEnabled(
   enabled: boolean,
 ): Promise<GlobalVoiceStatus> {
   return invoke("global_voice_set_enabled", { enabled });
+}
+
+export function setGlobalVoicePushToTalk(
+  key: PushToTalkKey,
+): Promise<GlobalVoiceStatus> {
+  return invoke("global_voice_set_push_to_talk", { key });
 }
 
 export function captureGlobalVoiceTarget(): Promise<GlobalVoiceTarget> {

@@ -103,6 +103,32 @@ async function transcribeViaRest(
   return res.text();
 }
 
+/** Below this, the loudest 50 ms of a take is room noise; a speaking voice
+ * measures several times higher (the meter's own floor is 0.012). */
+export const SILENCE_RMS = 0.015;
+
+/** The loudest 50 ms stretch of a recording, as RMS of its first channel.
+ * Decoded from the recording itself, since the live meter stops while the
+ * orb window is hidden. */
+export async function peakLevel(blob: Blob): Promise<number> {
+  const ctx = new AudioContext();
+  try {
+    const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
+    const data = buf.getChannelData(0);
+    const step = Math.max(1, Math.round(buf.sampleRate * 0.05));
+    let peak = 0;
+    for (let start = 0; start < data.length; start += step) {
+      const end = Math.min(data.length, start + step);
+      let sum = 0;
+      for (let i = start; i < end; i++) sum += data[i] * data[i];
+      peak = Math.max(peak, Math.sqrt(sum / (end - start)));
+    }
+    return peak;
+  } finally {
+    void ctx.close();
+  }
+}
+
 async function toWav(blob: Blob): Promise<Blob> {
   const ctx = new AudioContext();
   try {

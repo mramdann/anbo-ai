@@ -7,9 +7,11 @@ import { onKeysChanged } from "@/modules/settings/store";
 import {
   captureGlobalVoiceTarget,
   clearGlobalVoiceTarget,
+  GLOBAL_VOICE_PTT_EVENT,
   GLOBAL_VOICE_TOGGLE_EVENT,
   type GlobalVoiceTarget,
   insertGlobalVoiceText,
+  type PushToTalkPhase,
   rememberGlobalVoiceForeground,
 } from "@/modules/voice/lib/globalVoice";
 import { useVoiceMeterStyle } from "@/modules/voice/lib/useVoiceMeterStyle";
@@ -229,6 +231,7 @@ export function GlobalVoiceApp() {
     onResult: finishInsert,
     onError: handleVoiceError,
     onSettled: settleTarget,
+    skipSilence: true,
   });
 
   useVoiceMeterStyle(visualRef, "--voice", voice.audioMeter, voice.recording);
@@ -311,6 +314,117 @@ export function GlobalVoiceApp() {
 
   const toggleRef = useRef(toggle);
   toggleRef.current = toggle;
+
+  // A take started by holding the push to talk chord; its release stops it.
+  const holdRef = useRef({ active: false, stopRequested: false });
+
+  const holdStart = useCallback(async () => {
+    // A hold starts a take only on an idle orb: a Ctrl+Alt+Space take or a
+    // transcription still finishing keeps its turn.
+    if (
+      voice.recording ||
+      voice.requesting ||
+      voice.transcribing ||
+      inserting ||
+      actionRef.current
+    ) {
+      return;
+    }
+    if (!voice.supported) {
+      setError(
+        "Microphone recording is not supported by this Windows WebView.",
+      );
+      return;
+    }
+    if (!voice.hasKey) {
+      setError("Configure the selected voice provider in Anbo Settings first.");
+      return;
+    }
+    holdRef.current = { active: true, stopRequested: false };
+    actionRef.current = true;
+    abortStartRef.current = false;
+    setPreparing(true);
+    setError(null);
+    setFallbackTranscript(null);
+    try {
+      // Speech starts as soon as the hold registers, so the microphone opens
+      // alongside the target capture rather than after it.
+      const [target, started] = await Promise.allSettled([
+        captureGlobalVoiceTarget(),
+        voice.start(finishInsert),
+      ]);
+      const recording = started.status === "fulfilled" && started.value;
+      if (target.status === "rejected" || !recording || abortStartRef.current) {
+        if (recording) voice.cancel();
+        if (target.status === "rejected") setError(message(target.reason));
+        holdRef.current.active = false;
+        targetRef.current = null;
+        await clearGlobalVoiceTarget();
+        return;
+      }
+      targetRef.current = target.value;
+      // Released while the microphone was still opening.
+      if (holdRef.current.stopRequested) {
+        holdRef.current.active = false;
+        voice.stop();
+      }
+    } catch (cause) {
+      holdRef.current.active = false;
+      targetRef.current = null;
+      setError(message(cause));
+      await clearGlobalVoiceTarget();
+    } finally {
+      abortStartRef.current = false;
+      actionRef.current = false;
+      setPreparing(false);
+    }
+  }, [finishInsert, inserting, voice]);
+
+  const holdStop = useCallback(() => {
+    if (!holdRef.current.active) return;
+    if (actionRef.current) {
+      holdRef.current.stopRequested = true;
+      return;
+    }
+    holdRef.current.active = false;
+    voice.stop();
+  }, [voice]);
+
+  // Another key pressed with the chord made it a Windows shortcut.
+  const holdCancel = useCallback(() => {
+    if (!holdRef.current.active) return;
+    holdRef.current.active = false;
+    cancel();
+  }, [cancel]);
+
+  const holdHandlersRef = useRef({
+    start: holdStart,
+    stop: holdStop,
+    cancel: holdCancel,
+  });
+  holdHandlersRef.current = {
+    start: holdStart,
+    stop: holdStop,
+    cancel: holdCancel,
+  };
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<PushToTalkPhase>(GLOBAL_VOICE_PTT_EVENT, ({ payload }) => {
+      const handlers = holdHandlersRef.current;
+      if (payload === "start") void handlers.start();
+      else if (payload === "stop") handlers.stop();
+      else handlers.cancel();
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   // Registered once. Keying this on `toggle` tore the listener down on every
   // render and re-armed it across an async round trip, dropping any hotkey
