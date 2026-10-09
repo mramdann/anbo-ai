@@ -1573,7 +1573,10 @@ export default function App() {
   // "Open With" files arrive via the event (warm start) and get_launch_files
   // (cold start, before this listener attaches). Backend already authorized
   // each parent; openFileTab dedupes by path, so both paths can't double-open.
+  // Both wait for the spaces boot: its restore replaces every tab, so a file
+  // opened before it was gone again once the saved workspace came back.
   useEffect(() => {
+    if (!spacesHydrated) return;
     let unlisten: (() => void) | undefined;
     const openAll = (paths: string[]) => {
       for (const path of paths) handleOpenFile(path, true);
@@ -1585,12 +1588,13 @@ export default function App() {
       openAll(await consumeLaunchFiles());
     })();
     return () => unlisten?.();
-  }, [handleOpenFile]);
+  }, [handleOpenFile, spacesHydrated]);
 
   // A folder from another launch, which the single-instance plugin hands to
   // this window, is a request for a shell there, as on a cold start. Rust
   // authorized it before emitting.
   useEffect(() => {
+    if (!spacesHydrated) return;
     let unlisten: (() => void) | undefined;
     (async () => {
       unlisten = await listen<string>("anbo:open-folder", (e) => {
@@ -1598,7 +1602,7 @@ export default function App() {
       });
     })();
     return () => unlisten?.();
-  }, [cdInNewTab]);
+  }, [cdInNewTab, spacesHydrated]);
 
   // Another app holding the MCP port leaves every agent here talking to that
   // app; say so, and offer a retry, instead of leaving it to the log.
