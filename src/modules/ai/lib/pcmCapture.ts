@@ -1,4 +1,6 @@
-import workletUrl from "./pcmCapture.worklet.js?url";
+// no-inline: a file this small would otherwise ship as a data: URL, which
+// the app's CSP (script-src 'self') refuses to load as a worklet.
+import workletUrl from "./pcmCapture.worklet.js?url&no-inline";
 import { resampleMono, WHISPER_SAMPLE_RATE } from "./wav";
 
 /** The worklet posts one block per 100 ms of audio. */

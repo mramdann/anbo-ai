@@ -14,6 +14,22 @@ if (!existsSync(indexPath)) {
 
 assertNoStaticChunkCycles(join(distRoot, "assets"));
 
+// The app's CSP takes scripts from its own origin only. A small script
+// imported with ?url ships inlined as a data: URL unless asked not to, and
+// then fails to load in the app alone: the AnboVoice audio worklet did, and
+// live text quietly stopped working while everything else still ran.
+const assetNames = readdirSync(join(distRoot, "assets"));
+for (const name of assetNames.filter((asset) => asset.endsWith(".js"))) {
+  if (readFileSync(join(distRoot, "assets", name), "utf8").includes("data:text/javascript")) {
+    throw new Error(
+      `dist/assets/${name} inlines a script as a data: URL, which the app's CSP refuses; import it with ?url&no-inline`,
+    );
+  }
+}
+if (!assetNames.some((name) => /^pcmCapture\.worklet-.+\.js$/.test(name))) {
+  throw new Error("the AnboVoice audio worklet is missing from dist/assets");
+}
+
 const browserCandidates = [
   process.env.CHROME_PATH,
   process.platform === "win32"
