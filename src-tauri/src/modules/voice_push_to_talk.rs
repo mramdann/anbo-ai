@@ -5,6 +5,10 @@
 //! A shorter press is a tap, so the Start menu (or the menu bar, for Alt)
 //! behaves as before.
 
+// Only the Windows hook feeds the chord tracker; other platforms build it for
+// its tests and start no listener.
+#![cfg_attr(not(windows), allow(dead_code))]
+
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
