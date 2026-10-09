@@ -177,6 +177,8 @@ describe("local preview window", () => {
     });
     const sent = fetchMock.mock.calls.map(([, init]) => init?.body as FormData);
     expect(sent[0].get("audio_ctx")).toBe("288");
+    expect(sent[0].get("temperature_inc")).toBe("0");
     expect(sent[1].has("audio_ctx")).toBe(false);
+    expect(sent[1].has("temperature_inc")).toBe(false);
   });
 });

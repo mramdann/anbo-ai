@@ -220,7 +220,7 @@ async function transcribeWhisperCpp(
   baseURL: string,
   blob: Blob,
   language: string | undefined,
-  audioContext: number | undefined,
+  preview: { audioContext: number } | null,
 ): Promise<string> {
   // Live text already sends a 16 kHz WAV; decoding it again would only
   // cost time.
@@ -229,8 +229,13 @@ async function transcribeWhisperCpp(
   form.append("file", wav, "audio.wav");
   form.append("response_format", "text");
   if (language) form.append("language", language);
-  // A server that does not know the field ignores it.
-  if (audioContext) form.append("audio_ctx", String(audioContext));
+  // A server that does not know these fields ignores them.
+  if (preview) {
+    form.append("audio_ctx", String(preview.audioContext));
+    // One decoding pass: retrying a poor one at higher temperatures is what
+    // a final text is for, not a preview that is replaced a second later.
+    form.append("temperature_inc", "0");
+  }
 
   const res = await fetchWithTimeout(
     `${baseURL}/inference`,
@@ -327,11 +332,11 @@ export async function transcribeAudio(
         options.whispercppBaseURL?.replace(/\/+$/, "") ||
         "http://127.0.0.1:8080";
       assertLoopbackUrl(baseURL);
-      const audioContext =
+      const preview =
         options.preview && options.audioSeconds
-          ? previewAudioContext(options.audioSeconds)
-          : undefined;
-      return transcribeWhisperCpp(baseURL, blob, language, audioContext);
+          ? { audioContext: previewAudioContext(options.audioSeconds) }
+          : null;
+      return transcribeWhisperCpp(baseURL, blob, language, preview);
     }
   }
 }

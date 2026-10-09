@@ -77,10 +77,13 @@ export function rememberGlobalVoiceForeground(): Promise<void> {
   return invoke("global_voice_remember_foreground");
 }
 
+/** `keepTarget` leaves the target in place for a further insert, as a
+ * hands-free take does for every sentence but its last. */
 export function insertGlobalVoiceText(
   text: string,
+  keepTarget = false,
 ): Promise<GlobalVoiceInsertResult> {
-  return invoke("global_voice_insert_text", { text });
+  return invoke("global_voice_insert_text", { text, keepTarget });
 }
 
 /** Shows `text` in the bubble beside the orb, or hides the bubble for null. */

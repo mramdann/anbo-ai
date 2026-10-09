@@ -5,14 +5,7 @@ import { toast } from "sonner";
 import { type SttProvider, WHISPERCPP_DEFAULT_BASE_URL } from "../config";
 import { createAudioMeter } from "../lib/audioMeter";
 import { groqQuota } from "../lib/groqQuota";
-import {
-  LIVE_MAX_FAILURES,
-  LIVE_POLL_MS,
-  liveCaption,
-  liveProvider,
-  nextLiveRequestAt,
-  planLiveRequest,
-} from "../lib/liveTranscript";
+import { liveProvider, trimSilence } from "../lib/liveTranscript";
 import { type PcmCapture, startPcmCapture } from "../lib/pcmCapture";
 import {
   peakLevel,
@@ -21,6 +14,7 @@ import {
   transcribeAudio,
   whisperCppReachable,
 } from "../lib/stt";
+import { followTake } from "../lib/takeFollower";
 import { encodeWav, WHISPER_SAMPLE_RATE } from "../lib/wav";
 import { useChatStore } from "../store/chatStore";
 
@@ -180,7 +174,15 @@ export function useWhisperRecording({
   }, [teardownStream]);
 
   const start = useCallback(
-    async (resultHandler?: (text: string) => void) => {
+    async (
+      resultHandler?: (text: string) => void,
+      takeOptions: {
+        /** Types one sentence of a hands-free take as soon as the user
+         * pauses after it, false when it could not; the result then holds
+         * only what was not typed. */
+        onSentence?: (text: string) => Promise<boolean>;
+      } = {},
+    ) => {
       if (!supported || !hasKey || state !== "idle" || activeRef.current) {
         return false;
       }
@@ -200,25 +202,33 @@ export function useWhisperRecording({
           return false;
         }
       }
-      // Live text runs beside the take: nothing in it can fail the recording
-      // or its final transcription.
-      const followLive = async (provider: SttProvider, stream: MediaStream) => {
+      const onSentence = takeOptions.onSentence;
+      let follower: ReturnType<typeof followTake> | null = null;
+      let followed: PcmCapture | null = null;
+      // The take's own audio, tapped beside the recorder for live text and to
+      // type a hands-free take sentence by sentence. Nothing in it can fail
+      // the take: without it, the whole take is transcribed at its end.
+      const follow = async (stream: MediaStream) => {
         const recording = () =>
           generationRef.current === generation &&
           recRef.current?.state === "recording";
-        if (provider === "whispercpp" && sttProvider !== "whispercpp") {
+        let liveFrom = liveRef.current
+          ? liveProvider(liveSource, sttProvider)
+          : null;
+        if (liveFrom === "whispercpp" && sttProvider !== "whispercpp") {
           // The final text goes elsewhere, so nothing checked this server.
           const endpoint =
             whispercppBaseURL?.replace(/\/+$/, "") ||
             WHISPERCPP_DEFAULT_BASE_URL;
-          if (!(await whisperCppReachable(endpoint))) return;
+          if (!(await whisperCppReachable(endpoint))) liveFrom = null;
         }
+        if (!liveFrom && !onSentence) return;
         let capture: PcmCapture;
         try {
           capture = await startPcmCapture(stream);
         } catch (e) {
           logVoiceFailure(
-            `live text could not read the microphone: ${errorText(e)}`,
+            `the take's audio could not be followed: ${errorText(e)}`,
           );
           return;
         }
@@ -227,52 +237,67 @@ export function useWhisperRecording({
           return;
         }
         captureRef.current = capture;
-        let sentUpTo = 0;
-        let failures = 0;
-        let nextAt = 0;
-        while (recording()) {
-          const began = Date.now();
-          const request =
-            began >= nextAt ? planLiveRequest(capture, sentUpTo) : null;
-          const seconds = request ? request.to - request.from : 0;
-          if (
-            request &&
-            (provider !== "groq" || groqQuota.liveAllowed(seconds))
-          ) {
-            const wav = encodeWav(
-              capture.slice(request.from, request.to),
-              WHISPER_SAMPLE_RATE,
-            );
-            const sentAt = Date.now();
-            try {
-              const text = await transcribeAudio(wav, provider, apiKeys, {
-                ...sttOptions,
-                audioSeconds: seconds,
-                preview: true,
-              });
-              if (!recording()) break;
-              const caption = liveCaption(text, request.from);
-              if (caption) setLiveText(caption);
-              sentUpTo = request.to;
-              failures = 0;
-            } catch (e) {
-              if (!recording()) break;
-              failures += 1;
-              if (failures >= LIVE_MAX_FAILURES) {
-                logVoiceFailure(
-                  `live text stopped (${provider}): ${errorText(e)}`,
-                );
-                break;
+        followed = capture;
+        const provider = liveFrom;
+        follower = followTake({
+          take: capture,
+          recording,
+          wanted: () =>
+            generationRef.current === generation && !cancelledRef.current,
+          live: provider
+            ? {
+                provider,
+                transcribe: (wav, seconds) =>
+                  transcribeAudio(wav, provider, apiKeys, {
+                    ...sttOptions,
+                    audioSeconds: seconds,
+                    preview: true,
+                  }),
+                allowed: (seconds) =>
+                  provider !== "groq" || groqQuota.liveAllowed(seconds),
               }
-            }
-            nextAt = nextLiveRequestAt(provider, sentAt, Date.now());
+            : null,
+          sentences: onSentence
+            ? {
+                transcribe: (wav, seconds) =>
+                  transcribeAudio(wav, sttProvider, apiKeys, {
+                    ...sttOptions,
+                    audioSeconds: seconds,
+                  }),
+                type: onSentence,
+              }
+            : null,
+          onLiveText: setLiveText,
+          log: logVoiceFailure,
+        });
+      };
+      /** What a hands-free take still holds after its last typed sentence. */
+      const finishSentences = async (
+        current: ReturnType<typeof followTake>,
+        capture: PcmCapture,
+      ) => {
+        const rest = await current.rest();
+        const end = capture.seconds();
+        const from = trimSilence(capture, rest.from, end);
+        let tail = "";
+        if (end - from >= 0.3 && capture.peak(from) >= SILENCE_RMS) {
+          const seconds = end - from;
+          try {
+            tail = await transcribeAudio(
+              encodeWav(capture.slice(from, end), WHISPER_SAMPLE_RATE),
+              sttProvider,
+              apiKeys,
+              { ...sttOptions, audioSeconds: seconds },
+            );
+          } catch (e) {
+            // Sentences already transcribed still go out.
+            if (rest.untyped.length === 0) throw e;
+            logVoiceFailure(
+              `${sttProvider}, the end of a hands-free take: ${errorText(e)}`,
+            );
           }
-          await new Promise((resolve) =>
-            setTimeout(resolve, Math.max(LIVE_POLL_MS, nextAt - Date.now())),
-          );
         }
-        capture.stop();
-        if (captureRef.current === capture) captureRef.current = null;
+        return [...rest.untyped, tail.trim()].filter(Boolean).join(" ");
       };
       try {
         cancelledRef.current = false;
@@ -340,17 +365,23 @@ export function useWhisperRecording({
           }
           if (mountedRef.current) setState("transcribing");
           try {
-            // A recording that cannot be decoded here still goes to Whisper.
-            if (
-              skipSilenceRef.current &&
-              (await peakLevel(blob).catch(() => 1)) < SILENCE_RMS
-            ) {
-              return;
+            let text: string;
+            const sentenceFollower = onSentence ? follower : null;
+            if (sentenceFollower && followed) {
+              text = await finishSentences(sentenceFollower, followed);
+            } else {
+              // A recording that cannot be decoded here still goes to Whisper.
+              if (
+                skipSilenceRef.current &&
+                (await peakLevel(blob).catch(() => 1)) < SILENCE_RMS
+              ) {
+                return;
+              }
+              text = await transcribeAudio(blob, sttProvider, apiKeys, {
+                ...sttOptions,
+                audioSeconds: takeSeconds,
+              });
             }
-            const text = await transcribeAudio(blob, sttProvider, apiKeys, {
-              ...sttOptions,
-              audioSeconds: takeSeconds,
-            });
             if (
               generationRef.current === generation &&
               !cancelledRef.current &&
@@ -381,10 +412,7 @@ export function useWhisperRecording({
           if (rec.state !== "inactive") rec.stop();
         }, MAX_RECORDING_MS);
         setState("recording");
-        const following = liveRef.current
-          ? liveProvider(liveSource, sttProvider)
-          : null;
-        if (following) void followLive(following, stream);
+        void follow(stream);
         return true;
       } catch (e) {
         if (

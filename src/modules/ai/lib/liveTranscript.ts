@@ -14,6 +14,14 @@ export const LIVE_POLL_MS = 250;
 /** Three failures in a row end live text for the take; the final text does
  * not depend on it. */
 export const LIVE_MAX_FAILURES = 3;
+/** A breath between sentences: this much silence after speech ends one. */
+const PAUSE_SECONDS = 0.8;
+/** Silence kept at the end of a sentence, so its last sound is not cut. */
+const PAUSE_KEPT_SECONDS = 0.3;
+/** Less than this before a pause is more likely a cough than a sentence. */
+const MIN_SENTENCE_SECONDS = 1;
+/** A clip starts this long before its first sound. */
+const LEAD_SECONDS = 0.3;
 
 /** Which service shows text while the user speaks, or null for none. */
 export function liveProvider(
@@ -47,32 +55,65 @@ export function nextLiveRequestAt(
   return sentAt + Math.max(liveIntervalMs(provider), 2 * (answeredAt - sentAt));
 }
 
-export type LiveRequest = { from: number; to: number };
+/** `cut`: the window starts after what was said first and shows so. */
+export type LiveRequest = { from: number; to: number; cut: boolean };
+
+/**
+ * Where a clip from `from` to `to` should start: just before its first
+ * sound. A clip that opens on a second of silence and ends on a word cut
+ * short makes Whisper repeat that word ("Here come. Here come."), which on a
+ * busy local server took up to 5 s instead of 0.2 s.
+ */
+export function trimSilence(take: PcmTake, from: number, to: number): number {
+  const first = Math.round(from * 10);
+  for (let block = first; block < Math.round(to * 10); block += 1) {
+    if (take.peak(block / 10, (block + 1) / 10) >= SILENCE_RMS) {
+      return Math.max(from, block / 10 - LEAD_SECONDS);
+    }
+  }
+  return from;
+}
 
 /** The stretch of the take to transcribe next, or null when nothing new
- * was said since `sentUpTo`. */
+ * was said since `sentUpTo`. Audio before `floor` was typed already. */
 export function planLiveRequest(
   take: PcmTake,
   sentUpTo: number,
+  floor = 0,
 ): LiveRequest | null {
   const to = take.seconds();
-  if (to < LIVE_MIN_SECONDS || to - sentUpTo < LIVE_MIN_NEW_SECONDS) {
+  const since = Math.max(sentUpTo, floor);
+  if (to - floor < LIVE_MIN_SECONDS || to - since < LIVE_MIN_NEW_SECONDS) {
     return null;
   }
   // Nothing above room noise since the last request: the text shown still
   // stands, and Whisper would only make words up for the silence.
-  if (take.peak(sentUpTo, to) < SILENCE_RMS) return null;
-  return { from: Math.max(0, to - LIVE_WINDOW_SECONDS), to };
+  if (take.peak(since, to) < SILENCE_RMS) return null;
+  const cut = to - LIVE_WINDOW_SECONDS > floor;
+  const from = cut ? to - LIVE_WINDOW_SECONDS : trimSilence(take, floor, to);
+  // Half a second of a new word reads as "n".
+  if (to - from < LIVE_MIN_SECONDS) return null;
+  return { from, to, cut };
+}
+
+/** Where the sentence that started at `from` ends, once the user has paused
+ * after it; null while they still speak or have not said anything yet. */
+export function findSentenceEnd(take: PcmTake, from: number): number | null {
+  const pause = take.seconds() - PAUSE_SECONDS;
+  if (pause - from < MIN_SENTENCE_SECONDS) return null;
+  if (take.peak(pause) >= SILENCE_RMS) return null;
+  if (take.peak(from, pause) < SILENCE_RMS) return null;
+  return pause + PAUSE_KEPT_SECONDS;
 }
 
 /** The caption for a live answer. Whisper marks sounds it does not take for
- * speech in brackets ("[BLANK_AUDIO]", "[Music]"); a window that starts
- * after the take did is shown as cut. */
-export function liveCaption(text: string, from: number): string | null {
+ * speech in brackets ("[BLANK_AUDIO]", "[Music]"); a `cut` window starts
+ * after what the user said first and is shown as such. */
+export function liveCaption(text: string, cut: boolean): string | null {
   const words = text
     .replace(/\[[^\]]*\]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (!words) return null;
-  return from > 0 ? `… ${words}` : words;
+  return cut ? `… ${words}` : words;
 }

@@ -455,27 +455,37 @@ async fn remember_foreground(
     Ok(())
 }
 
+/// `keep_target` leaves the target for another insert: a hands-free take
+/// types each sentence as it is said, into the same place.
 #[tauri::command]
 pub async fn global_voice_insert_text(
     app: tauri::AppHandle,
     state: tauri::State<'_, GlobalVoiceState>,
     text: String,
+    keep_target: Option<bool>,
 ) -> Result<GlobalVoiceInsertResult, String> {
-    logged("insert", insert_text(app, state, text).await)
+    let keep_target = keep_target.unwrap_or(false);
+    logged("insert", insert_text(app, state, text, keep_target).await)
 }
 
 async fn insert_text(
     app: tauri::AppHandle,
     state: tauri::State<'_, GlobalVoiceState>,
     text: String,
+    keep_target: bool,
 ) -> Result<GlobalVoiceInsertResult, String> {
-    let target = state
-        .inner
-        .lock()
-        .map_err(|_| "Global AnboVoice state is unavailable.".to_string())?
-        .target
-        .take()
-        .ok_or_else(|| "The original input target is no longer available.".to_string())?;
+    let target = {
+        let mut inner = state
+            .inner
+            .lock()
+            .map_err(|_| "Global AnboVoice state is unavailable.".to_string())?;
+        if keep_target {
+            inner.target.clone()
+        } else {
+            inner.target.take()
+        }
+    }
+    .ok_or_else(|| "The original input target is no longer available.".to_string())?;
     let excluded_window = voice_window_handle(&app);
     if platform::requires_internal_focus_restore(&target) {
         tauri::async_runtime::spawn_blocking(move || platform::restore_foreground(excluded_window))

@@ -21,7 +21,10 @@ import {
   VOICE_ORB_VISIBLE_KEY,
 } from "@/modules/voice/lib/useVoiceVisibility";
 import { resolveVoicePress } from "@/modules/voice/lib/voicePress";
-import { normalizeVoiceText } from "@/modules/voice/lib/voiceTarget";
+import {
+  joinVoiceText,
+  normalizeVoiceText,
+} from "@/modules/voice/lib/voiceTarget";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
@@ -179,6 +182,27 @@ export function GlobalVoiceApp() {
     return preparation;
   }, []);
 
+  // The last text this take typed, which the next one is joined to.
+  const typedRef = useRef<string | null>(null);
+
+  // A hands-free take types each sentence as the user pauses after it, into
+  // the target captured at its start. A failure is not shown here: the
+  // sentence comes back with the end of the take, which shows it.
+  const typeSentence = useCallback(async (text: string) => {
+    const normalized = normalizeVoiceText(text);
+    if (!normalized) return true;
+    try {
+      await insertGlobalVoiceText(
+        joinVoiceText(typedRef.current, normalized),
+        true,
+      );
+      typedRef.current = normalized;
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const finishInsert = useCallback(
     async (text: string) => {
       // The native side turns control characters into real keystrokes, so a raw
@@ -187,7 +211,11 @@ export function GlobalVoiceApp() {
       const normalized = normalizeVoiceText(text);
       setInserting(true);
       try {
-        if (normalized) await insertGlobalVoiceText(normalized);
+        if (normalized) {
+          await insertGlobalVoiceText(
+            joinVoiceText(typedRef.current, normalized),
+          );
+        }
         setError(null);
         setFallbackTranscript(null);
       } catch (cause) {
@@ -302,6 +330,7 @@ export function GlobalVoiceApp() {
 
     actionRef.current = true;
     abortStartRef.current = false;
+    typedRef.current = null;
     setPreparing(true);
     setError(null);
     setFallbackTranscript(null);
@@ -313,7 +342,9 @@ export function GlobalVoiceApp() {
         return;
       }
       targetRef.current = target;
-      const started = await voice.start(finishInsert);
+      const started = await voice.start(finishInsert, {
+        onSentence: typeSentence,
+      });
       if (!started || abortStartRef.current) {
         if (started) voice.cancel();
         targetRef.current = null;
@@ -328,7 +359,7 @@ export function GlobalVoiceApp() {
       actionRef.current = false;
       setPreparing(false);
     }
-  }, [cancel, finishInsert, inserting, voice]);
+  }, [cancel, finishInsert, inserting, typeSentence, voice]);
 
   const toggleRef = useRef(toggle);
   toggleRef.current = toggle;
@@ -360,6 +391,7 @@ export function GlobalVoiceApp() {
     }
     holdRef.current = { active: true, stopRequested: false };
     actionRef.current = true;
+    typedRef.current = null;
     abortStartRef.current = false;
     setPreparing(true);
     setError(null);
