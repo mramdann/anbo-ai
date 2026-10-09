@@ -790,7 +790,14 @@ export default function App() {
   const { explorerRoot, inheritedCwdForNewTab } =
     useWorkspaceCwd(activeSpaceRoot);
 
-  useWindowTitle(activeTab, explorerRoot);
+  // Only a tab of the shown space names the window: right after a switch to
+  // an empty space the active tab is still the last space's for one render.
+  useWindowTitle(
+    activeTab?.spaceId === (activeSpaceId ?? DEFAULT_SPACE_ID)
+      ? activeTab
+      : undefined,
+    explorerRoot,
+  );
 
   useEffect(() => {
     setActiveSearchAddon(

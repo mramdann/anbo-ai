@@ -16,6 +16,29 @@ function tabLabel(tab: Tab | undefined): string {
   return tab.title;
 }
 
+// Tauri runs every setTitle as its own async command, so two quick calls can
+// land in either order and leave the older title on the window. One call at
+// a time, always with the newest title.
+let wantedTitle: string | null = null;
+let applyingTitle = false;
+
+export async function applyWindowTitle(title: string): Promise<void> {
+  wantedTitle = title;
+  if (applyingTitle) return;
+  applyingTitle = true;
+  try {
+    while (wantedTitle !== null) {
+      const next = wantedTitle;
+      wantedTitle = null;
+      await getCurrentWindow()
+        .setTitle(next)
+        .catch(() => {});
+    }
+  } finally {
+    applyingTitle = false;
+  }
+}
+
 /**
  * Drives the OS window title from the focused tab + project folder, the way
  * Spotify shows the current track instead of just the app name. Without this
@@ -38,8 +61,6 @@ export function useWindowTitle(
     else title = project || label || APP_NAME;
 
     document.title = title;
-    void getCurrentWindow()
-      .setTitle(title)
-      .catch(() => {});
+    void applyWindowTitle(title);
   }, [project, label]);
 }
