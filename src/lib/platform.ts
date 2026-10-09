@@ -17,6 +17,15 @@ export const IS_WINDOWS = PLATFORM === "windows";
  * overlay title bar. */
 export const USE_CUSTOM_WINDOW_CONTROLS = !IS_MAC && PLATFORM !== "";
 
+/** What the OS calls its file manager and its deleted-files bin, for menu
+ * items such as "Reveal in …" and "Move to …". */
+export const FILE_MANAGER_NAME = IS_MAC
+  ? "Finder"
+  : IS_WINDOWS
+    ? "File Explorer"
+    : "File Manager";
+export const TRASH_NAME = IS_WINDOWS ? "Recycle Bin" : "Trash";
+
 export const MOD_KEY = IS_MAC ? "⌘" : "Ctrl";
 /** KeyBinding property name for the platform's primary modifier. */
 export const MOD_PROP: "meta" | "ctrl" = IS_MAC ? "meta" : "ctrl";

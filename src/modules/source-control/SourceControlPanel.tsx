@@ -36,7 +36,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { basename, relativeDirname } from "@/lib/path";
-import { IS_MAC } from "@/lib/platform";
+import { FILE_MANAGER_NAME, IS_MAC } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { type GitBranchEntry, native } from "@/modules/ai/lib/native";
 import {
@@ -1134,7 +1134,7 @@ const EntryRow = memo(function EntryRow({
     ? joinPath(repoRoot.replace(/\\/g, "/"), entry.path.replace(/\\/g, "/"))
     : null;
   const isDeleted = entry.statusCode === "D";
-  const revealLabel = IS_MAC ? "Reveal in Finder" : "Reveal in File Manager";
+  const revealLabel = `Reveal in ${FILE_MANAGER_NAME}`;
 
   return (
     <ContextMenu>
@@ -1294,7 +1294,7 @@ const EntryRow = memo(function EntryRow({
           </ContextMenuItem>
         ) : null}
 
-        {/* Reveal in Finder — only for existing files */}
+        {/* Reveal in the file manager — only for existing files */}
         {!isDeleted && absolutePath ? (
           <>
             <ContextMenuSeparator />

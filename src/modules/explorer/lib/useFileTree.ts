@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { TRASH_NAME } from "@/lib/platform";
 import { useWorkspaceEnvStore } from "@/modules/workspace";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { listenFsChanged, watchAdd, watchRemove } from "./watch";
@@ -444,12 +445,11 @@ export function useFileTree(rootPath: string | null, options?: Options) {
         );
         if (generation === generationRef.current)
           await fetchChildren(dirname(path));
-        toast.success("Moved to trash", {
-          description:
-            "You can restore it from your system trash or Recycle Bin.",
+        toast.success(`Moved to ${TRASH_NAME}`, {
+          description: `You can restore it from the ${TRASH_NAME}.`,
         });
       } catch (e) {
-        toast.error("Could not move to trash", {
+        toast.error(`Could not move to ${TRASH_NAME}`, {
           description: e instanceof Error ? e.message : String(e),
         });
       }

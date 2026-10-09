@@ -7,6 +7,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { basename } from "@/lib/path";
+import { FILE_MANAGER_NAME, TRASH_NAME } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import type { GitStatusSnapshot } from "@/modules/ai/lib/native";
 import { isBrowserPreviewablePath } from "@/modules/browser";
@@ -732,7 +733,7 @@ export const FileExplorer = memo(
                     className={COMPACT_ITEM}
                     onSelect={() => void revealInFinder(menuTarget.path)}
                   >
-                    Reveal in Finder
+                    Reveal in {FILE_MANAGER_NAME}
                   </ContextMenuItem>
                   <ContextMenuSeparator />
                   <ContextMenuItem
@@ -809,7 +810,9 @@ export const FileExplorer = memo(
                       }
                     }}
                   >
-                    {deleteConfirm ? "Confirm move to trash" : "Move to Trash"}
+                    {deleteConfirm
+                      ? `Confirm move to ${TRASH_NAME}`
+                      : `Move to ${TRASH_NAME}`}
                   </ContextMenuItem>
                 </>
               ) : (
@@ -826,7 +829,7 @@ export const FileExplorer = memo(
                     className={COMPACT_ITEM}
                     onSelect={() => void revealInFinder(rootPath)}
                   >
-                    Reveal in Finder
+                    Reveal in {FILE_MANAGER_NAME}
                   </ContextMenuItem>
                   <ContextMenuSeparator />
                   <ContextMenuItem

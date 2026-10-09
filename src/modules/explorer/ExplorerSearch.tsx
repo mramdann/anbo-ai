@@ -26,6 +26,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { fileIconUrl, folderIconUrl } from "./lib/iconResolver";
 import { copyToClipboard, revealInFinder } from "./lib/contextActions";
 import { COMPACT_CONTENT, COMPACT_ITEM } from "./lib/menuItemClass";
+import { FILE_MANAGER_NAME } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { isBrowserPreviewablePath } from "@/modules/browser";
 import { InlineInput } from "./InlineInput";
@@ -363,7 +364,7 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(
                           className={COMPACT_ITEM}
                           onSelect={() => void revealInFinder(hit.path)}
                         >
-                          Reveal in Finder
+                          Reveal in {FILE_MANAGER_NAME}
                         </ContextMenuItem>
                         <ContextMenuSeparator />
                         <ContextMenuItem
