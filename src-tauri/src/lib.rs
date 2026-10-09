@@ -95,11 +95,19 @@ fn resolve_launch_target(entries: Vec<LaunchEntry>) -> LaunchTarget {
     LaunchTarget { dir, files }
 }
 
-fn parse_launch_target() -> LaunchTarget {
-    let entries = std::env::args()
-        .skip(1)
+/// The existing paths among command-line arguments (program name excluded),
+/// relative ones taken from `cwd` when the launch came from another process.
+fn launch_entries(
+    args: impl IntoIterator<Item = String>,
+    cwd: Option<&std::path::Path>,
+) -> Vec<LaunchEntry> {
+    args.into_iter()
         .filter(|arg| !arg.starts_with('-'))
-        .filter_map(|arg| std::fs::canonicalize(arg).ok())
+        .map(|arg| match cwd {
+            Some(cwd) => cwd.join(arg),
+            None => PathBuf::from(arg),
+        })
+        .filter_map(|path| std::fs::canonicalize(path).ok())
         .filter_map(|path| {
             let meta = std::fs::metadata(&path).ok()?;
             Some(if meta.is_dir() {
@@ -108,8 +116,63 @@ fn parse_launch_target() -> LaunchTarget {
                 LaunchEntry::File(path)
             })
         })
-        .collect();
-    resolve_launch_target(entries)
+        .collect()
+}
+
+fn parse_launch_target() -> LaunchTarget {
+    resolve_launch_target(launch_entries(std::env::args().skip(1), None))
+}
+
+/// Anbo was started again while this one runs: a shortcut, an "Open With"
+/// file or a folder on the command line. The single-instance plugin ends that
+/// process and hands its arguments here, so this window comes forward and
+/// opens what the launch asked for, as a cold start with them would have.
+fn handle_second_launch<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    args: Vec<String>,
+    cwd: String,
+) {
+    if let Some(window) = app.get_window("main") {
+        // Only a window the user can see comes forward; showing a hidden one
+        // stays with the frontend, which does it once it has painted.
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    }
+    // The plugin calls this on the main thread; a path on a slow network
+    // share must not stall the window while it resolves.
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = resolve_launch_target(launch_entries(
+            args.into_iter().skip(1),
+            Some(std::path::Path::new(&cwd)),
+        ));
+        log::info!(
+            "[windows] another launch was handed to this window ({} files{})",
+            target.files.len(),
+            if target.dir.is_some() {
+                ", a folder"
+            } else {
+                ""
+            }
+        );
+        if let Some(dir) = &target.dir {
+            if let Some(registry) = app.try_state::<workspace::WorkspaceRegistry>() {
+                let _ = registry.authorize(dir);
+            }
+        }
+        if !target.files.is_empty() {
+            // Seeded too, for a launch that lands before the frontend listens.
+            if let Some(state) = app.try_state::<LaunchFiles>() {
+                *state.0.lock().expect("LaunchFiles mutex poisoned") = target.files.clone();
+            }
+            let _ = app.emit("anbo:open-file", target.files);
+        } else if let Some(dir) = target.dir {
+            // A folder on the command line is a request for a shell there.
+            let _ = app.emit("anbo:open-folder", dir);
+        }
+    });
 }
 
 /// Settings' size when nothing is saved, in logical pixels.
@@ -282,6 +345,10 @@ pub fn run() {
     let window_state_path = data_paths.window_state.to_string_lossy().into_owned();
 
     let builder = tauri::Builder::default();
+    // First, so a second start hands its arguments to this one and exits
+    // before any other plugin or the setup below touches shared state.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(handle_second_launch));
     #[cfg(target_os = "linux")]
     let builder = builder.plugin(tauri_plugin_clipboard_manager::init());
     builder
@@ -661,6 +728,21 @@ mod launch_target_tests {
         ]);
         assert_eq!(out.dir.as_deref(), Some("/workspace"));
         assert_eq!(out.files, vec!["/other/x.rs".to_string()]);
+    }
+
+    #[test]
+    fn a_handed_over_launch_resolves_relative_paths_from_its_own_cwd() {
+        let cwd = tempfile::tempdir().unwrap();
+        std::fs::write(cwd.path().join("note.md"), "x").unwrap();
+        std::fs::create_dir(cwd.path().join("proj")).unwrap();
+        let canon = |name: &str| cwd.path().join(name).canonicalize().unwrap();
+        let entries = super::launch_entries(
+            ["--flag", "proj", "note.md", "missing.txt"].map(String::from),
+            Some(cwd.path()),
+        );
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(&entries[0], LaunchEntry::Dir(path) if *path == canon("proj")));
+        assert!(matches!(&entries[1], LaunchEntry::File(path) if *path == canon("note.md")));
     }
 }
 

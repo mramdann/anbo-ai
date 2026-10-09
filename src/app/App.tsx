@@ -1580,6 +1580,19 @@ export default function App() {
     return () => unlisten?.();
   }, [handleOpenFile]);
 
+  // A folder from another launch, which the single-instance plugin hands to
+  // this window, is a request for a shell there, as on a cold start. Rust
+  // authorized it before emitting.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      unlisten = await listen<string>("anbo:open-folder", (e) => {
+        cdInNewTab(e.payload);
+      });
+    })();
+    return () => unlisten?.();
+  }, [cdInNewTab]);
+
   // Another app holding the MCP port leaves every agent here talking to that
   // app; say so, and offer a retry, instead of leaving it to the log.
   useEffect(() => watchMcpPort(), []);

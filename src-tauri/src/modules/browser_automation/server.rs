@@ -39,11 +39,24 @@ fn auth_token_path() -> Result<PathBuf, String> {
     Ok(dir.join("auth-token"))
 }
 
+/// Whether a descriptor's text names this process. Another Anbo (a second
+/// instance, or a restart racing this one's shutdown) may have written its own
+/// since, and only the process it names may remove it.
+fn descriptor_names(content: &str, pid: u32) -> bool {
+    serde_json::from_str::<serde_json::Value>(content)
+        .ok()
+        .and_then(|desc| desc.get("pid").and_then(serde_json::Value::as_u64))
+        == Some(u64::from(pid))
+}
+
 pub fn remove_descriptor() {
-    if let Ok(path) = descriptor_path() {
-        if path.exists() {
-            let _ = fs::remove_file(path);
-        }
+    let Ok(path) = descriptor_path() else {
+        return;
+    };
+    let owned = fs::read_to_string(&path)
+        .is_ok_and(|content| descriptor_names(&content, std::process::id()));
+    if owned {
+        let _ = fs::remove_file(path);
     }
 }
 
@@ -451,6 +464,15 @@ mod tests {
         let token = generate_random_token().unwrap();
         assert_eq!(token.len(), 64);
         assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn only_the_process_a_descriptor_names_may_remove_it() {
+        let text = r#"{"version":1,"pid":4242,"pipe":"p","token":"t","startedAt":1}"#;
+        assert!(descriptor_names(text, 4242));
+        assert!(!descriptor_names(text, 4243));
+        assert!(!descriptor_names("not json", 4242));
+        assert!(!descriptor_names(r#"{"version":1}"#, 4242));
     }
 
     #[test]
