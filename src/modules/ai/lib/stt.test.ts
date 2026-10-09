@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { groqQuota } from "./groqQuota";
 import type { ProviderKeys } from "./keyring";
-import { transcribeAudio, whisperCppReachable } from "./stt";
+import {
+  previewAudioContext,
+  transcribeAudio,
+  whisperCppReachable,
+} from "./stt";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -88,5 +93,90 @@ describe("Groq transcription upload", () => {
       "Could not reach Groq after two attempts (Failed to fetch)",
     );
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("transcription language", () => {
+  const keys = { groq: "test-key" } as unknown as ProviderKeys;
+  const sentForm = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls[0][1].body as FormData;
+
+  it("names the chosen language to Groq and leaves it out on auto", async () => {
+    const fetchMock = vi.fn(async () => new Response("halo", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const audio = new Blob([new Uint8Array(16)], { type: "audio/webm" });
+
+    await transcribeAudio(audio, "groq", keys, { language: "id" });
+    expect(sentForm(fetchMock).get("language")).toBe("id");
+    expect((sentForm(fetchMock).get("file") as File).name).toBe("audio.webm");
+
+    fetchMock.mockClear();
+    await transcribeAudio(audio, "groq", keys, { language: "auto" });
+    expect(sentForm(fetchMock).has("language")).toBe(false);
+  });
+
+  it("sends a live WAV to the local server as it is, with the language", async () => {
+    const fetchMock = vi.fn(async () => new Response("hello", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const wav = new Blob([new Uint8Array(44)], { type: "audio/wav" });
+
+    await transcribeAudio(wav, "whispercpp", {} as ProviderKeys, {
+      language: "en",
+      whispercppBaseURL: "http://127.0.0.1:8080",
+    });
+    const form = sentForm(fetchMock);
+    expect(form.get("language")).toBe("en");
+    expect(await (form.get("file") as File).arrayBuffer()).toEqual(
+      await wav.arrayBuffer(),
+    );
+  });
+
+  it("holds live Groq requests back for the retry-after of a 429", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response("rate limit", {
+            status: 429,
+            headers: { "retry-after": "30" },
+          }),
+      ),
+    );
+    const audio = new Blob([new Uint8Array(16)], { type: "audio/webm" });
+
+    await expect(transcribeAudio(audio, "groq", keys)).rejects.toThrow(
+      "STT request failed (429)",
+    );
+    expect(groqQuota.liveAllowed(5, Date.now() + 29_000)).toBe(false);
+    expect(groqQuota.liveAllowed(5, Date.now() + 31_000)).toBe(true);
+  });
+});
+
+describe("local preview window", () => {
+  it("gives a preview room past its length and leaves finals whole", async () => {
+    expect(previewAudioContext(1.2)).toBe(256);
+    expect(previewAudioContext(3)).toBe(288);
+    expect(previewAudioContext(12)).toBe(960);
+    expect(previewAudioContext(40)).toBe(1500);
+
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("hello", { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const wav = new Blob([new Uint8Array(44)], { type: "audio/wav" });
+    const options = { whispercppBaseURL: "http://127.0.0.1:8080" };
+    await transcribeAudio(wav, "whispercpp", {} as ProviderKeys, {
+      ...options,
+      audioSeconds: 3,
+      preview: true,
+    });
+    await transcribeAudio(wav, "whispercpp", {} as ProviderKeys, {
+      ...options,
+      audioSeconds: 3,
+    });
+    const sent = fetchMock.mock.calls.map(([, init]) => init?.body as FormData);
+    expect(sent[0].get("audio_ctx")).toBe("288");
+    expect(sent[1].has("audio_ctx")).toBe(false);
   });
 });

@@ -1,3 +1,5 @@
+import type { SttLanguage } from "../config";
+import { type GroqQuota, groqQuota } from "./groqQuota";
 import type { ProviderKeys } from "./keyring";
 
 const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
@@ -19,7 +21,11 @@ async function fetchWithTimeout(
   }
 }
 
-async function transcribeOpenAI(blob: Blob, apiKey: string): Promise<string> {
+async function transcribeOpenAI(
+  blob: Blob,
+  apiKey: string,
+  language: string | undefined,
+): Promise<string> {
   // Taking one export through .then lets the bundler drop the rest of the
   // SDK; a bare import("ai") keeps every export it has.
   const [{ createOpenAI }, transcribe] = await Promise.all([
@@ -31,6 +37,7 @@ async function transcribeOpenAI(blob: Blob, apiKey: string): Promise<string> {
   const { text } = await transcribe({
     model: openai.transcription("whisper-1"),
     audio: buf,
+    ...(language && { providerOptions: { openai: { language } } }),
   });
   return text;
 }
@@ -73,27 +80,47 @@ async function postTranscription(
   }
 }
 
+function audioFileName(blob: Blob): string {
+  return blob.type === "audio/wav" ? "audio.wav" : "audio.webm";
+}
+
+function retryAfterSeconds(res: Response): number | null {
+  const value = Number(res.headers.get("retry-after"));
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+type RestOptions = {
+  language?: string;
+  /** Counts the request against a free tier the service enforces. */
+  quota?: GroqQuota;
+  audioSeconds?: number;
+};
+
 async function transcribeViaRest(
   service: string,
   baseURL: string,
   blob: Blob,
   apiKey: string | null,
   model: string,
+  { language, quota, audioSeconds = 0 }: RestOptions = {},
 ): Promise<string> {
   const form = new FormData();
-  form.append("file", blob, "audio.webm");
+  form.append("file", blob, audioFileName(blob));
   form.append("model", model);
   form.append("response_format", "text");
+  if (language) form.append("language", language);
 
   const headers: Record<string, string> = {};
   if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
+  quota?.note(audioSeconds);
   const res = await postTranscription(
     service,
     `${baseURL}/audio/transcriptions`,
     { method: "POST", headers, body: form },
     STT_TIMEOUT_GROQ_MS,
   );
+  if (res.status === 429) quota?.rateLimited(retryAfterSeconds(res));
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(
@@ -172,14 +199,38 @@ async function toWav(blob: Blob): Promise<Blob> {
   }
 }
 
+/**
+ * whisper.cpp reads 50 frames of audio a second and encodes a whole 30 s
+ * window (1500 frames) for any clip, which is what makes it take the same
+ * time for one second as for twenty. A preview gets a window near its own
+ * length instead: about a third of the time on a 4-core machine. One that
+ * is too tight makes the decoder repeat itself ("to talk to talk to talk"),
+ * so the window is one and a half times the audio and a second more, and
+ * never under five seconds: the first second of a take, cut mid-word, still
+ * looped at less.
+ */
+export function previewAudioContext(seconds: number): number {
+  return Math.min(
+    1500,
+    Math.max(256, Math.ceil((seconds * 75 + 50) / 32) * 32),
+  );
+}
+
 async function transcribeWhisperCpp(
   baseURL: string,
   blob: Blob,
+  language: string | undefined,
+  audioContext: number | undefined,
 ): Promise<string> {
-  const wav = await toWav(blob);
+  // Live text already sends a 16 kHz WAV; decoding it again would only
+  // cost time.
+  const wav = blob.type === "audio/wav" ? blob : await toWav(blob);
   const form = new FormData();
   form.append("file", wav, "audio.wav");
   form.append("response_format", "text");
+  if (language) form.append("language", language);
+  // A server that does not know the field ignores it.
+  if (audioContext) form.append("audio_ctx", String(audioContext));
 
   const res = await fetchWithTimeout(
     `${baseURL}/inference`,
@@ -237,6 +288,12 @@ export async function whisperCppReachable(baseURL: string): Promise<boolean> {
 export type SttOptions = {
   groqSttModel?: string;
   whispercppBaseURL?: string;
+  language?: SttLanguage;
+  /** How long the audio runs; Groq bills a request by it (10 s at least). */
+  audioSeconds?: number;
+  /** Words shown while the take still records, where speed matters more
+   * than the last bit of accuracy. */
+  preview?: boolean;
 };
 
 export async function transcribeAudio(
@@ -245,24 +302,36 @@ export async function transcribeAudio(
   apiKeys: ProviderKeys,
   options: SttOptions = {},
 ): Promise<string> {
+  const language =
+    options.language && options.language !== "auto"
+      ? options.language
+      : undefined;
   switch (provider) {
     case "openai": {
       const key = apiKeys.openai;
       if (!key) throw new Error("OpenAI API key is not configured");
-      return transcribeOpenAI(blob, key);
+      return transcribeOpenAI(blob, key, language);
     }
     case "groq": {
       const key = apiKeys.groq;
       if (!key) throw new Error("Groq API key is not configured");
       const model = options.groqSttModel || "whisper-large-v3-turbo";
-      return transcribeViaRest("Groq", GROQ_BASE_URL, blob, key, model);
+      return transcribeViaRest("Groq", GROQ_BASE_URL, blob, key, model, {
+        language,
+        quota: groqQuota,
+        audioSeconds: options.audioSeconds,
+      });
     }
     case "whispercpp": {
       const baseURL =
         options.whispercppBaseURL?.replace(/\/+$/, "") ||
         "http://127.0.0.1:8080";
       assertLoopbackUrl(baseURL);
-      return transcribeWhisperCpp(baseURL, blob);
+      const audioContext =
+        options.preview && options.audioSeconds
+          ? previewAudioContext(options.audioSeconds)
+          : undefined;
+      return transcribeWhisperCpp(baseURL, blob, language, audioContext);
     }
   }
 }

@@ -11,16 +11,22 @@ import { useEffect, useRef } from "react";
 export function WhisperRuntimeBridge() {
   const hydrated = usePreferencesStore((state) => state.hydrated);
   const provider = usePreferencesStore((state) => state.sttProvider);
+  const globalVoice = usePreferencesStore((state) => state.globalVoiceEnabled);
+  const liveSource = usePreferencesStore((state) => state.voiceLiveSource);
   const autoStart = usePreferencesStore((state) => state.whispercppAutoStart);
   const choice = usePreferencesStore((state) => state.whispercppModel);
   const attemptedModelRef = useRef<string | null>(null);
+  // AnboVoice's live text reads the local runtime even when the typed text
+  // goes to a cloud provider.
+  const wanted =
+    provider === "whispercpp" || (globalVoice && liveSource === "local");
 
-  // Leaving the local provider hides the whole runtime panel, and with it the
+  // Once nothing uses the local runtime, its panel is hidden, and with it the
   // only Stop button in the app. A server left behind that way holds its model
   // in memory for the rest of the session with nothing able to reach it, so
   // release it here rather than stranding it.
   useEffect(() => {
-    if (!hydrated || provider === "whispercpp") return;
+    if (!hydrated || wanted) return;
     let disposed = false;
     void getWhisperRuntimeStatus()
       .then((status) => {
@@ -33,10 +39,10 @@ export function WhisperRuntimeBridge() {
     return () => {
       disposed = true;
     };
-  }, [hydrated, provider]);
+  }, [hydrated, wanted]);
 
   useEffect(() => {
-    if (!hydrated || provider !== "whispercpp" || !autoStart) {
+    if (!hydrated || !wanted || !autoStart) {
       attemptedModelRef.current = null;
       return;
     }
@@ -68,7 +74,7 @@ export function WhisperRuntimeBridge() {
     return () => {
       disposed = true;
     };
-  }, [autoStart, choice, hydrated, provider]);
+  }, [autoStart, choice, hydrated, wanted]);
 
   return null;
 }

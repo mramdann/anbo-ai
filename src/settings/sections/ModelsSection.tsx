@@ -41,6 +41,8 @@ import {
   type ProviderId,
   type ProviderInfo,
   providerNeedsKey,
+  STT_LANGUAGE_LABELS,
+  STT_LANGUAGES,
   STT_PROVIDER_LABELS,
   type SttProvider,
 } from "@/modules/ai/config";
@@ -75,6 +77,7 @@ import {
   setOpenaiCompatibleContextLimit,
   setOpenaiCompatibleModelId,
   setOpenrouterModelId,
+  setSttLanguage,
   setSttProvider,
 } from "@/modules/settings/store";
 // Imported by file rather than through the module barrel: the barrel also
@@ -1624,7 +1627,15 @@ function StatusLine({
 
 function VoiceBlock() {
   const sttProvider = usePreferencesStore((s) => s.sttProvider);
+  const sttLanguage = usePreferencesStore((s) => s.sttLanguage);
+  const globalVoiceEnabled = usePreferencesStore((s) => s.globalVoiceEnabled);
+  const voiceLiveSource = usePreferencesStore((s) => s.voiceLiveSource);
   const groqSttModel = usePreferencesStore((s) => s.groqSttModel);
+  // AnboVoice's live text can read the local runtime while the typed text
+  // comes from a cloud provider; its panel is the only place to install it.
+  const localRuntimeUsed =
+    sttProvider === "whispercpp" ||
+    (globalVoiceEnabled && voiceLiveSource === "local");
   const [groqModelDraft, setGroqModelDraft] = useState(groqSttModel);
 
   useEffect(() => setGroqModelDraft(groqSttModel), [groqSttModel]);
@@ -1678,6 +1689,39 @@ function VoiceBlock() {
           "Connects to a local Whisper.cpp server for fully offline transcription."}
       </p>
 
+      <FieldRow label="Language">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="outline"
+              className="h-8 flex-1 justify-between gap-2 px-2.5 text-[11.5px]"
+            >
+              <span>{STT_LANGUAGE_LABELS[sttLanguage]}</span>
+              <HugeiconsIcon
+                icon={ArrowDown01Icon}
+                size={11}
+                strokeWidth={2}
+                className="opacity-70"
+              />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="min-w-44 p-1">
+            {STT_LANGUAGES.map((language) => (
+              <DropdownMenuItem
+                key={language}
+                onSelect={() => void setSttLanguage(language)}
+                className={cn(
+                  "flex items-center gap-2 text-[12px]",
+                  language === sttLanguage && "bg-accent/50",
+                )}
+              >
+                <span>{STT_LANGUAGE_LABELS[language]}</span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </FieldRow>
+
       <GlobalVoiceSettings />
 
       {sttProvider === "groq" && (
@@ -1698,7 +1742,7 @@ function VoiceBlock() {
         </div>
       )}
 
-      {sttProvider === "whispercpp" && <WhisperRuntimeSettings />}
+      {localRuntimeUsed && <WhisperRuntimeSettings />}
     </div>
   );
 }

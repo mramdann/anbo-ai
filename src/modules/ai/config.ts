@@ -893,6 +893,37 @@ export function getAutocompleteEligibleModels(): readonly ModelInfo[] {
 
 export type SttProvider = "openai" | "groq" | "whispercpp";
 
+/** "auto" lets Whisper detect the language; a short take often guesses
+ * wrong between Indonesian, Malay and English. */
+export const STT_LANGUAGES = ["auto", "id", "en"] as const;
+export type SttLanguage = (typeof STT_LANGUAGES)[number];
+
+export const STT_LANGUAGE_LABELS: Record<SttLanguage, string> = {
+  auto: "Detect automatically",
+  id: "Indonesian",
+  en: "English",
+};
+
+export function isSttLanguage(value: unknown): value is SttLanguage {
+  return (
+    typeof value === "string" &&
+    (STT_LANGUAGES as readonly string[]).includes(value)
+  );
+}
+
+/** Where AnboVoice gets the text it shows while the user still speaks: the
+ * local Whisper server (no request quota), the selected provider, or
+ * nowhere. */
+const VOICE_LIVE_SOURCES = ["local", "provider", "off"] as const;
+export type VoiceLiveSource = (typeof VOICE_LIVE_SOURCES)[number];
+
+export function isVoiceLiveSource(value: unknown): value is VoiceLiveSource {
+  return (
+    typeof value === "string" &&
+    (VOICE_LIVE_SOURCES as readonly string[]).includes(value)
+  );
+}
+
 // Anbo has its own browser, so a link in agent output stays in the workspace
 // it came from unless the user would rather leave the app.
 export const DEFAULT_OPEN_LINKS_IN_ANBO = true;
