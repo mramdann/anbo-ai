@@ -5760,12 +5760,19 @@ async fn explain_blocked_point(
 /// fractions positions take. An action without a position gets only what
 /// covers its target, since it has no point to move.
 fn blocked_point_detail(explained: &Value, positioned: bool) -> Option<String> {
+    // Each end rounded inwards, so a position on a printed end is still inside
+    // (0.635 printed as 0.64 put a retry past the screen's edge); a stretch
+    // narrower than a hundredth prints its middle to the thousandth.
     let span = |value: &Value| {
-        Some(format!(
-            "{:.2}-{:.2}",
-            value.get(0)?.as_f64()?,
-            value.get(1)?.as_f64()?
-        ))
+        let (from, to) = (value.get(0)?.as_f64()?, value.get(1)?.as_f64()?);
+        // Adding 0.0 turns the -0 that ceil gives a hair below zero into 0.
+        let low = (from * 100.0 - 1e-9).ceil() / 100.0 + 0.0;
+        let high = (to * 100.0 + 1e-9).floor() / 100.0;
+        Some(if low <= high {
+            format!("{low:.2}-{high:.2}")
+        } else {
+            format!("{:.3}", (from + to) / 2.0)
+        })
     };
     let mut parts = Vec::new();
     if let Some(covered) = explained
@@ -5812,6 +5819,56 @@ fn blocked_point_detail(explained: &Value, positioned: bool) -> Option<String> {
         }
     }
     (!parts.is_empty()).then(|| parts.join("; "))
+}
+
+/// When a pointer action's point has stayed blocked the same way long enough
+/// that waiting longer only repeats the answer.
+#[derive(Default)]
+struct BlockedClock {
+    since: Option<(tokio::time::Instant, String)>,
+}
+
+impl BlockedClock {
+    /// Takes this sample's blocked signature, None when it is not blocked,
+    /// and says whether the same one has held for ABSENCE_SETTLE, the time a
+    /// miss also waits before it calls an element absent.
+    fn observe(&mut self, signature: Option<String>, now: tokio::time::Instant) -> bool {
+        let Some(signature) = signature else {
+            self.since = None;
+            return false;
+        };
+        if let Some((since, held)) = &self.since {
+            if *held == signature {
+                return now.duration_since(*since) >= ABSENCE_SETTLE;
+            }
+        }
+        self.since = Some((now, signature));
+        false
+    }
+}
+
+/// What has to stay the same for a blocked point to count as settled: why it
+/// is blocked and where the element's box is, to the pixel.
+fn blocked_signature(reason: &str, parsed: &Value) -> String {
+    let at = |key| parsed.get(key).and_then(Value::as_f64).unwrap_or(f64::NAN);
+    format!(
+        "{reason}|{:.0}|{:.0}|{:.0}|{:.0}",
+        at("x"),
+        at("y"),
+        at("width"),
+        at("height")
+    )
+}
+
+/// The detail of an answer the clock gave early says so, so the caller knows
+/// a longer wait would not have helped.
+fn held_detail(detail: Option<String>, held: bool) -> Option<String> {
+    const HELD: &str = "unchanged for 1.5 s";
+    match (detail, held) {
+        (Some(detail), true) => Some(format!("{detail}; {HELD}")),
+        (None, true) => Some(HELD.to_string()),
+        (detail, false) => detail,
+    }
 }
 
 fn extract_hover_position(params: &Value) -> Result<Option<(f64, f64)>, (String, String)> {
@@ -5989,6 +6046,7 @@ async fn wait_for_drag_pair(
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut previous = None;
     let mut scroll = true;
+    let mut blocked_clock = BlockedClock::default();
     loop {
         let reason = match read_drag_pair(webview, source_ref, target_ref, scroll, positions).await
         {
@@ -6011,9 +6069,11 @@ async fn wait_for_drag_pair(
             }
         };
         scroll = false;
-        if tokio::time::Instant::now() >= deadline {
-            let blocked = reason.contains("is covered by another element")
-                || reason.contains("is outside the viewport");
+        let blocked = reason.contains("is covered by another element")
+            || reason.contains("is outside the viewport");
+        let held =
+            blocked_clock.observe(blocked.then(|| reason.clone()), tokio::time::Instant::now());
+        if held || tokio::time::Instant::now() >= deadline {
             let end = if reason.starts_with("drag source") {
                 Some((source_ref, positions.0))
             } else if reason.starts_with("drag target") {
@@ -6027,7 +6087,7 @@ async fn wait_for_drag_pair(
                 }
                 _ => None,
             };
-            let detail = detail
+            let detail = held_detail(detail, held)
                 .map(|detail| format!(" ({detail})"))
                 .unwrap_or_default();
             return Err((
@@ -6118,6 +6178,14 @@ async fn wait_for_actionable_attempt(
     let frame_id = target
         .filter(|target| !target.is_main)
         .map(|target| target.frame_id.as_str());
+    // A drag or a positioned hover whose point stays blocked with the element
+    // in place answers once that has held (BlockedClock); a click keeps the
+    // full wait, since a loading overlay over a button can take seconds to go.
+    let settles_early = matches!(
+        requirement,
+        ActionabilityRequirement::ClickAt(_) | ActionabilityRequirement::Hover(Some(_))
+    );
+    let mut blocked_clock = BlockedClock::default();
     loop {
         let probe_started = tokio::time::Instant::now();
         let response = ref_context::execute_awaited(webview, frame_id, script)
@@ -6209,16 +6277,25 @@ async fn wait_for_actionable_attempt(
                     .map(str::to_owned),
             });
         }
-        if tokio::time::Instant::now() >= deadline {
-            let blocked = matches!(
-                actionability_failure_reason(&parsed, requirement),
-                "covered by another element" | "outside the viewport after scrolling"
+        let reason = actionability_failure_reason(&parsed, requirement);
+        let blocked = matches!(
+            reason,
+            "covered by another element" | "outside the viewport after scrolling"
+        );
+        // A panel over a map does not move by itself: the agent used to wait
+        // the full 5 s for the answer it could have had at once.
+        let held = settles_early
+            && blocked_clock.observe(
+                blocked.then(|| blocked_signature(reason, &parsed)),
+                tokio::time::Instant::now(),
             );
+        if held || tokio::time::Instant::now() >= deadline {
             let detail = if blocked {
                 explain_blocked_point(webview, frame_id, ref_id, position, position.is_some()).await
             } else {
                 None
             };
+            let detail = held_detail(detail, held);
             return Err((
                 error_codes::TIMEOUT.to_string(),
                 actionability_timeout_message_with(ref_id, &parsed, requirement, detail.as_deref()),
@@ -9300,7 +9377,7 @@ mod tests {
         });
         assert_eq!(
             blocked_point_detail(&covered, true).as_deref(),
-            Some("feed 'Results'; free on that row at x 0.33-0.75; visible part x 0.01-0.77, y 0.07-0.71")
+            Some("feed 'Results'; free on that row at x 0.34-0.75; visible part x 0.01-0.76, y 0.08-0.70")
         );
         // A click has no point to move: only what covers its target.
         assert_eq!(
@@ -9326,6 +9403,13 @@ mod tests {
             Some("no part of it inside the viewport")
         );
         assert_eq!(blocked_point_detail(&Value::Null, true), None);
+        // A stretch narrower than a hundredth: its middle.
+        let sliver = json!({"visible": {"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            "covered": {"by": "main", "row": [0.6312, 0.6354], "column": null}});
+        assert_eq!(
+            blocked_point_detail(&sliver, true).as_deref(),
+            Some("main; free on that row at x 0.633")
+        );
         // The detail follows the reason, before the drag hint.
         let sample =
             json!({"visible": true, "enabled": true, "receives": false, "inViewport": false});
@@ -9338,6 +9422,44 @@ mod tests {
         assert!(message.starts_with(
             "element ref 'g1-e1' did not become actionable: outside the viewport after scrolling (visible part x 0.00-0.76, y 0.07-0.71); requested drag position"
         ));
+    }
+
+    #[test]
+    fn a_blocked_point_settles_once_the_same_block_has_held() {
+        let start = tokio::time::Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let covered = |x: u32| Some(format!("covered by another element|{x}|20|30|40"));
+        let mut clock = BlockedClock::default();
+        assert!(!clock.observe(covered(10), at(0)));
+        assert!(!clock.observe(covered(10), at(1_400)));
+        assert!(clock.observe(covered(10), at(1_500)));
+        // The element moved: the wait starts over.
+        assert!(!clock.observe(covered(12), at(1_600)));
+        assert!(!clock.observe(covered(12), at(2_900)));
+        // Free for a moment: so does it.
+        assert!(!clock.observe(None, at(3_000)));
+        assert!(!clock.observe(covered(12), at(3_100)));
+        assert!(clock.observe(covered(12), at(4_600)));
+        // The box to the pixel, and the reason, make the signature.
+        let sample = json!({"x": 100.4, "y": 20.0, "width": 1280.0, "height": 1280.0});
+        assert_eq!(
+            blocked_signature("covered by another element", &sample),
+            "covered by another element|100|20|1280|1280"
+        );
+        // An early answer says it was early.
+        assert_eq!(
+            held_detail(Some("main".into()), true).as_deref(),
+            Some("main; unchanged for 1.5 s")
+        );
+        assert_eq!(
+            held_detail(None, true).as_deref(),
+            Some("unchanged for 1.5 s")
+        );
+        assert_eq!(
+            held_detail(Some("main".into()), false).as_deref(),
+            Some("main")
+        );
+        assert_eq!(held_detail(None, false), None);
     }
 
     #[test]
