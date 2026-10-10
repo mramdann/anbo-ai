@@ -41,7 +41,9 @@ Five browser patterns:
    adds `page.hints` with its `heading` and `results` (title links with refs).
    `waitFor:{url,title,text,timeout}` checks the result; URL supports globs, text
    is a visible substring, title is exact (`*` is literal). A changing title can
-   use `titleMatch:"prefix"`. Streaming pages need explicit readiness, not
+   use `titleMatch:"prefix"`. `browser_navigate` takes the same `waitFor` and
+   answers once the new page matches, so it needs no `browser_wait` after it.
+   Streaming pages need explicit readiness, not
    `networkIdle`. `matched:true,stable:false` means matched but not stable.
    A timeout after dispatch must not trigger blind resubmission.
 4. **Read facts together.** `browser_find` and `browser_get_text` accept
@@ -50,8 +52,9 @@ Five browser patterns:
    `browser_get_property` reads live `paused`, `currentTime`, `value`, `checked`
    and other allowed properties without eval; a press or click on a player
    already returns them in `media`, and landing on a playing player adds
-   `page.media`. Screenshot checks visual state;
-   console logs help diagnose failures. Absence/hints describe observed state,
+   `page.media`. Screenshot checks visual state (`fullPage:true` for the whole
+   page); console logs and, in Anbo's own browser tabs, `browser_network_requests`
+   help diagnose failures. Absence/hints describe observed state,
    not guaranteed future absence or unique substitute targets. Bound retries.
 5. **Finish.** Put `endSession:true` on the last successful call. Use
    `browser_close {tabId,workspace,endSession:true}` to close a task tab, or a final
@@ -95,9 +98,11 @@ recognizable list items, rows and cards whose identity changed; large or
 unrecognized containers keep only node identity protection. Re-find controls
 after replacing a list and verify the current item before acting. A capped scan
 or skipped frame does not prove absence: inspect `nodeLimitReached`,
-`skippedFrames` and the timeout's coverage diagnostics. Open Shadow DOM and
-child frames are searched; CSS descendant combinators do not cross a shadow
-boundary.
+`skippedFrames` and the timeout's coverage diagnostics. A miss that ran to its
+whole timeout says why it did not end early: a timeout you set (waited out in
+full), a tab still loading, or a page that kept changing its structure. Open
+Shadow DOM and child frames are searched; CSS descendant combinators do not
+cross a shadow boundary.
 
 `locator` on a single-target action, for example `browser_click: {tabId,
 locator: {by: "role", value: "button", name: "Search", exact: true}}`, requires
@@ -146,16 +151,30 @@ hidden), start a bounded `browser_wait` for the clock ref to become visible, and
 read the clock element itself. Verify playback with two visible clock readings;
 distinguish ads, paused playback and hidden UI before calling a video frozen.
 Charts can expose axis labels without the plotted value: verify with a
-screenshot when semantics are not enough. Screenshots cover the viewport,
-exclude remote-control effects and do not replace postcondition checks.
+screenshot when semantics are not enough. Screenshots cover the viewport unless
+`fullPage:true`, which captures the whole page up to 16384 device pixels tall
+(`fullPageCut` says where a taller page stops; without a label the file is named
+full-page). They exclude remote-control effects and do not replace
+postcondition checks.
 
 `browser_drag` takes two refs, or the same ref twice with `sourcePosition` and
 `targetPosition` as fractions of the element to pan inside it, or a `locator`
 with both positions to pan inside one element straight from a missed find.
-Both points must be visible; nothing is retried automatically. `browser_emulate` lays a page out
+Both points must be visible; nothing is retried automatically. A point that is
+covered or off screen is refused with what covers it and, as fractions of the
+element to pass back, the free stretch of that row and column and the part of
+the element on screen (a map's canvas is often larger than the viewport); a
+drag answers once the same block has held for 1.5 s ("unchanged for 1.5 s").
+A click or hover refused as covered names what covers it, such as a cookie
+dialog. `browser_emulate` lays a page out
 as another device would; `width: 0` clears it, it survives navigation, and it
-never resizes the application window. `browser_press` modifiers are per call:
-pass the whole combination on every key event. `keyAction` is `press` by default,
+never resizes the application window. Its reply's `seenByPage` is what the page
+itself reads (`innerWidth`, `innerHeight`, `devicePixelRatio`,
+`maxTouchPoints`): a page with no viewport meta lays a phone out 980 px wide.
+`browser_press` modifiers are per call: pass the whole combination on every key
+event, or write it into `key` as `"Control+A"` (`"Ctrl+Shift+K"` and
+`"Control++"` work too). Key names match in any case; send one key per call.
+`keyAction` is `press` by default,
 or `down`/`up`; only `press` supports postconditions and Enter observation.
 `browser_dialog` clicks a ref
 and answers the alert, confirm or prompt it raises, reporting `clickDispatched`
@@ -164,7 +183,10 @@ clicks a ref; a `timedOut` result from `browser_download_wait` is normal for a
 large file and keeps the `downloadId`, so poll it again rather than arming a
 second download. `browser_console_logs` returns up to 50 recent bounded
 messages, uncaught errors and unhandled rejections from the main document and
-reachable frames.
+reachable frames. `browser_network_requests` lists the last 200 requests of an
+Anbo browser tab, newest last (method, URL, type, status, size, ms, error), with
+a URL `filter` and a `limit`; a Chrome or Edge tab driven through the extension
+does not report its requests.
 
 When the active workspace has no tabs, `browser_open`, `terminal_open` and
 `agent_spawn` display their first tab automatically (`placement:
