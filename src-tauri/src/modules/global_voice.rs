@@ -137,32 +137,34 @@ fn ensure_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String>
         return Ok(window);
     }
 
-    let builder =
-        WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::App("voice.html".into()))
-            .title("AnboVoice")
-            .inner_size(WINDOW_SIZE.0, WINDOW_SIZE.1)
-            .min_inner_size(WINDOW_SIZE.0, WINDOW_SIZE.1)
-            .max_inner_size(WINDOW_SIZE.0, WINDOW_SIZE.1)
-            .resizable(false)
-            .decorations(false)
-            .always_on_top(true)
-            .visible_on_all_workspaces(true)
-            .skip_taskbar(true)
-            .shadow(false)
-            .focused(false)
-            .focusable(false)
-            .visible(false);
+    let window = window_open::build_beside_main("the AnboVoice orb", || {
+        let builder =
+            WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::App("voice.html".into()))
+                .title("AnboVoice")
+                .inner_size(WINDOW_SIZE.0, WINDOW_SIZE.1)
+                .min_inner_size(WINDOW_SIZE.0, WINDOW_SIZE.1)
+                .max_inner_size(WINDOW_SIZE.0, WINDOW_SIZE.1)
+                .resizable(false)
+                .decorations(false)
+                .always_on_top(true)
+                .visible_on_all_workspaces(true)
+                .skip_taskbar(true)
+                .shadow(false)
+                .focused(false)
+                .focusable(false)
+                .visible(false);
 
-    // macOS only exposes transparent windows behind macos-private-api, which
-    // this app does not enable. The orb is Windows only anyway, so the window
-    // just has to keep compiling everywhere.
-    #[cfg(not(target_os = "macos"))]
-    let builder = builder.transparent(true);
+        // macOS only exposes transparent windows behind macos-private-api,
+        // which this app does not enable. The orb is Windows only anyway, so
+        // the window just has to keep compiling everywhere.
+        #[cfg(not(target_os = "macos"))]
+        let builder = builder.transparent(true);
 
-    #[cfg(target_os = "windows")]
-    let builder = builder.drag_and_drop(false);
+        #[cfg(target_os = "windows")]
+        let builder = builder.drag_and_drop(false);
 
-    let window = window_open::build("the AnboVoice orb", || builder.build())?;
+        Ok(builder)
+    })?;
     // Windows widens a new window that has a caption style to its minimum
     // width (136 px at 100%) before tao's limits apply, and window-state then
     // saves and restores that width. Set the designed size after both, before

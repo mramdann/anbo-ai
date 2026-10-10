@@ -243,55 +243,63 @@ fn open_settings(app: &tauri::AppHandle, tab: Option<String>) -> Result<(), Stri
         return Ok(());
     }
 
-    let builder = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App(url_path.into()))
-        .title("Settings")
-        .inner_size(SETTINGS_SIZE.0, SETTINGS_SIZE.1)
-        .min_inner_size(820.0, 620.0)
-        .resizable(true)
-        .visible(false);
-    // A popup window created without a position lands in the screen's top-left
-    // corner on Windows. Start centered over the main window instead;
-    // window-state still moves it to its saved place when it has one.
-    #[cfg(target_os = "windows")]
-    let builder = match settings_origin_over_main(app) {
-        Some((x, y)) => builder.position(x, y),
-        None => builder.center(),
-    };
-    // On Windows/Linux the settings window is parented to the main window
-    // (below), which keeps it above main without floating above every other
-    // app. macOS has no parent there, so it opts into always-on-top instead.
+    // Described once per attempt: Settings opens in the main window's browser
+    // process first (see window_open).
+    let _window = window_open::build_beside_main("the Settings window", || {
+        let builder =
+            WebviewWindowBuilder::new(app, "settings", WebviewUrl::App(url_path.clone().into()))
+                .title("Settings")
+                .inner_size(SETTINGS_SIZE.0, SETTINGS_SIZE.1)
+                .min_inner_size(820.0, 620.0)
+                .resizable(true)
+                .visible(false);
+        // A popup window created without a position lands in the screen's
+        // top-left corner on Windows. Start centered over the main window
+        // instead; window-state still moves it to its saved place when it has
+        // one.
+        #[cfg(target_os = "windows")]
+        let builder = match settings_origin_over_main(app) {
+            Some((x, y)) => builder.position(x, y),
+            None => builder.center(),
+        };
+        // On Windows/Linux the settings window is parented to the main window
+        // (below), which keeps it above main without floating above every
+        // other app. macOS has no parent there, so it opts into always-on-top
+        // instead.
 
-    // Tie lifecycle to the main window so settings minimizes/closes with it.
-    // macOS: skip parent() — child + always_on_top leaves the settings webview
-    // behind the main window except while the parent is being dragged (#33).
-    // Windows finds main as a plain window and makes it the owner, which is all
-    // parent() does there: once main hosts browser tabs it holds several
-    // webviews, get_webview_window("main") is None, and Settings came out
-    // unowned (its own taskbar button, free to fall behind main).
-    #[cfg(target_os = "windows")]
-    let builder = match app.get_window("main") {
-        Some(main) => builder.owner_raw(main.hwnd().map_err(|e| e.to_string())?),
-        None => builder,
-    };
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let builder = if let Some(main) = app.get_webview_window("main") {
-        builder.parent(&main).map_err(|e| e.to_string())?
-    } else {
-        builder
-    };
+        // Tie lifecycle to the main window so settings minimizes/closes with
+        // it. macOS: skip parent() — child + always_on_top leaves the settings
+        // webview behind the main window except while the parent is being
+        // dragged (#33). Windows finds main as a plain window and makes it the
+        // owner, which is all parent() does there: once main hosts browser
+        // tabs it holds several webviews, get_webview_window("main") is None,
+        // and Settings came out unowned (its own taskbar button, free to fall
+        // behind main).
+        #[cfg(target_os = "windows")]
+        let builder = match app.get_window("main") {
+            Some(main) => builder.owner_raw(main.hwnd().map_err(|e| e.to_string())?),
+            None => builder,
+        };
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let builder = if let Some(main) = app.get_webview_window("main") {
+            builder.parent(&main).map_err(|e| e.to_string())?
+        } else {
+            builder
+        };
 
-    #[cfg(target_os = "macos")]
-    let builder = builder
-        .always_on_top(true)
-        .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .hidden_title(true);
+        #[cfg(target_os = "macos")]
+        let builder = builder
+            .always_on_top(true)
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true);
 
-    // On Linux/Windows we render our own titlebar, so drop native chrome
-    // and make the window transparent.
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    let builder = builder.decorations(false).transparent(true);
+        // On Linux/Windows we render our own titlebar, so drop native chrome
+        // and make the window transparent.
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        let builder = builder.decorations(false).transparent(true);
 
-    let _window = window_open::build("the Settings window", || builder.build())?;
+        Ok(builder)
+    })?;
 
     // Some Linux compositors (GNOME/Mutter with CSD-by-default) ignore the
     // builder-time decorations flag — re-assert it after realize.
@@ -458,6 +466,9 @@ pub fn run() {
                     }
                 });
             }
+            // Settings and the AnboVoice orb open in this browser process, which
+            // keeps the runtime it started with when WebView2 updates itself.
+            window_open::remember_main_environment(_app.handle());
             Ok(())
         })
         .manage(pty::PtyState::default())
