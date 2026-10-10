@@ -28,7 +28,7 @@
 > ### 🍴 Anbo is a fork of [Terax](https://github.com/crynta/terax-ai)
 > Anbo is built on top of the excellent [Terax](https://github.com/crynta/terax-ai) project by [crynta](https://github.com/crynta). All credit for the core architecture, terminal, editor, and AI foundations goes to the original Terax maintainers. Anbo is a personal fork that diverges with its own tweaks, branding, and experiments. If you're looking for the upstream project, please visit [Terax](https://github.com/crynta/terax-ai).
 
-Anbo is a lightweight open-source terminal (ADE) built on Tauri 2 + Rust and React 19. A native PTY backend with a WebGL renderer, an agentic AI side-panel that runs against your own keys or fully local models, plus a code editor, file explorer, source control with a git graph, and a built-in browser pane. About 7-8 MB on disk. No telemetry. No account.
+Anbo is a lightweight open-source terminal (ADE) built on Tauri 2 + Rust and React 19. A native PTY backend with a WebGL renderer, an agentic AI side-panel that runs against your own keys or fully local models, plus a code editor, file explorer, source control with a git graph, and a built-in browser pane. CLI agents run in workspace tabs and drive the browser, shared terminals and each other through a local MCP server, and AnboVoice types what you say into any app. On Windows the installer is about 5 MB and the app about 12 MB on disk. No telemetry. No account.
 
 ## Screenshots
 
@@ -80,17 +80,29 @@ Anbo is a lightweight open-source terminal (ADE) built on Tauri 2 + Rust and Rea
 
 ### Browser
 
-- Built-in native browser tab — navigate any HTTP/HTTPS URL, including external sites, with back / forward / reload / stop
+- Built-in native browser tab: navigate any HTTP/HTTPS URL, including external sites, with back / forward / reload / stop
 - Curated dev-server port presets and a sandboxed iframe fallback
-- AI automation tools (snapshot, click, type, scroll, screenshot, history) drive the active browser tab, plus an `anbo-browser` CLI / MCP sidecar
+- A tidy layout that keeps a workspace's browser tabs in their own side panel
+- **Connect Chrome or Edge:** drive your own browser profiles through the Anbo extension; their tabs dock inside Anbo
+- **Design mode:** mark up a page with boxes, arrows, sketches and picked elements, then send the numbered notes and an annotated capture to an agent
+- **Agent automation over MCP:** more than 30 `browser_*` tools that work on background tabs without taking focus. Open with an initial read, find by role, label, text or test id, act through refs with `waitFor` postconditions, fill forms, drag, hover, emulate devices, take full-page screenshots, and read console logs and network requests. Plus an `anbo-browser` CLI / MCP sidecar
 
 ### CLI agents
 
-- Launch Claude, Codex, OpenCode, and Antigravity in independent workspace-scoped terminal tabs
+- Launch Claude, Codex, OpenCode, Antigravity, and Kimi in independent workspace-scoped terminal tabs, or add your own launchers
 - Resume supported CLI sessions while preserving tab identity and multi-pane layouts
 - Assign readable per-workspace callsigns such as `spica-codex:21`
+- See whether each agent is working or waiting, with an alert when one needs you
 - Coordinate agents through local MCP tools: `agent_spawn`, `agent_list`, `agent_status`, `agent_read`, `agent_send`, and `agent_wait`
+- Give agents shared terminals through `terminal_open`, `terminal_execute`, `terminal_wait`, and `terminal_read`, separate from the terminals they type in
 - Run background agents without activating their workspace or stealing the user's current tab focus
+
+### AnboVoice
+
+- System-wide voice typing: a movable orb types what you say into the focused app
+- Hold a key you choose (such as Win) to talk and release it to type, or toggle hands-free recording with Ctrl+Alt+Space, which types each sentence as you pause
+- A language setting keeps recognition in the language you speak
+- Transcription through Groq or OpenAI with your own key, or fully local with whisper.cpp
 
 ### Themes and customization
 
@@ -151,7 +163,7 @@ Enable **Settings -> Browser automation** and connect an MCP client to Anbo's lo
 }
 ```
 
-The server exposes `browser_*` automation and `agent_*` orchestration tools. Agent operations require an explicit workspace path or space id and never switch the user's active workspace. Automatic project-local MCP setup is available for Claude, Codex, OpenCode, and Antigravity from Settings. The HTTP endpoint accepts loopback connections only and does not require a token in project configuration.
+The server exposes `browser_*` automation, `agent_*` orchestration, `terminal_*` shared terminals, and `skills_*` tools; the built-in `anbo` skill (`skills_read`) tells an agent how to use them. Agent operations require an explicit workspace path or space id and never switch the user's active workspace. Automatic project-local MCP setup is available for Claude, Codex, OpenCode, and Antigravity from Settings. The HTTP endpoint accepts loopback connections only and does not require a token in project configuration.
 
 ## Build from source
 
@@ -178,7 +190,7 @@ cd src-tauri && cargo nextest run --locked                           # or: cargo
 
 ## Tech stack
 
-Tauri 2, Rust, `portable-pty`, React 19, TypeScript, Vite, xterm.js, CodeMirror 6, Vercel AI SDK v6, Tailwind v4, shadcn/ui, Zustand.
+Tauri 2, Rust, `portable-pty`, React 19, TypeScript, Vite, xterm.js, CodeMirror 6, Vercel AI SDK 7, Tailwind v4, shadcn/ui, Zustand.
 
 ## Contributing
 
