@@ -182,6 +182,7 @@ pub fn tool_definitions() -> Value {
         { "name": "browser_get_text", "description": "Read a known target directly by ref or locator; omit both for body text. Returns DOM text or accessible name, visible and source. Hidden labels may be outdated: reveal controls before treating their text as live state. Use ancestors:N to read the whole enclosing block (row, list, card, section) a found element sits in, in one call instead of probing each fact.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "maxLength": { "type": "integer", "minimum": 1, "maximum": 16000, "default": 8000 }, "ancestors": { "type": "integer", "minimum": 0, "maximum": 10, "default": 0, "description": "Climb N ancestors from the ref/locator target before reading, so one call returns the surrounding block instead of just the leaf. Target an element inside the block (a value or item), not a distant heading -- the block is its nearest shared ancestor. Needs ref or locator." } }, "required": ["tabId"] } },
         { "name": "browser_get_property", "description": "Read up to 8 live properties by ref or locator in one call, e.g. paused/currentTime or value/checked. Only the listed DOM properties are allowed, never caller-supplied JavaScript. Reuse the returned ref for a later state check.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "ref": refr.clone(), "properties": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": { "type": "string", "enum": super::actions::ELEMENT_PROPERTIES } } }, "required": ["tabId", "ref", "properties"] } },
         { "name": "browser_page_info", "description": "Get native title, committed URL, loading and pendingUrl without page JavaScript. pendingUrl is not a committed navigation. titleSource document opts into a bounded DOM-title read. When waiting for this title, pass the returned titleSource to waitFor; native and DOM titles can differ after SPA back/forward.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "titleSource": {"type":"string", "enum":["native","document"], "default":"native"} }, "required": ["tabId"] } },
+        { "name": "browser_network_requests", "description": "Requests an Anbo browser tab made, newest last (the last 200 are kept): method, url, type, status, size, ms, error. Not for external Chrome or Edge tabs.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "filter": { "type": "string", "maxLength": 200, "description": "URL substring." }, "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } }, "required": ["tabId"] } },
         { "name": "browser_console_logs", "description": "Get up to 50 bounded recent console messages, uncaught runtime errors, and unhandled promise rejections from the main document and accessible child frames.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "level": { "description": "Keep only these console levels, as one name or a list.", "anyOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" }, "maxItems": 8 } ] }, "maxCharsPerMessage": { "type": "integer", "minimum": 40, "maximum": 4000, "description": "Clip each message; one advert frame can otherwise spend the whole budget on a single tracking URL." }, "since": { "type": "integer", "minimum": 0, "description": "Only entries at or after this timestamp." } }, "required": ["tabId"] } },
         { "name": "agent_spawn", "description": "Spawn one configured built-in or custom CLI agent in an explicitly selected open Anbo workspace. Displays its first tab only in an empty active workspace; later spawns stay in the background and inactive workspaces never activate. The stored command cannot be supplied or overridden by the caller.", "annotations": { "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "agent": { "type": "string", "minLength": 1, "maxLength": 71, "description": "Built-in launcher id or label, or the display name or custom:<id> of an agent registered in Anbo Settings." }, "timeout": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 15000, "description": "How long to wait for live agent detection before returning pending: true." } }, "required": ["workspace", "agent"] } },
         { "name": "agent_list", "description": "List live non-private terminal agents in an explicitly selected Anbo workspace. Each carries the name it goes by, such as Alnilam, alongside its cli and id. Use the name when addressing it. Does not activate the workspace or move UI focus.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
@@ -388,6 +389,7 @@ pub fn tool_name_to_method(name: &str) -> Option<&'static str> {
         "browser_get_property" => "get_property",
         "browser_page_info" => "get_page_info",
         "browser_console_logs" => "console_logs",
+        "browser_network_requests" => "network_requests",
         "agent_spawn" => "agent_spawn",
         "agent_list" => "agent_list",
         "agent_status" => "agent_status",
@@ -419,7 +421,7 @@ mod tests {
                 .iter()
                 .filter(|tool| tool["name"].as_str().unwrap().starts_with("browser_"))
                 .count(),
-            33
+            34
         );
         for (alias, method) in [
             ("browser_double_click", "double_click"),
@@ -477,7 +479,7 @@ mod tests {
     #[test]
     fn tools_have_capability_prefixes_and_unique_names() {
         let tools = tool_definitions().as_array().unwrap().clone();
-        assert_eq!(tools.len(), 49);
+        assert_eq!(tools.len(), 50);
         let mut names = std::collections::HashSet::new();
         for t in &tools {
             let n = t.get("name").and_then(|v| v.as_str()).unwrap();
@@ -674,8 +676,9 @@ mod tests {
         // 41.1k since 0.33.2: browser_type no longer claims it never types per
         // key; a combobox that shows no list is retyped (0.32.0).
         // 41.2k since Oct 10 2026: browser_screenshot takes fullPage, the whole
-        // page rather than only the viewport.
-        assert!(size <= 41_200, "browser tool schemas are {size} characters");
+        // page rather than only the viewport. 41.7k the same day for
+        // browser_network_requests, the one tool a debugging agent missed.
+        assert!(size <= 41_700, "browser tool schemas are {size} characters");
     }
 
     #[test]

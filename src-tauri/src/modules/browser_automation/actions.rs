@@ -3433,6 +3433,28 @@ async fn handle_action_inner(
             )
         }
 
+        // The requests an Anbo browser tab made, newest last, from the same
+        // observer that waits for its network to go quiet. Reads no page, so
+        // it takes no tab lock.
+        "network_requests" => {
+            let tab_id = extract_tab_id(&params)?;
+            get_embed_webview(app, tab_id)
+                .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
+            let filter = params.get("filter").and_then(Value::as_str);
+            if let Some(filter) = filter {
+                ensure_bounded(filter, 200, "filter")?;
+            }
+            let limit = params
+                .get("limit")
+                .and_then(as_count)
+                .unwrap_or(50)
+                .clamp(1, 200) as usize;
+            let mut listed = super::network::requests(tab_id, filter, limit)
+                .map_err(|error| (error_codes::INVALID_REQUEST.to_string(), error))?;
+            listed["tabId"] = json!(tab_id);
+            Ok(listed)
+        }
+
         "console_logs" => {
             let tab_id = params
                 .get("tabId")
