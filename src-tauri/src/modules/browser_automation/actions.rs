@@ -2721,9 +2721,13 @@ async fn handle_action_inner(
                         "the page reported no size for a full-page capture".to_string(),
                     ));
                 };
-                let scale = metrics["contentSize"]["height"]
-                    .as_f64()
-                    .map(|device| device / height)
+                // The page's own ratio: under emulation the layout metrics'
+                // contentSize is not in device pixels, and a phone at scale 3
+                // captured three times the height the cap is for.
+                let scale = ref_context::execute_main(&webview, "devicePixelRatio")
+                    .await
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<f64>(&raw).ok())
                     .filter(|scale| scale.is_finite() && *scale > 0.0)
                     .unwrap_or(1.0);
                 let captured = height.min((FULL_PAGE_MAX_DEVICE_PIXELS / scale).floor());
