@@ -80,6 +80,74 @@ const INLINE_SCREENSHOT_LIMIT: usize = 600 * 1024;
 /// The tallest full-page capture, in device pixels: Chromium draws a capture
 /// beyond the viewport as one texture, and this is its usual size limit.
 const FULL_PAGE_MAX_DEVICE_PIXELS: f64 = 16_384.0;
+
+/// Tabs an agent's browser_emulate put an override on, each with the size
+/// its page read before the first one. Clearing an override hands the page
+/// its own size back a frame or more after the call, sometimes through a
+/// size an earlier override left queued, so the read that follows waits for
+/// it; clearing a tab with no override (a common way to read the viewport)
+/// reads at once.
+type PageSize = (i64, i64);
+type EmulatedTabs = HashMap<i64, Option<PageSize>>;
+static EMULATED_TABS: std::sync::OnceLock<std::sync::Mutex<EmulatedTabs>> =
+    std::sync::OnceLock::new();
+
+fn emulated_tabs() -> std::sync::MutexGuard<'static, EmulatedTabs> {
+    EMULATED_TABS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+const SEEN_BY_PAGE_JS: &str = "({innerWidth: innerWidth, innerHeight: innerHeight, devicePixelRatio: devicePixelRatio, maxTouchPoints: navigator.maxTouchPoints})";
+
+/// What the page itself reads of its viewport (see the emulate action).
+async fn seen_by_page(webview: &Webview) -> Option<Value> {
+    ref_context::execute_main(webview, SEEN_BY_PAGE_JS)
+        .await
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+}
+
+/// The size the page reads, (innerWidth, innerHeight).
+fn seen_size(seen: &Value) -> Option<(i64, i64)> {
+    Some((seen["innerWidth"].as_i64()?, seen["innerHeight"].as_i64()?))
+}
+
+/// Whether a read after a clear is the page's own size: back at the size it
+/// had before any override, or away from the cleared override's size and the
+/// same in two reads in a row.
+fn cleared_size_settled(
+    size: Option<(i64, i64)>,
+    previous: Option<(i64, i64)>,
+    own: Option<(i64, i64)>,
+    overridden: Option<(i64, i64)>,
+) -> bool {
+    size.is_some() && (size == own || (size != overridden && size == previous))
+}
+
+/// seen_by_page once the page has its own size back (cleared_size_settled),
+/// or after half a second. Polled from here: a hidden page's timers can be
+/// held to one a second.
+async fn seen_by_page_after_clear(
+    webview: &Webview,
+    own: Option<(i64, i64)>,
+    overridden: Option<(i64, i64)>,
+) -> Option<Value> {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    let mut previous = None;
+    loop {
+        let seen = seen_by_page(webview).await;
+        let size = seen.as_ref().and_then(seen_size);
+        if cleared_size_settled(size, previous, own, overridden)
+            || tokio::time::Instant::now() >= deadline
+        {
+            return seen;
+        }
+        previous = size;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
 const MAX_KEY_BYTES: usize = 64;
 const MAX_WORKSPACE_BYTES: usize = 4 * 1024;
 const MAX_REF_BYTES: usize = 32;
@@ -2594,6 +2662,16 @@ async fn handle_action_inner(
             let _lock = tab_lock.lock().await;
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
+            // The page's size before the call: under an override about to be
+            // cleared it is the override's, and before a first override it is
+            // the page's own, kept for when that override is cleared.
+            let had = emulated_tabs().get(&tab_id).copied();
+            let clearing = width == 0 && had.is_some();
+            let before = if clearing || (width > 0 && had.is_none()) {
+                seen_by_page(&webview).await.as_ref().and_then(seen_size)
+            } else {
+                None
+            };
             super::registry::apply_viewport(
                 &webview,
                 width as u32,
@@ -2617,16 +2695,21 @@ async fn handle_action_inner(
             .ok()
             .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
             .and_then(|metrics| metrics.get("cssVisualViewport").cloned());
+            if width > 0 {
+                emulated_tabs()
+                    .entry(tab_id)
+                    .or_insert(had.flatten().or(before));
+            } else {
+                emulated_tabs().remove(&tab_id);
+            }
             // And what the page itself reads, which an agent could only check
             // with a script of its own: a phone that kept the desktop's pixel
             // ratio or no touch looks the same in the layout metrics.
-            let seen_by_page = ref_context::execute_main(
-                &webview,
-                "({innerWidth: innerWidth, innerHeight: innerHeight, devicePixelRatio: devicePixelRatio, maxTouchPoints: navigator.maxTouchPoints})",
-            )
-            .await
-            .ok()
-            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+            let seen_by_page = if clearing {
+                seen_by_page_after_clear(&webview, had.flatten(), before).await
+            } else {
+                seen_by_page(&webview).await
+            };
             Ok(json!({
                 "tabId": tab_id,
                 "emulating": width > 0,
@@ -10261,6 +10344,33 @@ mod tests {
                 "not stable"
             );
         }
+    }
+
+    #[test]
+    fn a_cleared_override_is_read_once_the_page_has_its_own_size_back() {
+        let own = Some((440, 814));
+        let overridden = Some((412, 915));
+        // Back at its own size: done at once.
+        assert!(cleared_size_settled(own, None, own, overridden));
+        // Still at the override's size, or at a size an earlier override left
+        // queued for one read only: not yet.
+        assert!(!cleared_size_settled(
+            overridden, overridden, own, overridden
+        ));
+        assert!(!cleared_size_settled(
+            Some((1280, 800)),
+            overridden,
+            own,
+            overridden
+        ));
+        // A new size that holds for two reads (the window changed meanwhile).
+        assert!(cleared_size_settled(
+            Some((600, 814)),
+            Some((600, 814)),
+            own,
+            overridden
+        ));
+        assert!(!cleared_size_settled(None, None, own, overridden));
     }
 
     #[test]
