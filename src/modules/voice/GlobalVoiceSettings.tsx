@@ -17,6 +17,7 @@ import {
   isPushToTalkKey,
   PUSH_TO_TALK_KEYS,
   type PushToTalkKey,
+  shortcutLabel,
 } from "@/modules/voice/lib/globalVoice";
 import { useEffect, useState } from "react";
 
@@ -75,8 +76,8 @@ export function GlobalVoiceSettings() {
           <div className="mt-0.5 text-[9.5px] leading-relaxed text-muted-foreground">
             A movable AnboVoice orb types into the focused app. Hold the key
             below to talk and release it to type, or toggle hands-free recording
-            with {status?.shortcut ?? "Ctrl+Alt+Space"}, which types each
-            sentence as you pause.
+            with {status ? shortcutLabel(status.shortcut) : "Ctrl+Alt+Space"},
+            which types each sentence as you pause.
           </div>
           {status?.supported === false ? (
             <div className="mt-1 text-[9.5px] text-muted-foreground">

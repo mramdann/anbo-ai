@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { isPushToTalkKey, PUSH_TO_TALK_KEYS } from "./globalVoice";
+import {
+  isPushToTalkKey,
+  PUSH_TO_TALK_KEYS,
+  shortcutLabel,
+} from "./globalVoice";
+
+describe("shortcutLabel", () => {
+  it("shows the shell's shortcut in Anbo's casing", () => {
+    expect(shortcutLabel("ctrl+alt+space")).toBe("Ctrl+Alt+Space");
+    expect(shortcutLabel("ctrl+alt+shift+space")).toBe("Ctrl+Alt+Shift+Space");
+    expect(shortcutLabel("CmdOrCtrl+k")).toBe("Ctrl+K");
+    expect(shortcutLabel("alt+f10")).toBe("Alt+F10");
+    expect(shortcutLabel("ctrl++")).toBe("Ctrl++");
+  });
+});
 
 describe("isPushToTalkKey", () => {
   it("accepts the chords the shell knows and nothing else", () => {

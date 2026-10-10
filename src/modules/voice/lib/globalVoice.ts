@@ -9,6 +9,32 @@ export const PUSH_TO_TALK_KEYS = [
 ] as const;
 export type PushToTalkKey = (typeof PUSH_TO_TALK_KEYS)[number];
 
+const SHORTCUT_KEY_LABELS: Record<string, string> = {
+  ctrl: "Ctrl",
+  control: "Ctrl",
+  cmdorctrl: "Ctrl",
+  commandorcontrol: "Ctrl",
+  alt: "Alt",
+  shift: "Shift",
+  super: "Win",
+  meta: "Win",
+  space: "Space",
+};
+
+/** A shortcut as the shell registers it ("ctrl+alt+space") in the casing the
+ * rest of Anbo shows: "Ctrl+Alt+Space". */
+export function shortcutLabel(accelerator: string): string {
+  return accelerator
+    .split("+")
+    .map((part) => {
+      const key = part.trim().toLowerCase();
+      return (
+        SHORTCUT_KEY_LABELS[key] ?? key.charAt(0).toUpperCase() + key.slice(1)
+      );
+    })
+    .join("+");
+}
+
 export function isPushToTalkKey(value: unknown): value is PushToTalkKey {
   return (
     typeof value === "string" &&
