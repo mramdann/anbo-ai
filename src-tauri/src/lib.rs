@@ -8,8 +8,8 @@ extern "C" {}
 
 use modules::{
     agent, agent_cli, anbo, app_data, browser, browser_automation, fs, git, global_voice, history,
-    lsp, net, proc, project_memory, pty, secrets, shell, voice_caption, voice_runtime, window_fit,
-    window_frame, window_open, workspace,
+    lsp, net, proc, project_memory, pty, secrets, shell, voice_runtime, window_fit, window_frame,
+    window_open, workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -468,7 +468,6 @@ pub fn run() {
         .manage(lsp::LspState::default())
         .manage(voice_runtime::WhisperRuntimeState::default())
         .manage(global_voice::GlobalVoiceState::default())
-        .manage(voice_caption::VoiceCaptionState::default())
         .manage(fs::grep::ContentSearchState::default())
         .manage({
             let registry = workspace::WorkspaceRegistry::default();
@@ -621,8 +620,6 @@ pub fn run() {
             global_voice::global_voice_status,
             global_voice::global_voice_set_enabled,
             global_voice::global_voice_set_push_to_talk,
-            voice_caption::global_voice_caption,
-            voice_caption::global_voice_caption_current,
             global_voice::global_voice_capture_target,
             global_voice::global_voice_clear_target,
             global_voice::global_voice_remember_foreground,

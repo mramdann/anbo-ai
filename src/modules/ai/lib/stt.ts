@@ -1,5 +1,4 @@
 import type { SttLanguage } from "../config";
-import { type GroqQuota, groqQuota } from "./groqQuota";
 import type { ProviderKeys } from "./keyring";
 
 const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
@@ -84,25 +83,13 @@ function audioFileName(blob: Blob): string {
   return blob.type === "audio/wav" ? "audio.wav" : "audio.webm";
 }
 
-function retryAfterSeconds(res: Response): number | null {
-  const value = Number(res.headers.get("retry-after"));
-  return Number.isFinite(value) && value > 0 ? value : null;
-}
-
-type RestOptions = {
-  language?: string;
-  /** Counts the request against a free tier the service enforces. */
-  quota?: GroqQuota;
-  audioSeconds?: number;
-};
-
 async function transcribeViaRest(
   service: string,
   baseURL: string,
   blob: Blob,
   apiKey: string | null,
   model: string,
-  { language, quota, audioSeconds = 0 }: RestOptions = {},
+  language: string | undefined,
 ): Promise<string> {
   const form = new FormData();
   form.append("file", blob, audioFileName(blob));
@@ -113,14 +100,12 @@ async function transcribeViaRest(
   const headers: Record<string, string> = {};
   if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
-  quota?.note(audioSeconds);
   const res = await postTranscription(
     service,
     `${baseURL}/audio/transcriptions`,
     { method: "POST", headers, body: form },
     STT_TIMEOUT_GROQ_MS,
   );
-  if (res.status === 429) quota?.rateLimited(retryAfterSeconds(res));
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(
@@ -199,43 +184,18 @@ async function toWav(blob: Blob): Promise<Blob> {
   }
 }
 
-/**
- * whisper.cpp reads 50 frames of audio a second and encodes a whole 30 s
- * window (1500 frames) for any clip, which is what makes it take the same
- * time for one second as for twenty. A preview gets a window near its own
- * length instead: about a third of the time on a 4-core machine. One that
- * is too tight makes the decoder repeat itself ("to talk to talk to talk"),
- * so the window is one and a half times the audio and a second more, and
- * never under five seconds: the first second of a take, cut mid-word, still
- * looped at less.
- */
-export function previewAudioContext(seconds: number): number {
-  return Math.min(
-    1500,
-    Math.max(256, Math.ceil((seconds * 75 + 50) / 32) * 32),
-  );
-}
-
 async function transcribeWhisperCpp(
   baseURL: string,
   blob: Blob,
   language: string | undefined,
-  preview: { audioContext: number } | null,
 ): Promise<string> {
-  // Live text already sends a 16 kHz WAV; decoding it again would only
-  // cost time.
+  // A hands-free sentence comes as a 16 kHz WAV already; decoding it
+  // again would only cost time.
   const wav = blob.type === "audio/wav" ? blob : await toWav(blob);
   const form = new FormData();
   form.append("file", wav, "audio.wav");
   form.append("response_format", "text");
   if (language) form.append("language", language);
-  // A server that does not know these fields ignores them.
-  if (preview) {
-    form.append("audio_ctx", String(preview.audioContext));
-    // One decoding pass: retrying a poor one at higher temperatures is what
-    // a final text is for, not a preview that is replaced a second later.
-    form.append("temperature_inc", "0");
-  }
 
   const res = await fetchWithTimeout(
     `${baseURL}/inference`,
@@ -294,11 +254,6 @@ export type SttOptions = {
   groqSttModel?: string;
   whispercppBaseURL?: string;
   language?: SttLanguage;
-  /** How long the audio runs; Groq bills a request by it (10 s at least). */
-  audioSeconds?: number;
-  /** Words shown while the take still records, where speed matters more
-   * than the last bit of accuracy. */
-  preview?: boolean;
 };
 
 export async function transcribeAudio(
@@ -321,22 +276,21 @@ export async function transcribeAudio(
       const key = apiKeys.groq;
       if (!key) throw new Error("Groq API key is not configured");
       const model = options.groqSttModel || "whisper-large-v3-turbo";
-      return transcribeViaRest("Groq", GROQ_BASE_URL, blob, key, model, {
+      return transcribeViaRest(
+        "Groq",
+        GROQ_BASE_URL,
+        blob,
+        key,
+        model,
         language,
-        quota: groqQuota,
-        audioSeconds: options.audioSeconds,
-      });
+      );
     }
     case "whispercpp": {
       const baseURL =
         options.whispercppBaseURL?.replace(/\/+$/, "") ||
         "http://127.0.0.1:8080";
       assertLoopbackUrl(baseURL);
-      const preview =
-        options.preview && options.audioSeconds
-          ? { audioContext: previewAudioContext(options.audioSeconds) }
-          : null;
-      return transcribeWhisperCpp(baseURL, blob, language, preview);
+      return transcribeWhisperCpp(baseURL, blob, language);
     }
   }
 }

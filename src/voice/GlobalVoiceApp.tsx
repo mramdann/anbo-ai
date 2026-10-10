@@ -5,7 +5,6 @@ import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { onKeysChanged } from "@/modules/settings/store";
 import {
-  applyGlobalVoiceCaption,
   captureGlobalVoiceTarget,
   clearGlobalVoiceTarget,
   GLOBAL_VOICE_PTT_EVENT,
@@ -28,7 +27,6 @@ import {
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
-import { warn } from "@tauri-apps/plugin-log";
 import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
@@ -262,25 +260,9 @@ export function GlobalVoiceApp() {
     onError: handleVoiceError,
     onSettled: settleTarget,
     skipSilence: true,
-    live: true,
   });
 
   useVoiceMeterStyle(visualRef, "--voice", voice.audioMeter, voice.recording);
-
-  // The bubble beside the orb follows the words heard so far, and goes once
-  // the take is typed, cancelled or failed. A bubble that cannot show is
-  // reported once and left alone for the rest of the take.
-  const captionBrokenRef = useRef(false);
-  useEffect(() => {
-    const text = voice.liveText;
-    if (text === null) captionBrokenRef.current = false;
-    else if (captionBrokenRef.current) return;
-    void applyGlobalVoiceCaption(text, (cause, failed) => {
-      if (failed === null || captionBrokenRef.current) return;
-      captionBrokenRef.current = true;
-      void warn(`AnboVoice caption failed: ${message(cause)}`).catch(() => {});
-    });
-  }, [voice.liveText]);
 
   const cancel = useCallback(() => {
     voice.cancel();

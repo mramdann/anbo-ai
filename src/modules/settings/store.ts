@@ -25,7 +25,6 @@ import {
   isCompatModelId,
   isKnownModelId,
   isSttLanguage,
-  isVoiceLiveSource,
   isWhispercppAcceleration,
   isWhispercppModelChoice,
   LMSTUDIO_DEFAULT_BASE_URL,
@@ -36,7 +35,6 @@ import {
   OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
   type SttLanguage,
   type SttProvider,
-  type VoiceLiveSource,
   WHISPERCPP_DEFAULT_BASE_URL,
   DEFAULT_OPEN_LINKS_IN_ANBO,
   WHISPERCPP_DEFAULT_ACCELERATION,
@@ -185,7 +183,6 @@ export type Preferences = {
   whispercppAutoStart: boolean;
   globalVoiceEnabled: boolean;
   globalVoicePushToTalk: PushToTalkKey;
-  voiceLiveSource: VoiceLiveSource;
   sttLanguage: SttLanguage;
   favoriteModelIds: string[];
   recentModelIds: string[];
@@ -289,7 +286,6 @@ const KEY_WHISPERCPP_MODEL = "whispercppModel";
 const KEY_WHISPERCPP_AUTO_START = "whispercppAutoStart";
 const KEY_GLOBAL_VOICE_ENABLED = "globalVoiceEnabled";
 const KEY_GLOBAL_VOICE_PUSH_TO_TALK = "globalVoicePushToTalk";
-const KEY_VOICE_LIVE_SOURCE = "voiceLiveSource";
 const KEY_STT_LANGUAGE = "sttLanguage";
 const KEY_FAVORITE_MODELS = "favoriteModelIds";
 const KEY_RECENT_MODELS = "recentModelIds";
@@ -389,7 +385,6 @@ export const DEFAULT_PREFERENCES: Preferences = {
   whispercppAutoStart: true,
   globalVoiceEnabled: false,
   globalVoicePushToTalk: "win",
-  voiceLiveSource: "local",
   sttLanguage: "auto",
   favoriteModelIds: [],
   recentModelIds: [],
@@ -570,12 +565,6 @@ export async function loadPreferences(): Promise<Preferences> {
       return isPushToTalkKey(stored)
         ? stored
         : DEFAULT_PREFERENCES.globalVoicePushToTalk;
-    })(),
-    voiceLiveSource: (() => {
-      const stored = get<unknown>(KEY_VOICE_LIVE_SOURCE);
-      return isVoiceLiveSource(stored)
-        ? stored
-        : DEFAULT_PREFERENCES.voiceLiveSource;
     })(),
     sttLanguage: (() => {
       const stored = get<unknown>(KEY_STT_LANGUAGE);
@@ -909,12 +898,6 @@ export async function setGlobalVoicePushToTalk(
   await writePref(KEY_GLOBAL_VOICE_PUSH_TO_TALK, value);
 }
 
-export async function setVoiceLiveSource(
-  value: VoiceLiveSource,
-): Promise<void> {
-  await writePref(KEY_VOICE_LIVE_SOURCE, value);
-}
-
 export async function setSttLanguage(value: SttLanguage): Promise<void> {
   await writePref(KEY_STT_LANGUAGE, value);
 }
@@ -1154,7 +1137,6 @@ export async function onPreferencesChange(
     [KEY_WHISPERCPP_AUTO_START]: "whispercppAutoStart",
     [KEY_GLOBAL_VOICE_ENABLED]: "globalVoiceEnabled",
     [KEY_GLOBAL_VOICE_PUSH_TO_TALK]: "globalVoicePushToTalk",
-    [KEY_VOICE_LIVE_SOURCE]: "voiceLiveSource",
     [KEY_STT_LANGUAGE]: "sttLanguage",
     [KEY_FAVORITE_MODELS]: "favoriteModelIds",
     [KEY_RECENT_MODELS]: "recentModelIds",

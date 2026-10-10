@@ -1,42 +1,99 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPcmTake } from "./pcmCapture";
-import { type FollowTakeOptions, followTake } from "./takeFollower";
+import {
+  type FollowTakeOptions,
+  findSentenceEnd,
+  followTake,
+  trimSilence,
+} from "./takeFollower";
 
-beforeEach(() => {
-  vi.useFakeTimers();
-});
-
-afterEach(() => {
-  vi.useRealTimers();
-});
-
-function takeWith() {
+/** `levels` of 100 ms blocks at 16 kHz, each a steady level. */
+function takeOf(levels: number[]) {
   const take = createPcmTake();
-  const add = (seconds: number, level: number) => {
-    for (let index = 0; index < Math.round(seconds * 10); index += 1) {
-      take.push(new Float32Array(1_600).fill(level));
-    }
-  };
-  return {
-    take,
-    speak: (seconds: number) => add(seconds, 0.2),
-    pause: (seconds: number) => add(seconds, 0.001),
-  };
+  for (const level of levels) take.push(new Float32Array(1_600).fill(level));
+  return take;
 }
 
-function follow(
-  take: FollowTakeOptions["take"],
-  overrides: Partial<FollowTakeOptions> = {},
-) {
-  const state = { recording: true, wanted: true };
-  const typed: string[] = [];
-  const heard: number[] = [];
-  const follower = followTake({
-    take,
-    recording: () => state.recording,
-    wanted: () => state.wanted,
-    live: null,
-    sentences: {
+const speech = (seconds: number) => Array(seconds * 10).fill(0.2);
+const quiet = (seconds: number) => Array(seconds * 10).fill(0.001);
+
+describe("trimSilence", () => {
+  it("starts a clip 0.3 s before its first sound", () => {
+    const take = takeOf([...quiet(2), ...speech(1)]);
+    expect(trimSilence(take, 0, 3)).toBeCloseTo(1.7);
+    // Speech from the start, or none at all: nothing to trim.
+    expect(trimSilence(take, 2, 3)).toBe(2);
+    expect(trimSilence(takeOf(quiet(1)), 0, 1)).toBe(0);
+  });
+});
+
+describe("findSentenceEnd", () => {
+  it("ends a sentence 0.3 s into a pause of 0.8 s", () => {
+    const take = takeOf([...speech(2), ...quiet(0.8)]);
+    expect(findSentenceEnd(take, 0)).toBeCloseTo(2.3);
+  });
+
+  it("waits while the user speaks, pauses too briefly, or said nothing", () => {
+    expect(findSentenceEnd(takeOf(speech(3)), 0)).toBeNull();
+    expect(
+      findSentenceEnd(takeOf([...speech(2), ...quiet(0.5)]), 0),
+    ).toBeNull();
+    expect(findSentenceEnd(takeOf(quiet(3)), 0)).toBeNull();
+    // A cough before the pause is not a sentence.
+    expect(
+      findSentenceEnd(takeOf([...speech(0.5), ...quiet(0.8)]), 0),
+    ).toBeNull();
+  });
+
+  it("starts looking where the last sentence ended", () => {
+    const take = takeOf([
+      ...speech(2),
+      ...quiet(1),
+      ...speech(2),
+      ...quiet(0.8),
+    ]);
+    expect(findSentenceEnd(take, 2.3)).toBeCloseTo(5.3);
+    // Only silence since the last sentence.
+    expect(
+      findSentenceEnd(takeOf([...speech(2), ...quiet(3)]), 2.3),
+    ).toBeNull();
+  });
+});
+
+describe("followTake", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function takeWith() {
+    const take = createPcmTake();
+    const add = (seconds: number, level: number) => {
+      for (let index = 0; index < Math.round(seconds * 10); index += 1) {
+        take.push(new Float32Array(1_600).fill(level));
+      }
+    };
+    return {
+      take,
+      speak: (seconds: number) => add(seconds, 0.2),
+      pause: (seconds: number) => add(seconds, 0.001),
+    };
+  }
+
+  function follow(
+    take: FollowTakeOptions["take"],
+    overrides: Partial<FollowTakeOptions> = {},
+  ) {
+    const state = { recording: true, wanted: true };
+    const typed: string[] = [];
+    const heard: number[] = [];
+    const follower = followTake({
+      take,
+      recording: () => state.recording,
+      wanted: () => state.wanted,
       transcribe: async (_wav, seconds) => {
         heard.push(Math.round(seconds * 10) / 10);
         return ` sentence ${heard.length} `;
@@ -45,15 +102,12 @@ function follow(
         typed.push(text);
         return true;
       },
-    },
-    onLiveText: () => {},
-    log: () => {},
-    ...overrides,
-  });
-  return { follower, state, typed, heard };
-}
+      log: () => {},
+      ...overrides,
+    });
+    return { follower, state, typed, heard };
+  }
 
-describe("followTake sentences", () => {
   it("types each sentence after a pause, in order, and leaves the rest", async () => {
     const { take, speak, pause } = takeWith();
     const { follower, state, typed, heard } = follow(take);
@@ -81,12 +135,10 @@ describe("followTake sentences", () => {
     const { take, speak, pause } = takeWith();
     const typed: string[] = [];
     const { follower, state } = follow(take, {
-      sentences: {
-        transcribe: async () => "the first one",
-        type: async (text) => {
-          typed.push(text);
-          return false;
-        },
+      transcribe: async () => "the first one",
+      type: async (text) => {
+        typed.push(text);
+        return false;
       },
     });
     speak(2);
@@ -106,11 +158,8 @@ describe("followTake sentences", () => {
   it("keeps the audio of a sentence it could not transcribe for the end", async () => {
     const { take, speak, pause } = takeWith();
     const { follower, state, typed } = follow(take, {
-      sentences: {
-        transcribe: async () => {
-          throw new Error("offline");
-        },
-        type: async () => true,
+      transcribe: async () => {
+        throw new Error("offline");
       },
     });
     speak(2);
@@ -125,18 +174,11 @@ describe("followTake sentences", () => {
   it("types nothing once the take is cancelled", async () => {
     const { take, speak, pause } = takeWith();
     let answer: ((text: string) => void) | undefined;
-    const typed: string[] = [];
-    const { follower, state } = follow(take, {
-      sentences: {
-        transcribe: () =>
-          new Promise<string>((resolve) => {
-            answer = resolve;
-          }),
-        type: async (text) => {
-          typed.push(text);
-          return true;
-        },
-      },
+    const { follower, state, typed } = follow(take, {
+      transcribe: () =>
+        new Promise<string>((resolve) => {
+          answer = resolve;
+        }),
     });
     speak(2);
     pause(1);
@@ -151,18 +193,11 @@ describe("followTake sentences", () => {
   it("finishes the sentence on its way before the rest is handed over", async () => {
     const { take, speak, pause } = takeWith();
     let answer: ((text: string) => void) | undefined;
-    const typed: string[] = [];
-    const { follower, state } = follow(take, {
-      sentences: {
-        transcribe: () =>
-          new Promise<string>((resolve) => {
-            answer = resolve;
-          }),
-        type: async (text) => {
-          typed.push(text);
-          return true;
-        },
-      },
+    const { follower, state, typed } = follow(take, {
+      transcribe: () =>
+        new Promise<string>((resolve) => {
+          answer = resolve;
+        }),
     });
     speak(2);
     pause(1);
@@ -172,59 +207,5 @@ describe("followTake sentences", () => {
     answer?.("last words");
     expect((await rest).from).toBeCloseTo(2.5);
     expect(typed).toEqual(["last words"]);
-  });
-});
-
-describe("followTake live text", () => {
-  it("shows the words since the last typed sentence and drops old answers", async () => {
-    const { take, speak, pause } = takeWith();
-    const shown: (string | null)[] = [];
-    const answers: { from: number; resolve: (text: string) => void }[] = [];
-    let at = 0;
-    const { follower, state } = follow(take, {
-      live: {
-        provider: "whispercpp",
-        transcribe: (_wav, seconds) =>
-          new Promise<string>((resolve) => {
-            answers.push({ from: take.seconds() - seconds, resolve });
-            at += 1;
-          }),
-        allowed: () => true,
-      },
-      onLiveText: (text) => shown.push(text),
-    });
-    speak(1.5);
-    await vi.advanceTimersByTimeAsync(300);
-    expect(at).toBe(1);
-    answers[0].resolve("hello there");
-    await vi.advanceTimersByTimeAsync(0);
-    expect(shown).toEqual(["hello there"]);
-    // A second live request goes out, then the user pauses: the sentence is
-    // typed before that answer is back, so the answer is dropped.
-    speak(0.5);
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(at).toBe(2);
-    pause(1);
-    await vi.advanceTimersByTimeAsync(300);
-    answers[1].resolve("hello there friend");
-    await vi.advanceTimersByTimeAsync(0);
-    // Typed: the caption went; the old answer did not bring it back.
-    expect(shown).toEqual(["hello there", null]);
-    state.recording = false;
-    await follower.rest();
-  });
-
-  it("asks nothing while the quota says no", async () => {
-    const { take, speak } = takeWith();
-    const transcribe = vi.fn(async () => "words");
-    const { follower, state } = follow(take, {
-      live: { provider: "groq", transcribe, allowed: () => false },
-      sentences: null,
-    });
-    speak(3);
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(transcribe).not.toHaveBeenCalled();
-    state.recording = false;
-    await follower.rest();
   });
 });

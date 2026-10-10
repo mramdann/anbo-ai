@@ -1,5 +1,5 @@
 use crate::modules::voice_push_to_talk::{self as ptt, PttKey};
-use crate::modules::{voice_caption, window_open};
+use crate::modules::window_open;
 use serde::Serialize;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -82,7 +82,6 @@ pub fn shutdown(app: &tauri::AppHandle) {
         let _ = app.global_shortcut().unregister(SHORTCUT);
     }
     platform::stop_foreground_tracking();
-    voice_caption::close(app);
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         let _ = window.close();
     }

@@ -911,19 +911,6 @@ export function isSttLanguage(value: unknown): value is SttLanguage {
   );
 }
 
-/** Where AnboVoice gets the text it shows while the user still speaks: the
- * local Whisper server (no request quota), the selected provider, or
- * nowhere. */
-const VOICE_LIVE_SOURCES = ["local", "provider", "off"] as const;
-export type VoiceLiveSource = (typeof VOICE_LIVE_SOURCES)[number];
-
-export function isVoiceLiveSource(value: unknown): value is VoiceLiveSource {
-  return (
-    typeof value === "string" &&
-    (VOICE_LIVE_SOURCES as readonly string[]).includes(value)
-  );
-}
-
 // Anbo has its own browser, so a link in agent output stays in the workspace
 // it came from unless the user would rather leave the app.
 export const DEFAULT_OPEN_LINKS_IN_ANBO = true;

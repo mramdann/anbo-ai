@@ -4,8 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { type SttProvider, WHISPERCPP_DEFAULT_BASE_URL } from "../config";
 import { createAudioMeter } from "../lib/audioMeter";
-import { groqQuota } from "../lib/groqQuota";
-import { liveProvider, trimSilence } from "../lib/liveTranscript";
 import { type PcmCapture, startPcmCapture } from "../lib/pcmCapture";
 import {
   peakLevel,
@@ -14,7 +12,7 @@ import {
   transcribeAudio,
   whisperCppReachable,
 } from "../lib/stt";
-import { followTake } from "../lib/takeFollower";
+import { followTake, trimSilence } from "../lib/takeFollower";
 import { encodeWav, WHISPER_SAMPLE_RATE } from "../lib/wav";
 import { useChatStore } from "../store/chatStore";
 
@@ -65,7 +63,6 @@ export function useWhisperRecording({
   onError,
   onSettled,
   skipSilence = false,
-  live = false,
 }: {
   onResult: (text: string) => void | Promise<void>;
   onError?: (message: string) => void;
@@ -74,18 +71,13 @@ export function useWhisperRecording({
    * Whisper writes words into silence ("Thank you."), and a hold to talk can
    * end without a word said. */
   skipSilence?: boolean;
-  /** Transcribe the take while it records too, and hand the words heard so
-   * far out as `liveText`. The voice settings choose the service. */
-  live?: boolean;
 }) {
   const apiKeys = useChatStore((s) => s.apiKeys);
   const sttProvider = usePreferencesStore((s) => s.sttProvider);
   const groqSttModel = usePreferencesStore((s) => s.groqSttModel);
   const whispercppBaseURL = usePreferencesStore((s) => s.whispercppBaseURL);
   const sttLanguage = usePreferencesStore((s) => s.sttLanguage);
-  const liveSource = usePreferencesStore((s) => s.voiceLiveSource);
   const [state, setState] = useState<State>("idle");
-  const [liveText, setLiveText] = useState<string | null>(null);
   const audioMeter = useMemo(createAudioMeter, []);
   const recRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -95,7 +87,6 @@ export function useWhisperRecording({
   const errorRef = useRef(onError);
   const settledRef = useRef(onSettled);
   const skipSilenceRef = useRef(skipSilence);
-  const liveRef = useRef(live);
   const sessionResultRef = useRef(onResult);
   const cancelledRef = useRef(false);
   const mountedRef = useRef(true);
@@ -108,7 +99,6 @@ export function useWhisperRecording({
   errorRef.current = onError;
   settledRef.current = onSettled;
   skipSilenceRef.current = skipSilence;
-  liveRef.current = live;
 
   const needsKey = providerNeedsKey(sttProvider);
   const providerKey = needsKey ? getApiKeyForStt(apiKeys, sttProvider) : null;
@@ -205,24 +195,14 @@ export function useWhisperRecording({
       const onSentence = takeOptions.onSentence;
       let follower: ReturnType<typeof followTake> | null = null;
       let followed: PcmCapture | null = null;
-      // The take's own audio, tapped beside the recorder for live text and to
-      // type a hands-free take sentence by sentence. Nothing in it can fail
-      // the take: without it, the whole take is transcribed at its end.
+      // A hands-free take's own audio, tapped beside the recorder to type it
+      // sentence by sentence. Nothing in it can fail the take: without it,
+      // the whole take is transcribed at its end.
       const follow = async (stream: MediaStream) => {
+        if (!onSentence) return;
         const recording = () =>
           generationRef.current === generation &&
           recRef.current?.state === "recording";
-        let liveFrom = liveRef.current
-          ? liveProvider(liveSource, sttProvider)
-          : null;
-        if (liveFrom === "whispercpp" && sttProvider !== "whispercpp") {
-          // The final text goes elsewhere, so nothing checked this server.
-          const endpoint =
-            whispercppBaseURL?.replace(/\/+$/, "") ||
-            WHISPERCPP_DEFAULT_BASE_URL;
-          if (!(await whisperCppReachable(endpoint))) liveFrom = null;
-        }
-        if (!liveFrom && !onSentence) return;
         let capture: PcmCapture;
         try {
           capture = await startPcmCapture(stream);
@@ -238,36 +218,14 @@ export function useWhisperRecording({
         }
         captureRef.current = capture;
         followed = capture;
-        const provider = liveFrom;
         follower = followTake({
           take: capture,
           recording,
           wanted: () =>
             generationRef.current === generation && !cancelledRef.current,
-          live: provider
-            ? {
-                provider,
-                transcribe: (wav, seconds) =>
-                  transcribeAudio(wav, provider, apiKeys, {
-                    ...sttOptions,
-                    audioSeconds: seconds,
-                    preview: true,
-                  }),
-                allowed: (seconds) =>
-                  provider !== "groq" || groqQuota.liveAllowed(seconds),
-              }
-            : null,
-          sentences: onSentence
-            ? {
-                transcribe: (wav, seconds) =>
-                  transcribeAudio(wav, sttProvider, apiKeys, {
-                    ...sttOptions,
-                    audioSeconds: seconds,
-                  }),
-                type: onSentence,
-              }
-            : null,
-          onLiveText: setLiveText,
+          transcribe: (wav) =>
+            transcribeAudio(wav, sttProvider, apiKeys, sttOptions),
+          type: onSentence,
           log: logVoiceFailure,
         });
       };
@@ -281,13 +239,12 @@ export function useWhisperRecording({
         const from = trimSilence(capture, rest.from, end);
         let tail = "";
         if (end - from >= 0.3 && capture.peak(from) >= SILENCE_RMS) {
-          const seconds = end - from;
           try {
             tail = await transcribeAudio(
               encodeWav(capture.slice(from, end), WHISPER_SAMPLE_RATE),
               sttProvider,
               apiKeys,
-              { ...sttOptions, audioSeconds: seconds },
+              sttOptions,
             );
           } catch (e) {
             // Sentences already transcribed still go out.
@@ -302,7 +259,6 @@ export function useWhisperRecording({
       try {
         cancelledRef.current = false;
         sessionResultRef.current = resultHandler ?? resultRef.current;
-        setLiveText(null);
         setState("requesting");
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: true,
@@ -329,7 +285,6 @@ export function useWhisperRecording({
           mimeType ? { mimeType } : undefined,
         );
         chunksRef.current = [];
-        const startedAt = Date.now();
         rec.ondataavailable = (e) => {
           if (e.data.size > 0) chunksRef.current.push(e.data);
         };
@@ -349,7 +304,6 @@ export function useWhisperRecording({
         };
         rec.onstop = async () => {
           recRef.current = null;
-          const takeSeconds = (Date.now() - startedAt) / 1000;
           const blob = new Blob(chunksRef.current, {
             type: rec.mimeType || "audio/webm",
           });
@@ -377,10 +331,12 @@ export function useWhisperRecording({
               ) {
                 return;
               }
-              text = await transcribeAudio(blob, sttProvider, apiKeys, {
-                ...sttOptions,
-                audioSeconds: takeSeconds,
-              });
+              text = await transcribeAudio(
+                blob,
+                sttProvider,
+                apiKeys,
+                sttOptions,
+              );
             }
             if (
               generationRef.current === generation &&
@@ -441,7 +397,6 @@ export function useWhisperRecording({
       apiKeys,
       sttProvider,
       sttOptions,
-      liveSource,
       state,
       supported,
       hasKey,
@@ -474,9 +429,6 @@ export function useWhisperRecording({
     requesting: state === "requesting",
     recording: state === "recording",
     transcribing: state === "transcribing",
-    /** The words heard so far, kept until the final text has gone out. */
-    liveText:
-      state === "recording" || state === "transcribing" ? liveText : null,
     start,
     stop,
     cancel,

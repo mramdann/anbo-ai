@@ -1628,14 +1628,7 @@ function StatusLine({
 function VoiceBlock() {
   const sttProvider = usePreferencesStore((s) => s.sttProvider);
   const sttLanguage = usePreferencesStore((s) => s.sttLanguage);
-  const globalVoiceEnabled = usePreferencesStore((s) => s.globalVoiceEnabled);
-  const voiceLiveSource = usePreferencesStore((s) => s.voiceLiveSource);
   const groqSttModel = usePreferencesStore((s) => s.groqSttModel);
-  // AnboVoice's live text can read the local runtime while the typed text
-  // comes from a cloud provider; its panel is the only place to install it.
-  const localRuntimeUsed =
-    sttProvider === "whispercpp" ||
-    (globalVoiceEnabled && voiceLiveSource === "local");
   const [groqModelDraft, setGroqModelDraft] = useState(groqSttModel);
 
   useEffect(() => setGroqModelDraft(groqSttModel), [groqSttModel]);
@@ -1742,7 +1735,7 @@ function VoiceBlock() {
         </div>
       )}
 
-      {localRuntimeUsed && <WhisperRuntimeSettings />}
+      {sttProvider === "whispercpp" && <WhisperRuntimeSettings />}
     </div>
   );
 }
