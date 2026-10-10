@@ -1,7 +1,9 @@
-import type { UnlistenFn } from "@tauri-apps/api/event";
 import { appLocalDataDir, join } from "@tauri-apps/api/path";
 import { LazyStore, type StoreOptions } from "@tauri-apps/plugin-store";
 
+// No onChange: plugin-store delivers the changes of every store to such a
+// listener, in every window that holds one (see PREFS_CHANGED_EVENT in
+// settings/store). Announce a write with a Tauri event of its own instead.
 export class LocalLazyStore {
   private storePromise: Promise<LazyStore> | null = null;
 
@@ -35,11 +37,5 @@ export class LocalLazyStore {
 
   async save(): Promise<void> {
     return (await this.store()).save();
-  }
-
-  async onChange<T>(
-    callback: (key: string, value: T | undefined) => void,
-  ): Promise<UnlistenFn> {
-    return (await this.store()).onChange(callback);
   }
 }

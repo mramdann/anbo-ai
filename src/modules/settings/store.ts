@@ -423,10 +423,12 @@ export const DEFAULT_PREFERENCES: Preferences = {
 
 const store = new LocalLazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
 
-// LazyStore.onChange only fires within the writing process. The settings
-// page lives in a separate webview, so writes there never reach the main
-// window's subscribers. Mirror every setter through a Tauri event so any
-// window can listen.
+// Every setter announces its write with a Tauri event, which reaches every
+// window, the writing one included. LazyStore.onChange is not used for this:
+// plugin-store sends each change of every store, with its whole value, to
+// every window that holds such a listener, as a script that window runs, so a
+// window listening for settings also ran every write of every other store,
+// such as the browser history on each page visit.
 const PREFS_CHANGED_EVENT = "anbo://prefs-changed";
 
 async function writePref<T>(key: string, value: T): Promise<void> {
@@ -1173,23 +1175,10 @@ export async function onPreferencesChange(
     [KEY_LSP_ACTIVATION]: "lspActivation",
     [KEY_LSP_CUSTOM_SERVERS]: "lspCustomServers",
   };
-  // Same-process writes still fire onChange immediately; cross-window writes
-  // arrive via the Tauri event emitted by writePref().
-  const unsubLocal = await store.onChange<unknown>((key, value) => {
-    const mapped = map[key];
-    if (mapped) cb(mapped, value);
+  return listen<{ key: string; value: unknown }>(PREFS_CHANGED_EVENT, (e) => {
+    const mapped = map[e.payload.key];
+    if (mapped) cb(mapped, e.payload.value);
   });
-  const unsubEvent = await listen<{ key: string; value: unknown }>(
-    PREFS_CHANGED_EVENT,
-    (e) => {
-      const mapped = map[e.payload.key];
-      if (mapped) cb(mapped, e.payload.value);
-    },
-  );
-  return () => {
-    unsubLocal();
-    unsubEvent();
-  };
 }
 
 // API key changes are stored in OS keychain (not the prefs store),

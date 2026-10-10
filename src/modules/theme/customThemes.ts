@@ -30,15 +30,10 @@ export async function deleteCustomTheme(id: string): Promise<void> {
   await emit(CHANGED_EVENT);
 }
 
+// Saving and deleting announce the change to every window, this one included
+// (see PREFS_CHANGED_EVENT in settings/store for why not LazyStore.onChange).
 export async function onCustomThemesChange(
   cb: () => void,
 ): Promise<UnlistenFn> {
-  const unsubLocal = await store.onChange((key) => {
-    if (key === KEY) cb();
-  });
-  const unsubEvent = await listen(CHANGED_EVENT, () => cb());
-  return () => {
-    unsubLocal();
-    unsubEvent();
-  };
+  return listen(CHANGED_EVENT, () => cb());
 }

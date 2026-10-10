@@ -109,7 +109,7 @@ Windows resource admission: `modules/resource_guard.rs` samples system commit he
 - Terminal and agent close confirmations retain one title/description snapshot through the dialog's exit animation, even after the pending tab or pane is cleared. A new confirmation captures fresh copy, including when reopening the same tab. Keep this presentation state separate from process disposal; no close delay, polling, or timeout is needed.
 - **statusbar/** - bottom bar, `CwdBreadcrumb` (handles Unix paths, Windows drive letters, and home `~` segments via `pathUtils.segmentsFromCwd`), AI tools indicator.
 - **shortcuts/** - keymap registry (`shortcuts.ts`) + `useGlobalShortcuts`. Handlers live in `App.tsx` and are passed in by id (`tab.new`, `ai.toggle`, …). `metaKey || ctrlKey` for cross-platform Cmd/Ctrl. `matchBinding` falls back to the physical key (`e.code`) for Alt and Shift bindings: WebView2 reports what Shift types, so Ctrl+Shift+] arrives as `}`.
-- **settings/** - settings store (`store.ts` via `tauri-plugin-store`), preferences hook, settings window opener.
+- **settings/** - settings store (`store.ts` via `tauri-plugin-store`), preferences hook, settings window opener. Every setter announces its write with `anbo://prefs-changed`, which reaches every window, the writer included; nothing subscribes through `LazyStore.onChange` (`LocalLazyStore` has none), because plugin-store sends each write of every store, value and all, as a script to every window holding such a listener.
 - **sidebar/** - activity bar + collapsible side panels (explorer, source control, git history).
 - **source-control/** - git status / stage / commit panel and diff workflow.
 - **git-history/** - commit graph rail, refs, per-commit file diffs.
