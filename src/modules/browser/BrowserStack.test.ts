@@ -1,12 +1,26 @@
 import { describe, expect, it } from "vitest";
-import type { Tab } from "@/modules/tabs";
+import type { BrowserTab, Tab } from "@/modules/tabs";
 import {
   browserPaneInitialLoading,
+  followsHostSize,
   selectBackgroundBrowserTabs,
 } from "./BrowserStack";
 
 const tab = (id: number, kind: Tab["kind"], spaceId: string) =>
   ({ id, kind, spaceId }) as Tab;
+
+describe("followsHostSize", () => {
+  it("lets only a hidden tab of the space in view follow its box", () => {
+    const inView = tab(1, "browser", "A") as BrowserTab;
+    const elsewhere = tab(2, "browser", "B") as BrowserTab;
+    expect(followsHostSize(inView, false, "A")).toBe(true);
+    // A tab of another space keeps its size until its own space is shown.
+    expect(followsHostSize(elsewhere, false, "A")).toBe(false);
+    // A visible pane already follows its box; no space named, nothing follows.
+    expect(followsHostSize(inView, true, "A")).toBe(false);
+    expect(followsHostSize(inView, false, null)).toBe(false);
+  });
+});
 
 describe("selectBackgroundBrowserTabs", () => {
   it("hosts only tabs without a visible dockview panel", () => {

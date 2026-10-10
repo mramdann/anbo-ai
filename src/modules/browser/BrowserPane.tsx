@@ -25,6 +25,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { useAgentCallsign } from "@/modules/agents/lib/agentCallsign";
+import { BROWSER_PANEL_ATTRIBUTE } from "@/modules/tabs/lib/dockContentArea";
 import { useTheme } from "@/modules/theme";
 import {
   ensureBrowserAutomationActivityListener,
@@ -118,6 +119,9 @@ type Props = {
   onLoadingChange?: (loading: boolean) => void;
   /** The page took focus: this tab is the one being used. */
   onActivate?: () => void;
+  /** While hidden, keep the size of the box this pane renders in (a tab of
+   *  the space in view; see followsHostSize). */
+  followHidden?: boolean;
 };
 
 type DesiredBounds = {
@@ -133,6 +137,11 @@ const DesignToolbar = lazy(() => import("./design/DesignToolbar"));
 const DesignSendDialog = lazy(() => import("./design/DesignSendDialog"));
 
 const EMPTY_BOUNDS = { x: 0, y: 0, width: 0, height: 0 };
+
+// How long a hidden pane's box has to keep one size before the page behind it
+// is resized: a window resize drag would otherwise lay out every hidden page
+// again in each frame.
+const HIDDEN_BOUNDS_SETTLE_MS = 150;
 
 // Which panes hold each native browser, and the releases their unmounts queued.
 // A hot update in Dev runs this module again and re-runs every pane's effects:
@@ -158,6 +167,25 @@ const {
   visibleNativeBrowserOwners,
   lastVisibleBrowserBounds,
 } = paneRegistry;
+
+// What a hidden pane that follows its box (followHidden) needs to tell a tab
+// that lives in that box from one shown in another group. The hidden host
+// takes its box from the browser panel when there is one, so a tab last shown
+// in the panel follows it; in a free layout it takes the active group's box,
+// so a tab follows only once its shown size matched the box it was last laid
+// out in, and one from another group keeps the size it was shown at instead
+// of resizing whenever focus moves between groups. Kept while the tab's space
+// is in the background, so a resize meanwhile is caught up with when the space
+// is shown; losing them to a hot update costs one follow at most.
+const followedHiddenBoxes = new Map<number, DesiredBounds["bounds"]>();
+const shownInBrowserPanel = new Set<number>();
+
+function sameSize(
+  a: DesiredBounds["bounds"],
+  b: DesiredBounds["bounds"],
+): boolean {
+  return Math.abs(a.width - b.width) <= 2 && Math.abs(a.height - b.height) <= 2;
+}
 
 function syncNativeBrowserSurface(): void {
   if (visibleNativeBrowserOwners.size > 0) {
@@ -200,6 +228,7 @@ export const BrowserPane = memo(
       onTitleChange,
       onLoadingChange,
       onActivate,
+      followHidden = false,
     },
     ref,
   ) {
@@ -543,6 +572,17 @@ export const BrowserPane = memo(
       const measuredBounds = hasArea
         ? toPhysicalBounds(rect, dpr)
         : EMPTY_BOUNDS;
+      if (followHidden && !visibleRef.current && hasArea) {
+        const box = followedHiddenBoxes.get(id);
+        const lastShown = lastVisibleBrowserBounds.get(id);
+        if (
+          lastShown &&
+          (shownInBrowserPanel.has(id) || (box && sameSize(lastShown, box)))
+        ) {
+          lastVisibleBrowserBounds.set(id, measuredBounds);
+        }
+        followedHiddenBoxes.set(id, measuredBounds);
+      }
       const bounds = browserPresentationBounds(
         visibleRef.current,
         measuredBounds,
@@ -554,7 +594,15 @@ export const BrowserPane = memo(
         hasArea,
         suppressionReadyRef.current,
       );
-      if (shouldShow) lastVisibleBrowserBounds.set(id, bounds);
+      if (shouldShow) {
+        lastVisibleBrowserBounds.set(id, bounds);
+        followedHiddenBoxes.delete(id);
+        if (element?.closest(`[${BROWSER_PANEL_ATTRIBUTE}]`)) {
+          shownInBrowserPanel.add(id);
+        } else {
+          shownInBrowserPanel.delete(id);
+        }
+      }
       // Physical bounds divided by the ratio they were scaled by gives the
       // CSS size the child webview lays out in.
       const dprNow = window.devicePixelRatio || 1;
@@ -593,13 +641,38 @@ export const BrowserPane = memo(
         desiredHolesRef.current = { key, holes };
         sendHoles();
       }
-    }, [id, native, sendDesiredBounds, sendHoles, effectsEnabled]);
+    }, [
+      id,
+      native,
+      sendDesiredBounds,
+      sendHoles,
+      effectsEnabled,
+      followHidden,
+    ]);
 
     useLayoutEffect(() => {
       if (!native) return;
       syncBounds();
       if (!visible) {
-        return;
+        if (!followHidden) return;
+        // A hidden tab opened in the space in view kept the size it got when
+        // it opened: after a window resize or a layout change it came forward
+        // at the old size and resized under an agent that had measured its
+        // page. It follows its box now, once the box settles.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const hiddenObserver = new ResizeObserver(() => {
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => {
+            timer = undefined;
+            syncBounds();
+          }, HIDDEN_BOUNDS_SETTLE_MS);
+        });
+        const element = contentRef.current;
+        if (element) hiddenObserver.observe(element);
+        return () => {
+          hiddenObserver.disconnect();
+          if (timer) clearTimeout(timer);
+        };
       }
       let frame = 0;
       const scheduleBounds = () => {
@@ -634,7 +707,7 @@ export const BrowserPane = memo(
           frame = 0;
         }
       };
-    }, [native, syncBounds, visible]);
+    }, [native, syncBounds, visible, followHidden]);
 
     useEffect(() => {
       disposedRef.current = false;
@@ -658,6 +731,8 @@ export const BrowserPane = memo(
           pendingReleases.delete(id);
           if ((mountedOwnerCounts.get(id) ?? 0) > 0) return;
           lastVisibleBrowserBounds.delete(id);
+          followedHiddenBoxes.delete(id);
+          shownInBrowserPanel.delete(id);
           forgetBrowserOwnerId(id, ownerId);
           void browserEmbedRelease(id, ownerId).catch(() => {});
         }, 0);

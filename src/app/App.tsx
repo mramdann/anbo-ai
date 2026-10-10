@@ -3137,6 +3137,7 @@ export default function App() {
                             <BrowserStack
                               tabs={backgroundBrowserTabs}
                               activeId={-1}
+                              followSpaceId={activeSpaceId ?? DEFAULT_SPACE_ID}
                               registerHandle={registerBrowserHandle}
                               onUrlChange={handleBrowserUrl}
                               onTitleChange={handleBrowserTitle}

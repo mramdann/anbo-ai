@@ -73,6 +73,17 @@ describe("BrowserPane native layering", () => {
     expect(src).toContain("setFreezeFrame(null)");
   });
 
+  it("lets a hidden pane of the space in view follow its box once it settles", () => {
+    expect(src).toContain("if (!followHidden) return;");
+    expect(src).toContain("}, HIDDEN_BOUNDS_SETTLE_MS);");
+    expect(src).toContain("}, [native, syncBounds, visible, followHidden]);");
+    // A tab last shown in the browser panel, or at the size of the box it
+    // follows, takes the box's new size.
+    expect(src).toContain(
+      "(shownInBrowserPanel.has(id) || (box && sameSize(lastShown, box)))",
+    );
+  });
+
   it("keeps hidden navigation keyed by URL so it cannot stall", () => {
     expect(src).toMatch(
       /hidden:\$\{bounds\.x\}.*\$\{bounds\.height\}:\$\{currentUrl\}/s,

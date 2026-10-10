@@ -21,6 +21,8 @@ type Props = {
     handle: BrowserPaneHandle | null,
     previous?: BrowserPaneHandle | null,
   ) => void;
+  /** Hidden panes of this space keep the size of the box they render in. */
+  followSpaceId?: string | null;
 };
 
 export function selectBackgroundBrowserTabs(
@@ -31,6 +33,18 @@ export function selectBackgroundBrowserTabs(
     (tab): tab is BrowserTab =>
       tab.kind === "browser" && !tab.cold && !visibleTabIds.has(tab.id),
   );
+}
+
+/** Whether a pane follows the size of its box while hidden: only a tab of
+ *  the space in view. The hidden host takes its box from that space's dock,
+ *  so a tab of another space following it would lay out its page again on
+ *  every space switch; it keeps its size until its own space is shown. */
+export function followsHostSize(
+  tab: BrowserTab,
+  visible: boolean,
+  followSpaceId: string | null | undefined,
+): boolean {
+  return !visible && followSpaceId != null && tab.spaceId === followSpaceId;
 }
 
 export function browserPaneInitialLoading(tab: BrowserTab): boolean {
@@ -46,6 +60,7 @@ export function BrowserStack({
   onActivate,
   getWorkspaceContext,
   registerHandle,
+  followSpaceId,
 }: Props) {
   const browserTabs = tabs.filter(
     (t): t is BrowserTab => t.kind === "browser" && !t.cold,
@@ -186,6 +201,7 @@ export function BrowserStack({
                 onTitleChange={getTitleCallback(t.id)}
                 onLoadingChange={getLoadingCallback(t.id)}
                 onActivate={getActivateCallback(t.id)}
+                followHidden={followsHostSize(t, visible, followSpaceId)}
               />
             )}
           </div>
