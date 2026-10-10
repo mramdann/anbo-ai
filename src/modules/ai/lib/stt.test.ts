@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderKeys } from "./keyring";
-import { transcribeAudio, whisperCppReachable } from "./stt";
+import { likeliestLanguage, transcribeAudio, whisperCppReachable } from "./stt";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -126,5 +126,72 @@ describe("transcription language", () => {
     expect(await (form.get("file") as File).arrayBuffer()).toEqual(
       await audio.arrayBuffer(),
     );
+  });
+
+  it("asks the local server which language it heard while the setting is auto", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            text: " Halo semua. ",
+            language: "indonesian",
+            language_probabilities: { id: 0.93, ms: 0.05 },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const onLanguage = vi.fn();
+
+    await expect(
+      transcribeAudio(wav(), "whispercpp", {} as ProviderKeys, {
+        ...local,
+        language: "auto",
+        onLanguage,
+      }),
+    ).resolves.toBe(" Halo semua. ");
+    expect(sentForm(fetchMock).get("response_format")).toBe("verbose_json");
+    expect(sentForm(fetchMock).has("language")).toBe(false);
+    expect(onLanguage).toHaveBeenCalledWith("id", 0.93);
+  });
+
+  it("keeps to the take's language once found, and asks no more", async () => {
+    const fetchMock = vi.fn(async () => new Response("halo", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onLanguage = vi.fn();
+
+    await transcribeAudio(wav(), "whispercpp", {} as ProviderKeys, {
+      ...local,
+      language: "auto",
+      takeLanguage: "id",
+      onLanguage,
+    });
+    expect(sentForm(fetchMock).get("language")).toBe("id");
+    expect(sentForm(fetchMock).get("response_format")).toBe("text");
+    expect(onLanguage).not.toHaveBeenCalled();
+  });
+
+  it("lets a chosen language stand without asking", async () => {
+    const fetchMock = vi.fn(async () => new Response("hello", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onLanguage = vi.fn();
+
+    await transcribeAudio(wav(), "whispercpp", {} as ProviderKeys, {
+      ...local,
+      language: "en",
+      onLanguage,
+    });
+    expect(sentForm(fetchMock).get("language")).toBe("en");
+    expect(sentForm(fetchMock).get("response_format")).toBe("text");
+    expect(onLanguage).not.toHaveBeenCalled();
+  });
+
+  it("picks the language the answer is most sure of", () => {
+    expect(likeliestLanguage({ en: 0.2, id: 0.7, xx: "bad" })).toEqual({
+      code: "id",
+      confidence: 0.7,
+    });
+    expect(likeliestLanguage(undefined)).toBeNull();
+    expect(likeliestLanguage({})).toBeNull();
   });
 });

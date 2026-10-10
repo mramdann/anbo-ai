@@ -23,6 +23,9 @@ const MIME_CANDIDATES = [
   "audio/mp4",
 ];
 const MAX_RECORDING_MS = 5 * 60_000;
+/** How sure the local server must be of a hands-free sentence's language
+ * before that language stands for the rest of the take. */
+const LANGUAGE_LOCK_CONFIDENCE = 0.7;
 
 function pickMime(): string | undefined {
   if (typeof MediaRecorder === "undefined") return undefined;
@@ -195,6 +198,22 @@ export function useWhisperRecording({
       const onSentence = takeOptions.onSentence;
       let follower: ReturnType<typeof followTake> | null = null;
       let followed: PcmCapture | null = null;
+      // A hands-free take is one language. Left on auto, the local base model
+      // judged each short sentence anew and typed one of them in Japanese, so
+      // the first sentence it is sure of sets the language of the rest.
+      let takeLanguage: string | undefined;
+      const sentenceOptions = (): SttOptions => ({
+        ...sttOptions,
+        takeLanguage,
+        onLanguage:
+          takeLanguage === undefined
+            ? (code, confidence) => {
+                if (confidence >= LANGUAGE_LOCK_CONFIDENCE) {
+                  takeLanguage = code;
+                }
+              }
+            : undefined,
+      });
       // A hands-free take's own audio, tapped beside the recorder to type it
       // sentence by sentence. Nothing in it can fail the take: without it,
       // the whole take is transcribed at its end.
@@ -224,7 +243,7 @@ export function useWhisperRecording({
           wanted: () =>
             generationRef.current === generation && !cancelledRef.current,
           transcribe: (wav) =>
-            transcribeAudio(wav, sttProvider, apiKeys, sttOptions),
+            transcribeAudio(wav, sttProvider, apiKeys, sentenceOptions()),
           type: onSentence,
           log: logVoiceFailure,
         });
@@ -244,7 +263,7 @@ export function useWhisperRecording({
               encodeWav(capture.slice(from, end), WHISPER_SAMPLE_RATE),
               sttProvider,
               apiKeys,
-              sttOptions,
+              { ...sttOptions, takeLanguage },
             );
           } catch (e) {
             // Sentences already transcribed still go out.

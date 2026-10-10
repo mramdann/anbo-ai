@@ -184,17 +184,37 @@ async function toWav(blob: Blob): Promise<Blob> {
   }
 }
 
+/** The local server's verbose answer, of which only these are read. */
+type WhisperCppVerbose = {
+  text?: unknown;
+  /** Keyed by language code: { en: 0.99 }. */
+  language_probabilities?: Record<string, unknown>;
+};
+
+/** The language a verbose answer is most sure of, with how sure it is. */
+export function likeliestLanguage(
+  probabilities: Record<string, unknown> | undefined,
+): { code: string; confidence: number } | null {
+  let best: { code: string; confidence: number } | null = null;
+  for (const [code, confidence] of Object.entries(probabilities ?? {})) {
+    if (typeof confidence !== "number") continue;
+    if (!best || confidence > best.confidence) best = { code, confidence };
+  }
+  return best;
+}
+
 async function transcribeWhisperCpp(
   baseURL: string,
   blob: Blob,
   language: string | undefined,
+  onLanguage: SttOptions["onLanguage"],
 ): Promise<string> {
   // A hands-free sentence comes as a 16 kHz WAV already; decoding it
   // again would only cost time.
   const wav = blob.type === "audio/wav" ? blob : await toWav(blob);
   const form = new FormData();
   form.append("file", wav, "audio.wav");
-  form.append("response_format", "text");
+  form.append("response_format", onLanguage ? "verbose_json" : "text");
   if (language) form.append("language", language);
 
   const res = await fetchWithTimeout(
@@ -211,7 +231,11 @@ async function transcribeWhisperCpp(
       `STT request failed (${res.status}): ${body || res.statusText}`,
     );
   }
-  return res.text();
+  if (!onLanguage) return res.text();
+  const answer = (await res.json()) as WhisperCppVerbose;
+  const heard = likeliestLanguage(answer.language_probabilities);
+  if (heard) onLanguage(heard.code, heard.confidence);
+  return typeof answer.text === "string" ? answer.text : "";
 }
 
 // Offline provider: never POST recorded audio to a non-loopback host.
@@ -254,6 +278,12 @@ export type SttOptions = {
   groqSttModel?: string;
   whispercppBaseURL?: string;
   language?: SttLanguage;
+  /** The language code a take was found to be in; it stands in for a
+   * setting of auto. */
+  takeLanguage?: string;
+  /** Asks the local server which language it heard, as a code and how sure
+   * it is (0 to 1), while the setting is auto. Other providers ignore it. */
+  onLanguage?: (code: string, confidence: number) => void;
 };
 
 export async function transcribeAudio(
@@ -263,9 +293,10 @@ export async function transcribeAudio(
   options: SttOptions = {},
 ): Promise<string> {
   const language =
-    options.language && options.language !== "auto"
+    options.takeLanguage ??
+    (options.language && options.language !== "auto"
       ? options.language
-      : undefined;
+      : undefined);
   switch (provider) {
     case "openai": {
       const key = apiKeys.openai;
@@ -290,7 +321,12 @@ export async function transcribeAudio(
         options.whispercppBaseURL?.replace(/\/+$/, "") ||
         "http://127.0.0.1:8080";
       assertLoopbackUrl(baseURL);
-      return transcribeWhisperCpp(baseURL, blob, language);
+      return transcribeWhisperCpp(
+        baseURL,
+        blob,
+        language,
+        language ? undefined : options.onLanguage,
+      );
     }
   }
 }
