@@ -188,7 +188,10 @@ tab, newest last (method, URL, type, status, size, ms, error), with a URL
 `filter` and a `limit`. A Chrome or Edge tab lists them from extension 0.5.4
 on and from when Anbo connected to it: until its page loads again the reply's
 `note` says that load is missing (`browser_reload` lists it), and an older
-extension's tab says how many requests it could not list.
+extension's tab says how many requests it could not list. Its URLs show
+`<REDACTED>` for query values shaped like a credential (a token, key, secret,
+password, session or signature parameter, or a token-like value); Anbo's own
+tabs show URLs whole.
 
 When the active workspace has no tabs, `browser_open`, `terminal_open` and
 `agent_spawn` display their first tab automatically (`placement:

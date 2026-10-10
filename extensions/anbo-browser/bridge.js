@@ -64,9 +64,10 @@ export function profileLabel(value) {
 export const NETWORK_EVENTS = new Set(["Network.requestWillBeSent", "Network.responseReceived", "Network.loadingFinished", "Network.loadingFailed"]);
 
 /** What Anbo gets of one network event: never headers, bodies or the timing
- * breakdown, and a URL without its user name or password, cut at 512
- * characters (a data: URL can run to megabytes). The event's own time lets
- * Anbo measure a request on the browser's clock, not when events arrive. */
+ * breakdown, and a URL without its user name, password or anything shaped
+ * like a credential, cut at 512 characters (a data: URL can run to
+ * megabytes). The event's own time lets Anbo measure a request on the
+ * browser's clock, not when events arrive. */
 export function networkSummary(sessionId, method, params) {
   const summary = { requestId: `${sessionId ?? ""}:${params?.requestId}` };
   if (Number.isFinite(params?.timestamp)) summary.timestamp = params.timestamp;
@@ -85,17 +86,59 @@ export function networkSummary(sessionId, method, params) {
   return summary;
 }
 
+const MAX_URL = 512;
+// A credential in a request URL is hidden before it leaves the browser, the
+// way Anbo hides one in terminal output: a query value whose parameter is
+// named like one, or any value shaped like a token or a known key.
+const SECRET_WORDS = new Set(["token", "key", "secret", "password", "passwd", "pwd", "pass", "auth", "authorization", "session", "sid", "sig", "signature", "credential", "credentials", "jwt", "otp", "ticket", "apikey"]);
+const SECRET_PARTS = /token|secret|passw|sess(?:ion)?id|signature|credential|api_?key|access_?key|private_?key/i;
+const KEY_SHAPE = /\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\bgh[opsur]_[A-Za-z0-9]{36,}|\bgithub_pat_[A-Za-z0-9_]{40,}|\bAIza[0-9A-Za-z_-]{35}|\bxox[bpsare]-[A-Za-z0-9-]{10,}|\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
+const KEY_SHAPES = new RegExp(KEY_SHAPE.source, "g");
+
+function secretName(name) {
+  const words = name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/);
+  return words.some((word) => SECRET_WORDS.has(word)) || SECRET_PARTS.test(name);
+}
+
+// Long, unbroken, letters and digits: a token, a signature or an id.
+function tokenShaped(value) {
+  return KEY_SHAPE.test(value) || (value.length >= 20 && /^[A-Za-z0-9_.~=/+-]+$/.test(value) && /[A-Za-z]/.test(value) && /[0-9]/.test(value));
+}
+
+function decoded(text) {
+  try {
+    return decodeURIComponent(text.replace(/\+/g, " "));
+  } catch {
+    return text;
+  }
+}
+
+function withoutCredentials(url) {
+  const query = url.search
+    .slice(1)
+    .split("&")
+    .map((part) => {
+      const at = part.indexOf("=");
+      if (at <= 0 || at === part.length - 1) return part;
+      const name = part.slice(0, at);
+      return secretName(decoded(name)) || tokenShaped(decoded(part.slice(at + 1))) ? `${name}=<REDACTED>` : part;
+    });
+  return `${url.protocol}//${url.host}${url.pathname.replace(KEY_SHAPES, "<REDACTED>")}${url.search ? `?${query.join("&")}` : ""}`;
+}
+
 function listedUrl(value) {
-  const text = String(value ?? "");
+  let text = String(value ?? "");
   try {
     const url = new URL(text);
-    if (url.username || url.password) {
+    if (/^(?:https?|wss?):$/.test(url.protocol)) {
+      text = withoutCredentials(url);
+    } else if (url.username || url.password) {
       url.username = "";
       url.password = "";
-      return url.href.slice(0, 512);
+      text = url.href;
     }
   } catch {}
-  return text.slice(0, 512);
+  return text.length > MAX_URL ? `${text.slice(0, MAX_URL)}...` : text;
 }
 
 export function tabInfo(tab) {

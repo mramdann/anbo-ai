@@ -13,10 +13,25 @@ describe("networkSummary", () => {
     expect(networkSummary("", "Network.responseReceived", { requestId: "7", response: { status: 200 }, timestamp: "soon" })).toEqual({ requestId: ":7", response: { status: 200 } });
   });
 
-  it("cuts a long URL, and passes on only the four events Anbo reads", () => {
+  it("cuts a long URL with a mark, and passes on only the four events Anbo reads", () => {
     const url = `data:text/plain,${"a".repeat(2000)}`;
-    expect(networkSummary("", "Network.requestWillBeSent", { requestId: "1", request: { url, method: "GET" } }).request.url).toHaveLength(512);
+    expect(networkSummary("", "Network.requestWillBeSent", { requestId: "1", request: { url, method: "GET" } }).request.url).toBe(`${url.slice(0, 512)}...`);
     expect([...NETWORK_EVENTS]).toEqual(["Network.requestWillBeSent", "Network.responseReceived", "Network.loadingFinished", "Network.loadingFailed"]);
+  });
+
+  it("hides what is shaped like a credential in a URL and keeps the rest", () => {
+    const listed = (url) => networkSummary("", "Network.requestWillBeSent", { requestId: "1", request: { url, method: "GET" } }).request.url;
+    // By the parameter's name, in any spelling.
+    expect(listed("https://api.test/v1/items?access_token=tok123&page=2&q=red+shoes&keyword=key&t=1697000000000")).toBe("https://api.test/v1/items?access_token=<REDACTED>&page=2&q=red+shoes&keyword=key&t=1697000000000");
+    expect(listed("https://x.test/cb?sessionId=abc&PHPSESSID=q1w2&apiKey=k&X-Api-Key=k2&client_secret=s&debug")).toBe("https://x.test/cb?sessionId=<REDACTED>&PHPSESSID=<REDACTED>&apiKey=<REDACTED>&X-Api-Key=<REDACTED>&client_secret=<REDACTED>&debug");
+    expect(listed("https://s3.test/f.png?X-Amz-Credential=AKIDEXAMPLE%2F20261011&X-Amz-Date=20261011T000000Z&X-Amz-Expires=300&X-Amz-Signature=fe5f80f77d5fa3beca038a248ff027d0445342fe2855ddc963176630326f1024")).toBe("https://s3.test/f.png?X-Amz-Credential=<REDACTED>&X-Amz-Date=20261011T000000Z&X-Amz-Expires=300&X-Amz-Signature=<REDACTED>");
+    // By the value's shape: an OAuth code or state, a JWT or a known key, also in the path.
+    expect(listed("https://x.test/cb?code=4%2F0AY0e-g7abcDEF123ghiJKL456&state=Zx9Kq2Lm8Np4Rt6Vw1Yb3Cd5&scope=email")).toBe("https://x.test/cb?code=<REDACTED>&state=<REDACTED>&scope=email");
+    expect(listed("https://x.test/magic/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U/open")).toBe("https://x.test/magic/<REDACTED>/open");
+    expect(listed("wss://rt.test/socket?apikey=pk.abc&vsn=1.0.0")).toBe("wss://rt.test/socket?apikey=<REDACTED>&vsn=1.0.0");
+    // A search with numbers, a country code and a short id stay readable.
+    expect(listed("https://shop.test/search?q=iphone+15+pro+max+256gb&code=US&id=42&lang=en")).toBe("https://shop.test/search?q=iphone+15+pro+max+256gb&code=US&id=42&lang=en");
+    expect(listed("https://x.test/plain")).toBe("https://x.test/plain");
   });
 });
 
