@@ -27,7 +27,7 @@ async function close(tabId){if(!owned.has(tabId))throw Error('Unowned tab');cons
 try{
   await rpc('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'anbo-consolidation-smoke',version:'1'}});await call('skills_read',{workspace,name:'anbo'});before=await call('browser_tabs');
   const tools=(await rpc('tools/list',{})).tools;
-  check('33 browser / 49 total tools; redundant names not advertised',tools.length===49&&tools.filter(t=>t.name.startsWith('browser_')).length===33&&['browser_double_click','browser_key','browser_get_url'].every(name=>tools.every(t=>t.name!==name)));
+  check('34 browser / 50 total tools; redundant names not advertised',tools.length===50&&tools.filter(t=>t.name.startsWith('browser_')).length===34&&['browser_double_click','browser_key','browser_get_url'].every(name=>tools.every(t=>t.name!==name)));
   await new Promise(r=>server.listen(0,'127.0.0.1',r));origin='http://127.0.0.1:'+server.address().port;
   const {tabId}=await call('browser_open',{workspace,url:origin+'/'});owned.add(tabId);await call('browser_wait',{tabId,condition:'load',loadState:'complete'});
   const find=async value=>(await call('browser_find',{tabId,by:'css',value,limit:1})).matches[0].ref;
