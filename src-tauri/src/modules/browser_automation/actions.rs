@@ -2,6 +2,7 @@ use super::target::BrowserTarget as Webview;
 use base64::Engine;
 use futures_util::stream::{self, StreamExt};
 use serde_json::{json, Value};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2098,15 +2099,10 @@ async fn handle_action_inner(
 
         "press_key" | "press" => {
             let tab_id = extract_tab_id(&params)?;
-            let key = params.get("key").and_then(|v| v.as_str()).ok_or_else(|| {
-                (
-                    error_codes::INVALID_REQUEST.to_string(),
-                    "missing 'key' parameter".to_string(),
-                )
-            })?;
-            ensure_bounded(key, MAX_KEY_BYTES, "key")?;
+            let (key_name, combo_modifiers) = extract_key(&params)?;
+            let key: &str = &key_name;
             let action = extract_key_action(&params)?;
-            let modifiers = extract_key_modifiers(&params)?;
+            let modifiers = extract_key_modifiers(&params)? | combo_modifiers;
             let expectation = PageExpectation::parse(params.get("waitFor"))?;
             if action != "press"
                 && (expectation.is_some()
@@ -2322,13 +2318,8 @@ async fn handle_action_inner(
 
         "key" => {
             let tab_id = extract_tab_id(&params)?;
-            let key = params.get("key").and_then(Value::as_str).ok_or_else(|| {
-                (
-                    error_codes::INVALID_REQUEST.to_string(),
-                    "missing 'key' parameter".to_string(),
-                )
-            })?;
-            ensure_bounded(key, MAX_KEY_BYTES, "key")?;
+            let (key_name, combo_modifiers) = extract_key(&params)?;
+            let key: &str = &key_name;
             let action = params
                 .get("keyAction")
                 .and_then(Value::as_str)
@@ -2339,7 +2330,7 @@ async fn handle_action_inner(
                     format!("unsupported keyboard action '{action}'"),
                 ));
             }
-            let modifiers = extract_key_modifiers(&params)?;
+            let modifiers = extract_key_modifiers(&params)? | combo_modifiers;
             let tab_lock = get_tab_lock(tab_id);
             let _lock = tab_lock.lock().await;
             let webview = get_embed_webview(app, tab_id)
@@ -7312,6 +7303,142 @@ fn extract_key_modifiers(params: &Value) -> Result<u8, (String, String)> {
     Ok(mask)
 }
 
+/// The key a press names, with the modifiers a combo in it adds. Agents write
+/// `keys` as well as `key` (a string, or a list of one), and combos as other
+/// tools take them: "Control+A", "Ctrl+Shift+K", "Control++". A spelling the
+/// browser does not know arrives as an empty key that does nothing, so a +
+/// that makes no combo is refused instead of sent.
+fn extract_key(params: &Value) -> Result<(Cow<'_, str>, u8), (String, String)> {
+    let named = match (params.get("key"), params.get("keys")) {
+        (Some(key), _) => key.as_str(),
+        (None, Some(Value::String(key))) => Some(key.as_str()),
+        (None, Some(Value::Array(keys))) if keys.len() > 1 => {
+            return Err((
+                error_codes::INVALID_REQUEST.to_string(),
+                "browser_press sends one key per call: press each key in its own call, a combo as Control+A, and type text with browser_type".to_string(),
+            ));
+        }
+        (None, Some(Value::Array(keys))) => keys.first().and_then(Value::as_str),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        (
+            error_codes::INVALID_REQUEST.to_string(),
+            "missing 'key' parameter".to_string(),
+        )
+    })?;
+    ensure_bounded(named, MAX_KEY_BYTES, "key")?;
+    parse_key_combo(named)
+}
+
+/// Splits "Control+A" into the A key and Control. A shortcut names the key as
+/// printed on it, so its letter goes out in lower case and only Shift makes
+/// it a capital, as on a keyboard. A key without a + passes through.
+fn parse_key_combo(named: &str) -> Result<(Cow<'_, str>, u8), (String, String)> {
+    if named == "+" || !named.contains('+') {
+        return Ok((Cow::Borrowed(canonical_key(named)), 0));
+    }
+    let refuse = || {
+        (
+            error_codes::INVALID_REQUEST.to_string(),
+            format!("'{named}' is not a key or a combo: a combo joins Control, Alt, Shift or Meta to one key with +, such as Control+A or Control++"),
+        )
+    };
+    let (prefix, key) = match named.strip_suffix("++") {
+        Some(prefix) => (prefix, "+"),
+        None => named.rsplit_once('+').ok_or_else(refuse)?,
+    };
+    let key = if key.trim().is_empty() {
+        key
+    } else {
+        key.trim()
+    };
+    if key.is_empty() || prefix.trim().is_empty() {
+        return Err(refuse());
+    }
+    let mut mask = 0u8;
+    for name in prefix.split('+') {
+        mask |= combo_modifier(name.trim()).ok_or_else(refuse)?;
+    }
+    let key = canonical_key(key);
+    let key = if key.len() == 1 && key.as_bytes()[0].is_ascii_uppercase() {
+        Cow::Owned(key.to_ascii_lowercase())
+    } else {
+        Cow::Borrowed(key)
+    };
+    Ok((key, mask))
+}
+
+/// A key name in the case the key table spells it ("enter" is Enter), or the
+/// DOM name of one other tools spell their own way (Return, BackSpace, Down).
+/// Anything else passes as written: the browser also knows names the table
+/// leaves out, such as F2 or MediaPlayPause.
+fn canonical_key(key: &str) -> &str {
+    const NAMES: [&str; 18] = [
+        "Shift",
+        "Control",
+        "Alt",
+        "Meta",
+        "Enter",
+        "Tab",
+        "Escape",
+        "Backspace",
+        "Delete",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowDown",
+        "Home",
+        "End",
+        "PageUp",
+        "PageDown",
+        "Space",
+    ];
+    if key.len() <= 1 {
+        return key;
+    }
+    if let Some(name) = NAMES
+        .iter()
+        .copied()
+        .find(|name| name.eq_ignore_ascii_case(key))
+    {
+        return name;
+    }
+    match key.to_ascii_lowercase().as_str() {
+        "ctrl" => "Control",
+        "esc" => "Escape",
+        "return" => "Enter",
+        "del" => "Delete",
+        "spacebar" => "Space",
+        "up" => "ArrowUp",
+        "down" => "ArrowDown",
+        "left" => "ArrowLeft",
+        "right" => "ArrowRight",
+        "pgup" => "PageUp",
+        "pgdn" => "PageDown",
+        _ => key,
+    }
+}
+
+/// A modifier as combos spell it, in extract_key_modifiers' bits.
+fn combo_modifier(name: &str) -> Option<u8> {
+    Some(match name.to_ascii_lowercase().as_str() {
+        "alt" | "option" => 1,
+        "control" | "ctrl" => 2,
+        "meta" | "cmd" | "command" | "win" | "super" => 4,
+        // Playwright's shortcut modifier for both platforms.
+        "controlormeta" => {
+            if cfg!(target_os = "macos") {
+                4
+            } else {
+                2
+            }
+        }
+        "shift" => 8,
+        _ => return None,
+    })
+}
+
 fn extract_key_action(params: &Value) -> Result<&str, (String, String)> {
     match params.get("keyAction") {
         None => Ok("press"),
@@ -9033,6 +9160,60 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn a_press_takes_keys_and_combos_as_agents_write_them() {
+        let pressed = |params: Value| {
+            extract_key(&params).map(|(key, modifiers)| (key.into_owned(), modifiers))
+        };
+        // keys as well as key, as a string or a list of one.
+        assert_eq!(pressed(json!({"keys": "Enter"})), Ok(("Enter".into(), 0)));
+        assert_eq!(pressed(json!({"keys": ["Tab"]})), Ok(("Tab".into(), 0)));
+        assert_eq!(
+            pressed(json!({"key": "a", "keys": "b"})),
+            Ok(("a".into(), 0))
+        );
+        assert!(pressed(json!({"keys": ["ArrowDown", "Enter"]}))
+            .unwrap_err()
+            .1
+            .contains("one key per call"));
+        assert!(pressed(json!({})).unwrap_err().1.contains("missing 'key'"));
+        // A shortcut names the key: Control+A is Control and a.
+        assert_eq!(pressed(json!({"key": "Control+A"})), Ok(("a".into(), 2)));
+        assert_eq!(
+            pressed(json!({"key": "ctrl+shift+k"})),
+            Ok(("k".into(), 10))
+        );
+        assert_eq!(pressed(json!({"key": "Control++"})), Ok(("+".into(), 2)));
+        assert_eq!(pressed(json!({"key": "Shift+="})), Ok(("=".into(), 8)));
+        assert_eq!(
+            pressed(json!({"key": "Meta+Enter"})),
+            Ok(("Enter".into(), 4))
+        );
+        // A plain key keeps its case; key names get the table's.
+        assert_eq!(pressed(json!({"key": "A"})), Ok(("A".into(), 0)));
+        assert_eq!(pressed(json!({"key": "+"})), Ok(("+".into(), 0)));
+        assert_eq!(
+            pressed(json!({"key": "backspace"})),
+            Ok(("Backspace".into(), 0))
+        );
+        assert_eq!(pressed(json!({"key": "Return"})), Ok(("Enter".into(), 0)));
+        assert_eq!(pressed(json!({"key": "F2"})), Ok(("F2".into(), 0)));
+        assert_eq!(
+            pressed(json!({"key": "MediaPlayPause"})),
+            Ok(("MediaPlayPause".into(), 0))
+        );
+        // A + that makes no combo is refused, not sent as an empty key.
+        for named in ["Foo+a", "Control+", "a+", "++"] {
+            assert!(
+                pressed(json!({ "key": named }))
+                    .unwrap_err()
+                    .1
+                    .contains("not a key or a combo"),
+                "{named}"
+            );
+        }
     }
 
     #[test]
