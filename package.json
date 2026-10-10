@@ -1,7 +1,7 @@
 {
   "name": "anbo",
   "private": true,
-  "version": "0.36.2",
+  "version": "0.37.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/mramdann/anbo-ai.git"

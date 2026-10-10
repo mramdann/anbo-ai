@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.37.0](https://github.com/mramdann/anbo-ai/compare/v0.36.2...v0.37.0) (2026-10-10)
+
+
+### Features
+
+* **voice:** hold Win to talk with the global AnboVoice orb ([e918f45](https://github.com/mramdann/anbo-ai/commit/e918f45b791e5506eb416eb529efeee50f69d98f))
+* **voice:** show live text beside the AnboVoice orb while talking ([11f8cdb](https://github.com/mramdann/anbo-ai/commit/11f8cdb102ff0c5353dd0ad05111df6a9d3d8c60))
+* **voice:** type a hands-free take sentence by sentence ([7309822](https://github.com/mramdann/anbo-ai/commit/7309822d943e2aef73c9ba92f4b80b30c10ee50e))
+
+
+### Bug Fixes
+
+* **voice:** a key whose release went unseen no longer costs a press ([b6cba05](https://github.com/mramdann/anbo-ai/commit/b6cba059c5cf66b7fcac35e6894906d998c2c761))
+* **voice:** keep a hands-free take to the language of its first sentence ([82c2807](https://github.com/mramdann/anbo-ai/commit/82c280797547002da6e4e27f469d54e1664b8787))
+* **voice:** let clippy pass where only tests use the chord tracker ([b214b3d](https://github.com/mramdann/anbo-ai/commit/b214b3d81089d6fe3219e122362c48d9eebd190a))
+* **voice:** ship the live text audio worklet as a file the CSP allows ([c837a4f](https://github.com/mramdann/anbo-ai/commit/c837a4f0ef4a5bf2dc567b4a6981c60c118eb6e2))
+
 ## [0.36.2](https://github.com/mramdann/anbo-ai/compare/v0.36.1...v0.36.2) (2026-10-09)
 
 
