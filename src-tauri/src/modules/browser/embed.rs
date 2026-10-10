@@ -15,10 +15,11 @@ use crate::modules::workspace::{authorize_existing_path, WorkspaceEnv, Workspace
 use base64::Engine;
 #[cfg(windows)]
 use webview2_com::{
-    CapturePreviewCompletedHandler, FocusChangedEventHandler,
+    BrowserProcessExitedEventHandler, CapturePreviewCompletedHandler, FocusChangedEventHandler,
     Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2_22, COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG,
-        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+        ICoreWebView2Environment, ICoreWebView2Environment5, ICoreWebView2_22,
+        COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+        COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
     },
     SourceChangedEventHandler,
 };
@@ -562,6 +563,8 @@ async fn spawn_browser_child(
     let popup_app = app.clone();
     let title_app = app.clone();
     let browser_data_dir = super::data::profile_dir(app)?;
+    #[cfg(windows)]
+    let profile_data_dir = browser_data_dir.clone();
     let navigation_local_root = local_root.clone();
     let popup_local_root = local_root.clone();
     let event_local_root = local_root.clone();
@@ -597,6 +600,14 @@ async fn spawn_browser_child(
         // a solid color instead of a transparent hole through to the desktop.
         .background_color(Color(255, 255, 255, 255))
         .initialization_script(include_str!("consoleCapture.js"));
+    // Joins the browser that already holds the profile (see ProfileEnvironment).
+    // The environment goes straight into the builder: held on its own it is
+    // not Send, and this future waits after the tab exists.
+    #[cfg(windows)]
+    let (builder, joined_profile) = match profile_environment(&profile_data_dir) {
+        Some(environment) => (builder.with_environment(environment), true),
+        None => (builder, false),
+    };
     #[cfg(target_os = "linux")]
     let builder = builder.transparent(browser_child_transparent());
     #[cfg(not(target_os = "linux"))]
@@ -717,9 +728,15 @@ async fn spawn_browser_child(
             true
         });
 
-    window
-        .add_child(builder, position, size)
-        .map_err(|error| error.to_string())?;
+    window.add_child(builder, position, size).map_err(|error| {
+        // The browser that environment belonged to would not take the
+        // tab; the next one starts a browser of its own.
+        #[cfg(windows)]
+        if joined_profile {
+            forget_profile_environment();
+        }
+        error.to_string()
+    })?;
     if let Some(entry) = active_embeds()
         .lock()
         .map_err(|_| "browser lifecycle state unavailable")?
@@ -731,6 +748,8 @@ async fn spawn_browser_child(
         // The host process is shared by every tab, so this only does work once.
         #[cfg(windows)]
         super::host::adopt_from_webview(&webview);
+        #[cfg(windows)]
+        remember_profile_environment(&webview, profile_data_dir);
         // Record the child window while it certainly exists. Closing later only
         // queues the destroy, so this handle is the only way to observe that it
         // actually happened.
@@ -770,6 +789,91 @@ async fn spawn_browser_child(
     Ok(())
 }
 
+/// The browser profile's WebView2 environment while its browser process runs,
+/// so every tab and the warm host join that process. WebView2 updates itself
+/// in the background, and a tab that asked for an environment of its own
+/// afterwards got the newer runtime, which cannot join the browser that still
+/// holds the profile: every new tab then never became ready until Anbo
+/// restarted. Only the main thread, where the shell creates webviews, calls
+/// into the environment; elsewhere it is cloned and dropped, which only counts
+/// references, as Tauri does when it hands one to a webview.
+#[cfg(windows)]
+struct ProfileEnvironment {
+    data_dir: PathBuf,
+    generation: u64,
+    environment: ICoreWebView2Environment,
+}
+
+#[cfg(windows)]
+unsafe impl Send for ProfileEnvironment {}
+#[cfg(windows)]
+unsafe impl Sync for ProfileEnvironment {}
+
+#[cfg(windows)]
+static PROFILE_ENVIRONMENT: Mutex<Option<ProfileEnvironment>> = Mutex::new(None);
+#[cfg(windows)]
+static PROFILE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// The environment of the browser that holds `data_dir`, while it runs.
+#[cfg(windows)]
+fn profile_environment(data_dir: &Path) -> Option<ICoreWebView2Environment> {
+    let slot = PROFILE_ENVIRONMENT.lock().ok()?;
+    slot.as_ref()
+        .filter(|kept| kept.data_dir == data_dir)
+        .map(|kept| kept.environment.clone())
+}
+
+/// Lets go of the kept environment, so the next webview starts a browser of
+/// its own.
+#[cfg(windows)]
+fn forget_profile_environment() {
+    if let Ok(mut slot) = PROFILE_ENVIRONMENT.lock() {
+        *slot = None;
+    }
+}
+
+/// Keeps a new profile webview's environment until its browser process exits.
+/// The handler forgets only the environment it was registered for, so an old
+/// browser's exit cannot drop the one that replaced it.
+#[cfg(windows)]
+fn remember_profile_environment(webview: &tauri::Webview, data_dir: PathBuf) {
+    let _ = webview.with_webview(move |platform| {
+        use windows::core::Interface;
+        if PROFILE_ENVIRONMENT
+            .lock()
+            .is_ok_and(|slot| slot.as_ref().is_some_and(|kept| kept.data_dir == data_dir))
+        {
+            return;
+        }
+        let environment = platform.environment();
+        let Ok(events) = environment.cast::<ICoreWebView2Environment5>() else {
+            return;
+        };
+        let generation = PROFILE_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+        let handler = BrowserProcessExitedEventHandler::create(Box::new(move |_sender, _args| {
+            if let Ok(mut slot) = PROFILE_ENVIRONMENT.lock() {
+                if slot
+                    .as_ref()
+                    .is_some_and(|kept| kept.generation == generation)
+                {
+                    *slot = None;
+                }
+            }
+            Ok(())
+        }));
+        let mut token: i64 = 0;
+        if unsafe { events.add_BrowserProcessExited(&handler, &mut token) }.is_ok() {
+            if let Ok(mut slot) = PROFILE_ENVIRONMENT.lock() {
+                *slot = Some(ProfileEnvironment {
+                    data_dir,
+                    generation,
+                    environment,
+                });
+            }
+        }
+    });
+}
+
 /// A parked about:blank child that keeps the WebView2 host alive between tabs.
 /// WebView2 shuts the host down with the last tab and starts a fresh one for the
 /// next: an agent that closed its only tab and opened another waited 550 to 700
@@ -790,9 +894,14 @@ fn keep_host_warm(window: &tauri::Window) {
         else {
             return;
         };
+        let shared_environment = profile_environment(&profile);
         let builder = WebviewBuilder::new(WARM_HOST_LABEL, WebviewUrl::External(blank))
             .focused(false)
-            .data_directory(profile);
+            .data_directory(profile.clone());
+        let builder = match shared_environment.clone() {
+            Some(environment) => builder.with_environment(environment),
+            None => builder,
+        };
         let (x, y) = super::presentation::background_origin(64);
         match window.add_child(
             builder,
@@ -802,8 +911,12 @@ fn keep_host_warm(window: &tauri::Window) {
             Ok(webview) => {
                 let _ = webview.hide();
                 super::host::adopt_from_webview(&webview);
+                remember_profile_environment(&webview, profile);
             }
             Err(error) => {
+                if shared_environment.is_some() {
+                    forget_profile_environment();
+                }
                 log::warn!("could not keep the browser host warm: {error}");
                 return;
             }
