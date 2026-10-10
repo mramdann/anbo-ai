@@ -26,6 +26,12 @@ struct LaunchDir(Mutex<Option<String>>);
 #[derive(Default)]
 struct LaunchFiles(Mutex<Vec<String>>);
 
+/// Folders other launches handed to this window, waiting for the frontend:
+/// one handed over while the window still boots comes before anything
+/// listens, so the event alone lost it. Drained on read, so none opens twice.
+#[derive(Default)]
+struct LaunchFolders(Mutex<Vec<String>>);
+
 #[tauri::command]
 fn get_launch_dir(state: State<'_, LaunchDir>) -> Option<String> {
     state.0.lock().expect("LaunchDir mutex poisoned").take()
@@ -34,6 +40,11 @@ fn get_launch_dir(state: State<'_, LaunchDir>) -> Option<String> {
 #[tauri::command]
 fn get_launch_files(state: State<'_, LaunchFiles>) -> Vec<String> {
     std::mem::take(&mut *state.0.lock().expect("LaunchFiles mutex poisoned"))
+}
+
+#[tauri::command]
+fn get_launch_folders(state: State<'_, LaunchFolders>) -> Vec<String> {
+    std::mem::take(&mut *state.0.lock().expect("LaunchFolders mutex poisoned"))
 }
 
 /// Release CI sets this environment variable to verify that the packaged
@@ -169,7 +180,15 @@ fn handle_second_launch<R: tauri::Runtime>(
             }
             let _ = app.emit("anbo:open-file", target.files);
         } else if let Some(dir) = target.dir {
-            // A folder on the command line is a request for a shell there.
+            // A folder on the command line is a request for a shell there. It
+            // waits in the queue; the event only says one is waiting.
+            if let Some(state) = app.try_state::<LaunchFolders>() {
+                state
+                    .0
+                    .lock()
+                    .expect("LaunchFolders mutex poisoned")
+                    .push(dir.clone());
+            }
             let _ = app.emit("anbo:open-folder", dir);
         }
     });
@@ -492,6 +511,7 @@ pub fn run() {
         })
         .manage(LaunchDir(Mutex::new(cli_dir)))
         .manage(LaunchFiles(Mutex::new(launch.files)))
+        .manage(LaunchFolders::default())
         .invoke_handler(tauri::generate_handler![
             modules::resource_guard::resource_admit_agent,
             pty::pty_open,
@@ -602,6 +622,7 @@ pub fn run() {
             workspace::workspace_authorize,
             workspace::workspace_current_dir,
             get_launch_dir,
+            get_launch_folders,
             get_launch_files,
             packaged_smoke_ready,
             refresh_window_presentation,

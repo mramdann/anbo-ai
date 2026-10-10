@@ -7,6 +7,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   consumeLaunchFiles,
+  consumeLaunchFolders,
   getLaunchDir,
   hasExplicitLaunchDir,
 } from "@/lib/launchDir";
@@ -1592,16 +1593,30 @@ export default function App() {
 
   // A folder from another launch, which the single-instance plugin hands to
   // this window, is a request for a shell there, as on a cold start. Rust
-  // authorized it before emitting.
+  // authorized it and keeps it in a queue: one handed over while the window
+  // still booted came before this listener, so the queue is read once the
+  // spaces are back, and again each time the event says another arrived.
+  // Each read takes what it finds, so no folder opens twice.
   useEffect(() => {
     if (!spacesHydrated) return;
+    let disposed = false;
     let unlisten: (() => void) | undefined;
+    const openWaiting = async () => {
+      if (disposed) return;
+      for (const dir of await consumeLaunchFolders()) cdInNewTab(dir);
+    };
     (async () => {
-      unlisten = await listen<string>("anbo:open-folder", (e) => {
-        cdInNewTab(e.payload);
+      const stop = await listen<string>("anbo:open-folder", () => {
+        void openWaiting();
       });
+      if (disposed) stop();
+      else unlisten = stop;
+      await openWaiting();
     })();
-    return () => unlisten?.();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [cdInNewTab, spacesHydrated]);
 
   // Another app holding the MCP port leaves every agent here talking to that

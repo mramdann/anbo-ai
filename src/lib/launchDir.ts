@@ -33,3 +33,12 @@ export async function consumeLaunchFiles(): Promise<string[]> {
   const files = await invoke<string[]>("get_launch_files").catch(() => []);
   return files.map((f) => f.replace(/\\/g, "/"));
 }
+
+/**
+ * Drains the folders other launches handed to this window ("Open With" on a
+ * folder, or a folder on the command line), each once, so a read after the
+ * event can't open one twice. Returns [] when none waits.
+ */
+export async function consumeLaunchFolders(): Promise<string[]> {
+  return invoke<string[]>("get_launch_folders").catch(() => []);
+}
