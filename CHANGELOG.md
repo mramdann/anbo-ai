@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.37.0](https://github.com/mramdann/anbo-ai/compare/v0.36.2...v0.37.0) (2026-10-10)
+
+
+### Features
+
+* **voice:** hold Win to talk with the global AnboVoice orb ([e918f45](https://github.com/mramdann/anbo-ai/commit/e918f45b791e5506eb416eb529efeee50f69d98f))
+* **voice:** type a hands-free take sentence by sentence ([7309822](https://github.com/mramdann/anbo-ai/commit/7309822d943e2aef73c9ba92f4b80b30c10ee50e))
+* **voice:** choose the language voice input listens for ([11f8cdb](https://github.com/mramdann/anbo-ai/commit/11f8cdb102ff0c5353dd0ad05111df6a9d3d8c60))
+
 ## [0.36.2](https://github.com/mramdann/anbo-ai/compare/v0.36.1...v0.36.2) (2026-10-09)
 
 
