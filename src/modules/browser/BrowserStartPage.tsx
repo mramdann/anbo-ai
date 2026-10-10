@@ -31,6 +31,7 @@ import {
   BROWSER_HISTORY_EVENT,
   type BrowserHistoryEntry,
   clearBrowserHistory,
+  loadBrowserHistory,
   readBrowserHistory,
   removeBrowserHistoryEntry,
 } from "./history";
@@ -87,6 +88,9 @@ export function BrowserStartPage({
   useEffect(() => {
     const refreshHistory = () => setHistory(readBrowserHistory());
     window.addEventListener(BROWSER_HISTORY_EVENT, refreshHistory);
+    // The kept history arrives once per app run; a page shown before that
+    // fills in when it does.
+    void loadBrowserHistory().then(refreshHistory);
     return () =>
       window.removeEventListener(BROWSER_HISTORY_EVENT, refreshHistory);
   }, []);
