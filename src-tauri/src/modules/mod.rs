@@ -26,5 +26,6 @@ pub mod voice_push_to_talk;
 pub mod voice_runtime;
 pub mod window_fit;
 pub mod window_frame;
+pub mod window_menu_key;
 pub mod window_open;
 pub mod workspace;

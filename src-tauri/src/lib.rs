@@ -9,7 +9,7 @@ extern "C" {}
 use modules::{
     agent, agent_cli, anbo, app_data, browser, browser_automation, fs, git, global_voice, history,
     lsp, net, proc, project_memory, pty, secrets, shell, voice_runtime, window_fit, window_frame,
-    window_open, workspace,
+    window_menu_key, window_open, workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -381,6 +381,8 @@ pub fn run() {
         // Before window-state, so a restored size is measured against the
         // frame the window keeps (see window_frame).
         .plugin(window_frame::init())
+        // Alt alone would put a window in the menu loop (see window_menu_key).
+        .plugin(window_menu_key::init())
         // Skip restoring VISIBLE — frontend calls window.show() after first
         // paint so the user never sees a transparent window-shadow flash on
         // Windows/Linux.
