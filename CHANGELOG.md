@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.37.1](https://github.com/mramdann/anbo-ai/compare/v0.37.0...v0.37.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **voice:** show a hidden orb while it listens, without taking focus ([618ae90](https://github.com/mramdann/anbo-ai/commit/618ae90dc8284d44c8acafa7fe69097083fc9510))
+* **windows:** open Settings and the voice orb after WebView2 updates itself ([d05fac8](https://github.com/mramdann/anbo-ai/commit/d05fac8a598e279d169d848cbe057bf6e2fb7c18))
+
 ## [0.37.0](https://github.com/mramdann/anbo-ai/compare/v0.36.2...v0.37.0) (2026-10-10)
 
 
