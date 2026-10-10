@@ -1,5 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDispatcher, profileLabel, RELOAD_RECONNECT_MS, reconnectsAfterReload, tabInfo, validateCommand } from "./bridge.js";
+import { createDispatcher, NETWORK_EVENTS, networkSummary, profileLabel, RELOAD_RECONNECT_MS, reconnectsAfterReload, tabInfo, validateCommand } from "./bridge.js";
+
+describe("networkSummary", () => {
+  it("passes on what a request did, never its headers, body or credentials", () => {
+    const started = networkSummary("s1", "Network.requestWillBeSent", { requestId: "7", type: "Fetch", request: { url: "https://user:secret@x.test/api?q=1", method: "POST", headers: { Cookie: "a=b" }, postData: "secret" }, initiator: { stack: {} } });
+    expect(started).toEqual({ requestId: "s1:7", request: { url: "https://x.test/api?q=1", method: "POST" }, type: "Fetch" });
+    const redirected = networkSummary(undefined, "Network.requestWillBeSent", { requestId: "8", request: { url: "https://x.test/new", method: "GET" }, redirectResponse: { status: 301, headers: { Location: "/new" } } });
+    expect(redirected).toEqual({ requestId: ":8", request: { url: "https://x.test/new", method: "GET" }, redirectResponse: { status: 301 } });
+    expect(networkSummary("", "Network.responseReceived", { requestId: "7", response: { status: 404, headers: { "Set-Cookie": "x" }, securityDetails: {} } })).toEqual({ requestId: ":7", response: { status: 404 } });
+    expect(networkSummary("", "Network.loadingFinished", { requestId: "7", encodedDataLength: 512, timestamp: 1.5 })).toEqual({ requestId: ":7", encodedDataLength: 512, timestamp: 1.5 });
+    expect(networkSummary("", "Network.loadingFailed", { requestId: "7", errorText: "net::ERR_ABORTED", canceled: true, timestamp: 2 })).toEqual({ requestId: ":7", errorText: "net::ERR_ABORTED", canceled: true, timestamp: 2 });
+    expect(networkSummary("", "Network.responseReceived", { requestId: "7", response: { status: 200 }, timestamp: "soon" })).toEqual({ requestId: ":7", response: { status: 200 } });
+  });
+
+  it("cuts a long URL, and passes on only the four events Anbo reads", () => {
+    const url = `data:text/plain,${"a".repeat(2000)}`;
+    expect(networkSummary("", "Network.requestWillBeSent", { requestId: "1", request: { url, method: "GET" } }).request.url).toHaveLength(512);
+    expect([...NETWORK_EVENTS]).toEqual(["Network.requestWillBeSent", "Network.responseReceived", "Network.loadingFinished", "Network.loadingFailed"]);
+  });
+});
 
 function command(overrides = {}) {
   return { type: "command", id: 1, tabId: 10, selectionId: "lease", method: "Runtime.evaluate", params: {}, expiresAt: Date.now() + 10_000, ...overrides };

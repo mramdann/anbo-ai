@@ -64,6 +64,9 @@ struct RequestRecord {
     error: Option<String>,
     #[serde(skip)]
     started: Instant,
+    /// The browser's clock when the request was sent (CDP seconds).
+    #[serde(skip)]
+    sent: Option<f64>,
 }
 
 #[cfg(any(windows, test))]
@@ -74,12 +77,34 @@ impl NetworkState {
     pub fn external_enabled(&self, enabled: bool) {
         if let Ok(mut tracker) = self.0.lock() {
             tracker.enabled = enabled;
+            tracker.external = true;
         }
     }
 
-    pub fn external_event(&self, started: bool, payload: &str) {
+    /// An external tab's main frame navigated: its list now holds a page
+    /// load of its own.
+    pub fn external_navigated(&self) {
         if let Ok(mut tracker) = self.0.lock() {
-            tracker.event(started, payload, Instant::now());
+            tracker.navigated = true;
+        }
+    }
+
+    /// One network event an external tab's extension passed on; from
+    /// extension 0.5.4 it says what the request was, for the list as well.
+    pub fn external_event(&self, method: &str, payload: &str) {
+        let kind = match method {
+            "Network.requestWillBeSent" => NetworkEvent::Started,
+            "Network.responseReceived" => NetworkEvent::Response,
+            "Network.loadingFinished" => NetworkEvent::Finished,
+            "Network.loadingFailed" => NetworkEvent::Failed,
+            _ => return,
+        };
+        if let Ok(mut tracker) = self.0.lock() {
+            let now = Instant::now();
+            tracker.record(kind, payload, now);
+            if let Some(started) = kind.started() {
+                tracker.event(started, payload, now);
+            }
         }
     }
 }
@@ -92,6 +117,12 @@ struct Tracker {
     failure: Option<&'static str>,
     records: VecDeque<RequestRecord>,
     dropped: usize,
+    /// Requests that started without saying what they were.
+    unlisted: usize,
+    /// A Chrome or Edge tab: Anbo connects to it once its page committed, so
+    /// its list starts after that load unless the page navigates again.
+    external: bool,
+    navigated: bool,
 }
 
 #[cfg(any(windows, test))]
@@ -104,6 +135,9 @@ impl Default for NetworkState {
             failure: None,
             records: VecDeque::new(),
             dropped: 0,
+            unlisted: 0,
+            external: false,
+            navigated: false,
         }))
     }
 }
@@ -170,6 +204,8 @@ impl Tracker {
             error: Option<Cow<'a, str>>,
             #[serde(default)]
             canceled: bool,
+            #[serde(default)]
+            timestamp: Option<f64>,
         }
         #[derive(serde::Deserialize)]
         struct Request<'a> {
@@ -188,8 +224,12 @@ impl Tracker {
         let Ok(event) = serde_json::from_str::<Event<'_>>(json) else {
             return;
         };
-        let elapsed = |record: &RequestRecord| {
-            Some(now.saturating_duration_since(record.started).as_millis() as u64)
+        // The browser's own clock where the event has one: events reach Anbo
+        // late, a Chrome or Edge tab's in bursts.
+        let timestamp = event.timestamp;
+        let elapsed = |record: &RequestRecord| match (record.sent, timestamp) {
+            (Some(sent), Some(at)) => Some(((at - sent) * 1000.0).round().max(0.0) as u64),
+            _ => Some(now.saturating_duration_since(record.started).as_millis() as u64),
         };
         let latest = self
             .records
@@ -198,8 +238,10 @@ impl Tracker {
             .find(|record| record.id == event.id);
         match kind {
             NetworkEvent::Started => {
-                // An external tab's events carry only the id.
+                // A Chrome or Edge extension before 0.5.4 passes on only
+                // the id.
                 let Some(request) = event.request else {
+                    self.unlisted += 1;
                     return;
                 };
                 if let (Some(previous), Some(redirect)) = (latest, event.redirect) {
@@ -224,6 +266,7 @@ impl Tracker {
                     ms: None,
                     error: None,
                     started: now,
+                    sent: timestamp,
                 });
             }
             NetworkEvent::Response => {
@@ -264,11 +307,22 @@ impl Tracker {
             })
             .collect();
         let shown = &matching[matching.len().saturating_sub(limit)..];
-        serde_json::json!({
+        let mut listed = serde_json::json!({
             "requests": shown,
             "matching": matching.len(),
             "dropped": self.dropped,
-        })
+        });
+        if self.unlisted > 0 {
+            listed["unlisted"] = self.unlisted.into();
+            listed["note"] = format!(
+                "{} requests were not listed: this profile runs Anbo Browser Bridge older than 0.5.4, which does not say what requests are; reload it at chrome://extensions or edge://extensions",
+                self.unlisted
+            )
+            .into();
+        } else if self.external && !self.navigated {
+            listed["note"] = "Anbo connected to this Chrome or Edge tab after its page loaded, so that load's requests are not listed; browser_reload lists them".into();
+        }
+        listed
     }
 
     fn idle(&self, now: Instant) -> Result<bool, String> {
@@ -304,9 +358,8 @@ pub fn is_idle(tab_id: i64) -> Result<bool, String> {
     }
 }
 
-/// browser_network_requests for an Anbo browser tab. An external Chrome or
-/// Edge tab is refused: its extension reports only that requests start and
-/// end, not what they are.
+/// browser_network_requests for a browser tab, Anbo's own or a Chrome or Edge
+/// one (whose extension passes on what its requests are from 0.5.4).
 pub fn requests(
     tab_id: i64,
     filter: Option<&str>,
@@ -314,10 +367,10 @@ pub fn requests(
 ) -> Result<serde_json::Value, String> {
     #[cfg(windows)]
     {
-        if crate::modules::browser_external::get_target(tab_id).is_some() {
-            return Err("an external Chrome or Edge tab does not report its requests to Anbo; the list is kept for Anbo's own browser tabs".into());
-        }
         let state = crate::modules::browser::embed::active_network(tab_id)
+            .or_else(|| {
+                crate::modules::browser_external::get_target(tab_id).map(|target| target.network)
+            })
             .ok_or_else(|| "browser network state is unavailable".to_string())?;
         let tracker = state
             .0
@@ -510,10 +563,16 @@ mod tests {
             r#"{"requestId":"c","errorText":"","canceled":true}"#,
             at(90),
         );
-        // An external tab's event carries only the id: nothing to list.
+        // An old extension's event carries only the id: nothing to list,
+        // and the list says so.
         tracker.record(NetworkEvent::Started, r#"{"requestId":"d"}"#, at(100));
         let listed = tracker.listed(None, 50);
         assert_eq!(listed["matching"], 4);
+        assert_eq!(listed["unlisted"], 1);
+        assert!(listed["note"]
+            .as_str()
+            .unwrap()
+            .contains("older than 0.5.4"));
         let requests = listed["requests"].as_array().unwrap();
         assert_eq!(requests[0]["url"], "https://x.test/api");
         assert_eq!(requests[0]["status"], 404);
@@ -541,6 +600,85 @@ mod tests {
         tracker.record(NetworkEvent::Response, "not json", at(120));
         assert!(tracker.failure.is_none());
         assert_eq!(NetworkEvent::Response.started(), None);
+    }
+
+    #[test]
+    fn a_request_is_timed_by_the_browser_clock_when_its_events_carry_it() {
+        let state = NetworkState::default();
+        let mut tracker = state.0.lock().unwrap();
+        let now = Instant::now();
+        // Both events arrive at once, as a Chrome or Edge tab's often do.
+        tracker.record(
+            NetworkEvent::Started,
+            r#"{"requestId":"a","request":{"url":"https://x.test/slow","method":"GET"},"timestamp":100.25}"#,
+            now,
+        );
+        tracker.record(
+            NetworkEvent::Failed,
+            r#"{"requestId":"a","errorText":"net::ERR_ABORTED","timestamp":100.4497}"#,
+            now,
+        );
+        // A redirect hop ends when the next one is sent.
+        tracker.record(
+            NetworkEvent::Started,
+            r#"{"requestId":"b","request":{"url":"https://x.test/old","method":"GET"},"timestamp":101.0}"#,
+            now,
+        );
+        tracker.record(
+            NetworkEvent::Started,
+            r#"{"requestId":"b","request":{"url":"https://x.test/new","method":"GET"},"redirectResponse":{"status":302},"timestamp":101.012}"#,
+            now,
+        );
+        tracker.record(
+            NetworkEvent::Finished,
+            r#"{"requestId":"b","encodedDataLength":10,"timestamp":101.05}"#,
+            now,
+        );
+        let listed = tracker.listed(None, 50);
+        assert_eq!(listed["requests"][0]["ms"], 200);
+        assert_eq!(listed["requests"][1]["ms"], 12);
+        assert_eq!(listed["requests"][2]["ms"], 38);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_external_tab_lists_its_requests_from_when_anbo_connected() {
+        let state = NetworkState::default();
+        state.external_enabled(true);
+        state.external_event(
+            "Network.requestWillBeSent",
+            r#"{"requestId":":1","request":{"url":"https://x.test/api","method":"POST"},"type":"Fetch"}"#,
+        );
+        assert_eq!(state.0.lock().unwrap().pending.len(), 1);
+        state.external_event(
+            "Network.responseReceived",
+            r#"{"requestId":":1","response":{"status":200}}"#,
+        );
+        state.external_event(
+            "Network.loadingFinished",
+            r#"{"requestId":":1","encodedDataLength":524}"#,
+        );
+        let listed = state.0.lock().unwrap().listed(None, 50);
+        assert!(state.0.lock().unwrap().pending.is_empty());
+        assert_eq!(listed["requests"][0]["method"], "POST");
+        assert_eq!(listed["requests"][0]["status"], 200);
+        assert_eq!(listed["requests"][0]["size"], 524);
+        // Until the page loads again its first load is missing, and the list
+        // says so; Anbo's own tab is watched from the start.
+        assert!(listed["note"]
+            .as_str()
+            .unwrap()
+            .contains("browser_reload lists them"));
+        state.external_navigated();
+        assert!(state
+            .0
+            .lock()
+            .unwrap()
+            .listed(None, 50)
+            .get("note")
+            .is_none());
+        let own = NetworkState::default();
+        assert!(own.0.lock().unwrap().listed(None, 50).get("note").is_none());
     }
 
     #[test]

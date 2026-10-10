@@ -5,7 +5,7 @@ import { createDockManager } from "./dock.js";
 // The version this code is, kept equal to manifest.json. After an update the
 // browser reads the new manifest but can keep running the old scripts until the
 // extension reloads, so the manifest alone would hide that a reload is due.
-export const EXTENSION_VERSION = "0.5.3";
+export const EXTENSION_VERSION = "0.5.4";
 
 const MAX_TABS = 128;
 

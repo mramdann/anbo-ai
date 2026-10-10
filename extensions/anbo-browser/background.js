@@ -1,4 +1,4 @@
-import { createDispatcher, profileLabel, reconnectsAfterReload } from "./bridge.js";
+import { createDispatcher, NETWORK_EVENTS, networkSummary, profileLabel, reconnectsAfterReload } from "./bridge.js";
 import { NATIVE_HOST } from "./host.js";
 import { createTabManager } from "./tabs.js";
 
@@ -95,8 +95,8 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   if (!current?.approved || !current.tabs.event(source, method, params) || !tab) return;
   if (method === "Page.frameNavigated" && !source.sessionId && !params.frame.parentId) {
     post({ type: "event", tabId: tab.id, selectionId: tab.selectionId, method, params: {} }, current);
-  } else if (["Network.requestWillBeSent", "Network.loadingFinished", "Network.loadingFailed"].includes(method)) {
-    post({ type: "event", tabId: tab.id, selectionId: tab.selectionId, method, params: { requestId: `${source.sessionId ?? ""}:${params.requestId}` } }, current);
+  } else if (NETWORK_EVENTS.has(method)) {
+    post({ type: "event", tabId: tab.id, selectionId: tab.selectionId, method, params: networkSummary(source.sessionId, method, params) }, current);
   } else if (method === "Runtime.consoleAPICalled" || method === "Runtime.exceptionThrown") {
     const msg = method === "Runtime.exceptionThrown" ? String(params.exceptionDetails?.exception?.description ?? params.exceptionDetails?.text ?? "Page exception") : (params.args ?? []).slice(0, 10).map((arg) => String(arg.value ?? arg.description ?? arg.type ?? "").slice(0, 1024)).join(" ");
     post({ type: "event", tabId: tab.id, selectionId: tab.selectionId, method: "anbo.console", params: { level: method === "Runtime.exceptionThrown" ? "error" : String(params.type).slice(0, 16), msg: msg.slice(0, 4000), ts: Math.round(params.timestamp ?? Date.now()), frame: source.sessionId ? `frame-${source.sessionId}` : "main" } }, current);

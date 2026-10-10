@@ -53,9 +53,9 @@ Five browser patterns:
    and other allowed properties without eval; a press or click on a player
    already returns them in `media`, and landing on a playing player adds
    `page.media`. Screenshot checks visual state (`fullPage:true` for the whole
-   page); console logs and, in Anbo's own browser tabs, `browser_network_requests`
-   help diagnose failures. Absence/hints describe observed state,
-   not guaranteed future absence or unique substitute targets. Bound retries.
+   page); console logs and `browser_network_requests` help diagnose failures.
+   Absence/hints describe observed state, not guaranteed future absence or
+   unique substitute targets. Bound retries.
 5. **Finish.** Put `endSession:true` on the last successful call. Use
    `browser_close {tabId,workspace,endSession:true}` to close a task tab, or a final
    read to leave it for the user. Ending control removes cursor/badge, not tabs.
@@ -183,10 +183,12 @@ clicks a ref; a `timedOut` result from `browser_download_wait` is normal for a
 large file and keeps the `downloadId`, so poll it again rather than arming a
 second download. `browser_console_logs` returns up to 50 recent bounded
 messages, uncaught errors and unhandled rejections from the main document and
-reachable frames. `browser_network_requests` lists the last 200 requests of an
-Anbo browser tab, newest last (method, URL, type, status, size, ms, error), with
-a URL `filter` and a `limit`; a Chrome or Edge tab driven through the extension
-does not report its requests.
+reachable frames. `browser_network_requests` lists the last 200 requests of a
+tab, newest last (method, URL, type, status, size, ms, error), with a URL
+`filter` and a `limit`. A Chrome or Edge tab lists them from extension 0.5.4
+on and from when Anbo connected to it: until its page loads again the reply's
+`note` says that load is missing (`browser_reload` lists it), and an older
+extension's tab says how many requests it could not list.
 
 When the active workspace has no tabs, `browser_open`, `terminal_open` and
 `agent_spawn` display their first tab automatically (`placement:

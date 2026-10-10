@@ -505,15 +505,22 @@ pub(super) fn event(
             }
         }
         #[cfg(windows)]
-        "Network.requestWillBeSent" | "Network.loadingFinished" | "Network.loadingFailed" => {
+        "Network.requestWillBeSent"
+        | "Network.responseReceived"
+        | "Network.loadingFinished"
+        | "Network.loadingFailed" => {
             if let Some(target) = get(tab_id) {
-                target
-                    .network
-                    .external_event(method == "Network.requestWillBeSent", &params.to_string());
+                target.network.external_event(method, &params.to_string());
             }
         }
         "Runtime.bindingCalled" => design::external_event(app, tab_id, &params.to_string()),
         "Page.frameNavigated" if params.get("parentId").is_none() => {
+            #[cfg(windows)]
+            {
+                if let Some(target) = get(tab_id) {
+                    target.network.external_navigated();
+                }
+            }
             if let Some(target) = registry::find_target(app, tab_id) {
                 activity::navigation(&target);
                 design::navigation(&target);

@@ -59,6 +59,45 @@ export function profileLabel(value) {
   return label;
 }
 
+// The network events the bridge passes on, for Anbo's networkIdle check and
+// its request list.
+export const NETWORK_EVENTS = new Set(["Network.requestWillBeSent", "Network.responseReceived", "Network.loadingFinished", "Network.loadingFailed"]);
+
+/** What Anbo gets of one network event: never headers, bodies or the timing
+ * breakdown, and a URL without its user name or password, cut at 512
+ * characters (a data: URL can run to megabytes). The event's own time lets
+ * Anbo measure a request on the browser's clock, not when events arrive. */
+export function networkSummary(sessionId, method, params) {
+  const summary = { requestId: `${sessionId ?? ""}:${params?.requestId}` };
+  if (Number.isFinite(params?.timestamp)) summary.timestamp = params.timestamp;
+  if (method === "Network.requestWillBeSent") {
+    summary.request = { url: listedUrl(params?.request?.url), method: String(params?.request?.method ?? "").slice(0, 16) };
+    if (typeof params?.type === "string") summary.type = params.type.slice(0, 32);
+    if (params?.redirectResponse) summary.redirectResponse = { status: Number(params.redirectResponse.status) || 0 };
+  } else if (method === "Network.responseReceived") {
+    summary.response = { status: Number(params?.response?.status) || 0 };
+  } else if (method === "Network.loadingFinished") {
+    summary.encodedDataLength = Number(params?.encodedDataLength) || 0;
+  } else if (method === "Network.loadingFailed") {
+    summary.errorText = String(params?.errorText ?? "").slice(0, 200);
+    summary.canceled = params?.canceled === true;
+  }
+  return summary;
+}
+
+function listedUrl(value) {
+  const text = String(value ?? "");
+  try {
+    const url = new URL(text);
+    if (url.username || url.password) {
+      url.username = "";
+      url.password = "";
+      return url.href.slice(0, 512);
+    }
+  } catch {}
+  return text.slice(0, 512);
+}
+
 export function tabInfo(tab) {
   const address = tab.url;
   if (tab.incognito || !Number.isSafeInteger(tab.id) || tab.id <= 0) {
