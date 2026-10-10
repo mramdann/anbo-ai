@@ -1311,13 +1311,15 @@ async fn handle_action_inner(
             loop {
                 let now = tokio::time::Instant::now();
                 if now >= deadline {
-                    return Err(find_timeout(
+                    let held = clock.held_back(last_empty_scan.as_ref());
+                    return Err(find_timeout_held(
                         &locator,
                         timeout_ms,
                         empty_scans,
                         None,
                         last_empty_scan.as_ref(),
                         quiet_waits,
+                        held.as_deref(),
                     ));
                 }
                 let current_state = page_scan_state(&webview).await;
@@ -4528,6 +4530,12 @@ struct MissClock {
     // timeout was given up on at 1.5 s). A hidden-only miss still does; the
     // default timeout keeps the early answer agents need for wrong guesses.
     patient: bool,
+    // Why a miss that ran to its deadline did not end once absence held, for
+    // its message: how often the page changed shape while the element was
+    // absent, and whether a load held back an absence that had settled. A
+    // full wait used to read like any other absence.
+    reshaped: usize,
+    held_by_load: bool,
 }
 
 impl MissClock {
@@ -4550,7 +4558,31 @@ impl MissClock {
             {
                 self.absent_live = true;
             }
+            Some(_) if self.absent_since.is_some() => {
+                self.reshaped += 1;
+                self.reset_absence();
+            }
             _ => self.reset_absence(),
+        }
+    }
+
+    /// Why a miss that ran to its deadline did not end once absence held,
+    /// given that its last complete scan proved the element absent.
+    fn held_back(&self, last_scan: Option<&CollectedLocatorMatches>) -> Option<String> {
+        if !last_scan.is_some_and(absence_conclusive) {
+            return None;
+        }
+        if self.patient {
+            Some("a timeout the caller sets is waited out in full".to_string())
+        } else if self.held_by_load {
+            Some("the tab was still loading, so absence could not be concluded early".to_string())
+        } else if self.reshaped > 0 {
+            Some(format!(
+                "the page kept changing while waiting ({} changes of its structure), so absence could not be concluded early",
+                self.reshaped
+            ))
+        } else {
+            None
         }
     }
 
@@ -4577,7 +4609,9 @@ impl MissClock {
         let readable = state.is_some_and(|state| state.mutations >= 0);
         let mut last = false;
         if readable && absence_conclusive(scan) {
-            last = self.absence_settled(completed, timeout_ms) && !loading;
+            let settled = self.absence_settled(completed, timeout_ms);
+            self.held_by_load |= settled && loading;
+            last = settled && !loading;
             if self.absent_since.is_none() {
                 self.absent_since = Some(completed);
                 self.absent_baseline = state.cloned();
@@ -4630,12 +4664,35 @@ fn find_timeout(
     last_empty_scan: Option<&CollectedLocatorMatches>,
     quiet_waits: usize,
 ) -> (String, String) {
-    let diagnostics = locator_timeout_diagnostics(
+    find_timeout_held(
+        locator,
+        timeout_ms,
+        empty_scans,
+        scan_error,
+        last_empty_scan,
+        quiet_waits,
+        None,
+    )
+}
+
+/// As find_timeout, saying why a miss that proved absence waited out its
+/// deadline.
+fn find_timeout_held(
+    locator: &LocatorRequest,
+    timeout_ms: u64,
+    empty_scans: usize,
+    scan_error: Option<&str>,
+    last_empty_scan: Option<&CollectedLocatorMatches>,
+    quiet_waits: usize,
+    held: Option<&str>,
+) -> (String, String) {
+    let diagnostics = locator_timeout_diagnostics_held(
         locator,
         empty_scans,
         scan_error,
         last_empty_scan,
         quiet_waits,
+        held,
     );
     (
         error_codes::TIMEOUT.to_string(),
@@ -4646,12 +4703,34 @@ fn find_timeout(
     )
 }
 
+// Only the tests read the diagnostics without the reason argument.
+#[cfg(test)]
 fn locator_timeout_diagnostics(
     locator: &LocatorRequest,
     completed_scans: usize,
     scan_error: Option<&str>,
     last_scan: Option<&CollectedLocatorMatches>,
     quiet_waits: usize,
+) -> String {
+    locator_timeout_diagnostics_held(
+        locator,
+        completed_scans,
+        scan_error,
+        last_scan,
+        quiet_waits,
+        None,
+    )
+}
+
+/// The diagnostics with `held`, why a miss that proved absence waited out
+/// its deadline, right after the verdict it explains.
+fn locator_timeout_diagnostics_held(
+    locator: &LocatorRequest,
+    completed_scans: usize,
+    scan_error: Option<&str>,
+    last_scan: Option<&CollectedLocatorMatches>,
+    quiet_waits: usize,
+    held: Option<&str>,
 ) -> String {
     // What the caller needs is not how many scans ran, but whether this is a
     // verdict they can act on. A page scanned end to end with nothing matching
@@ -4715,8 +4794,9 @@ fn locator_timeout_diagnostics(
         )
     } else {
         format!(
-            "page fully scanned {completed_scans} time(s) ({} nodes); confirmed absence in the last completed scan, not a guarantee about later changes",
+            "page fully scanned {completed_scans} time(s) ({} nodes); confirmed absence in the last completed scan, not a guarantee about later changes{}",
             last_scan.map_or(0, |scan| scan.scanned),
+            held.map(|why| format!("; {why}")).unwrap_or_default(),
         )
     };
     let quiet = if quiet_waits > 0 {
@@ -4804,8 +4884,30 @@ fn target_locator_timeout(
     scan_error: Option<&str>,
     last_scan: Option<&CollectedLocatorMatches>,
 ) -> (String, String) {
+    target_locator_timeout_held(
+        locator,
+        state,
+        timeout_ms,
+        completed_scans,
+        scan_error,
+        last_scan,
+        None,
+    )
+}
+
+/// As target_locator_timeout, saying why a miss that proved absence waited
+/// out its deadline.
+fn target_locator_timeout_held(
+    locator: &LocatorRequest,
+    state: Option<&str>,
+    timeout_ms: u64,
+    completed_scans: usize,
+    scan_error: Option<&str>,
+    last_scan: Option<&CollectedLocatorMatches>,
+    held: Option<&str>,
+) -> (String, String) {
     let diagnostics =
-        locator_timeout_diagnostics(locator, completed_scans, scan_error, last_scan, 0);
+        locator_timeout_diagnostics_held(locator, completed_scans, scan_error, last_scan, 0, held);
     (
         error_codes::TIMEOUT.into(),
         format!(
@@ -5082,13 +5184,17 @@ async fn resolve_target_locator(
     loop {
         let now = tokio::time::Instant::now();
         if now >= deadline {
-            return Err(target_locator_timeout(
+            let held = settles
+                .then(|| clock.held_back(last_scan.as_ref()))
+                .flatten();
+            return Err(target_locator_timeout_held(
                 &locator,
                 state,
                 timeout_ms,
                 completed_scans,
                 None,
                 last_scan.as_ref(),
+                held.as_deref(),
             ));
         }
         let current_state = page_scan_state(&webview).await;
@@ -9071,6 +9177,78 @@ mod tests {
         assert_eq!(hidden_only_settle(5_000), Duration::from_millis(1_000));
         assert_eq!(hidden_only_settle(10_000), Duration::from_millis(1_500));
         assert_eq!(hidden_only_settle(60_000), Duration::from_millis(1_500));
+    }
+
+    #[test]
+    fn a_miss_that_waited_out_its_deadline_says_why() {
+        let page = |mutations: i64, elements: i64| PageScanState {
+            id: "doc".into(),
+            mutations,
+            animating: false,
+            elements,
+        };
+        let scan = |hidden: usize| CollectedLocatorMatches {
+            matches: vec![],
+            scanned: 3_000,
+            truncated: false,
+            node_limit_reached: false,
+            included_frames: 1,
+            skipped_frames: 0,
+            hidden,
+            name_misses: vec![],
+            candidates: vec![],
+            nearest: None,
+        };
+        let start = tokio::time::Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+
+        // A page that keeps changing its structure restarts absence each time.
+        let mut clock = MissClock::default();
+        assert!(!clock.missed(&scan(0), Some(&page(1, 1_000)), at(0), 5_000, false));
+        clock.page_read(&page(1, 1_000), Some(&page(2, 1_100)));
+        assert!(!clock.missed(&scan(0), Some(&page(2, 1_100)), at(1_000), 5_000, false));
+        clock.page_read(&page(2, 1_100), Some(&page(3, 1_250)));
+        let held = clock.held_back(Some(&scan(0))).unwrap();
+        assert!(
+            held.contains("kept changing") && held.contains("2 changes"),
+            "{held}"
+        );
+        // Changes that keep the page's shape are a live page, not a reshape.
+        let mut live = MissClock::default();
+        assert!(!live.missed(&scan(0), Some(&page(1, 1_000)), at(0), 5_000, false));
+        live.page_read(&page(1, 1_000), Some(&page(9, 1_000)));
+        assert_eq!(live.held_back(Some(&scan(0))), None);
+
+        // A settled absence the load held back says so.
+        let mut loading = MissClock::default();
+        assert!(!loading.missed(&scan(0), Some(&page(1, 1_000)), at(0), 5_000, true));
+        assert!(!loading.missed(&scan(0), Some(&page(1, 1_000)), at(1_600), 5_000, true));
+        assert!(loading
+            .held_back(Some(&scan(0)))
+            .unwrap()
+            .contains("still loading"));
+
+        // A caller's own timeout is the reason, whatever the page did.
+        let patient = MissClock {
+            patient: true,
+            ..MissClock::default()
+        };
+        assert!(patient
+            .held_back(Some(&scan(0)))
+            .unwrap()
+            .contains("waited out in full"));
+        // Only an absence the last scan proved gets a reason.
+        assert_eq!(patient.held_back(Some(&scan(2))), None);
+        assert_eq!(patient.held_back(None), None);
+
+        // The reason follows the verdict it explains.
+        let locator = extract_locator(&json!({"by":"css", "value":".missing"})).unwrap();
+        let (_, message) =
+            find_timeout_held(&locator, 5_000, 4, None, Some(&scan(0)), 0, Some("why"));
+        assert!(
+            message.contains("not a guarantee about later changes; why"),
+            "{message}"
+        );
     }
 
     #[test]
