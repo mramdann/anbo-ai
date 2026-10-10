@@ -108,7 +108,23 @@ impl Chord {
         !self.parts.is_empty() || self.active
     }
 
-    pub(crate) fn key_down(&mut self, vk: u32, now: Instant) -> Step {
+    /// Forgets keys the hook saw go down but never saw come up: one released
+    /// while an elevated window had the keyboard, or an unpaired event some
+    /// tool sent. `is_down` asks the keyboard itself.
+    fn forget_released(&mut self, is_down: &impl Fn(u32) -> bool) {
+        for (index, held) in self.others.iter_mut().enumerate() {
+            if *held && !is_down(index as u32) {
+                *held = false;
+            }
+        }
+    }
+
+    pub(crate) fn key_down(
+        &mut self,
+        vk: u32,
+        now: Instant,
+        is_down: impl Fn(u32) -> bool,
+    ) -> Step {
         if self.key == PttKey::Off {
             return Step::Nothing;
         }
@@ -122,6 +138,12 @@ impl Chord {
                 return Step::Nothing;
             }
             // Shift+Win and the like are other combinations, not the chord.
+            // A key remembered as held may be one whose release went unseen,
+            // and Win alone has no poll before it to notice, so one such key
+            // cost the next press; the keyboard settles it first.
+            if self.other_held() {
+                self.forget_released(&is_down);
+            }
             if self.other_held() {
                 self.broken = true;
                 return Step::Nothing;
@@ -172,11 +194,7 @@ impl Chord {
     /// would otherwise keep a take running to its five-minute cap, so held
     /// keys are checked against the keyboard first.
     pub(crate) fn poll(&mut self, now: Instant, is_down: impl Fn(u32) -> bool) -> Step {
-        for (index, held) in self.others.iter_mut().enumerate() {
-            if *held && !is_down(index as u32) {
-                *held = false;
-            }
-        }
+        self.forget_released(&is_down);
         let released: Vec<u32> = self
             .parts
             .iter()
@@ -387,7 +405,7 @@ mod hook {
                 let (step, polling) = CHORD.with_borrow_mut(|chord| match chord.as_mut() {
                     Some(chord) => {
                         let step = if message == WM_KEYDOWN || message == WM_SYSKEYDOWN {
-                            chord.key_down(info.vkCode, now)
+                            chord.key_down(info.vkCode, now, key_is_down)
                         } else if message == WM_KEYUP || message == WM_SYSKEYUP {
                             chord.key_up(info.vkCode)
                         } else {
@@ -483,10 +501,10 @@ mod tests {
     fn a_held_win_starts_after_the_hold_and_stops_on_release() {
         let t0 = Instant::now();
         let mut chord = Chord::new(PttKey::Win);
-        assert_eq!(chord.key_down(VK_LWIN, t0), Step::Arm);
+        assert_eq!(chord.key_down(VK_LWIN, t0, |_| true), Step::Arm);
         assert_eq!(chord.poll(after(t0, 100), |_| true), Step::Nothing);
         assert_eq!(
-            chord.key_down(VK_LWIN, after(t0, 150)),
+            chord.key_down(VK_LWIN, after(t0, 150), |_| true),
             Step::Nothing,
             "auto-repeat"
         );
@@ -500,7 +518,7 @@ mod tests {
     fn a_tap_never_starts() {
         let t0 = Instant::now();
         let mut chord = Chord::new(PttKey::Win);
-        assert_eq!(chord.key_down(VK_LWIN, t0), Step::Arm);
+        assert_eq!(chord.key_down(VK_LWIN, t0, |_| true), Step::Arm);
         assert_eq!(chord.key_up(VK_LWIN), Step::Nothing);
         assert_eq!(chord.poll(after(t0, 500), |_| false), Step::Nothing);
     }
@@ -509,8 +527,11 @@ mod tests {
     fn a_shortcut_typed_with_win_never_starts_and_cancels_a_running_take() {
         let t0 = Instant::now();
         let mut chord = Chord::new(PttKey::Win);
-        chord.key_down(VK_LWIN, t0);
-        assert_eq!(chord.key_down(KEY_E, after(t0, 80)), Step::Nothing);
+        chord.key_down(VK_LWIN, t0, |_| true);
+        assert_eq!(
+            chord.key_down(KEY_E, after(t0, 80), |_| true),
+            Step::Nothing
+        );
         assert_eq!(chord.poll(after(t0, 400), |_| true), Step::Nothing);
         chord.key_up(KEY_E);
         assert_eq!(
@@ -521,9 +542,12 @@ mod tests {
         assert_eq!(chord.key_up(VK_LWIN), Step::Nothing);
 
         let t1 = after(t0, 1000);
-        chord.key_down(VK_LWIN, t1);
+        chord.key_down(VK_LWIN, t1, |_| true);
         assert_eq!(chord.poll(after(t1, 300), |_| true), Step::Start);
-        assert_eq!(chord.key_down(KEY_E, after(t1, 900)), Step::Cancel);
+        assert_eq!(
+            chord.key_down(KEY_E, after(t1, 900), |_| true),
+            Step::Cancel
+        );
         assert_eq!(chord.key_up(VK_LWIN), Step::Nothing, "already cancelled");
     }
 
@@ -531,8 +555,11 @@ mod tests {
     fn win_pressed_while_another_key_is_held_is_not_the_chord() {
         let t0 = Instant::now();
         let mut chord = Chord::new(PttKey::Win);
-        chord.key_down(LSHIFT, t0);
-        assert_eq!(chord.key_down(VK_LWIN, after(t0, 10)), Step::Nothing);
+        chord.key_down(LSHIFT, t0, |_| true);
+        assert_eq!(
+            chord.key_down(VK_LWIN, after(t0, 10), |_| true),
+            Step::Nothing
+        );
         assert_eq!(chord.poll(after(t0, 500), |_| true), Step::Nothing);
     }
 
@@ -540,31 +567,50 @@ mod tests {
     fn a_missed_release_stops_the_take_on_the_next_poll() {
         let t0 = Instant::now();
         let mut chord = Chord::new(PttKey::Win);
-        chord.key_down(VK_LWIN, t0);
+        chord.key_down(VK_LWIN, t0, |_| true);
         assert_eq!(chord.poll(after(t0, 300), |_| true), Step::Start);
         assert_eq!(chord.poll(after(t0, 350), |_| false), Step::Stop);
         assert!(!chord.needs_poll());
     }
 
     #[test]
-    fn a_stale_other_key_does_not_block_the_chord_for_ever() {
+    fn a_key_whose_release_went_unseen_does_not_cost_a_press() {
         let t0 = Instant::now();
         let mut chord = Chord::new(PttKey::Win);
-        chord.key_down(KEY_E, t0); // its key up was never seen
-        chord.key_down(VK_LWIN, after(t0, 10));
-        assert_eq!(chord.poll(after(t0, 20), |vk| vk != KEY_E), Step::Nothing);
-        chord.key_up(VK_LWIN);
-        let t1 = after(t0, 1000);
-        assert_eq!(chord.key_down(VK_LWIN, t1), Step::Arm);
-        assert_eq!(chord.poll(after(t1, 300), |vk| vk != KEY_E), Step::Start);
+        chord.key_down(KEY_E, t0, |_| true); // its key up was never seen
+        assert_eq!(
+            chord.key_down(VK_LWIN, after(t0, 10), |vk| vk != KEY_E),
+            Step::Arm
+        );
+        assert_eq!(chord.poll(after(t0, 310), |vk| vk != KEY_E), Step::Start);
+    }
+
+    #[test]
+    fn ctrl_win_pressed_quickly_is_not_broken_by_a_stale_key() {
+        // Win 40 ms after Ctrl comes before the first 50 ms poll could prune
+        // the stale key; the press used to be lost (Oct 10 stress run).
+        const F24: u32 = 0x87;
+        let t0 = Instant::now();
+        let mut chord = Chord::new(PttKey::CtrlWin);
+        chord.key_down(F24, t0, |_| true);
+        let keyboard = |vk: u32| vk != F24;
+        assert_eq!(
+            chord.key_down(VK_LCONTROL, after(t0, 300), keyboard),
+            Step::Nothing
+        );
+        assert_eq!(chord.key_down(VK_LWIN, after(t0, 340), keyboard), Step::Arm);
+        assert_eq!(chord.poll(after(t0, 640), keyboard), Step::Start);
     }
 
     #[test]
     fn ctrl_win_needs_both_keys_in_either_order() {
         let t0 = Instant::now();
         let mut chord = Chord::new(PttKey::CtrlWin);
-        assert_eq!(chord.key_down(VK_LWIN, t0), Step::Nothing);
-        assert_eq!(chord.key_down(VK_RCONTROL, after(t0, 40)), Step::Arm);
+        assert_eq!(chord.key_down(VK_LWIN, t0, |_| true), Step::Nothing);
+        assert_eq!(
+            chord.key_down(VK_RCONTROL, after(t0, 40), |_| true),
+            Step::Arm
+        );
         assert_eq!(
             chord.poll(after(t0, 300), |_| true),
             Step::Nothing,
@@ -579,17 +625,17 @@ mod tests {
     fn win_alone_is_another_key_for_right_alt_and_ctrl_for_win() {
         let t0 = Instant::now();
         let mut alt = Chord::new(PttKey::RightAlt);
-        assert_eq!(alt.key_down(VK_LWIN, t0), Step::Nothing);
+        assert_eq!(alt.key_down(VK_LWIN, t0, |_| true), Step::Nothing);
         assert_eq!(
-            alt.key_down(VK_RMENU, after(t0, 10)),
+            alt.key_down(VK_RMENU, after(t0, 10), |_| true),
             Step::Nothing,
             "Win is held"
         );
 
         let mut win = Chord::new(PttKey::Win);
-        win.key_down(VK_LCONTROL, t0);
+        win.key_down(VK_LCONTROL, t0, |_| true);
         assert_eq!(
-            win.key_down(VK_LWIN, after(t0, 10)),
+            win.key_down(VK_LWIN, after(t0, 10), |_| true),
             Step::Nothing,
             "Ctrl+Win is not Win"
         );
@@ -599,7 +645,7 @@ mod tests {
     fn off_ignores_everything() {
         let t0 = Instant::now();
         let mut chord = Chord::new(PttKey::Off);
-        assert_eq!(chord.key_down(VK_LWIN, t0), Step::Nothing);
+        assert_eq!(chord.key_down(VK_LWIN, t0, |_| true), Step::Nothing);
         assert_eq!(chord.poll(after(t0, 500), |_| true), Step::Nothing);
     }
 
@@ -607,7 +653,7 @@ mod tests {
     fn abandoning_a_running_take_cancels_it() {
         let t0 = Instant::now();
         let mut chord = Chord::new(PttKey::Win);
-        chord.key_down(VK_LWIN, t0);
+        chord.key_down(VK_LWIN, t0, |_| true);
         chord.poll(after(t0, 300), |_| true);
         assert_eq!(chord.abandon(), Step::Cancel);
         assert_eq!(chord.abandon(), Step::Nothing);
