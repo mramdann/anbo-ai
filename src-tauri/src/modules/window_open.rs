@@ -132,6 +132,42 @@ pub fn show<R: Runtime>(what: &str, window: &WebviewWindow<R>) -> Result<(), Str
     shown
 }
 
+/// Like [`show`], without taking the foreground. Once a window exists the
+/// shell shows it activated, even one that cannot be focused, and the
+/// AnboVoice orb types into the app in front. Such a window is hidden with
+/// [`hide_shown_without_focus`]: the shell still counts it hidden, so its own
+/// hide changes nothing and does nothing.
+pub fn show_without_focus<R: Runtime>(what: &str, window: &WebviewWindow<R>) -> Result<(), String> {
+    let shown = set_shown(window, true);
+    let visible = window.is_visible().map_err(|error| error.to_string());
+    if let Some(note) = shown_note(what, &shown, visible) {
+        log::warn!("[windows] {note}");
+    }
+    shown
+}
+
+/// Hides a window shown with [`show_without_focus`].
+pub fn hide_shown_without_focus<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), String> {
+    set_shown(window, false)
+}
+
+#[cfg(windows)]
+fn set_shown<R: Runtime>(window: &WebviewWindow<R>, shown: bool) -> Result<(), String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOWNOACTIVATE};
+    let handle = window.hwnd().map_err(|error| error.to_string())?;
+    let command = if shown { SW_SHOWNOACTIVATE } else { SW_HIDE };
+    // The shell's handle type comes from its own copy of the windows crate.
+    let _ = unsafe { ShowWindow(HWND(handle.0), command) };
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn set_shown<R: Runtime>(window: &WebviewWindow<R>, shown: bool) -> Result<(), String> {
+    let result = if shown { window.show() } else { window.hide() };
+    result.map_err(|error| error.to_string())
+}
+
 fn shown_note(
     what: &str,
     shown: &Result<(), String>,

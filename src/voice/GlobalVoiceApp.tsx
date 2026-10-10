@@ -13,10 +13,11 @@ import {
   insertGlobalVoiceText,
   type PushToTalkPhase,
   rememberGlobalVoiceForeground,
+  setGlobalVoiceOrbVisible,
 } from "@/modules/voice/lib/globalVoice";
 import { useVoiceMeterStyle } from "@/modules/voice/lib/useVoiceMeterStyle";
 import {
-  orbVisibleFromStorage,
+  orbOnScreen,
   VOICE_ORB_VISIBLE_KEY,
 } from "@/modules/voice/lib/useVoiceVisibility";
 import { resolveVoicePress } from "@/modules/voice/lib/voicePress";
@@ -60,9 +61,22 @@ const INITIAL_STYLE = {
 
 const DRAG_THRESHOLD_PX = 4;
 const POSITION_STORAGE_KEY = "anbo-global-voice-position";
+/** How long a hidden orb stays on screen after a failed take, so its error
+ * can be seen. */
+const ERROR_ON_SCREEN_MS = 6000;
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Puts the orb on screen or off: the header toggle's choice, or on screen
+ * while `needed`. */
+function applyOrbVisibility(needed: boolean): void {
+  let raw: string | null = null;
+  try {
+    raw = window.localStorage.getItem(VOICE_ORB_VISIBLE_KEY);
+  } catch {}
+  void setGlobalVoiceOrbVisible(orbOnScreen(raw, needed)).catch(() => {});
 }
 
 export function GlobalVoiceApp() {
@@ -135,28 +149,6 @@ export function GlobalVoiceApp() {
       disposed = true;
       unlisten?.();
     };
-  }, []);
-
-  // The shell shows this window when global voice starts; whether it stays on
-  // screen is the header toggle's call. The toggle writes one localStorage
-  // key, and since both windows share an origin, that write arrives here as
-  // a storage event. The value is read once at start too, for an orb hidden
-  // before the app was last closed.
-  useEffect(() => {
-    const appWindow = getCurrentWindow();
-    const apply = (raw: string | null) => {
-      void (
-        orbVisibleFromStorage(raw) ? appWindow.show() : appWindow.hide()
-      ).catch(() => {});
-    };
-    try {
-      apply(window.localStorage.getItem(VOICE_ORB_VISIBLE_KEY));
-    } catch {}
-    const onStorage = (event: StorageEvent) => {
-      if (event.key === VOICE_ORB_VISIBLE_KEY) apply(event.newValue);
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   useEffect(() => {
@@ -489,6 +481,43 @@ export function GlobalVoiceApp() {
   const pending =
     preparing || voice.requesting || voice.transcribing || inserting;
   const busy = voice.recording || pending;
+
+  // A failed take keeps a hidden orb up long enough to show its error.
+  const [errorShown, setErrorShown] = useState(false);
+  useEffect(() => {
+    if (!error) {
+      setErrorShown(false);
+      return;
+    }
+    setErrorShown(true);
+    const timer = window.setTimeout(
+      () => setErrorShown(false),
+      ERROR_ON_SCREEN_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [error]);
+
+  // The shell shows this window when global voice starts; whether it stays on
+  // screen is the header toggle's call, except while a take runs or its error
+  // shows: a hidden orb would record and type with no sign of it. The toggle
+  // writes one localStorage key, and since both windows share an origin, that
+  // write arrives here as a storage event; the value is read at start too,
+  // for an orb hidden before the app was last closed.
+  const needed = busy || errorShown;
+  const neededRef = useRef(needed);
+  useEffect(() => {
+    neededRef.current = needed;
+    applyOrbVisibility(needed);
+  }, [needed]);
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === VOICE_ORB_VISIBLE_KEY) {
+        applyOrbVisibility(neededRef.current);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   const onPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
     // Prevent the button's default focus action from activating this

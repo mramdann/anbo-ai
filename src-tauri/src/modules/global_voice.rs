@@ -281,7 +281,7 @@ fn set_enabled(
             let _ = window.close();
             return Err(error);
         }
-        if let Err(error) = window_open::show("the AnboVoice orb", &window) {
+        if let Err(error) = window_open::show_without_focus("the AnboVoice orb", &window) {
             platform::stop_foreground_tracking();
             if registered_here {
                 let _ = app.global_shortcut().unregister(SHORTCUT);
@@ -307,6 +307,21 @@ fn set_enabled(
         inner.listener = None;
     }
     Ok(status_of(&inner))
+}
+
+/// Puts the orb on screen or takes it off, for the orb itself: the header
+/// toggle's choice, and the takes it stays up for while hidden. Showing it
+/// never takes the foreground from the app a take types into.
+#[tauri::command]
+pub fn global_voice_show_orb(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
+        return Ok(());
+    };
+    if visible {
+        window_open::show_without_focus("the AnboVoice orb", &window)
+    } else {
+        window_open::hide_shown_without_focus(&window)
+    }
 }
 
 /// The orb shows a failure only as its colour, so every one is written down

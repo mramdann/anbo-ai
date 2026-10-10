@@ -53,6 +53,12 @@ export function setGlobalVoicePushToTalk(
   return invoke("global_voice_set_push_to_talk", { key });
 }
 
+/** Puts the orb on screen or takes it off. Unlike the window API's show,
+ * showing it leaves the foreground with the app a take types into. */
+export function setGlobalVoiceOrbVisible(visible: boolean): Promise<void> {
+  return invoke("global_voice_show_orb", { visible });
+}
+
 export function captureGlobalVoiceTarget(): Promise<GlobalVoiceTarget> {
   return invoke("global_voice_capture_target");
 }

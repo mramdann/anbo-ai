@@ -12,6 +12,13 @@ export function orbVisibleFromStorage(raw: string | null): boolean {
   return raw !== "0";
 }
 
+/** Whether the orb belongs on screen: the header toggle's choice, unless
+ * `needed` (a take runs or its error shows), which a hidden orb would keep
+ * out of sight. */
+export function orbOnScreen(raw: string | null, needed: boolean): boolean {
+  return needed || orbVisibleFromStorage(raw);
+}
+
 function loadVisible(): boolean {
   try {
     return orbVisibleFromStorage(
