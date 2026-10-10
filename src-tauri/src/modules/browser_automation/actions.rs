@@ -52,6 +52,7 @@ use crate::modules::browser_automation::timings::ActionTimings;
 use crate::modules::browser_automation::visibility::VISIBILITY_JS;
 const VALUE_ACTION_JS: &str = include_str!("valueAction.js");
 const REF_REPLACEMENT_JS: &str = include_str!("refReplacement.js");
+const BLOCKED_POINT_JS: &str = include_str!("blockedPoint.js");
 
 /// Per-poll timeout for `execute_script` inside readiness/wait loops. Short on
 /// purpose: while a tab is navigating, WebView2 drops the script callback, and a
@@ -5697,18 +5698,120 @@ fn actionability_failure_reason(
     }
 }
 
+// Only the tests build the message without a detail.
+#[cfg(test)]
 fn actionability_timeout_message(
     ref_id: &str,
     parsed: &Value,
     requirement: ActionabilityRequirement,
 ) -> String {
+    actionability_timeout_message_with(ref_id, parsed, requirement, None)
+}
+
+/// As actionability_timeout_message, with `detail` (blocked_point_detail)
+/// right after the reason it explains.
+fn actionability_timeout_message_with(
+    ref_id: &str,
+    parsed: &Value,
+    requirement: ActionabilityRequirement,
+    detail: Option<&str>,
+) -> String {
     let reason = actionability_failure_reason(parsed, requirement);
+    let detail = detail
+        .map(|detail| format!(" ({detail})"))
+        .unwrap_or_default();
     let hint = if matches!(requirement, ActionabilityRequirement::ClickAt(_)) {
         "; requested drag position was not ready; no mouse button was pressed. Inspect the current bounds and visible page before retrying; do not repeat unchanged blocked positions"
     } else {
         ""
     };
-    format!("element ref '{ref_id}' did not become actionable: {reason}{hint}")
+    format!("element ref '{ref_id}' did not become actionable: {reason}{detail}{hint}")
+}
+
+/// Why `ref_id` cannot take the pointer at `position`, read once when a
+/// pointer action gives up: on Google Maps at 979 px the place panel covers
+/// the map's left and the map's canvas reaches past the viewport, and an
+/// agent told only "covered" or "outside the viewport" picked its next
+/// fractions blind. None when the page cannot be read.
+async fn explain_blocked_point(
+    webview: &Webview,
+    frame_id: Option<&str>,
+    ref_id: &str,
+    position: Option<(f64, f64)>,
+    positioned: bool,
+) -> Option<String> {
+    let position = position
+        .map(|(x, y)| json!({"x": x, "y": y}))
+        .unwrap_or(Value::Null);
+    let script = deep_ref_expression(
+        ref_id,
+        &format!("const position = {position};\n{BLOCKED_POINT_JS}"),
+    );
+    let response = ref_context::execute_awaited(webview, frame_id, &script)
+        .await
+        .ok()?;
+    let decoded: String = serde_json::from_str(&response).unwrap_or(response);
+    let explained: Value = serde_json::from_str(&decoded).ok()?;
+    blocked_point_detail(&explained, positioned)
+}
+
+/// blockedPoint.js's answer in words: what covers the point and where the
+/// element is free, then the part of it inside the viewport, in the
+/// fractions positions take. An action without a position gets only what
+/// covers its target, since it has no point to move.
+fn blocked_point_detail(explained: &Value, positioned: bool) -> Option<String> {
+    let span = |value: &Value| {
+        Some(format!(
+            "{:.2}-{:.2}",
+            value.get(0)?.as_f64()?,
+            value.get(1)?.as_f64()?
+        ))
+    };
+    let mut parts = Vec::new();
+    if let Some(covered) = explained
+        .get("covered")
+        .filter(|covered| covered.is_object())
+    {
+        parts.push(
+            covered["by"]
+                .as_str()
+                .filter(|by| !by.is_empty())
+                .unwrap_or("another element")
+                .to_string(),
+        );
+        if positioned {
+            let free: Vec<String> = [
+                ("row", "x", &covered["row"]),
+                ("column", "y", &covered["column"]),
+            ]
+            .into_iter()
+            .filter_map(|(line, axis, run)| {
+                span(run).map(|run| format!("on that {line} at {axis} {run}"))
+            })
+            .collect();
+            parts.push(if free.is_empty() {
+                "nothing free on that row or column".to_string()
+            } else {
+                format!("free {}", free.join(" and "))
+            });
+        }
+    }
+    if positioned {
+        match (
+            span(&explained["visible"]["x"]),
+            span(&explained["visible"]["y"]),
+        ) {
+            (Some(x), Some(y)) if (x.as_str(), y.as_str()) != ("0.00-1.00", "0.00-1.00") => {
+                parts.push(format!("visible part x {x}, y {y}"))
+            }
+            (Some(_), Some(_)) => {}
+            _ if explained.is_object() => {
+                parts.push("no part of it inside the viewport".to_string())
+            }
+            _ => {}
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("; "))
 }
 
 fn extract_hover_position(params: &Value) -> Result<Option<(f64, f64)>, (String, String)> {
@@ -5909,9 +6012,27 @@ async fn wait_for_drag_pair(
         };
         scroll = false;
         if tokio::time::Instant::now() >= deadline {
+            let blocked = reason.contains("is covered by another element")
+                || reason.contains("is outside the viewport");
+            let end = if reason.starts_with("drag source") {
+                Some((source_ref, positions.0))
+            } else if reason.starts_with("drag target") {
+                Some((target_ref, positions.1))
+            } else {
+                None
+            };
+            let detail = match end {
+                Some((ref_id, position)) if blocked => {
+                    explain_blocked_point(webview, None, ref_id, position, true).await
+                }
+                _ => None,
+            };
+            let detail = detail
+                .map(|detail| format!(" ({detail})"))
+                .unwrap_or_default();
             return Err((
                 error_codes::TIMEOUT.to_string(),
-                format!("{reason}; no mouse button was pressed"),
+                format!("{reason}{detail}; no mouse button was pressed"),
             ));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -6089,9 +6210,18 @@ async fn wait_for_actionable_attempt(
             });
         }
         if tokio::time::Instant::now() >= deadline {
+            let blocked = matches!(
+                actionability_failure_reason(&parsed, requirement),
+                "covered by another element" | "outside the viewport after scrolling"
+            );
+            let detail = if blocked {
+                explain_blocked_point(webview, frame_id, ref_id, position, position.is_some()).await
+            } else {
+                None
+            };
             return Err((
                 error_codes::TIMEOUT.to_string(),
-                actionability_timeout_message(ref_id, &parsed, requirement),
+                actionability_timeout_message_with(ref_id, &parsed, requirement, detail.as_deref()),
             ));
         }
         tokio::time::sleep_until((probe_started + Duration::from_millis(100)).min(deadline)).await;
@@ -9160,6 +9290,54 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn a_blocked_point_names_its_cover_and_where_the_element_is_free() {
+        let covered = json!({
+            "visible": {"x": [0.007, 0.769], "y": [0.071, 0.707]},
+            "covered": {"by": "feed 'Results'", "row": [0.333, 0.75], "column": null}
+        });
+        assert_eq!(
+            blocked_point_detail(&covered, true).as_deref(),
+            Some("feed 'Results'; free on that row at x 0.33-0.75; visible part x 0.01-0.77, y 0.07-0.71")
+        );
+        // A click has no point to move: only what covers its target.
+        assert_eq!(
+            blocked_point_detail(&covered, false).as_deref(),
+            Some("feed 'Results'")
+        );
+        let boxed_in = json!({
+            "visible": {"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            "covered": {"by": "", "row": null, "column": null}
+        });
+        assert_eq!(
+            blocked_point_detail(&boxed_in, true).as_deref(),
+            Some("another element; nothing free on that row or column")
+        );
+        let off_screen = json!({"visible": {"x": [0.0, 0.76], "y": [0.07, 0.71]}, "covered": null});
+        assert_eq!(
+            blocked_point_detail(&off_screen, true).as_deref(),
+            Some("visible part x 0.00-0.76, y 0.07-0.71")
+        );
+        let gone = json!({"visible": {"x": null, "y": [0.0, 1.0]}, "covered": null});
+        assert_eq!(
+            blocked_point_detail(&gone, true).as_deref(),
+            Some("no part of it inside the viewport")
+        );
+        assert_eq!(blocked_point_detail(&Value::Null, true), None);
+        // The detail follows the reason, before the drag hint.
+        let sample =
+            json!({"visible": true, "enabled": true, "receives": false, "inViewport": false});
+        let message = actionability_timeout_message_with(
+            "g1-e1",
+            &sample,
+            ActionabilityRequirement::ClickAt(Some((0.9, 0.5))),
+            Some("visible part x 0.00-0.76, y 0.07-0.71"),
+        );
+        assert!(message.starts_with(
+            "element ref 'g1-e1' did not become actionable: outside the viewport after scrolling (visible part x 0.00-0.76, y 0.07-0.71); requested drag position"
+        ));
     }
 
     #[test]
