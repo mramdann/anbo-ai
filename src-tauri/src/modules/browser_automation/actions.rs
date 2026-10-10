@@ -1141,6 +1141,9 @@ async fn handle_action_inner(
                 )
             })?;
             ensure_bounded(url, MAX_URL_BYTES, "url")?;
+            // Checked before the page moves: a bad condition must not cost a
+            // navigation the agent then cannot see through.
+            let expectation = PageExpectation::parse(params.get("waitFor"))?;
 
             let target = url::Url::parse(url).map_err(|error| {
                 (
@@ -1155,21 +1158,42 @@ async fn handle_action_inner(
                 ));
             }
 
-            let tab_lock = get_tab_lock(tab_id);
-            let _lock = tab_lock.lock().await;
-            let webview = get_embed_webview(app, tab_id)
-                .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
-            set_active_loading(tab_id, true);
-            set_active_pending_url(tab_id, Some(target.to_string()));
-            if let Err(error) = webview.navigate(target).await {
-                set_active_loading(tab_id, false);
-                return Err((
-                    error_codes::NAVIGATION_FAILED.to_string(),
-                    error.to_string(),
-                ));
-            }
+            // The lock covers starting the navigation only: the wait below
+            // reads the page under it, as a click's postcondition does.
+            let webview = {
+                let tab_lock = get_tab_lock(tab_id);
+                let _lock = tab_lock.lock().await;
+                let webview = get_embed_webview(app, tab_id)
+                    .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
+                set_active_loading(tab_id, true);
+                set_active_pending_url(tab_id, Some(target.to_string()));
+                if let Err(error) = webview.navigate(target).await {
+                    set_active_loading(tab_id, false);
+                    return Err((
+                        error_codes::NAVIGATION_FAILED.to_string(),
+                        error.to_string(),
+                    ));
+                }
+                webview
+            };
 
-            Ok(json!({ "tabId": tab_id, "url": url, "ok": true, "loading": true }))
+            let mut result = json!({ "tabId": tab_id, "url": url, "ok": true, "loading": true });
+            // With a condition the call answers once the new page meets it,
+            // instead of the browser_wait the agent spent a turn on after
+            // nearly every navigation.
+            if let Some(expectation) = expectation {
+                result["postcondition"] = timings
+                    .measure("postcondition", wait_for_page_state(&webview, tab_id, &expectation))
+                    .await
+                    .map_err(|(code, message)| {
+                        (
+                            code,
+                            format!("the navigation started, but {message}; inspect the page before navigating again"),
+                        )
+                    })?;
+                result["loading"] = json!(active_loading(tab_id) == Some(true));
+            }
+            Ok(result)
         }
 
         "reload" | "back" | "forward" | "stop" => {
