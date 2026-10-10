@@ -81,15 +81,10 @@ pub async fn capture_screenshot(
         }
         BrowserTarget::External { .. } => {
             let _visual = super::activity::prepare_capture(target).await?;
-            let mut params =
-                json!({"format":encoding.format,"fromSurface":true,"captureBeyondViewport":false});
-            if let Some(quality) = encoding.quality {
-                params["quality"] = json!(quality);
-            }
             call_devtools_protocol_method(
                 target,
                 "Page.captureScreenshot",
-                &params.to_string(),
+                &encoding.protocol_params().to_string(),
                 Duration::from_secs(10),
             )
             .await

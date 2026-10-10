@@ -77,6 +77,9 @@ const MAX_LOCATOR_VALUE_BYTES: usize = 4 * 1024;
 /// larger ones are only written to disk, since a full-quality PNG of a large
 /// viewport costs more context than the turn it saves.
 const INLINE_SCREENSHOT_LIMIT: usize = 600 * 1024;
+/// The tallest full-page capture, in device pixels: Chromium draws a capture
+/// beyond the viewport as one texture, and this is its usual size limit.
+const FULL_PAGE_MAX_DEVICE_PIXELS: f64 = 16_384.0;
 const MAX_KEY_BYTES: usize = 64;
 const MAX_WORKSPACE_BYTES: usize = 4 * 1024;
 const MAX_REF_BYTES: usize = 32;
@@ -2644,8 +2647,12 @@ async fn handle_action_inner(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
 
-            let options = super::artifacts::Options::parse(&params)
+            let mut options = super::artifacts::Options::parse(&params)
                 .map_err(|e| (error_codes::INVALID_REQUEST.to_string(), e))?;
+            let full_page = params.get("fullPage").and_then(Value::as_bool) == Some(true);
+            if full_page && options.label.is_none() {
+                options.label = Some("full-page".to_string());
+            }
             let actual = active_local_root(tab_id).ok_or_else(|| {
                 (
                     error_codes::INVALID_REQUEST.to_string(),
@@ -2683,6 +2690,48 @@ async fn handle_action_inner(
                 .await
                 .unwrap_or_default();
             let (fallback, origin) = super::artifacts::source(&source_url);
+            // The whole page rather than what is on screen: its CSS size from
+            // the layout metrics, captured beyond the viewport, cut at the
+            // tallest capture Chromium can draw.
+            let mut page_size = None;
+            let encoding = if full_page {
+                let metrics = call_devtools_protocol_method(
+                    &webview,
+                    "Page.getLayoutMetrics",
+                    "{}",
+                    SCRIPT_POLL_TIMEOUT,
+                )
+                .await
+                .ok()
+                .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                .ok_or_else(|| {
+                    (
+                        error_codes::CDP_FAILED.to_string(),
+                        "the page's size could not be read for a full-page capture".to_string(),
+                    )
+                })?;
+                let css = |key: &str| {
+                    metrics["cssContentSize"][key]
+                        .as_f64()
+                        .filter(|value| *value >= 1.0)
+                };
+                let (Some(width), Some(height)) = (css("width"), css("height")) else {
+                    return Err((
+                        error_codes::CDP_FAILED.to_string(),
+                        "the page reported no size for a full-page capture".to_string(),
+                    ));
+                };
+                let scale = metrics["contentSize"]["height"]
+                    .as_f64()
+                    .map(|device| device / height)
+                    .filter(|scale| scale.is_finite() && *scale > 0.0)
+                    .unwrap_or(1.0);
+                let captured = height.min((FULL_PAGE_MAX_DEVICE_PIXELS / scale).floor());
+                page_size = Some((width, height, captured));
+                encoding.full_page(width, captured)
+            } else {
+                encoding
+            };
             let _design_layer = super::design::hide_for_capture(&webview).await;
             let response = capture_screenshot(&webview, encoding)
                 .await
@@ -2711,6 +2760,15 @@ async fn handle_action_inner(
             result["size"] = json!(bytes.len());
             result["format"] = json!(encoding.format);
             result["quality"] = json!(encoding.quality);
+            if let Some((width, height, captured)) = page_size {
+                result["fullPage"] =
+                    json!({ "width": width, "height": height, "capturedHeight": captured });
+                if captured < height {
+                    result["fullPageCut"] = json!(format!(
+                        "the page is {height:.0} px tall; the capture stops at {captured:.0} px"
+                    ));
+                }
+            }
             // The agent asked to see the page; handing back only a path made
             // it spend another call reading the file. Measured: three extra
             // reads in one TradingView task. The image rides along in the
@@ -10177,6 +10235,28 @@ mod tests {
                 "not stable"
             );
         }
+    }
+
+    #[test]
+    fn a_full_page_capture_asks_for_the_whole_page_beyond_the_viewport() {
+        use crate::modules::browser_automation::cdp::ScreenshotEncoding;
+        let viewport = ScreenshotEncoding::parse(Some("jpeg"), Some(80)).unwrap();
+        let params = viewport.protocol_params();
+        assert_eq!(params["captureBeyondViewport"], false);
+        assert!(params.get("clip").is_none());
+        assert_eq!(params["quality"], 80);
+        let page = viewport.full_page(1280.0, 5400.0).protocol_params();
+        assert_eq!(page["captureBeyondViewport"], true);
+        assert_eq!(
+            page["clip"],
+            json!({"x": 0, "y": 0, "width": 1280.0, "height": 5400.0, "scale": 1})
+        );
+        assert_eq!(page["quality"], 80);
+        // A PNG carries no quality.
+        assert!(ScreenshotEncoding::default()
+            .protocol_params()
+            .get("quality")
+            .is_none());
     }
 
     #[test]

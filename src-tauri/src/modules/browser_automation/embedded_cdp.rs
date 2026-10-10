@@ -195,6 +195,9 @@ pub async fn call_devtools_protocol_method(
 pub struct ScreenshotEncoding {
     pub format: &'static str,
     pub quality: Option<u8>,
+    /// The CSS size of the whole page for a full-page capture, taken beyond
+    /// the viewport; None captures what is on screen.
+    pub clip: Option<(f64, f64)>,
 }
 
 impl Default for ScreenshotEncoding {
@@ -202,6 +205,7 @@ impl Default for ScreenshotEncoding {
         Self {
             format: "png",
             quality: None,
+            clip: None,
         }
     }
 }
@@ -220,21 +224,39 @@ impl ScreenshotEncoding {
         Ok(Self {
             format,
             quality: quality.map(|value| value.clamp(1, 100) as u8),
+            clip: None,
         })
+    }
+
+    /// The whole page, `width` by `height` CSS pixels from its top left.
+    pub fn full_page(self, width: f64, height: f64) -> Self {
+        Self {
+            clip: Some((width, height)),
+            ..self
+        }
+    }
+
+    /// Page.captureScreenshot's parameters, the same for an embedded and an
+    /// external tab.
+    pub fn protocol_params(self) -> serde_json::Value {
+        let mut params = serde_json::json!({
+            "format": self.format,
+            "fromSurface": true,
+            "captureBeyondViewport": self.clip.is_some(),
+        });
+        if let Some(quality) = self.quality.filter(|_| self.format != "png") {
+            params["quality"] = quality.into();
+        }
+        if let Some((width, height)) = self.clip {
+            params["clip"] =
+                serde_json::json!({"x": 0, "y": 0, "width": width, "height": height, "scale": 1});
+        }
+        params
     }
 
     #[cfg(windows)]
     fn params(self) -> String {
-        match self.quality {
-            Some(quality) if self.format != "png" => format!(
-                r#"{{"format":"{}","quality":{quality},"fromSurface":true,"captureBeyondViewport":false}}"#,
-                self.format
-            ),
-            _ => format!(
-                r#"{{"format":"{}","fromSurface":true,"captureBeyondViewport":false}}"#,
-                self.format
-            ),
-        }
+        self.protocol_params().to_string()
     }
 }
 
