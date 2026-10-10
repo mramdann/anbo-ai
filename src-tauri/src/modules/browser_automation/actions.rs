@@ -2620,6 +2620,16 @@ async fn handle_action_inner(
             .ok()
             .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
             .and_then(|metrics| metrics.get("cssVisualViewport").cloned());
+            // And what the page itself reads, which an agent could only check
+            // with a script of its own: a phone that kept the desktop's pixel
+            // ratio or no touch looks the same in the layout metrics.
+            let seen_by_page = ref_context::execute_main(
+                &webview,
+                "({innerWidth: innerWidth, innerHeight: innerHeight, devicePixelRatio: devicePixelRatio, maxTouchPoints: navigator.maxTouchPoints})",
+            )
+            .await
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
             Ok(json!({
                 "tabId": tab_id,
                 "emulating": width > 0,
@@ -2629,6 +2639,7 @@ async fn handle_action_inner(
                 "mobile": mobile,
                 "fit": fit,
                 "applied": applied,
+                "seenByPage": seen_by_page,
             }))
         }
 
