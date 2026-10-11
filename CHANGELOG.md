@@ -5,31 +5,23 @@
 
 ### Features
 
-* **browser:** let browser_navigate wait for the page it opens ([ec11b0e](https://github.com/mramdann/anbo-ai/commit/ec11b0edc0a63f18c52cb9e0849cbb8a6408498d))
-* **browser:** let browser_screenshot capture the whole page ([8ef0b73](https://github.com/mramdann/anbo-ai/commit/8ef0b73edbbe8e2b20f423419b21fae1692ac22d))
-* **browser:** list the requests an Anbo browser tab made ([faf1266](https://github.com/mramdann/anbo-ai/commit/faf1266c1fee9c83122a1c9af93844ac391dda2c))
-* **browser:** list the requests of Chrome and Edge tabs ([0054076](https://github.com/mramdann/anbo-ai/commit/0054076188c4034bb839a2f87e4efd7f7c1d7480))
-* **browser:** say why a miss waited out its whole deadline ([18f351a](https://github.com/mramdann/anbo-ai/commit/18f351ae3f83ab553171599a8e6507d9bdda053c))
-* **browser:** show what the page sees after browser_emulate ([f4afd5b](https://github.com/mramdann/anbo-ai/commit/f4afd5bb31e48322befd35e27109e25328cb760c))
+* **browser:** `browser_navigate` can wait for the page it opens (`waitFor`) ([ec11b0e](https://github.com/mramdann/anbo-ai/commit/ec11b0edc0a63f18c52cb9e0849cbb8a6408498d))
+* **browser:** `browser_screenshot` can capture the whole page (`fullPage`) ([8ef0b73](https://github.com/mramdann/anbo-ai/commit/8ef0b73edbbe8e2b20f423419b21fae1692ac22d), [a305c46](https://github.com/mramdann/anbo-ai/commit/a305c462345fc89de7237305c939bd7d56c68eae))
+* **browser:** `browser_network_requests` lists the requests a tab made, in Anbo's own tabs and in Chrome and Edge tabs (Anbo Browser Bridge 0.5.4, which a connected profile reloads to by itself); credential-shaped values in their URLs show as `<REDACTED>` ([faf1266](https://github.com/mramdann/anbo-ai/commit/faf1266c1fee9c83122a1c9af93844ac391dda2c), [0054076](https://github.com/mramdann/anbo-ai/commit/0054076188c4034bb839a2f87e4efd7f7c1d7480), [152e659](https://github.com/mramdann/anbo-ai/commit/152e659c8d2b6c3f9e42ea78f125db4b4b3ab4af))
+* **browser:** `browser_emulate` says what size the page sees ([f4afd5b](https://github.com/mramdann/anbo-ai/commit/f4afd5bb31e48322befd35e27109e25328cb760c), [319f51d](https://github.com/mramdann/anbo-ai/commit/319f51da2361e8b3a202f51e9202df3986fdd6e0))
+* **browser:** a find or a locator that waits out its whole deadline says why ([18f351a](https://github.com/mramdann/anbo-ai/commit/18f351ae3f83ab553171599a8e6507d9bdda053c))
 
 
 ### Bug Fixes
 
-* **browser:** cap a full-page capture by the page's own pixel ratio ([a305c46](https://github.com/mramdann/anbo-ai/commit/a305c462345fc89de7237305c939bd7d56c68eae))
-* **browser:** give up on a blocked drag once the block holds ([bf03cb0](https://github.com/mramdann/anbo-ai/commit/bf03cb048ba43b51a98a971d7aa2abb7908d8de6))
-* **browser:** hide credential-shaped values in Chrome and Edge request URLs ([152e659](https://github.com/mramdann/anbo-ai/commit/152e659c8d2b6c3f9e42ea78f125db4b4b3ab4af))
-* **browser:** keep a hidden tab at the size it will come forward at ([9818627](https://github.com/mramdann/anbo-ai/commit/98186279bb448a5eab263bd7b8a9d9f4552edb7f))
-* **browser:** keep browser tabs opening after WebView2 updates itself ([dad1830](https://github.com/mramdann/anbo-ai/commit/dad18304c0a66eba058380b08073b9a808fe497f))
-* **browser:** keep the browser history out of localStorage ([4991cb9](https://github.com/mramdann/anbo-ai/commit/4991cb931286a032ba94ecfa5e9e4e89a2d70b49))
-* **browser:** lay out a background workspace's hidden tabs at their own box ([63fd6f3](https://github.com/mramdann/anbo-ai/commit/63fd6f3955f8bd0c0d45eadd050e26ac8e9ee98c))
-* **browser:** press the key combos and spellings agents send ([5f72138](https://github.com/mramdann/anbo-ai/commit/5f72138b83a7300556aed03edf5f31306c3b2d87))
-* **browser:** read the page's own size after an emulation is cleared ([319f51d](https://github.com/mramdann/anbo-ai/commit/319f51da2361e8b3a202f51e9202df3986fdd6e0))
-* **browser:** say where a blocked pointer action can land instead ([7c32756](https://github.com/mramdann/anbo-ai/commit/7c32756c9a9cbdc8b13906a3adc4c3aac65c462a))
-* **launch:** open a folder handed over while Anbo is starting ([8763709](https://github.com/mramdann/anbo-ai/commit/87637095386c65929d01ab20894f3eadd9dd04eb))
-* **settings:** announce setting and theme changes only by their events ([539ae3a](https://github.com/mramdann/anbo-ai/commit/539ae3a5de95598979de36c140f0996c74197ddc))
-* **tabs:** keep workspace layouts out of localStorage ([fcdd51a](https://github.com/mramdann/anbo-ai/commit/fcdd51a874bc7a4ee2944208d5a33b11badc9b93))
-* **voice:** write the hands-free shortcut in Settings as Windows does ([9cd8c3d](https://github.com/mramdann/anbo-ai/commit/9cd8c3d9d31f1a7001e6648c9e00540aaa4158f2))
-* **windows:** keep Alt from stalling Anbo in the window menu loop ([faab76c](https://github.com/mramdann/anbo-ai/commit/faab76cff07ae60d27b7c8f7a7b36508ad33af68))
+* **windows:** pressing Alt on its own no longer leaves Anbo unresponsive until the next key ([faab76c](https://github.com/mramdann/anbo-ai/commit/faab76cff07ae60d27b7c8f7a7b36508ad33af68))
+* **launch:** a folder opened with Anbo while it is still starting now opens ([8763709](https://github.com/mramdann/anbo-ai/commit/87637095386c65929d01ab20894f3eadd9dd04eb))
+* **browser:** browser tabs keep opening after Windows updates WebView2 in the background ([dad1830](https://github.com/mramdann/anbo-ai/commit/dad18304c0a66eba058380b08073b9a808fe497f))
+* **browser:** `browser_press` presses combos such as Control+A and the key names agents write, and takes `keys` ([5f72138](https://github.com/mramdann/anbo-ai/commit/5f72138b83a7300556aed03edf5f31306c3b2d87))
+* **browser:** a blocked click, hover or drag names what covers the element and where it is free, and a drag under a cover that stays answers sooner ([7c32756](https://github.com/mramdann/anbo-ai/commit/7c32756c9a9cbdc8b13906a3adc4c3aac65c462a), [bf03cb0](https://github.com/mramdann/anbo-ai/commit/bf03cb048ba43b51a98a971d7aa2abb7908d8de6))
+* **browser:** hidden browser tabs keep the size they will be shown at, so switching workspaces no longer resizes their pages ([9818627](https://github.com/mramdann/anbo-ai/commit/98186279bb448a5eab263bd7b8a9d9f4552edb7f), [63fd6f3](https://github.com/mramdann/anbo-ai/commit/63fd6f3955f8bd0c0d45eadd050e26ac8e9ee98c))
+* **voice:** the AnboVoice orb no longer grows in memory while browser tabs open and close; the browser history and the workspace layouts move out of the window's local storage once, on the first start ([4991cb9](https://github.com/mramdann/anbo-ai/commit/4991cb931286a032ba94ecfa5e9e4e89a2d70b49), [fcdd51a](https://github.com/mramdann/anbo-ai/commit/fcdd51a874bc7a4ee2944208d5a33b11badc9b93), [539ae3a](https://github.com/mramdann/anbo-ai/commit/539ae3a5de95598979de36c140f0996c74197ddc))
+* **voice:** Settings writes the hands-free shortcut as Windows does ([9cd8c3d](https://github.com/mramdann/anbo-ai/commit/9cd8c3d9d31f1a7001e6648c9e00540aaa4158f2))
 
 ## [0.37.1](https://github.com/mramdann/anbo-ai/compare/v0.37.0...v0.37.1) (2026-10-10)
 
