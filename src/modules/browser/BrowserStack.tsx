@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 import type { BrowserTab, Tab } from "@/modules/tabs";
-import { lazy, Suspense, useEffect, useRef } from "react";
+import { type CSSProperties, lazy, Suspense, useEffect, useRef } from "react";
 import { BrowserPane, type BrowserPaneHandle } from "./BrowserPane";
 import type { BrowserWorkspaceContext } from "./native";
 const ExternalBrowserPane = lazy(
@@ -23,6 +23,9 @@ type Props = {
   ) => void;
   /** Hidden panes of this space keep the size of the box they render in. */
   followSpaceId?: string | null;
+  /** Where a hidden pane of another space sits instead of the whole host: the
+   *  box it comes forward in once its own space is shown (savedDockArea). */
+  paneStyles?: ReadonlyMap<number, CSSProperties>;
 };
 
 export function selectBackgroundBrowserTabs(
@@ -38,7 +41,9 @@ export function selectBackgroundBrowserTabs(
 /** Whether a pane follows the size of its box while hidden: only a tab of
  *  the space in view. The hidden host takes its box from that space's dock,
  *  so a tab of another space following it would lay out its page again on
- *  every space switch; it keeps its size until its own space is shown. */
+ *  every space switch; it keeps its size until its own space is shown, the
+ *  size it was shown at or, never shown, the one its space's saved layout
+ *  gives it (paneStyles). */
 export function followsHostSize(
   tab: BrowserTab,
   visible: boolean,
@@ -61,6 +66,7 @@ export function BrowserStack({
   getWorkspaceContext,
   registerHandle,
   followSpaceId,
+  paneStyles,
 }: Props) {
   const browserTabs = tabs.filter(
     (t): t is BrowserTab => t.kind === "browser" && !t.cold,
@@ -177,6 +183,7 @@ export function BrowserStack({
               "absolute inset-0",
               !visible && "invisible pointer-events-none",
             )}
+            style={visible ? undefined : paneStyles?.get(t.id)}
             aria-hidden={!visible}
           >
             {t.external ? (

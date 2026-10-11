@@ -159,11 +159,19 @@ import { isSerializableTab } from "@/modules/spaces/lib/serialize";
 import { createAutomationTabSelection } from "@/modules/tabs/lib/automationTabPlacement";
 import { showBrowserTabForInput } from "@/modules/tabs/lib/browserTabShow";
 import {
+  DOCK_TAB_STRIP_PX,
   dockAreaStyle,
+  groupContentStyle,
   useDockContentArea,
 } from "@/modules/tabs/lib/dockContentArea";
 import { runtimeTabIdAllocator } from "@/modules/tabs/lib/runtimeId";
-import type { WorkspaceLayoutMode } from "@/modules/tabs/lib/workspaceTidyLayout";
+import { savedBackgroundAreas } from "@/modules/tabs/lib/savedDockArea";
+import { readWorkspaceDockviewLayout } from "@/modules/tabs/lib/workspaceDockviewPersistence";
+import { workspaceLayoutStorage } from "@/modules/tabs/lib/workspaceLayoutStore";
+import {
+  browserPanelSide,
+  type WorkspaceLayoutMode,
+} from "@/modules/tabs/lib/workspaceTidyLayout";
 import { DEFAULT_SPACE_ID } from "@/modules/tabs/lib/useTabs";
 import {
   clearFocusedTerminal,
@@ -212,6 +220,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import type { SearchAddon } from "@xterm/addon-search";
 import {
+  type CSSProperties,
   lazy,
   Suspense,
   useCallback,
@@ -2193,9 +2202,45 @@ export default function App() {
     containerRef: dockAreaRef,
     remeasure: measureBackgroundArea,
   } = useDockContentArea();
+  // The workspace the hidden host was last measured for. A dock loading
+  // another workspace still hands the host the box of the one shown before,
+  // so until it settles the workspace in view takes its saved boxes too.
+  const [hostSpaceId, setHostSpaceId] = useState<string | null>(null);
+  // A hidden browser tab of a workspace not in view comes forward in that
+  // workspace's own dock, so it lays its page out at the box the workspace's
+  // saved layout gives it, not at the box of the workspace in view.
+  const backgroundPaneStyles = useMemo(() => {
+    const shown = activeSpaceId ?? DEFAULT_SPACE_ID;
+    const styles = new Map<number, CSSProperties>();
+    const areas = savedBackgroundAreas({
+      hidden: backgroundBrowserTabs,
+      tabs,
+      followingSpaceId: hostSpaceId === shown ? shown : null,
+      sideOf: (spaceId) =>
+        browserPanelSide(
+          spaceEnvironments.find((space) => space.id === spaceId)?.layout,
+        ),
+      layoutOf: (spaceId, spaceTabs) =>
+        readWorkspaceDockviewLayout(workspaceLayoutStorage, spaceId, spaceTabs),
+    });
+    const strip = zenMode ? 0 : DOCK_TAB_STRIP_PX;
+    for (const [id, area] of areas) {
+      styles.set(id, groupContentStyle(area, backgroundBrowserArea, strip));
+    }
+    return styles;
+  }, [
+    backgroundBrowserTabs,
+    tabs,
+    activeSpaceId,
+    hostSpaceId,
+    spaceEnvironments,
+    backgroundBrowserArea,
+    zenMode,
+  ]);
   const handleDockLayoutSettled = useCallback(() => {
     refitVisibleTerminalSlots();
     measureBackgroundArea();
+    setHostSpaceId(useSpaces.getState().activeId ?? DEFAULT_SPACE_ID);
   }, [measureBackgroundArea]);
 
   // Focus an agent's tab, switching to its space first so the header and tab
@@ -3139,6 +3184,7 @@ export default function App() {
                               tabs={backgroundBrowserTabs}
                               activeId={-1}
                               followSpaceId={activeSpaceId ?? DEFAULT_SPACE_ID}
+                              paneStyles={backgroundPaneStyles}
                               registerHandle={registerBrowserHandle}
                               onUrlChange={handleBrowserUrl}
                               onTitleChange={handleBrowserTitle}

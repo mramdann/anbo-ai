@@ -89,6 +89,34 @@ export function dockAreaStyle(area: DockArea | null): CSSProperties {
   };
 }
 
+/** A Dockview group's tab strip, in CSS pixels
+ *  (--dv-tabs-and-actions-container-height in WorkspaceDockview.css). */
+export const DOCK_TAB_STRIP_PX = 32;
+
+/**
+ * The style that places a pane over the content of a group whose box in the
+ * dock is `group` (tab strip included, savedTabGroupArea), from inside a
+ * hidden host placed over `host` (dockAreaStyle): the shares of the host it
+ * covers, below a tab strip of `stripPx`. The strip stays in CSS pixels, which
+ * the UI zoom scales just as it scales the strip itself.
+ */
+export function groupContentStyle(
+  group: DockArea,
+  host: DockArea | null,
+  stripPx: number,
+): CSSProperties {
+  const within = host ?? { top: 0, left: 0, width: 1, height: 1 };
+  const percent = (value: number) => `${value * 100}%`;
+  const top = percent((group.top - within.top) / within.height);
+  const height = percent(group.height / within.height);
+  return {
+    top: stripPx ? `calc(${top} + ${stripPx}px)` : top,
+    left: percent((group.left - within.left) / within.width),
+    width: percent(group.width / within.width),
+    height: stripPx ? `calc(${height} - ${stripPx}px)` : height,
+  };
+}
+
 function sameArea(a: DockArea | null, b: DockArea | null): boolean {
   return (
     a === b ||
