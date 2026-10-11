@@ -17,7 +17,6 @@ import {
   deactivateLeafAgentResume,
   findLeafCwd,
   hasLeaf,
-  insertNodeBeside,
   leafIds,
   nextLeafId,
   type PaneBounds,
@@ -27,10 +26,8 @@ import {
   rearmLeafAgentResume,
   removeLeaf,
   replaceLeafAgentResume,
-  type SplitDir,
   setLeafCwd as setLeafCwdInTree,
   siblingLeafOf,
-  splitLeaf,
   swapLeafInDirection,
 } from "@/modules/terminal/lib/panes";
 import { disposeSession } from "@/modules/terminal/lib/useTerminalSession";
@@ -41,9 +38,6 @@ import {
   runtimeTabIdAllocator,
   takeRuntimeId,
 } from "./runtimeId";
-
-// Matches the renderer slot pool size — over this we'd evict an active leaf.
-const MAX_PANES_PER_TAB = 4;
 
 const runtimeIds = runtimeTabIdAllocator();
 
@@ -1493,121 +1487,6 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [],
   );
 
-  /**
-   * Give `tabId` a new leaf next to its active one and make it active. `grow`
-   * places it in the tree. Returns the new leaf id, or null at the pane cap.
-   */
-  const addLeaf = useCallback(
-    (
-      tabId: number,
-      grow: (tab: TerminalTab, splitId: number, leafId: number) => PaneNode,
-    ): number | null => {
-      let newLeafId: number | null = null;
-      setTabs((curr) =>
-        curr.map((t) => {
-          if (t.id !== tabId || t.kind !== "terminal" || t.blocks) return t;
-          if (leafIds(t.paneTree).length >= MAX_PANES_PER_TAB) return t;
-          const splitId = nextIdRef.current++;
-          const leafId = nextIdRef.current++;
-          newLeafId = leafId;
-          const paneTree = grow(t, splitId, leafId);
-          return { ...t, paneTree, activeLeafId: leafId };
-        }),
-      );
-      return newLeafId;
-    },
-    [],
-  );
-
-  /** Split the active leaf of `tabId` along `dir`. Returns the new leaf id. */
-  const splitActivePane = useCallback(
-    (tabId: number, dir: SplitDir): number | null =>
-      addLeaf(tabId, (t, splitId, leafId) =>
-        splitLeaf(t.paneTree, t.activeLeafId, splitId, leafId, dir, t.cwd),
-      ),
-    [addLeaf],
-  );
-
-  /**
-   * Dock `sourceTabId`'s whole paneTree into `targetTabId` beside the target's
-   * active leaf (`dir` + `before`/`after`), then remove the now-empty source tab.
-   * Leaf ids are preserved → their PTY sessions reattach (no dispose/recreate).
-   * Returns false if disallowed (same tab, not terminals, or cap exceeded).
-   */
-  const mergeTabAsSplit = useCallback(
-    (
-      sourceTabId: number,
-      targetTabId: number,
-      dir: SplitDir,
-      place: "before" | "after",
-    ): boolean => {
-      if (sourceTabId === targetTabId) return false;
-      let ok = false;
-      setTabs((curr) => {
-        const source = curr.find((t) => t.id === sourceTabId);
-        const target = curr.find((t) => t.id === targetTabId);
-        if (
-          !source ||
-          source.kind !== "terminal" ||
-          !target ||
-          target.kind !== "terminal"
-        ) {
-          return curr;
-        }
-        if (
-          leafIds(source.paneTree).length + leafIds(target.paneTree).length >
-          MAX_PANES_PER_TAB
-        ) {
-          return curr;
-        }
-        const splitId = nextIdRef.current++;
-        const paneTree = insertNodeBeside(
-          target.paneTree,
-          target.activeLeafId,
-          splitId,
-          source.paneTree,
-          dir,
-          place,
-        );
-        ok = true;
-        return curr
-          .filter((t) => t.id !== sourceTabId)
-          .map((t) =>
-            t.id === targetTabId
-              ? { ...t, paneTree, activeLeafId: leafIds(source.paneTree)[0] }
-              : t,
-          );
-      });
-      if (ok) setActiveId(targetTabId);
-      return ok;
-    },
-    [],
-  );
-
-  /**
-   * Split the active leaf of `tabId` with an explicit before/after placement
-   * (unlike `splitActivePane`, which always appends). Used by drag-to-split so
-   * the new pane lands on the edge the user dropped on (left/up/right/down).
-   */
-  const splitPaneAt = useCallback(
-    (
-      tabId: number,
-      dir: SplitDir,
-      place: "before" | "after",
-    ): number | null =>
-      addLeaf(tabId, (t, splitId, leafId) =>
-        insertNodeBeside(
-          t.paneTree,
-          t.activeLeafId,
-          splitId,
-          { kind: "leaf", id: leafId, cwd: t.cwd },
-          dir,
-          place,
-        ),
-      ),
-    [addLeaf],
-  );
-
   const closePaneByLeaf = useCallback((leafId: number): void => {
     let didRemove = false;
     setTabs((curr) => {
@@ -1638,61 +1517,6 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       );
     });
     if (didRemove) disposeSession(leafId);
-  }, []);
-
-  const closeActivePane = useCallback((tabId: number): boolean => {
-    let closedTab = false;
-    let removedLeaf: number | null = null;
-    setTabs((curr) => {
-      const t = curr.find((x) => x.id === tabId);
-      if (t?.kind !== "terminal") return curr;
-      const target = t.activeLeafId;
-      const newTree = removeLeaf(t.paneTree, target);
-      if (newTree === null) {
-        const fallback = nextActiveInSpace(curr, tabId);
-        if (fallback === null) return curr;
-        const next = curr.filter((x) => x.id !== tabId);
-        setActiveId((active) => (active === tabId ? fallback : active));
-        closedTab = true;
-        removedLeaf = target;
-        return next;
-      }
-      const remaining = leafIds(newTree);
-      const sib = siblingLeafOf(t.paneTree, target);
-      const newActive = sib && remaining.includes(sib) ? sib : remaining[0];
-      removedLeaf = target;
-      return curr.map((x) =>
-        x.id === tabId
-          ? { ...x, paneTree: newTree, activeLeafId: newActive }
-          : x,
-      );
-    });
-    if (removedLeaf !== null) disposeSession(removedLeaf);
-    return closedTab;
-  }, []);
-
-  const resetWorkspace = useCallback((cwd?: string) => {
-    const tabId = nextIdRef.current++;
-    const leafId = nextIdRef.current++;
-    let toDispose: number[] = [];
-    setTabs((curr) => {
-      toDispose = curr.flatMap((t) =>
-        t.kind === "terminal" ? leafIds(t.paneTree) : [],
-      );
-      return [
-        {
-          id: tabId,
-          kind: "terminal",
-          spaceId: activeSpaceIdRef.current,
-          title: "shell",
-          cwd,
-          paneTree: { kind: "leaf", id: leafId, cwd },
-          activeLeafId: leafId,
-        },
-      ];
-    });
-    setActiveId(tabId);
-    for (const lid of toDispose) disposeSession(lid);
   }, []);
 
   const resetSpace = useCallback((spaceId: string, cwd?: string) => {
@@ -1772,12 +1596,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     focusPane,
     focusNextPaneInTab,
     swapActivePaneInDirection,
-    splitActivePane,
-    mergeTabAsSplit,
-    splitPaneAt,
-    closeActivePane,
     closePaneByLeaf,
-    resetWorkspace,
     resetSpace,
     clearTabs,
   };
