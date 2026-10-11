@@ -100,6 +100,7 @@ import {
   workspaceDockviewLayoutIdentities,
   writeWorkspaceDockviewLayout,
 } from "./lib/workspaceDockviewPersistence";
+import { workspaceLayoutStorage } from "./lib/workspaceLayoutStore";
 import {
   BROWSER_PANEL_SHARE,
   browserPanelSide,
@@ -866,14 +867,6 @@ function sameDropPreview(a: DropPreview | null, b: DropPreview | null) {
   );
 }
 
-function workspaceLayoutStorage(): Storage | null {
-  try {
-    return window.localStorage;
-  } catch {
-    return null;
-  }
-}
-
 function setGroupHeadersHidden(api: DockviewApi, hidden: boolean): void {
   for (const group of api.groups) group.header.hidden = hidden;
 }
@@ -1007,11 +1000,9 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
 
   const persistLayout = useCallback(
     (currentApi: DockviewApi, spaceId: string) => {
-      const storage = workspaceLayoutStorage();
-      if (!storage) return;
       try {
         writeWorkspaceDockviewLayout(
-          storage,
+          workspaceLayoutStorage,
           spaceId,
           currentApi.toJSON(),
           loadedTabsRef.current,
@@ -1540,10 +1531,11 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
       current.activeId,
       current.hideTabs ?? false,
     );
-    const storage = workspaceLayoutStorage();
-    const saved = storage
-      ? readWorkspaceDockviewLayout(storage, props.spaceId, current.tabs)
-      : null;
+    const saved = readWorkspaceDockviewLayout(
+      workspaceLayoutStorage,
+      props.spaceId,
+      current.tabs,
+    );
 
     applyingLayout.current = true;
     try {

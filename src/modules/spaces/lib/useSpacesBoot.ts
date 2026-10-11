@@ -3,6 +3,7 @@ import { native } from "@/modules/ai/lib/native";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { Tab } from "@/modules/tabs";
 import { DEFAULT_SPACE_ID } from "@/modules/tabs/lib/useTabs";
+import { loadWorkspaceLayouts } from "@/modules/tabs/lib/workspaceLayoutStore";
 import { isLeaf, type PaneNode } from "@/modules/terminal/lib/panes";
 import { parseWorkspaceScopeKey, type WorkspaceEnv } from "@/modules/workspace";
 import { useEffect, useRef } from "react";
@@ -60,7 +61,12 @@ export function useSpacesBoot({
     void (async () => {
       let landed = false;
       try {
-        const { spaces, activeId, states } = await loadAll();
+        // A workspace reads its saved layout synchronously when it loads, so
+        // the layouts arrive before any workspace shows.
+        const [{ spaces, activeId, states }] = await Promise.all([
+          loadAll(),
+          loadWorkspaceLayouts(),
+        ]);
 
         if (spaces.length === 0) {
           if (!hasExplicitLaunchDir) {

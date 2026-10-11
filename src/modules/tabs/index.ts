@@ -15,6 +15,7 @@ export {
   useTabs,
 } from "./lib/useTabs";
 export { flushWorkspaceLayoutNow } from "./lib/workspaceDockviewPersistence";
+export { saveWorkspaceLayouts } from "./lib/workspaceLayoutStore";
 export { useWindowTitle } from "./lib/useWindowTitle";
 export { useWorkspaceCwd } from "./lib/useWorkspaceCwd";
 export { TabIcon } from "./TabIcon";

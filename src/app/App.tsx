@@ -147,6 +147,7 @@ import {
 import { StatusBar } from "@/modules/statusbar";
 import {
   flushWorkspaceLayoutNow,
+  saveWorkspaceLayouts,
   TabSwitcherHud,
   useTabSwitcher,
   useTabs,
@@ -847,7 +848,7 @@ export default function App() {
 
   const flushPersistenceBeforeClose = useCallback(async () => {
     flushWorkspaceLayoutNow();
-    await flushSpacePersistenceNow();
+    await Promise.all([saveWorkspaceLayouts(), flushSpacePersistenceNow()]);
   }, []);
   const { pendingAppClose, confirmAppClose, cancelAppClose } = useAppCloseGuard(
     tabsRef,
