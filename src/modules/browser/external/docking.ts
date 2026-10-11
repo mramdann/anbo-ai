@@ -20,7 +20,6 @@ import type { BrowserTab } from "@/modules/tabs";
 import { subscribeBrowserTabShown } from "@/modules/tabs/lib/browserTabShow";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   useCallback,
   useEffect,
@@ -373,39 +372,55 @@ export function shouldAttachDock(state: AutoDockState): boolean {
   );
 }
 
-// Whether Anbo's window is the foreground window, shared by every external
-// tab. The page's own focus is not enough (the window can be in front while
-// the page is not focused), and a window event alone can be missed, so any
-// focus change asks the window again.
-let anboFocused = typeof document === "undefined" ? true : document.hasFocus();
-const focusListeners = new Set<() => void>();
-let watchingFocus = false;
-function setAnboFocused(next: boolean) {
-  if (next === anboFocused) return;
-  anboFocused = next;
-  for (const notify of focusListeners) notify();
+/** Where the user is, as Anbo's foreground watch tells it (dock.rs `Front`):
+ * in Anbo's window or the page its dock shows, or elsewhere. */
+export type WindowFront = { front: boolean; seq: number };
+
+/** Keeps the newest word on where the user is. A reply to an ask can arrive
+ * after an event newer than it, so the watch's change count decides. */
+export function createWindowFront(onChange: () => void) {
+  let front = false;
+  let seq = -1;
+  return {
+    current: () => front,
+    note(next: WindowFront) {
+      if (next.seq < seq) return;
+      seq = next.seq;
+      if (next.front === front) return;
+      front = next.front;
+      onChange();
+    },
+  };
 }
+
+// Whether the user is in Anbo, shared by every external tab. Windows says so
+// (browser_external_front, then anbo:window-front on each change), because
+// the page could not: WebView2's document.hasFocus() stayed true behind
+// another app, and the main window may not read its own focus.
+const focusListeners = new Set<() => void>();
+const windowFront = createWindowFront(() => {
+  for (const notify of focusListeners) notify();
+});
+let watchingFocus = false;
 function syncAnboFocus() {
-  if (document.hasFocus()) setAnboFocused(true);
-  else
-    void getCurrentWindow()
-      .isFocused()
-      .then(setAnboFocused, () => {});
+  void invoke<WindowFront>("browser_external_front").then(
+    (front) => windowFront.note(front),
+    () => {},
+  );
 }
 function subscribeAnboFocus(listener: () => void) {
   focusListeners.add(listener);
   if (!watchingFocus) {
     watchingFocus = true;
+    // Asked once the event is heard, so no change falls in between.
+    void listen<WindowFront>("anbo:window-front", ({ payload }) =>
+      windowFront.note(payload),
+    ).then(syncAnboFocus, syncAnboFocus);
+    // Asked again on the changes the page does see, in case the watch could
+    // not start.
     window.addEventListener("focus", syncAnboFocus);
     window.addEventListener("blur", syncAnboFocus);
-    void getCurrentWindow()
-      .onFocusChanged(({ payload }) => {
-        if (payload) setAnboFocused(true);
-        else syncAnboFocus();
-      })
-      .catch(() => {});
   }
-  syncAnboFocus();
   return () => {
     focusListeners.delete(listener);
   };
@@ -445,7 +460,7 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
   askedRef.current = asked;
   const focused = useSyncExternalStore(
     subscribeAnboFocus,
-    () => anboFocused,
+    windowFront.current,
     () => true,
   );
   const presented = useSyncExternalStore(

@@ -512,6 +512,76 @@ pub fn standing<R: tauri::Runtime>(app: &AppHandle<R>) -> Standing {
     }
 }
 
+/// The main window hears a `Front` here each time the user goes into Anbo or
+/// leaves it.
+pub const FRONT_EVENT: &str = "anbo:window-front";
+
+/// Whether the user is in Anbo: its main window has their input, or the page
+/// the dock shows in it does. The dock takes a page by itself only then, so a
+/// browser window it opens never comes over another app. `seq` counts the
+/// changes, so a reply sent before an event that arrives after it is known
+/// for the older news.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+pub struct Front {
+    pub front: bool,
+    pub seq: u64,
+}
+
+/// What the foreground watch last saw, packed as `seq << 2 | state`: state 0
+/// before its first look, 1 in Anbo, 2 elsewhere.
+fn front_value(packed: u64) -> Option<Front> {
+    match packed & 3 {
+        1 => Some(Front {
+            front: true,
+            seq: packed >> 2,
+        }),
+        2 => Some(Front {
+            front: false,
+            seq: packed >> 2,
+        }),
+        _ => None,
+    }
+}
+
+/// The packed value after the watch sees `front`, or None when nothing
+/// changed.
+fn front_next(packed: u64, front: bool) -> Option<u64> {
+    let state = if front { 1 } else { 2 };
+    (packed & 3 != state).then(|| (((packed >> 2) + 1) << 2) | state)
+}
+
+pub fn front<R: tauri::Runtime>(app: &AppHandle<R>) -> Front {
+    #[cfg(windows)]
+    {
+        native::front(app)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Front {
+            front: true,
+            seq: 0,
+        }
+    }
+}
+
+/// Watches Windows' foreground window for FRONT_EVENT. Anbo's page cannot
+/// tell by itself: WebView2's `document.hasFocus()` stayed true behind
+/// another app, and the main window's own focus state is not the page's to
+/// read.
+pub fn watch_front(app: &AppHandle) {
+    #[cfg(windows)]
+    native::watch_front(app);
+    #[cfg(not(windows))]
+    let _ = app;
+}
+
+#[tauri::command]
+pub async fn browser_external_front(app: AppHandle, webview: Webview) -> Result<Front, String> {
+    super::ensure_main(&webview)?;
+    Ok(front(&app))
+}
+
 /// Whether the dock shows this tab's page (true), holds it without showing it
 /// yet (false, with the reason), or does not hold it (None).
 pub fn docked(tab_id: i64) -> Option<(bool, Option<&'static str>)> {
@@ -542,8 +612,8 @@ mod native {
         get_target, note_outdated_extension, ExternalTarget,
     };
     use serde_json::json;
-    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
-    use std::sync::{LazyLock, Mutex};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+    use std::sync::{LazyLock, Mutex, OnceLock};
     use std::time::Duration;
     use std::time::Instant;
     use tauri::Emitter;
@@ -921,6 +991,7 @@ mod native {
         {
             HOST.store(0, Ordering::Release);
             BROWSER.store(0, Ordering::Release);
+            note_front();
         }
         unsafe {
             let _ = PostThreadMessageW(thread, WM_QUIT, WPARAM(0), LPARAM(0));
@@ -1580,6 +1651,115 @@ mod native {
         }
     }
 
+    // The foreground watch, read by its hook without a lock: what it last saw
+    // (see front_value), the main window, and where to tell it.
+    static FRONT: AtomicU64 = AtomicU64::new(0);
+    static FRONT_HOST: AtomicUsize = AtomicUsize::new(0);
+    static FRONT_APP: OnceLock<AppHandle> = OnceLock::new();
+
+    /// The user is in Anbo while its main window or the page the dock shows
+    /// has their input. A minimized window can stay in front; the dock also
+    /// needs the panel presented, so it does not dock then either.
+    fn user_in(host: HWND) -> bool {
+        let window = unsafe { GetForegroundWindow() };
+        !window.0.is_null()
+            && (window == host || window.0 as usize == BROWSER.load(Ordering::Acquire))
+    }
+
+    pub(super) fn front<R: tauri::Runtime>(app: &AppHandle<R>) -> Front {
+        // The watch's own answer, so the reply orders with its events.
+        if let Some(front) = front_value(FRONT.load(Ordering::Acquire)) {
+            return front;
+        }
+        let front = main_window(app)
+            .ok()
+            .and_then(|window| window.hwnd().ok())
+            .is_some_and(|handle| user_in(HWND(handle.0 as *mut _)));
+        Front { front, seq: 0 }
+    }
+
+    pub(super) fn watch_front(app: &AppHandle) {
+        if FRONT_APP.set(app.clone()).is_err() {
+            return;
+        }
+        let app = app.clone();
+        let started = std::thread::Builder::new()
+            .name("anbo-window-front".into())
+            .spawn(move || {
+                // The event loop answers this once setup has returned.
+                let Some(host) = main_window(&app)
+                    .ok()
+                    .and_then(|window| window.hwnd().ok())
+                else {
+                    log::warn!("[browser_dock] no main window to watch the foreground for");
+                    return;
+                };
+                FRONT_HOST.store(host.0 as usize, Ordering::Release);
+                let hook = unsafe {
+                    SetWinEventHook(
+                        EVENT_SYSTEM_FOREGROUND,
+                        EVENT_SYSTEM_FOREGROUND,
+                        None,
+                        Some(foreground_changed),
+                        0,
+                        0,
+                        WINEVENT_OUTOFCONTEXT,
+                    )
+                };
+                if hook.0.is_null() {
+                    log::warn!("[browser_dock] could not watch the foreground window; the dock asks on each focus change instead");
+                    return;
+                }
+                note_front();
+                let mut message = MSG::default();
+                while unsafe { GetMessageW(&mut message, None, 0, 0) }.0 > 0 {
+                    unsafe {
+                        let _ = TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
+                }
+            });
+        if let Err(error) = started {
+            log::warn!("[browser_dock] could not start the foreground watch: {error}");
+        }
+    }
+
+    unsafe extern "system" fn foreground_changed(
+        _hook: HWINEVENTHOOK,
+        _event: u32,
+        _window: HWND,
+        _object: i32,
+        _child: i32,
+        _thread: u32,
+        _time: u32,
+    ) {
+        note_front();
+    }
+
+    /// Looks again at what the user is in, and tells the main window when
+    /// that changed. Also called when the dock takes or gives up its window,
+    /// which can change it without a foreground change.
+    fn note_front() {
+        let host = FRONT_HOST.load(Ordering::Acquire);
+        if host == 0 {
+            return;
+        }
+        let front = user_in(HWND(host as *mut _));
+        let mut packed = FRONT.load(Ordering::Acquire);
+        let next = loop {
+            let Some(next) = front_next(packed, front) else {
+                return;
+            };
+            match FRONT.compare_exchange(packed, next, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => break next,
+                Err(current) => packed = current,
+            }
+        };
+        if let (Some(app), Some(payload)) = (FRONT_APP.get(), front_value(next)) {
+            let _ = app.emit_to("main", FRONT_EVENT, payload);
+        }
+    }
+
     fn status(dock: &Dock) -> Status {
         Status {
             dock_id: Some(dock.lease.token.clone()),
@@ -1747,6 +1927,7 @@ mod native {
             let insets = known_insets(&browser, scale);
             HOST.store(host, Ordering::Release);
             BROWSER.store(lease.handle as usize, Ordering::Release);
+            note_front();
             QUEUED.store(false, Ordering::Release);
             THREAD.store(thread, Ordering::Release);
             *DOCK.lock().map_err(|_| "Dock registry unavailable")? = Some(Dock {
@@ -1972,6 +2153,36 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_foreground_watch_counts_only_changes() {
+        // Nothing seen yet: the reply asks Windows itself.
+        assert_eq!(front_value(0), None);
+        let inside = front_next(0, true).unwrap();
+        assert_eq!(
+            front_value(inside),
+            Some(Front {
+                front: true,
+                seq: 1
+            })
+        );
+        // Another look at the same window is no news.
+        assert_eq!(front_next(inside, true), None);
+        let outside = front_next(inside, false).unwrap();
+        assert_eq!(
+            front_value(outside),
+            Some(Front {
+                front: false,
+                seq: 2
+            })
+        );
+        let back = front_next(outside, true).unwrap();
+        assert_eq!(front_value(back).map(|front| front.seq), Some(3));
+        assert_eq!(
+            serde_json::to_value(front_value(back).unwrap()).unwrap(),
+            serde_json::json!({"front": true, "seq": 3})
+        );
+    }
 
     fn scene() -> Scene {
         Scene {

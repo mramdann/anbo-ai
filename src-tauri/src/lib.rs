@@ -487,6 +487,8 @@ pub fn run() {
                     }
                 });
             }
+            // Whether the user is in Anbo, for the dock, from Windows itself.
+            modules::browser_external::dock::watch_front(_app.handle());
             // Settings and the AnboVoice orb open in this browser process, which
             // keeps the runtime it started with when WebView2 updates itself.
             window_open::remember_main_environment(_app.handle());
@@ -573,6 +575,7 @@ pub fn run() {
             browser_automation::browser_mcp_retry,
             modules::browser_external::browser_external_connections,
             modules::browser_external::dock::browser_external_dock,
+            modules::browser_external::dock::browser_external_front,
             modules::browser_external::target::browser_external_bind,
             modules::browser_external::control::browser_external_control,
             modules::browser_external::target::browser_external_unbind,

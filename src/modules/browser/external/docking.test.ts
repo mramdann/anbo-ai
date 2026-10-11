@@ -3,6 +3,7 @@ import {
   createDockHolders,
   createDockLayoutOwnership,
   createDockLayoutPublisher,
+  createWindowFront,
   type DockLayout,
   type DockStatus,
   dockMutationAffectsLayout,
@@ -47,6 +48,32 @@ describe("automatic docking", () => {
     ["an agent's open still reads the new page", { reading: true }],
   ] as const)("waits when %s", (_name, change) => {
     expect(shouldAttachDock({ ...ready, ...change })).toBe(false);
+  });
+});
+
+describe("where the user is", () => {
+  it("keeps the newest word, whatever order it arrives in", () => {
+    const onChange = vi.fn();
+    const front = createWindowFront(onChange);
+    // Nothing heard yet: no dock by itself.
+    expect(front.current()).toBe(false);
+    front.note({ front: true, seq: 3 });
+    expect(front.current()).toBe(true);
+    // A reply sent before that event, arriving after it.
+    front.note({ front: false, seq: 2 });
+    expect(front.current()).toBe(true);
+    front.note({ front: false, seq: 4 });
+    expect(front.current()).toBe(false);
+    // The same news again changes nothing.
+    front.note({ front: false, seq: 4 });
+    expect(onChange).toHaveBeenCalledTimes(2);
+  });
+
+  it("takes every reply while the watch could not start", () => {
+    const front = createWindowFront(() => {});
+    front.note({ front: true, seq: 0 });
+    front.note({ front: false, seq: 0 });
+    expect(front.current()).toBe(false);
   });
 });
 
