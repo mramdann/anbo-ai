@@ -105,9 +105,12 @@ void bootstrap().catch((error) => {
   );
 });
 
-// Window starts hidden (per tauri.conf.json) so users never see a transparent
-// shadow-only frame before React paints. Use setTimeout — rAF is throttled
-// while the window is hidden and would never fire.
+// tauri.conf.json creates the main window visible; this show() is left from
+// when the window started hidden until React had painted. On Windows it
+// changes nothing for a window that is already shown (tao applies a
+// visibility only when it changes), so it only matters for a window something
+// hid before this runs. setTimeout rather than requestAnimationFrame, which
+// stalls while the window is not drawn.
 const showWindow = () => {
   getCurrentWindow()
     .show()
