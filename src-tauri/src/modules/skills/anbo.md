@@ -100,9 +100,11 @@ after replacing a list and verify the current item before acting. A capped scan
 or skipped frame does not prove absence: inspect `nodeLimitReached`,
 `skippedFrames` and the timeout's coverage diagnostics. A miss that ran to its
 whole timeout says why it did not end early: a timeout you set (waited out in
-full), a tab still loading, or a page that kept changing its structure. Open
-Shadow DOM and child frames are searched; CSS descendant combinators do not
-cross a shadow boundary.
+full), a tab still loading, or a page that kept changing its structure. On a
+Chrome or Edge tab that is not shown, a find or wait that runs out of time says
+so: its browser runs a hidden page's timers about once a second, so retry with
+a longer timeout. Open Shadow DOM and child frames are searched; CSS descendant
+combinators do not cross a shadow boundary.
 
 `locator` on a single-target action, for example `browser_click: {tabId,
 locator: {by: "role", value: "button", name: "Search", exact: true}}`, requires

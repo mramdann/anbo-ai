@@ -345,6 +345,7 @@ pub async fn handle_action_as(
         },
         None => None,
     };
+    let waits_on_page = super::external_front::waits_on_page(method, &params);
     let result = super::activity::track(
         app,
         method,
@@ -360,6 +361,12 @@ pub async fn handle_action_as(
     let result = match (result, tab_id, held_ref.as_deref()) {
         (Err((code, message)), Some(tab), Some(ref_id)) if code == error_codes::STALE_REF => {
             Err((code, stale_ref_hint(app, tab, ref_id, message).await))
+        }
+        (Err((code, message)), Some(tab), _) if code == error_codes::TIMEOUT && waits_on_page => {
+            Err((
+                code,
+                super::external_front::with_hidden_page_note(tab, message).await,
+            ))
         }
         (result, ..) => result,
     };
@@ -1086,6 +1093,14 @@ async fn handle_action_inner(
                         }
                     }
                     Err((code, message)) => {
+                        // A find on a new Chrome or Edge tab runs before the
+                        // dock shows it.
+                        let message = match tab_id.as_i64() {
+                            Some(id) if code == error_codes::TIMEOUT => {
+                                super::external_front::with_hidden_page_note(id, message).await
+                            }
+                            _ => message,
+                        };
                         result["readOk"] = json!(false);
                         result["readError"] = json!({"code":code,"message":message});
                         result["closed"] = json!(false);

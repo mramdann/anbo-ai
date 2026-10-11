@@ -3,13 +3,16 @@
 //! minimized window. Before such input Anbo brings the tab to the front of its
 //! panel, as a click on it would, the dock shows the page, and the action waits
 //! for it. Anbo never switches tabs in the user's own browser window.
+//!
+//! Reads and waits leave the tab where it is, and its browser runs a hidden
+//! page slowly, so a lookup or wait that runs out of time there says so.
 
 use super::protocol::error_codes;
 use super::registry::get_embed_webview;
 use super::target::BrowserTarget;
 use crate::modules::browser_external::dock::{self, Standing};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Listener};
@@ -23,6 +26,12 @@ const SHOW_PATIENCE: Duration = Duration::from_secs(5);
 /// covers can read as visible and still draw nothing, and then a pointer move
 /// waits for a frame that never comes.
 const DRAWN_JS: &str = "document.visibilityState !== 'visible' ? 'hidden' : new Promise((resolve) => { requestAnimationFrame(() => resolve('drawn')); setTimeout(() => resolve('undrawn'), 150); })";
+/// Chrome and Edge run the timers of a page they are not showing about once a
+/// second, and an agent's tab is shown only while Anbo docks it. A button that
+/// five chained 100 ms timers put on the page was found after 4.7 s on such a
+/// tab, against 0.8 to 1.6 s docked (Oct 11 2026). An agent's input turns on
+/// focus emulation, under which the page runs as if shown.
+const HIDDEN_PAGE_NOTE: &str = "this Chrome/Edge tab is not shown, so its browser runs the page's timers about once a second and content that waits on them comes late: retry with a longer timeout; after a click, hover or key press on the tab, its page runs at full speed until your session ends";
 static SHOW_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Actions that reach the page as pointer input. Typing, selecting, scrolling
@@ -154,6 +163,41 @@ async fn request_show(app: &AppHandle, tab_id: i64) -> Result<ShowResponse, (Str
     })
 }
 
+/// Calls that wait for the page to show something: a find, a wait, a locator
+/// lookup, a field of a form, or a `waitFor` on the action's result.
+pub fn waits_on_page(method: &str, params: &Value) -> bool {
+    matches!(method, "find" | "wait" | "fill_form")
+        || params.get("locator").is_some()
+        || params.get("waitFor").is_some()
+}
+
+/// `message` with HIDDEN_PAGE_NOTE when the tab is a Chrome or Edge page its
+/// browser is not showing. Asked only once a lookup or wait has run out of
+/// time, so a call that succeeds pays nothing for it.
+pub async fn with_hidden_page_note(tab_id: i64, message: String) -> String {
+    let Some(target) = crate::modules::browser_external::get_target(tab_id) else {
+        return message;
+    };
+    let visibility = target
+        .call(
+            "Runtime.evaluate",
+            json!({"expression": "document.visibilityState", "returnByValue": true}),
+            Duration::from_millis(600),
+        )
+        .await
+        .unwrap_or_default();
+    noted(message, &visibility)
+}
+
+/// `visibility` is the page's answer to Runtime.evaluate.
+fn noted(message: String, visibility: &Value) -> String {
+    if visibility["result"]["value"] == "hidden" {
+        format!("{message}; {HIDDEN_PAGE_NOTE}")
+    } else {
+        message
+    }
+}
+
 fn refusal(why: &str) -> (String, String) {
     (
         error_codes::INPUT_NOT_READY.to_string(),
@@ -226,6 +270,48 @@ mod tests {
             &json!({"active":true,"split":false,"minimized":true})
         ));
         assert!(shown_in_window(&json!({})));
+    }
+
+    #[test]
+    fn only_lookups_and_waits_hear_about_a_hidden_page() {
+        for method in ["find", "wait", "fill_form"] {
+            assert!(waits_on_page(method, &json!({"tabId":1})), "{method}");
+        }
+        let lookup = json!({"tabId":1,"locator":{"by":"role","value":"button"}});
+        assert!(waits_on_page("click", &lookup));
+        assert!(waits_on_page("get_text", &lookup));
+        assert!(waits_on_page(
+            "type",
+            &json!({"ref":"g1-e1","waitFor":{"text":"Done"}})
+        ));
+        for method in [
+            "click",
+            "type",
+            "snapshot",
+            "screenshot",
+            "close",
+            "download",
+        ] {
+            assert!(
+                !waits_on_page(method, &json!({"tabId":1,"ref":"g1-e1"})),
+                "{method}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_miss_on_a_hidden_page_says_why_it_may_have_come_late() {
+        let message = || "timed out finding css '#ready' after 5000ms: absent".to_string();
+        let hidden = json!({"result":{"type":"string","value":"hidden"}});
+        let noted_message = noted(message(), &hidden);
+        assert!(noted_message.starts_with(&message()));
+        assert!(noted_message.contains("; this Chrome/Edge tab is not shown"));
+        assert!(noted_message.contains("retry with a longer timeout"));
+        let visible = json!({"result":{"type":"string","value":"visible"}});
+        assert_eq!(noted(message(), &visible), message());
+        // A page that did not answer gets no note rather than a guess.
+        assert_eq!(noted(message(), &Value::Null), message());
+        assert_eq!(noted(message(), &json!({"exceptionDetails":{}})), message());
     }
 
     #[test]
