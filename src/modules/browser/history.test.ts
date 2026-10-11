@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const kept = vi.hoisted(() => ({
   store: new Map<string, unknown>(),
   sets: 0,
+  saves: 0,
+  // How long each next set takes, in ms, so a test can keep one in flight.
+  delays: [] as number[],
   release: null as null | (() => void),
 }));
 
@@ -22,7 +25,12 @@ vi.mock("@/lib/localStore", () => ({
     }
     async set(key: string, value: unknown) {
       kept.sets += 1;
+      const delay = kept.delays.shift() ?? 0;
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
       kept.store.set(key, value);
+    }
+    async save() {
+      kept.saves += 1;
     }
   },
 }));
@@ -34,6 +42,8 @@ beforeEach(() => {
   vi.resetModules();
   kept.store.clear();
   kept.sets = 0;
+  kept.saves = 0;
+  kept.delays = [];
   kept.release = null;
   local.clear();
   vi.stubGlobal(
@@ -97,14 +107,19 @@ describe("browser history", () => {
   it("keeps visits in the app's store, never in localStorage", async () => {
     // Every localStorage write reaches each window of the origin, and the
     // orb's renderer kept what it was handed.
-    const { loadBrowserHistory, readBrowserHistory, recordBrowserVisit } =
-      await history();
+    const {
+      loadBrowserHistory,
+      readBrowserHistory,
+      recordBrowserVisit,
+      saveBrowserHistory,
+    } = await history();
     await loadBrowserHistory();
     recordBrowserVisit("https://example.com/a", "A", 1);
     recordBrowserVisit("https://example.com/a", null, 2);
     expect(readBrowserHistory()).toEqual([
       { url: "https://example.com/a", title: "A", visitedAt: 2 },
     ]);
+    await saveBrowserHistory();
     expect(kept.store.get("entries")).toEqual(readBrowserHistory());
     expect(local.size).toBe(0);
   });
@@ -114,11 +129,13 @@ describe("browser history", () => {
       legacyKey,
       JSON.stringify([{ url: "https://old.test", title: "Old", visitedAt: 5 }]),
     );
-    const { loadBrowserHistory, readBrowserHistory } = await history();
+    const { loadBrowserHistory, readBrowserHistory, saveBrowserHistory } =
+      await history();
     await loadBrowserHistory();
     expect(readBrowserHistory().map((entry) => entry.url)).toEqual([
       "https://old.test",
     ]);
+    await saveBrowserHistory();
     expect(kept.store.get("entries")).toEqual(readBrowserHistory());
     expect(local.has(legacyKey)).toBe(false);
     // A store that already holds the history wins over a leftover key.
@@ -144,6 +161,7 @@ describe("browser history", () => {
       readBrowserHistory,
       recordBrowserVisit,
       removeBrowserHistoryEntry,
+      saveBrowserHistory,
     } = await history();
     const changed = vi.fn();
     window.addEventListener(BROWSER_HISTORY_EVENT, changed);
@@ -159,6 +177,7 @@ describe("browser history", () => {
       "https://early.test",
       "https://kept.test",
     ]);
+    await saveBrowserHistory();
     expect(kept.store.get("entries")).toEqual(readBrowserHistory());
     expect(changed).toHaveBeenCalledTimes(3);
   });
@@ -167,11 +186,55 @@ describe("browser history", () => {
     kept.store.set("entries", [
       { url: "https://kept.test", title: "Kept", visitedAt: 1 },
     ]);
-    const { clearBrowserHistory, loadBrowserHistory, readBrowserHistory } =
-      await history();
+    const {
+      clearBrowserHistory,
+      loadBrowserHistory,
+      readBrowserHistory,
+      saveBrowserHistory,
+    } = await history();
     await loadBrowserHistory();
     clearBrowserHistory();
     expect(readBrowserHistory()).toEqual([]);
+    await saveBrowserHistory();
     expect(kept.store.get("entries")).toEqual([]);
+  });
+
+  it("writes one history at a time and ends with the newest", async () => {
+    const { loadBrowserHistory, recordBrowserVisit, saveBrowserHistory } =
+      await history();
+    await loadBrowserHistory();
+    // The first write is still on its way when the next visits come.
+    kept.delays = [30];
+    recordBrowserVisit("https://a.test", "A", 1);
+    await Promise.resolve();
+    await Promise.resolve();
+    recordBrowserVisit("https://b.test", "B", 2);
+    recordBrowserVisit("https://c.test", "C", 3);
+    await saveBrowserHistory();
+    // The write in flight and one more with the newest history, not three.
+    expect(kept.sets).toBe(2);
+    expect(
+      (kept.store.get("entries") as { url: string }[]).map(
+        (entry) => entry.url,
+      ),
+    ).toEqual(["https://c.test", "https://b.test", "https://a.test"]);
+    expect(kept.saves).toBe(1);
+  });
+
+  it("lets the app wait for a write still on its way when it closes", async () => {
+    const { loadBrowserHistory, recordBrowserVisit, saveBrowserHistory } =
+      await history();
+    await loadBrowserHistory();
+    kept.delays = [30];
+    recordBrowserVisit("https://late.test", "Late", 5);
+    const closing = saveBrowserHistory();
+    expect(kept.store.get("entries")).toBeUndefined();
+    await closing;
+    expect(
+      (kept.store.get("entries") as { url: string }[]).map(
+        (entry) => entry.url,
+      ),
+    ).toEqual(["https://late.test"]);
+    expect(kept.saves).toBe(1);
   });
 });

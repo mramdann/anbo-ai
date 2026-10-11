@@ -74,6 +74,8 @@ let entries: BrowserHistoryEntry[] = [];
 // an early visit never replaces what was kept.
 let early: Change[] | null = [];
 let loading: Promise<void> | null = null;
+let writes: Promise<void> = Promise.resolve();
+let queued = false;
 
 function legacyStorage(): Storage | null {
   try {
@@ -83,8 +85,23 @@ function legacyStorage(): Storage | null {
   }
 }
 
+// One write at a time, each with the newest history: a burst of visits sends
+// the write in flight and one more, and the file ends with the last history.
 function save(): void {
-  void store.set(KEY, entries).catch(() => {});
+  if (queued) return;
+  queued = true;
+  writes = writes
+    .then(() => {
+      queued = false;
+      return store.set(KEY, entries);
+    })
+    .catch(() => {});
+}
+
+/** Waits for the history writes made so far, then saves the file. */
+export async function saveBrowserHistory(): Promise<void> {
+  await writes;
+  await store.save().catch(() => {});
 }
 
 /** Loads the kept history once per app run, moving one an older version kept

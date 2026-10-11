@@ -93,6 +93,7 @@ import {
   setBrowserTabsRequestHandler,
 } from "@/modules/browser/automationOpenBridge";
 import { EXTERNAL_BROWSERS_ENABLED } from "@/modules/browser/external/store";
+import { saveBrowserHistory } from "@/modules/browser/history";
 import { watchMcpPort } from "@/modules/browser/mcpPortNotice";
 import {
   listenForForwardedLinks,
@@ -857,7 +858,11 @@ export default function App() {
 
   const flushPersistenceBeforeClose = useCallback(async () => {
     flushWorkspaceLayoutNow();
-    await Promise.all([saveWorkspaceLayouts(), flushSpacePersistenceNow()]);
+    await Promise.all([
+      saveWorkspaceLayouts(),
+      saveBrowserHistory(),
+      flushSpacePersistenceNow(),
+    ]);
   }, []);
   const { pendingAppClose, confirmAppClose, cancelAppClose } = useAppCloseGuard(
     tabsRef,
