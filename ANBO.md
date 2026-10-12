@@ -175,7 +175,7 @@ BYOK. Cloud providers via `@ai-sdk/*`: **OpenAI, Anthropic, Google, xAI, Cerebra
 
 ### Tauri capabilities
 
-Tauri capabilities are split by window: `default.json` is main-only, `settings.json` is settings-only, and `desktop.json` contains the updater/process permissions shared by both. Do not restore `core:default` or merge the windows back into one broad capability. The asset protocol starts with an empty static scope; `workspace_authorize` adds only canonical authorized workspace directories at runtime so local media preview keeps working without `scope: ["**"]`. New plugins typically need:
+Tauri capabilities are split by window: `default.json` is main-only, `settings.json` is settings-only, and `desktop.json` contains the updater/process permissions shared by both. Do not restore `core:default` or merge the windows back into one broad capability. A window API call that its window's capability does not grant only rejects, and a `.catch` fallback hides that: Settings' `hide()` for the theme editor was refused until `core:window:allow-hide`. The asset protocol starts with an empty static scope; `workspace_authorize` adds only canonical authorized workspace directories at runtime so local media preview keeps working without `scope: ["**"]`. New plugins typically need:
 1. `Cargo.toml` dependency
 2. `.plugin(...)` call in `lib.rs` `run()`
 3. capability entry in `default.json`
