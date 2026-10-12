@@ -57,6 +57,24 @@ describe("terminal window restore", () => {
     expect(source).toContain("slot.term.refresh");
   });
 
+  it("tells the PTY a resize its debounce still held when a terminal leaves its slot", () => {
+    // releaseSlot reports the grid the leaf leaves with as the PTY's size.
+    // Dropping the debounced resize left the PTY at its old size while the
+    // session reported the new one, until a later layout refit resized it.
+    const detach = sourceBetween(
+      "function detachSlotFromLeaf",
+      "function parkSlotHost",
+    );
+    const flushAt = detach.indexOf("syncPtySize(slot, slot.currentLeafId)");
+    expect(flushAt).toBeGreaterThan(
+      detach.indexOf("clearTimeout(slot.ptyTimer)"),
+    );
+    expect(flushAt).toBeLessThan(detach.indexOf("slot.currentLeafId = null"));
+    expect(
+      sourceBetween("export function releaseSlot", "export function writeSlot"),
+    ).toContain("return { cols: slot.term.cols, rows: slot.term.rows }");
+  });
+
   it("repaints a parked terminal without invalidating the shared atlas", () => {
     expect(source).toContain("scheduleRevealRepair(slot, leafId)");
     expect(source).toContain("slot.currentLeafId !== leafId || slot.parked");

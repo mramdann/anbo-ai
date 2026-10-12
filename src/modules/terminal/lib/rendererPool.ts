@@ -1002,9 +1002,14 @@ function detachSlotFromLeaf(slot: Slot, retain: boolean): void {
   slot.observer?.disconnect();
   slot.observer = null;
   if (slot.fitTimer) clearTimeout(slot.fitTimer);
-  if (slot.ptyTimer) clearTimeout(slot.ptyTimer);
   slot.fitTimer = null;
-  slot.ptyTimer = null;
+  if (slot.ptyTimer) {
+    clearTimeout(slot.ptyTimer);
+    slot.ptyTimer = null;
+    // A fit changed the grid and the leaf leaves with it (releaseSlot reports
+    // it as the PTY's size): the PTY hears it now, not at the next layout.
+    if (slot.currentLeafId !== null) syncPtySize(slot, slot.currentLeafId);
+  }
 
   cancelPendingUnhide(slot);
   cancelRevealRepair(slot);
