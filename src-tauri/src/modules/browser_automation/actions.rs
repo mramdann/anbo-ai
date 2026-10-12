@@ -1369,7 +1369,7 @@ async fn handle_action_inner(
 
         "find" => {
             let tab_id = extract_tab_id(&params)?;
-            let locator = extract_locator(&params)?;
+            let locator = find_locator(&params)?;
             let timeout_ms = params
                 .get("timeout")
                 .and_then(as_count)
@@ -1439,7 +1439,7 @@ async fn handle_action_inner(
                     |result| !result.matches.is_empty(),
                 )
                 .await;
-                let (generation, result) = match scanned {
+                let (generation, mut result) = match scanned {
                     Ok(scanned) => scanned,
                     // TradingView replaces its document right after it loads, and
                     // a find asked to wait 15 s failed at once on the change. A
@@ -1474,9 +1474,10 @@ async fn handle_action_inner(
                     }
                     Err(error) => return Err(error),
                 };
+                keep_screen_reader_text(&locator, &mut result.matches);
                 if !result.matches.is_empty() {
                     let count = result.matches.len();
-                    return Ok(json!({
+                    let mut reply = json!({
                         "tabId": tab_id,
                         "generation": generation,
                         "by": locator.by,
@@ -1489,7 +1490,9 @@ async fn handle_action_inner(
                         "includedFrames": result.included_frames,
                         "skippedFrames": result.skipped_frames,
                         "hiddenMatches": result.hidden
-                    }));
+                    });
+                    mark_screen_reader_find(&mut reply, &locator, &result.matches);
+                    return Ok(reply);
                 }
                 empty_scans += 1;
                 let completed = tokio::time::Instant::now();
@@ -4503,7 +4506,8 @@ struct LocatorRequest {
     include_hidden: bool,
     limit: usize,
     ancestors: Ancestors,
-    /// Set by a read only; see LocatorQuery::screen_reader_text.
+    /// Set by a read only (a get_text locator, a find); see
+    /// LocatorQuery::screen_reader_text.
     screen_reader_text: bool,
 }
 
@@ -5270,6 +5274,55 @@ fn extract_locator(params: &Value) -> Result<LocatorRequest, (String, String)> {
         ancestors: Ancestors::parse(params.get("ancestors"))?,
         screen_reader_text: false,
     })
+}
+
+/// A find is a read: when nothing rendered matches in any document it answers
+/// with the copies the page hides from sight but keeps for screen readers, as
+/// a get_text locator read does. Amazon writes each price whole only in
+/// `.a-offscreen` (opacity 0), and a find for it waited out its timeout. With
+/// includeHidden every hidden match comes back anyway.
+fn find_locator(params: &Value) -> Result<LocatorRequest, (String, String)> {
+    let mut locator = extract_locator(params)?;
+    locator.screen_reader_text = !locator.include_hidden;
+    Ok(locator)
+}
+
+/// The roles an action aims at (locator.rs CONTROL_ROLES).
+const CONTROL_ROLES: [&str; 16] = [
+    "button",
+    "link",
+    "textbox",
+    "searchbox",
+    "combobox",
+    "checkbox",
+    "radio",
+    "switch",
+    "slider",
+    "spinbutton",
+    "menuitem",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "tab",
+    "option",
+    "treeitem",
+];
+
+/// What a find takes from those copies is text to read. A hidden control is
+/// one the page has not shown yet, and a find for it is mostly a step toward
+/// an action, so a find still leaves it out and waits for it to show.
+fn keep_screen_reader_text(locator: &LocatorRequest, matches: &mut Vec<LocatorMatch>) {
+    if locator.screen_reader_text && matches.iter().all(|m| !m.visible) {
+        matches.retain(|m| !m.editable && !CONTROL_ROLES.contains(&m.role.as_str()));
+    }
+}
+
+/// Says so when every match a find returns is such a copy: its text reads the
+/// page, but it is no target for an action.
+fn mark_screen_reader_find(reply: &mut Value, locator: &LocatorRequest, matches: &[LocatorMatch]) {
+    if locator.screen_reader_text && !matches.is_empty() && matches.iter().all(|m| !m.visible) {
+        reply["screenReaderOnly"] = true.into();
+        reply["sourceNote"] = "nothing visible matched; these elements are hidden from sight but kept for screen readers: read their text, an action refuses them".into();
+    }
 }
 
 async fn resolve_target_locator(
@@ -10184,6 +10237,86 @@ mod tests {
         assert!(read.contains("describe(el, unseenMatches)"));
         assert!(read.contains("matches, unseen: unseenMatches, scanned"));
         assert!(build_find_js(1, "g1-e", &query(false)).contains("const screenReaderText = false;"));
+    }
+
+    #[test]
+    fn a_find_reads_screen_reader_copies_when_nothing_is_rendered() {
+        // Kimi's find for Amazon's .a-offscreen price waited out its timeout:
+        // the copy is hidden from sight but kept for screen readers.
+        let plain = find_locator(&json!({"by": "css", "value": ".a-price .a-offscreen"})).unwrap();
+        assert!(plain.screen_reader_text);
+        // includeHidden already returns every hidden match.
+        let hidden =
+            find_locator(&json!({"by": "css", "value": ".a-offscreen", "includeHidden": true}))
+                .unwrap();
+        assert!(!hidden.screen_reader_text);
+        // An action's lookup never takes them.
+        assert!(
+            !extract_locator(&json!({"by": "css", "value": ".a-offscreen"}))
+                .unwrap()
+                .screen_reader_text
+        );
+
+        let copy = |visible: bool| -> LocatorMatch {
+            serde_json::from_value(json!({
+                "ref": "g1-e1", "tag": "span", "role": "", "name": "", "text": "$11.98",
+                "value": null, "visible": visible, "enabled": true, "checked": null
+            }))
+            .unwrap()
+        };
+        let mut spoken = json!({});
+        mark_screen_reader_find(&mut spoken, &plain, &[copy(false), copy(false)]);
+        assert_eq!(spoken["screenReaderOnly"], true);
+        assert!(spoken["sourceNote"]
+            .as_str()
+            .unwrap()
+            .contains("kept for screen readers"));
+        // One rendered match keeps the find on what is seen.
+        let mut seen = json!({});
+        mark_screen_reader_find(&mut seen, &plain, &[copy(false), copy(true)]);
+        assert!(seen.get("screenReaderOnly").is_none());
+        // Asked for hidden matches, the caller knows what it gets.
+        let mut asked = json!({});
+        mark_screen_reader_find(&mut asked, &hidden, &[copy(false)]);
+        assert!(asked.get("screenReaderOnly").is_none());
+    }
+
+    #[test]
+    fn a_find_leaves_out_a_hidden_control() {
+        // The visibility smoke's transparent button has not been shown yet: a
+        // find waits for it rather than offer it, while hidden text is read.
+        let item = |role: &str, editable: bool, visible: bool| -> LocatorMatch {
+            serde_json::from_value(json!({
+                "ref": "g1-e1", "tag": "span", "role": role, "name": "", "text": "Hidden candidate",
+                "value": null, "visible": visible, "enabled": true, "checked": null,
+                "editable": editable
+            }))
+            .unwrap()
+        };
+        let locator = find_locator(&json!({"by": "css", "value": "#target"})).unwrap();
+        let mut copies = vec![
+            item("button", false, false),
+            item("", false, false),
+            item("heading", false, false),
+            item("generic", true, false),
+        ];
+        keep_screen_reader_text(&locator, &mut copies);
+        assert_eq!(
+            copies.iter().map(|m| m.role.as_str()).collect::<Vec<_>>(),
+            ["", "heading"]
+        );
+        let mut controls = vec![item("link", false, false), item("textbox", false, false)];
+        keep_screen_reader_text(&locator, &mut controls);
+        assert!(controls.is_empty());
+        // Rendered matches, and includeHidden's hidden ones, are left alone.
+        let mut seen = vec![item("button", false, true)];
+        keep_screen_reader_text(&locator, &mut seen);
+        assert_eq!(seen.len(), 1);
+        let hidden =
+            find_locator(&json!({"by": "css", "value": "#target", "includeHidden": true})).unwrap();
+        let mut asked = vec![item("button", false, false)];
+        keep_screen_reader_text(&hidden, &mut asked);
+        assert_eq!(asked.len(), 1);
     }
 
     #[test]
