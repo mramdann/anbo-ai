@@ -59,6 +59,9 @@ WebGL addons are created only for visible slots and reaped after a grace period 
 - A hidden busy leaf keeps its live grid parked with `display:none`.
 - An idle hidden leaf releases its slot but the buffer continues parsing bytes.
 - The DormantRing only buffers bytes for leaves without any slot.
+- A window restore refits and repaints the visible slots but never kicks
+  their PTYs, and resizes a PTY only when its grid changed: a shell leaves its
+  old prompt in the scrollback on every size change.
 
 ## See also
 

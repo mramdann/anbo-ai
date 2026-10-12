@@ -210,7 +210,7 @@ function scheduleSettledSlotFit(slot: Slot): void {
   });
 }
 
-function refitVisibleSlots(kick: boolean): void {
+function refitVisibleSlots(windowRestored: boolean): void {
   if (isWindowPresentationBlocked()) return;
   for (const slot of slots) {
     const leafId = slot.currentLeafId;
@@ -237,18 +237,24 @@ function refitVisibleSlots(kick: boolean): void {
       shouldRepairWebglFrame(
         previousFrame,
         { width, height, cols: slot.term.cols, rows: slot.term.rows },
-        kick,
+        windowRestored,
       )
     ) {
       scheduleWebglFrameRepair(slot, leafId);
     }
     slot.lastW = width;
     slot.lastH = height;
-    slot.lastCols = slot.term.cols;
-    slot.lastRows = slot.term.rows;
-    const bridge = adapter.resolveLeaf(leafId);
-    bridge?.resizePty(slot.lastCols, slot.lastRows);
-    if (kick) bridge?.kickPty(slot.lastCols, slot.lastRows);
+    if (windowRestored) {
+      // The output was parsed while the window was down, so the buffer is
+      // whole and only the picture needs repairing. A size change makes the
+      // shell or TUI draw again, and a shell leaves its old prompt in the
+      // scrollback each time, so the PTY hears one only when the grid changed.
+      syncPtySize(slot, leafId);
+    } else {
+      slot.lastCols = slot.term.cols;
+      slot.lastRows = slot.term.rows;
+      adapter.resolveLeaf(leafId)?.resizePty(slot.lastCols, slot.lastRows);
+    }
     repaintSlot(slot);
   }
 }

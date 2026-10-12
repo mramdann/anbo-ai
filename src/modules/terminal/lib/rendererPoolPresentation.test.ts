@@ -29,10 +29,31 @@ describe("terminal window restore", () => {
     expect(source).toContain("canFitTerminal(container)");
   });
 
-  it("refits, resizes, and repaints visible PTYs after restore", () => {
-    expect(source).toContain("restoreVisibleSlotsAfterWindowRestore");
-    expect(source).toContain("bridge?.resizePty");
-    expect(source).toContain("bridge?.kickPty");
+  it("refits and repaints visible terminals after restore, resizing a PTY only when its grid changed", () => {
+    // Every PTY size change makes the shell or TUI draw again, and a shell
+    // leaves its old prompt in the scrollback each time: a restore never
+    // bumps a PTY, and resizes it only to a grid it was not told yet.
+    expect(source).toContain("refitVisibleSlots(true)");
+    const refit = sourceBetween(
+      "function refitVisibleSlots",
+      "export function refitVisibleTerminalSlots",
+    );
+    const restoredAt = refit.indexOf("if (windowRestored) {");
+    const otherwiseAt = refit.indexOf("} else {", restoredAt);
+    expect(restoredAt).toBeGreaterThan(-1);
+    expect(otherwiseAt).toBeGreaterThan(restoredAt);
+    const restored = refit.slice(restoredAt, otherwiseAt);
+    expect(restored).toContain("syncPtySize(slot, leafId)");
+    expect(restored).not.toContain("resizePty");
+    expect(refit.slice(otherwiseAt)).toContain("resizePty(");
+    expect(refit).not.toContain("kickPty");
+    expect(refit).toContain("scheduleWebglFrameRepair(slot, leafId)");
+    expect(refit).toContain("repaintSlot(slot)");
+    expect(
+      sourceBetween("function syncPtySize", "function cancelRevealRepair"),
+    ).toContain(
+      "slot.term.cols === slot.lastCols && slot.term.rows === slot.lastRows",
+    );
     expect(source).toContain("slot.term.refresh");
   });
 
