@@ -56,6 +56,7 @@ function dependencies(
     }),
     hasForegroundProcess: async () => false,
     prepare: () => true,
+    unpreparedReason: () => "unprepared",
     open: () => ({ tabId: 20, leafId: 201 }),
     close: () => true,
     write: () => true,
@@ -694,9 +695,12 @@ describe("shared terminal input", () => {
 
   it("prepares a released renderer before executing so OSC completion stays observable", async () => {
     const prepare = vi.fn(() => false);
+    const unpreparedReason = vi.fn(
+      () => "All 16 live terminal buffers are in use, so nothing was sent.",
+    );
     const write = vi.fn(() => true);
     const service = createTerminalAutomationService(
-      dependencies({ prepare, write }),
+      dependencies({ prepare, unpreparedReason, write }),
     );
 
     const executed = await service.handle("terminal_execute", {
@@ -717,11 +721,97 @@ describe("shared terminal input", () => {
       result: {
         completed: true,
         completionReason: "dispatch_failed",
+        dispatchError:
+          "All 16 live terminal buffers are in use, so nothing was sent.",
         exitCode: null,
       },
     });
+    // An agent that asks again later still learns why.
+    await expect(
+      service.handle("terminal_interrupt", {
+        workspace: workspace.root,
+        terminalId: "terminal:10:101",
+        executionId,
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        alreadyCompleted: true,
+        completionReason: "dispatch_failed",
+        dispatchError:
+          "All 16 live terminal buffers are in use, so nothing was sent.",
+      },
+    });
     expect(prepare).toHaveBeenCalledWith(101);
+    expect(unpreparedReason).toHaveBeenCalledWith(101);
     expect(write).not.toHaveBeenCalled();
+  });
+
+  it("says why a command was held back when the prompt changed before dispatch", async () => {
+    let state = {
+      ready: true,
+      shellExited: false,
+      commandRunning: false,
+      blockMode: "prompt" as const,
+      commandGeneration: 2,
+      lastExitCode: 0,
+      shell: "pwsh",
+      inputPending: false,
+    };
+    const write = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({ getSessionState: () => state, write }),
+    );
+    const executed = await service.handle("terminal_execute", {
+      workspace: workspace.root,
+      terminalId: "terminal:10:101",
+      text: "echo late",
+    });
+    // The user typed at the prompt before the queued command went out.
+    state = { ...state, inputPending: true };
+    await expect(
+      service.handle("terminal_wait", {
+        workspace: workspace.root,
+        terminalId: "terminal:10:101",
+        executionId: (executed.result as { executionId: string }).executionId,
+        timeout: 1_000,
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        completionReason: "dispatch_failed",
+        dispatchError: expect.stringContaining(
+          "The prompt held input nobody had submitted, so nothing was sent.",
+        ),
+      },
+    });
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("names the error when sending a command throws", async () => {
+    const service = createTerminalAutomationService(
+      dependencies({
+        prepare: () => {
+          throw new Error("renderer pool is gone");
+        },
+      }),
+    );
+    const executed = await service.handle("terminal_execute", {
+      workspace: workspace.root,
+      terminalId: "terminal:10:101",
+      text: "echo thrown",
+    });
+    await expect(
+      service.handle("terminal_wait", {
+        workspace: workspace.root,
+        terminalId: "terminal:10:101",
+        executionId: (executed.result as { executionId: string }).executionId,
+        timeout: 1_000,
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        completionReason: "dispatch_failed",
+        dispatchError: "Sending the command failed: renderer pool is gone",
+      },
+    });
   });
 
   it("synchronizes the initial OSC prompt before capturing the execution baseline", async () => {
@@ -829,6 +919,9 @@ describe("shared terminal input", () => {
       result: {
         completed: true,
         completionReason: "dispatch_failed",
+        dispatchError: expect.stringContaining(
+          "The shell did not mark its first prompt within 0.02 s, so nothing was sent",
+        ),
         exitCode: null,
       },
     });
@@ -924,6 +1017,7 @@ describe("shared terminal input", () => {
         output: expect.stringContaining("command output"),
       },
     });
+    expect(waited.result).not.toHaveProperty("dispatchError");
     const firstOutput = (waited.result as { output: string }).output;
     buffer += "\nlater command output";
 

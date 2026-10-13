@@ -99,6 +99,7 @@ describe("agent workspace scoping", () => {
       getActiveTabId: () => null,
       getBuffer: () => "ready",
       prepare: () => false,
+      unpreparedReason: () => "All 16 live terminal buffers are in use.",
       write,
       spawn: () => null,
       subscribeSessions: () => () => {},
@@ -113,7 +114,14 @@ describe("agent workspace scoping", () => {
           message: "do not submit",
         },
       }),
-    ).resolves.toMatchObject({ error: { code: "agent_not_ready" } });
+    ).resolves.toMatchObject({
+      error: {
+        code: "agent_not_ready",
+        message: expect.stringContaining(
+          "terminal is not attached: All 16 live terminal buffers are in use.",
+        ),
+      },
+    });
     expect(write).not.toHaveBeenCalled();
     service.dispose();
   });

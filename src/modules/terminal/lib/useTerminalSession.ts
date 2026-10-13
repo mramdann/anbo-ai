@@ -25,6 +25,7 @@ import {
   registerPromptTracker,
 } from "./osc-handlers";
 import { openPty, type PtySession } from "./pty-bridge";
+import { LIVE_BUFFER_LIMIT } from "./rendererCapacity";
 import { joinTerminalBufferRows } from "./terminalBuffer";
 import "../block/block.css";
 import { ensureAgentActivityListener, isAgentActivePty } from "./agentActivity";
@@ -332,6 +333,23 @@ export function prepareTerminalAutomationSession(leafId: number): boolean {
     if (!session.visibleNow) parkLeafSlot(leafId);
   }
   return session.hasSlot;
+}
+
+/** Why prepareTerminalAutomationSession refused a leaf, in words an agent can
+ *  act on. Nothing reached the shell. */
+export function terminalAutomationRefusal(leafId: number): string {
+  const session = sessions.get(leafId);
+  if (!session || session.disposed)
+    return "The terminal closed before the command was sent.";
+  if (session.shellExited)
+    return "The shell exited before the command was sent.";
+  if (!session.pty)
+    return "The shell had not started yet, so nothing was sent. Try again once it shows its prompt.";
+  if (!session.container)
+    return "The terminal has no view in Anbo right now, so nothing was sent. Showing its tab once brings it back; or use another terminal.";
+  if (poolSize() < LIVE_BUFFER_LIMIT)
+    return "The terminal could not get a live buffer, so nothing was sent. Run the command again.";
+  return `All ${LIVE_BUFFER_LIMIT} live terminal buffers are in use, so nothing was sent. Every workspace shares them, and running commands, agent CLIs and terminals on screen keep theirs. Close a terminal or agent tab that is no longer needed (terminal_close closes one you opened) or let a command finish, then try again.`;
 }
 
 export async function writeToReadySession(

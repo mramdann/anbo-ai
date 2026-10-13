@@ -75,6 +75,8 @@ type ServiceDependencies = {
    * Falls back to getBuffer. */
   getScreen?: (leafId: number) => string | null;
   prepare: (leafId: number) => boolean;
+  /** Why prepare refused a leaf, such as every live terminal buffer in use. */
+  unpreparedReason?: (leafId: number) => string;
   write: (leafId: number, data: string) => boolean;
   spawn: (
     workspace: ResolvedWorkspace,
@@ -710,9 +712,10 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     const readPreparedScreen = (leafId: number) =>
       deps.prepare(leafId) ? (deps.getScreen ?? deps.getBuffer)(leafId) : null;
     if (!deps.prepare(current.leafId)) {
+      const reason = deps.unpreparedReason?.(current.leafId);
       return automationError(
         "agent_not_ready",
-        `${current.agent.name} terminal is not attached`,
+        `${current.agent.name} terminal is not attached${reason ? `: ${reason}` : ""}`,
       );
     }
     if (!deps.getSessions()[current.leafId]) {

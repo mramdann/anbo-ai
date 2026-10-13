@@ -195,6 +195,7 @@ import {
   setTerminalAutomationHandler,
   type TerminalPaneHandle,
   TerminalStack,
+  terminalAutomationRefusal,
   useAgentActivityStore,
   useTerminalFileDrop,
   writeToReadySession,
@@ -2017,6 +2018,7 @@ export default function App() {
           const agentService = createAgentAutomationService({
             ...shared,
             prepare: prepareTerminalAutomationSession,
+            unpreparedReason: terminalAutomationRefusal,
             spawn: async (workspace, agent) => {
               const space = useSpaces
                 .getState()
@@ -2063,6 +2065,7 @@ export default function App() {
             getSessionState: getTerminalSessionState,
             hasForegroundProcess: leafHasForegroundProcess,
             prepare: prepareTerminalAutomationSession,
+            unpreparedReason: terminalAutomationRefusal,
             open: (workspace, title) => {
               const placement = automationTabSelection.placement(
                 workspace.id,

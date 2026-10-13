@@ -29,7 +29,7 @@ When the leaf becomes visible again, `acquireSlot` looks for:
 2. A retained slot for this leaf (`retainedLeafId === leafId`) - fast path, no snapshot replay.
 3. A clean idle slot.
 4. Reuse the oldest safe hidden buffer. Visible panes, busy/alternate-screen buffers (including retained ones), and queued parser writes are never eviction candidates.
-5. If none is safe, allocate a live buffer up to the hard bound. At capacity, attachment returns an explicit failure; automation must not submit a command. Close an unused terminal and select the pending tab again to retry.
+5. If none is safe, allocate a live buffer up to the hard bound. At capacity, attachment returns an explicit failure; automation must not submit a command, and its `dispatch_failed` carries a `dispatchError` that says all 16 buffers are in use and what frees one (`terminalAutomationRefusal`). Close an unused terminal and select the pending tab again to retry.
 
 ## The DormantRing
 

@@ -47,6 +47,8 @@ export type TerminalAutomationDependencies = {
   getSessionState: (leafId: number) => TerminalSessionState | null;
   hasForegroundProcess: (leafId: number) => Promise<boolean>;
   prepare: (leafId: number) => boolean;
+  /** Why prepare refused a leaf, for the agent whose command it holds back. */
+  unpreparedReason: (leafId: number) => string;
   open: (
     workspace: { id: string; root: string },
     title: string,
@@ -94,6 +96,8 @@ type ExecutionState = {
   runningAt?: number;
   completedAt?: number;
   completionReason?: CompletionReason;
+  /** Why a dispatch_failed command was never sent. */
+  dispatchError?: string;
   exitCode: number | null;
   finalRead?: TerminalReadSnapshot;
 };
@@ -110,6 +114,24 @@ function bufferFingerprint(value: string): string {
 
 function shellSupportsOsc(shell: string | null | undefined): boolean {
   return /^(?:pwsh|powershell|bash|zsh|fish)$/.test(shell ?? "");
+}
+
+/** Why a shell cannot take a queued command now, or null when it can. The
+ *  foreground check runs last: it asks the PTY. */
+async function busyShellReason(
+  state: TerminalSessionState,
+  hasForegroundProcess: () => Promise<boolean>,
+): Promise<string | null> {
+  if (state.shellExited) return "The shell exited before the command was sent.";
+  if (!state.ready)
+    return "The shell had not finished starting, so nothing was sent. Run the command again once terminal_list shows the terminal idle.";
+  if (state.inputPending)
+    return "The prompt held input nobody had submitted, so nothing was sent. Submit or clear it (terminal_interrupt without an executionId clears it), then run the command again.";
+  if (state.commandRunning || state.blockMode !== "prompt")
+    return "Another command started in the terminal first, so nothing was sent. Wait for it to finish, or interrupt it, then run the command again.";
+  if (await hasForegroundProcess())
+    return "A program was running in the foreground of the terminal, so nothing was sent. Wait for it to end, or interrupt it, then run the command again.";
+  return null;
 }
 
 class TerminalOutputTracker {
@@ -299,6 +321,14 @@ export function createTerminalAutomationService(
     }
   };
 
+  // A dispatch failure with no reason sent a prod agent off blaming the
+  // inactive workspace, when every live terminal buffer was in use.
+  const failDispatch = (execution: ExecutionState, reason: string) => {
+    if (execution.completedAt !== undefined) return;
+    execution.dispatchError = reason;
+    finishExecution(execution, "dispatch_failed", null);
+  };
+
   const refreshExecutionCompletion = async (
     execution: ExecutionState,
   ): Promise<boolean> => {
@@ -357,29 +387,32 @@ export function createTerminalAutomationService(
     return completed;
   };
 
+  /** The shell's state once its first prompt is marked, or why the command
+   *  cannot wait for it. */
   const synchronizeInitialPrompt = async (
     leafId: number,
     initialState: TerminalSessionState,
-  ): Promise<TerminalSessionState | null> => {
+  ): Promise<TerminalSessionState | string> => {
     if (
       !shellSupportsOsc(initialState.shell) ||
       (initialState.commandGeneration ?? 0) > 0
     ) {
       return initialState;
     }
-    const deadline =
-      Date.now() +
-      (deps.initialPromptSyncTimeoutMs ?? INITIAL_PROMPT_SYNC_TIMEOUT_MS);
+    const timeoutMs =
+      deps.initialPromptSyncTimeoutMs ?? INITIAL_PROMPT_SYNC_TIMEOUT_MS;
+    const deadline = Date.now() + timeoutMs;
     let state: TerminalSessionState | null = initialState;
     while (Date.now() < deadline) {
       await new Promise((resolveDelay) =>
         setTimeout(resolveDelay, INITIAL_PROMPT_SYNC_POLL_MS),
       );
       state = deps.getSessionState(leafId);
-      if (!state || state.shellExited) return null;
+      if (!state || state.shellExited)
+        return "The shell exited before the command was sent.";
       if ((state.commandGeneration ?? 0) > 0) return state;
     }
-    return null;
+    return `The shell did not mark its first prompt within ${timeoutMs / 1000} s, so nothing was sent: Anbo follows a command by the prompt marks of its shell integration. Run the command again; a profile that replaces the prompt can keep the mark from appearing.`;
   };
 
   const dispatchExecution = async (execution: ExecutionState) => {
@@ -389,36 +422,31 @@ export function createTerminalAutomationService(
       finishExecution(execution, "closed", null);
       return;
     }
-    if (
-      !state.ready ||
-      state.inputPending ||
-      state.commandRunning ||
-      state.blockMode !== "prompt" ||
-      (await deps.hasForegroundProcess(execution.terminal.leafId))
-    ) {
-      if (execution.phase === "queued") {
-        finishExecution(execution, "dispatch_failed", null);
-      }
+    const busy = await busyShellReason(state, () =>
+      deps.hasForegroundProcess(execution.terminal.leafId),
+    );
+    if (busy) {
+      failDispatch(execution, busy);
       return;
     }
     if (execution.phase !== "queued") return;
     if (!deps.prepare(execution.terminal.leafId)) {
-      finishExecution(execution, "dispatch_failed", null);
+      failDispatch(execution, deps.unpreparedReason(execution.terminal.leafId));
       return;
     }
     const preparedState = deps.getSessionState(execution.terminal.leafId);
     const latestState = preparedState
       ? await synchronizeInitialPrompt(execution.terminal.leafId, preparedState)
-      : null;
-    if (
-      !latestState?.ready ||
-      latestState.shellExited ||
-      latestState.inputPending ||
-      latestState.commandRunning ||
-      latestState.blockMode !== "prompt" ||
-      (await deps.hasForegroundProcess(execution.terminal.leafId))
-    ) {
-      finishExecution(execution, "dispatch_failed", null);
+      : "The terminal closed before the command was sent.";
+    if (typeof latestState === "string") {
+      failDispatch(execution, latestState);
+      return;
+    }
+    const unready = await busyShellReason(latestState, () =>
+      deps.hasForegroundProcess(execution.terminal.leafId),
+    );
+    if (unready) {
+      failDispatch(execution, unready);
       return;
     }
     const raw = deps.getBuffer(execution.terminal.leafId) ?? "";
@@ -824,6 +852,9 @@ export function createTerminalAutomationService(
             timedOut: !completed && !state?.shellExited,
             phase: execution.phase,
             completionReason: execution.completionReason ?? null,
+            ...(execution.dispatchError !== undefined && {
+              dispatchError: execution.dispatchError,
+            }),
             interrupted: execution.completionReason === "interrupted",
             exitCode: completed ? execution.exitCode : null,
             durationMs:
@@ -868,6 +899,9 @@ export function createTerminalAutomationService(
               executionId: execution.executionId,
               phase: execution.phase,
               completionReason: execution.completionReason ?? null,
+              ...(execution.dispatchError !== undefined && {
+                dispatchError: execution.dispatchError,
+              }),
               interrupted: execution.completionReason === "interrupted",
               clearedInput: false,
               alreadyCompleted: true,
@@ -1028,8 +1062,11 @@ export function createTerminalAutomationService(
       };
       rememberExecution(execution);
       setTimeout(() => {
-        void dispatchExecution(execution).catch(() => {
-          finishExecution(execution, "dispatch_failed", null);
+        void dispatchExecution(execution).catch((cause: unknown) => {
+          failDispatch(
+            execution,
+            `Sending the command failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          );
         });
       }, DISPATCH_DELAY_MS);
       return {

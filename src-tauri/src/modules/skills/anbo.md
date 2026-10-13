@@ -247,6 +247,10 @@ foreground process.
 Every execute needs an idle prompt. Anbo revalidates that the PTY is attached,
 sitting at a prompt, and free of a foreground job immediately before writing,
 so a busy or exited terminal fails instead of running half a command.
+A command that never went out ends `dispatch_failed`, and `dispatchError`
+says why, such as every live terminal buffer in use (Anbo has 16, shared by
+all workspaces). When it says nothing was sent, act on it, then run the
+command again.
 `terminal_wait` freezes the exit code, completion reason and output of one
 `executionId`, so a later command cannot overwrite the answer you were waiting
 for. `terminal_interrupt` cancels a specific execution, including one still

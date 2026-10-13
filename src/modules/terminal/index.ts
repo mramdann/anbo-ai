@@ -27,6 +27,7 @@ export {
   readTerminalScreen,
   getTerminalSessionState,
   subscribeTerminalInput,
+  terminalAutomationRefusal,
   writeToReadySession,
   writeToSession,
 } from "./lib/useTerminalSession";
