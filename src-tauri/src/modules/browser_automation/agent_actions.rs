@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Listener};
 
 use crate::modules::browser_automation::protocol::error_codes;
@@ -17,6 +17,9 @@ const MAX_MESSAGE_ID_BYTES: usize = 128;
 const MAX_CURSOR_BYTES: usize = 128;
 const MAX_READ_CHARS: u64 = 12_000;
 const MAX_TIMEOUT_MS: u64 = 60_000;
+/// Anbo listens this much past the deadline it gives the UI, so the UI's
+/// answer for an operation it refused at that deadline still arrives.
+const UI_GRACE_MS: u64 = 1_000;
 static AGENT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Deserialize)]
@@ -132,8 +135,13 @@ fn validate_params(method: &str, params: &Value) -> Result<u64, (String, String)
     } else if !matches!(method, "agent_list" | "agent_spawn" | "terminal_list") {
         required_bounded_string(params, "agentId", MAX_AGENT_ID_BYTES)?;
     }
+    // How long the UI has, from the request to its answer. A burst of opens
+    // and commands makes it busy for seconds (20 terminals at once), and it
+    // starts nothing after this deadline, so an agent told an operation timed
+    // out never has it happen later.
     match method {
-        "agent_list" | "agent_status" | "terminal_list" | "terminal_open" => Ok(5_000),
+        "agent_list" | "agent_status" | "terminal_list" => Ok(10_000),
+        "terminal_open" => Ok(15_000),
         "agent_spawn" => {
             let agent = required_bounded_string(params, "agent", 71)?;
             if agent.chars().any(char::is_control) {
@@ -149,7 +157,7 @@ fn validate_params(method: &str, params: &Value) -> Result<u64, (String, String)
         "agent_read" | "terminal_read" => {
             optional_bounded_string(params, "cursor", MAX_CURSOR_BYTES)?;
             bounded_integer(params, "maxChars", 1, MAX_READ_CHARS)?;
-            Ok(5_000)
+            Ok(10_000)
         }
         "terminal_insert" | "terminal_execute" => {
             let text = required_bounded_string(params, "text", 8_000)?;
@@ -159,7 +167,7 @@ fn validate_params(method: &str, params: &Value) -> Result<u64, (String, String)
                     "text must be one line and cannot contain control characters".to_string(),
                 ));
             }
-            Ok(7_000)
+            Ok(15_000)
         }
         "terminal_wait" => {
             required_bounded_string(params, "executionId", MAX_TERMINAL_ID_BYTES)?;
@@ -170,9 +178,9 @@ fn validate_params(method: &str, params: &Value) -> Result<u64, (String, String)
         }
         "terminal_interrupt" => {
             optional_bounded_string(params, "executionId", MAX_TERMINAL_ID_BYTES)?;
-            Ok(7_000)
+            Ok(10_000)
         }
-        "terminal_close" => Ok(7_000),
+        "terminal_close" => Ok(10_000),
         "agent_send" => {
             let message = required_bounded_string(params, "message", MAX_MESSAGE_BYTES)?;
             if message
@@ -226,12 +234,18 @@ pub async fn handle_agent_action(
     let listener_id = app.once(response_event, move |event| {
         let _ = sender.send(event.payload().to_string());
     });
+    let deadline = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+        + timeout_ms;
     if let Err(error) = app.emit(
         AGENT_REQUEST_EVENT,
         json!({
             "requestId": request_id,
             "method": method,
             "params": params,
+            "deadline": deadline,
         }),
     ) {
         app.unlisten(listener_id);
@@ -241,13 +255,14 @@ pub async fn handle_agent_action(
         ));
     }
 
-    let received = tokio::time::timeout(Duration::from_millis(timeout_ms), receiver).await;
+    let received =
+        tokio::time::timeout(Duration::from_millis(timeout_ms + UI_GRACE_MS), receiver).await;
     app.unlisten(listener_id);
     let payload = received
         .map_err(|_| {
             (
                 error_codes::TIMEOUT.to_string(),
-                "Anbo UI did not complete the agent operation in time".to_string(),
+                "Anbo UI did not complete the agent operation in time; it starts nothing after the request's deadline".to_string(),
             )
         })?
         .map_err(|_| {
@@ -316,12 +331,24 @@ mod tests {
             &json!({ "workspace": "C:/repo", "agentId": "agent:one:1", "status": "done" })
         )
         .is_err());
-        assert!(validate_params("terminal_list", &json!({ "workspace": "C:/repo" })).is_ok());
-        assert!(validate_params(
-            "terminal_open",
-            &json!({ "workspace": "C:/repo", "title": "Dev Server" })
-        )
-        .is_ok());
+        assert_eq!(
+            validate_params("terminal_list", &json!({ "workspace": "C:/repo" })),
+            Ok(10_000)
+        );
+        assert_eq!(
+            validate_params(
+                "terminal_execute",
+                &json!({ "workspace": "C:/repo", "terminalId": "terminal:1:1", "text": "dir" })
+            ),
+            Ok(15_000)
+        );
+        assert_eq!(
+            validate_params(
+                "terminal_open",
+                &json!({ "workspace": "C:/repo", "title": "Dev Server" })
+            ),
+            Ok(15_000)
+        );
         assert!(validate_params(
             "terminal_open",
             &json!({ "workspace": "C:/repo", "title": "" })

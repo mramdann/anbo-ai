@@ -2,7 +2,9 @@ import { resolveAgentWorkspace } from "@/modules/agents/lib/agentAutomation";
 import {
   type AgentAutomationResponse,
   automationError,
+  lateRequest,
   paramString,
+  pastDeadline,
   type TerminalAutomationMethod,
 } from "@/modules/agents/lib/agentAutomationProtocol";
 import type { AgentSession } from "@/modules/agents/lib/types";
@@ -648,9 +650,12 @@ export function createTerminalAutomationService(
   };
 
   return {
+    /** `deadline` is when the caller stops waiting: nothing is written to a
+     *  terminal after it. */
     async handle(
       method: TerminalAutomationMethod,
       params: Record<string, unknown>,
+      deadline?: number,
     ): Promise<AgentAutomationResponse> {
       if (method === "terminal_open") {
         const workspace = resolveAgentWorkspace(
@@ -1078,6 +1083,10 @@ export function createTerminalAutomationService(
       const rawBefore = deps.getBuffer(target.terminal.leafId) ?? "";
       const stateBefore = deps.getSessionState(target.terminal.leafId);
       const cursor = output.checkpoint(target.terminal.terminalId, rawBefore);
+      if (pastDeadline(deadline))
+        return lateRequest(
+          method === "terminal_insert" ? "insert the text" : "run the command",
+        );
       if (method === "terminal_insert") {
         if (!deps.write(target.terminal.leafId, input.text)) {
           return automationError(

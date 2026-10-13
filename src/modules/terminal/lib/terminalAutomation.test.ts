@@ -403,6 +403,47 @@ describe("shared terminal input", () => {
     });
   });
 
+  it("writes nothing once the caller has stopped waiting", async () => {
+    const write = vi.fn(() => true);
+    const service = createTerminalAutomationService(dependencies({ write }));
+    const late = Date.now() - 1;
+    for (const method of ["terminal_insert", "terminal_execute"] as const) {
+      await expect(
+        service.handle(
+          method,
+          {
+            workspace: workspace.root,
+            terminalId: "terminal:10:101",
+            text: "pnpm test",
+          },
+          late,
+        ),
+      ).resolves.toMatchObject({
+        error: {
+          code: "timeout",
+          message: expect.stringContaining("nothing was done"),
+        },
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(write).not.toHaveBeenCalled();
+    // Still in time: the command goes out as usual.
+    await expect(
+      service.handle(
+        "terminal_execute",
+        {
+          workspace: workspace.root,
+          terminalId: "terminal:10:101",
+          text: "pnpm test",
+        },
+        Date.now() + 5_000,
+      ),
+    ).resolves.toMatchObject({ result: { ok: true, executed: true } });
+    await vi.waitFor(() =>
+      expect(write).toHaveBeenCalledWith(101, "pnpm test\r"),
+    );
+  });
+
   it("does not write when the shell is busy", async () => {
     const write = vi.fn(() => true);
     const service = createTerminalAutomationService(

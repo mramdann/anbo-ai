@@ -9,7 +9,9 @@ import {
   type AgentAutomationRequest,
   type AgentAutomationResponse,
   automationError,
+  lateRequest,
   paramString,
+  pastDeadline,
 } from "./agentAutomationProtocol";
 import { agentIdFor } from "./agentIdentity";
 import { readAgentScreen } from "./agentScreenClassifier";
@@ -627,6 +629,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
 
   const send = async (
     params: Record<string, unknown>,
+    deadline?: number,
   ): Promise<AgentAutomationResponse> => {
     let target = resolveTarget(params);
     if (!target.ok) return target.response;
@@ -741,6 +744,9 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         `${current.agent.name} did not reach a stable input prompt before timeout`,
       );
     }
+    // The caller stopped waiting: typing the message now would deliver one it
+    // was told timed out.
+    if (pastDeadline(deadline)) return lateRequest("send the message");
     if (deduplicationKey) {
       messageIds.set(deduplicationKey, Date.now());
       while (messageIds.size > MAX_DEDUPLICATION_KEYS) {
@@ -759,7 +765,10 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
           needsEchoedInput(normalizedCli) ||
           message.message.length > INPUT_CHUNK_CHARS),
       isAntigravity ? ANTIGRAVITY_SUBMIT_DELAY_MS : SUBMIT_DELAY_MS,
-      timeout,
+      // Typing stops, and is cleared, when the caller stops waiting.
+      deadline === undefined
+        ? timeout
+        : Math.min(timeout, Math.max(0, deadline - Date.now())),
     );
     if (!submitted) {
       return automationError(
@@ -889,7 +898,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
           previous ?? Promise.resolve<AgentAutomationResponse>({ result: null })
         )
           .catch(() => ({ result: null }))
-          .then(() => send(params));
+          .then(() => send(params, request.deadline));
         sendQueues.set(agentId, pending);
         const result = await pending;
         if (sendQueues.get(agentId) === pending) sendQueues.delete(agentId);

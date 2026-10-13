@@ -44,6 +44,8 @@ import {
   AGENT_RESPONSE_EVENT,
   type AgentAutomationRequest,
   type AgentAutomationResponse,
+  lateRequest,
+  pastDeadline,
   type TerminalAutomationMethod,
 } from "@/modules/agents/lib/agentAutomationProtocol";
 import { agentIdFor } from "@/modules/agents/lib/agentIdentity";
@@ -2117,6 +2119,7 @@ export default function App() {
                 ? terminalService.handle(
                     request.method as TerminalAutomationMethod,
                     request.params,
+                    request.deadline,
                   )
                 : agentService.handle(request),
             dispose: () => agentService.dispose(),
@@ -2127,7 +2130,12 @@ export default function App() {
     };
     setAgentRequestHandler((payload) => {
       void getService()
-        .then((service) => service.handle(payload))
+        // The caller stopped waiting before Anbo got to the request.
+        .then((service) =>
+          pastDeadline(payload.deadline)
+            ? lateRequest("start it")
+            : service.handle(payload),
+        )
         .then((response) =>
           emit(`${AGENT_RESPONSE_EVENT}:${payload.requestId}`, response),
         )

@@ -752,6 +752,50 @@ describe("agent messages", () => {
     service.dispose();
   });
 
+  it("types no message once the caller has stopped waiting", async () => {
+    vi.useFakeTimers();
+    const writes: Array<[number, string]> = [];
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab()] as Tab[],
+      getSpaces: () => [space()],
+      getSessions: () => ({
+        101: session({ status: "working", phase: "working" }),
+      }),
+      getActiveTabId: () => null,
+      getBuffer: () => "ready",
+      write: (leafId, data) => {
+        writes.push([leafId, data]);
+        return true;
+      },
+      spawn: () => null,
+      subscribeSessions: () => () => {},
+    });
+    const send = (deadline: number) =>
+      service.handle({
+        requestId: `request-${deadline}`,
+        method: "agent_send",
+        params: {
+          workspace: "space-a",
+          agentId: "atlas-claude:10",
+          message: "inspect the workspace",
+          waitForReady: false,
+        },
+        deadline,
+      });
+    await expect(send(Date.now() - 1)).resolves.toMatchObject({
+      error: { code: "timeout" },
+    });
+    expect(writes).toEqual([]);
+    const inTime = send(Date.now() + 5_000);
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(inTime).resolves.toMatchObject({ result: { ok: true } });
+    expect(writes).toEqual([
+      [101, "inspect the workspace"],
+      [101, "\r"],
+    ]);
+    service.dispose();
+  });
+
   it("cancels unverified input and reserves its message id before a retry", async () => {
     vi.useFakeTimers();
     const message = "delegate this task once";

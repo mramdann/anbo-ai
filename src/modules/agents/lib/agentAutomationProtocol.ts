@@ -24,6 +24,9 @@ export type AgentAutomationRequest = {
   requestId: string;
   method: AgentAutomationMethod;
   params: Record<string, unknown>;
+  /** When the caller stops waiting, in ms since the epoch. Nothing starts
+   *  after it, so a caller told the operation timed out never has it happen. */
+  deadline?: number;
 };
 
 export type AgentAutomationResponse = {
@@ -36,6 +39,23 @@ export function automationError(
   message: string,
 ): AgentAutomationResponse {
   return { error: { code, message } };
+}
+
+/** Whether the caller of a request with `deadline` has stopped waiting. */
+export function pastDeadline(
+  deadline: number | undefined,
+  now = Date.now(),
+): boolean {
+  return deadline !== undefined && now >= deadline;
+}
+
+/** The answer for a request that would have started after its caller stopped
+ *  waiting. */
+export function lateRequest(what: string): AgentAutomationResponse {
+  return automationError(
+    "timeout",
+    `Anbo was too busy to ${what} before the request's deadline, so nothing was done. Try again.`,
+  );
 }
 
 /** A non-blank string parameter, trimmed, or null. */
