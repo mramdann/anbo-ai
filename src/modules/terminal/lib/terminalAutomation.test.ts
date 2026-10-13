@@ -8,6 +8,7 @@ import {
   sanitizeTerminalTitle,
   type TerminalAutomationDependencies,
 } from "./terminalAutomation";
+import type { TerminalSessionState } from "./useTerminalSession";
 
 const workspaceRoot = "C:/work/alpha";
 
@@ -60,6 +61,25 @@ function dependencies(
     open: () => ({ tabId: 20, leafId: 201 }),
     close: () => true,
     write: () => true,
+    ...overrides,
+  };
+}
+
+// A Windows PowerShell whose first prompt has not ended yet.
+function startingShell(
+  overrides: Partial<TerminalSessionState> = {},
+): TerminalSessionState {
+  return {
+    ready: true,
+    shellExited: false,
+    commandRunning: false,
+    blockMode: "prompt",
+    commandGeneration: 0,
+    commandCompletions: [],
+    lastExitCode: null,
+    shell: "powershell",
+    inputPending: false,
+    awaitingFirstPrompt: true,
     ...overrides,
   };
 }
@@ -145,6 +165,25 @@ describe("shared terminal discovery", () => {
       { id: workspace.id, root: workspaceRoot },
     );
     expect(result[0].status).toBe("busy");
+  });
+
+  it("reports a shell as starting until its first prompt ends", async () => {
+    const hasForegroundProcess = vi.fn(async () => false);
+    const list = (state: TerminalSessionState) =>
+      collectSharedTerminals(
+        dependencies({ getSessionState: () => state, hasForegroundProcess }),
+        { id: workspace.id, root: workspaceRoot },
+      );
+
+    expect((await list(startingShell()))[0].status).toBe("starting");
+    expect(hasForegroundProcess).not.toHaveBeenCalled();
+    expect(
+      (await list(startingShell({ awaitingFirstPrompt: false })))[0].status,
+    ).toBe("idle");
+    // cmd marks no prompt, so there is no first one to wait for.
+    expect((await list(startingShell({ shell: "cmd" })))[0].status).toBe(
+      "idle",
+    );
   });
 });
 
@@ -928,6 +967,206 @@ describe("shared terminal input", () => {
     expect(write).not.toHaveBeenCalled();
   });
 
+  it("sends a command queued while the shell starts at its first prompt", async () => {
+    // Its PTY is still opening.
+    let state = startingShell({ ready: false, awaitingFirstPrompt: false });
+    const events: string[] = [];
+    const prepare = vi.fn(() => {
+      events.push(state.awaitingFirstPrompt ? "prepare early" : "prepare");
+      return true;
+    });
+    const write = vi.fn((_leafId: number, data: string) => {
+      events.push(`write ${data}`);
+      setTimeout(() => {
+        state = {
+          ...state,
+          commandGeneration: 2,
+          commandCompletions: [
+            { generation: 1, exitCode: 0 },
+            { generation: 2, exitCode: 0 },
+          ],
+        };
+      }, 10);
+      return true;
+    });
+    const service = createTerminalAutomationService(
+      dependencies({ getSessionState: () => state, prepare, write }),
+    );
+
+    const executed = await service.handle("terminal_execute", {
+      workspace: workspace.root,
+      terminalId: "terminal:10:101",
+      text: "echo ready",
+    });
+    expect(executed).toMatchObject({
+      result: { executed: true, phase: "queued" },
+    });
+    const executionId = (executed.result as { executionId: string })
+      .executionId;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    state = { ...state, ready: true, awaitingFirstPrompt: true };
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(events).toEqual([]);
+
+    // The first prompt ends the start, and its marks count one completion.
+    state = {
+      ...state,
+      awaitingFirstPrompt: false,
+      commandGeneration: 1,
+      commandCompletions: [{ generation: 1, exitCode: 0 }],
+    };
+    await expect(
+      service.handle("terminal_wait", {
+        workspace: workspace.root,
+        terminalId: "terminal:10:101",
+        executionId,
+        timeout: 1_000,
+      }),
+    ).resolves.toMatchObject({
+      result: { completed: true, completionReason: "exited", exitCode: 0 },
+    });
+    expect(events).toEqual(["prepare", "write echo ready\r"]);
+  });
+
+  it("never sends a command cancelled while the shell starts", async () => {
+    let state = startingShell();
+    const prepare = vi.fn(() => true);
+    const write = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({ getSessionState: () => state, prepare, write }),
+    );
+    const executed = await service.handle("terminal_execute", {
+      workspace: workspace.root,
+      terminalId: "terminal:10:101",
+      text: "must not run",
+    });
+    const executionId = (executed.result as { executionId: string })
+      .executionId;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    await expect(
+      service.handle("terminal_interrupt", {
+        workspace: workspace.root,
+        terminalId: "terminal:10:101",
+        executionId,
+      }),
+    ).resolves.toMatchObject({ result: { cancelledBeforeDispatch: true } });
+    state = { ...state, awaitingFirstPrompt: false, commandGeneration: 1 };
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(prepare).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("never sends a command cancelled while its first prompt mark is parsed", async () => {
+    let state = startingShell({ awaitingFirstPrompt: false });
+    const prepare = vi.fn(() => true);
+    const write = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({ getSessionState: () => state, prepare, write }),
+    );
+    const executed = await service.handle("terminal_execute", {
+      workspace: workspace.root,
+      terminalId: "terminal:10:101",
+      text: "must not run",
+    });
+    const executionId = (executed.result as { executionId: string })
+      .executionId;
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalled());
+
+    await expect(
+      service.handle("terminal_interrupt", {
+        workspace: workspace.root,
+        terminalId: "terminal:10:101",
+        executionId,
+      }),
+    ).resolves.toMatchObject({ result: { cancelledBeforeDispatch: true } });
+    state = {
+      ...state,
+      commandGeneration: 1,
+      commandCompletions: [{ generation: 1, exitCode: 0 }],
+    };
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("gives up on a shell that never ends its first prompt", async () => {
+    const prepare = vi.fn(() => true);
+    const write = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({
+        initialPromptSyncTimeoutMs: 50,
+        getSessionState: () => startingShell(),
+        prepare,
+        write,
+      }),
+    );
+    const executed = await service.handle("terminal_execute", {
+      workspace: workspace.root,
+      terminalId: "terminal:10:101",
+      text: "echo never",
+    });
+    const executionId = (executed.result as { executionId: string })
+      .executionId;
+
+    await expect(
+      service.handle("terminal_wait", {
+        workspace: workspace.root,
+        terminalId: "terminal:10:101",
+        executionId,
+        timeout: 1_000,
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        completionReason: "dispatch_failed",
+        dispatchError: expect.stringContaining(
+          "The shell did not mark its first prompt within 0.05 s, so nothing was sent",
+        ),
+      },
+    });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("refuses a command before the terminal has a session at all", async () => {
+    const write = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({ getSessionState: () => null, write }),
+    );
+    await expect(
+      service.handle("terminal_execute", {
+        workspace: workspace.root,
+        terminalId: "terminal:10:101",
+        text: "echo too early",
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: "terminal_busy",
+        message: expect.stringContaining("terminal:10:101 is starting"),
+      },
+    });
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("refuses to type into a shell that has not ended its first prompt", async () => {
+    const write = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({ getSessionState: () => startingShell(), write }),
+    );
+    await expect(
+      service.handle("terminal_insert", {
+        workspace: workspace.root,
+        terminalId: "terminal:10:101",
+        text: "echo early",
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: "terminal_busy",
+        message: expect.stringContaining("terminal:10:101 is starting"),
+      },
+    });
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it("returns bounded redacted incremental output", async () => {
     let buffer = "ready API_KEY=supersecretvalue";
     const service = createTerminalAutomationService(
@@ -1261,5 +1500,32 @@ describe("shared terminal input", () => {
     });
     expect(write).toHaveBeenCalledWith(101, "\x03");
     expect(hasForegroundProcess).not.toHaveBeenCalled();
+  });
+
+  it("sends no Ctrl+C to a shell that has not ended its first prompt", async () => {
+    const write = vi.fn(() => true);
+    for (const state of [
+      startingShell(),
+      startingShell({ inputPending: true }),
+      startingShell({ ready: false, awaitingFirstPrompt: false }),
+    ]) {
+      const service = createTerminalAutomationService(
+        dependencies({ getSessionState: () => state, write }),
+      );
+      await expect(
+        service.handle("terminal_interrupt", {
+          workspace: workspace.root,
+          terminalId: "terminal:10:101",
+        }),
+      ).resolves.toMatchObject({
+        error: {
+          code: "terminal_busy",
+          message: expect.stringContaining(
+            "terminal:10:101 is starting, so no Ctrl+C was sent",
+          ),
+        },
+      });
+    }
+    expect(write).not.toHaveBeenCalled();
   });
 });

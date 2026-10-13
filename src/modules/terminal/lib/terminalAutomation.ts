@@ -116,6 +116,18 @@ function shellSupportsOsc(shell: string | null | undefined): boolean {
   return /^(?:pwsh|powershell|bash|zsh|fish)$/.test(shell ?? "");
 }
 
+/** A shell with Anbo's integration that has not ended its first prompt. A
+ *  Ctrl+C now can end Windows PowerShell or stop its integration script, and
+ *  typing lands ahead of the prompt. The session stops waiting for the mark
+ *  30 s after the shell started (firstPrompt.ts). */
+function shellStarting(state: TerminalSessionState): boolean {
+  return state.awaitingFirstPrompt === true && shellSupportsOsc(state.shell);
+}
+
+function firstPromptMissing(timeoutMs: number): string {
+  return `The shell did not mark its first prompt within ${timeoutMs / 1000} s, so nothing was sent: Anbo follows a command by the prompt marks of its shell integration. Run the command again; a profile that replaces the prompt can keep the mark from appearing.`;
+}
+
 /** Why a shell cannot take a queued command now, or null when it can. The
  *  foreground check runs last: it asks the PTY. */
 async function busyShellReason(
@@ -183,6 +195,7 @@ function baseStatus(
 ): SharedTerminalDescriptor["status"] {
   if (!state?.ready) return state?.shellExited ? "exited" : "starting";
   if (state.shellExited) return "exited";
+  if (shellStarting(state)) return "starting";
   return state.commandRunning || state.blockMode !== "prompt" ? "busy" : "idle";
 }
 
@@ -387,11 +400,36 @@ export function createTerminalAutomationService(
     return completed;
   };
 
-  /** The shell's state once its first prompt is marked, or why the command
-   *  cannot wait for it. */
+  /** The shell's state once its PTY is open and it has ended its first
+   *  prompt, or why the command cannot wait for that. A command typed earlier
+   *  lands ahead of the prompt. */
+  const awaitShellStart = async (
+    leafId: number,
+    initialState: TerminalSessionState,
+    deadline: number,
+    timeoutMs: number,
+  ): Promise<TerminalSessionState | string> => {
+    let state = initialState;
+    while (!state.ready || shellStarting(state)) {
+      if (Date.now() >= deadline) return firstPromptMissing(timeoutMs);
+      await new Promise((resolveDelay) =>
+        setTimeout(resolveDelay, INITIAL_PROMPT_SYNC_POLL_MS),
+      );
+      const next = deps.getSessionState(leafId);
+      if (!next || next.shellExited)
+        return "The shell exited before the command was sent.";
+      state = next;
+    }
+    return state;
+  };
+
+  /** The shell's state once the live buffer has parsed its first prompt
+   *  mark, or why the command cannot wait for it. */
   const synchronizeInitialPrompt = async (
     leafId: number,
     initialState: TerminalSessionState,
+    deadline: number,
+    timeoutMs: number,
   ): Promise<TerminalSessionState | string> => {
     if (
       !shellSupportsOsc(initialState.shell) ||
@@ -399,9 +437,6 @@ export function createTerminalAutomationService(
     ) {
       return initialState;
     }
-    const timeoutMs =
-      deps.initialPromptSyncTimeoutMs ?? INITIAL_PROMPT_SYNC_TIMEOUT_MS;
-    const deadline = Date.now() + timeoutMs;
     let state: TerminalSessionState | null = initialState;
     while (Date.now() < deadline) {
       await new Promise((resolveDelay) =>
@@ -412,14 +447,29 @@ export function createTerminalAutomationService(
         return "The shell exited before the command was sent.";
       if ((state.commandGeneration ?? 0) > 0) return state;
     }
-    return `The shell did not mark its first prompt within ${timeoutMs / 1000} s, so nothing was sent: Anbo follows a command by the prompt marks of its shell integration. Run the command again; a profile that replaces the prompt can keep the mark from appearing.`;
+    return firstPromptMissing(timeoutMs);
   };
 
   const dispatchExecution = async (execution: ExecutionState) => {
     if (execution.phase !== "queued") return;
-    const state = deps.getSessionState(execution.terminal.leafId);
-    if (!state || state.shellExited) {
+    const queuedState = deps.getSessionState(execution.terminal.leafId);
+    if (!queuedState || queuedState.shellExited) {
       finishExecution(execution, "closed", null);
+      return;
+    }
+    // One wait for the first prompt, whether the shell is still starting or
+    // only its live buffer has yet to parse the mark.
+    const timeoutMs =
+      deps.initialPromptSyncTimeoutMs ?? INITIAL_PROMPT_SYNC_TIMEOUT_MS;
+    const deadline = Date.now() + timeoutMs;
+    const state = await awaitShellStart(
+      execution.terminal.leafId,
+      queuedState,
+      deadline,
+      timeoutMs,
+    );
+    if (typeof state === "string") {
+      failDispatch(execution, state);
       return;
     }
     const busy = await busyShellReason(state, () =>
@@ -436,7 +486,12 @@ export function createTerminalAutomationService(
     }
     const preparedState = deps.getSessionState(execution.terminal.leafId);
     const latestState = preparedState
-      ? await synchronizeInitialPrompt(execution.terminal.leafId, preparedState)
+      ? await synchronizeInitialPrompt(
+          execution.terminal.leafId,
+          preparedState,
+          deadline,
+          timeoutMs,
+        )
       : "The terminal closed before the command was sent.";
     if (typeof latestState === "string") {
       failDispatch(execution, latestState);
@@ -449,6 +504,9 @@ export function createTerminalAutomationService(
       failDispatch(execution, unready);
       return;
     }
+    // Cancelled while the first prompt was awaited: the agent was told nothing
+    // would run.
+    if (execution.phase !== "queued") return;
     const raw = deps.getBuffer(execution.terminal.leafId) ?? "";
     execution.baselineGeneration = latestState.commandGeneration ?? 0;
     execution.cursor = output.checkpoint(execution.terminalId, raw);
@@ -531,7 +589,10 @@ export function createTerminalAutomationService(
     return { ok: true as const, terminal };
   };
 
-  const requireIdle = async (params: Record<string, unknown>) => {
+  const requireIdle = async (
+    params: Record<string, unknown>,
+    acceptStarting = false,
+  ) => {
     const target = await resolveTarget(params, false);
     if (!target.ok) return target;
     if (await hasPendingExecution(target.terminal.terminalId)) {
@@ -543,16 +604,21 @@ export function createTerminalAutomationService(
         ),
       };
     }
-    if (target.terminal.status !== "idle") {
+    const latestState = deps.getSessionState(target.terminal.leafId);
+    const status = baseStatus(latestState);
+    // A command for a shell still starting, even before its PTY opens, goes
+    // out at its first prompt (dispatchExecution).
+    const starting =
+      acceptStarting && status === "starting" && latestState !== null;
+    if (status !== "idle" && !starting) {
       return {
         ok: false as const,
         response: automationError(
           "terminal_busy",
-          `${target.terminal.terminalId} is ${target.terminal.status}; wait for an idle shell prompt`,
+          `${target.terminal.terminalId} is ${status}; wait for an idle shell prompt`,
         ),
       };
     }
-    const latestState = deps.getSessionState(target.terminal.leafId);
     if (latestState?.inputPending) {
       return {
         ok: false as const,
@@ -562,6 +628,7 @@ export function createTerminalAutomationService(
         ),
       };
     }
+    if (starting) return target;
     if (
       !latestState?.ready ||
       latestState.shellExited ||
@@ -926,10 +993,18 @@ export function createTerminalAutomationService(
           };
         }
         const state = deps.getSessionState(target.terminal.leafId);
-        if (!state?.ready || state.shellExited) {
+        if (!state || state.shellExited) {
           return automationError(
             "terminal_unavailable",
             `${target.terminal.terminalId} has no live shell`,
+          );
+        }
+        // Sent right after terminal_open, a Ctrl+C ended the new Windows
+        // PowerShell with 0xC000013A, and its tab closed.
+        if (!state.ready || shellStarting(state)) {
+          return automationError(
+            "terminal_busy",
+            `${target.terminal.terminalId} is starting, so no Ctrl+C was sent: one before the shell's first prompt can end the shell. Wait until terminal_list shows it idle.`,
           );
         }
         if (execution) {
@@ -998,7 +1073,7 @@ export function createTerminalAutomationService(
 
       const input = sanitizeTerminalInput(params.text);
       if (!input.ok) return automationError("invalid_request", input.error);
-      const target = await requireIdle(params);
+      const target = await requireIdle(params, method === "terminal_execute");
       if (!target.ok) return target.response;
       const rawBefore = deps.getBuffer(target.terminal.leafId) ?? "";
       const stateBefore = deps.getSessionState(target.terminal.leafId);

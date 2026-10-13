@@ -19,6 +19,12 @@ import {
 import type { BlockMode } from "../block/lib/modeMachine";
 import { DormantRing } from "./dormantRing";
 import {
+  awaitingFirstPrompt,
+  FIRST_PROMPT_WAIT_MS,
+  matchPromptEnd,
+  PROMPT_END_LENGTH,
+} from "./firstPrompt";
+import {
   createShellIntegrationState,
   registerCwdHandler,
   registerOsc52ClipboardHandler,
@@ -112,6 +118,11 @@ type Session = {
   shell: string | null;
   hiddenReleaseTimer: ReturnType<typeof setTimeout> | null;
   spawnFailed: boolean;
+  // When the PTY opened (performance.now()), and whether the shell has ended a
+  // prompt since, read from its raw output (firstPrompt.ts).
+  ptyOpenedAt: number | null;
+  promptEnded: boolean;
+  promptEndMatched: number;
 };
 
 const MAX_COMMAND_COMPLETIONS = 64;
@@ -425,6 +436,8 @@ export type TerminalSessionState = {
   columns?: number;
   rows?: number;
   inputPending?: boolean;
+  /** The shell has not ended its first prompt yet and still may. */
+  awaitingFirstPrompt?: boolean;
 };
 
 export function getTerminalSessionState(
@@ -445,6 +458,13 @@ export function getTerminalSessionState(
     rows: session.rows || undefined,
     inputPending:
       session.inputPending || (session.blocks && !!session.inputDraft.trim()),
+    awaitingFirstPrompt:
+      session.pty !== null &&
+      awaitingFirstPrompt(
+        session.promptEnded,
+        session.ptyOpenedAt,
+        performance.now(),
+      ),
   };
 }
 
@@ -752,6 +772,9 @@ function ensureSession(
     shell: null,
     hiddenReleaseTimer: null,
     spawnFailed: false,
+    ptyOpenedAt: null,
+    promptEnded: false,
+    promptEndMatched: 0,
   };
   sessions.set(leafId, session);
 
@@ -766,11 +789,25 @@ function ensureSession(
 function deliverPtyBytes(leafId: number, bytes: Uint8Array): void {
   const s = sessions.get(leafId);
   if (!s) return;
+  if (!s.promptEnded) watchFirstPrompt(s, bytes);
   // Retained slots keep parsing live (render paused); the ring is only for
   // leaves whose buffer was stolen or never bound.
   const slot = getLiveSlotForLeaf(leafId);
   if (slot) writeSlot(slot, bytes);
   else s.dormantRing.push(bytes);
+}
+
+// Read before any buffer parses the bytes, so a leaf without a live buffer
+// sees its first prompt too. The search ends where the wait for it does.
+function watchFirstPrompt(s: Session, bytes: Uint8Array): void {
+  if (
+    s.ptyOpenedAt !== null &&
+    performance.now() - s.ptyOpenedAt >= FIRST_PROMPT_WAIT_MS
+  ) {
+    return;
+  }
+  s.promptEndMatched = matchPromptEnd(s.promptEndMatched, bytes);
+  s.promptEnded = s.promptEndMatched === PROMPT_END_LENGTH;
 }
 
 const SPAWN_RETRY_DELAY_MS = 250;
@@ -805,6 +842,9 @@ function adoptPty(leafId: number, s: Session, pty: PtySession): void {
     return;
   }
   s.pty = pty;
+  s.ptyOpenedAt = performance.now();
+  // Ready for typing, which conhost holds until the shell reads it; terminal
+  // automation also waits for the first prompt (awaitingFirstPrompt).
   markSessionReady(leafId);
   if (s.pendingInput) {
     void pty.write(s.pendingInput);
@@ -1042,6 +1082,9 @@ async function respawnSession(leafId: number, cwd?: string): Promise<void> {
   s.commandCompletions = [];
   s.inputPending = false;
   s.spawnFailed = false;
+  s.ptyOpenedAt = null;
+  s.promptEnded = false;
+  s.promptEndMatched = 0;
   cancelHiddenRelease(s);
 
   const slot = getSlotForLeaf(leafId);

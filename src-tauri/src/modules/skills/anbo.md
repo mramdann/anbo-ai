@@ -247,6 +247,10 @@ foreground process.
 Every execute needs an idle prompt. Anbo revalidates that the PTY is attached,
 sitting at a prompt, and free of a foreground job immediately before writing,
 so a busy or exited terminal fails instead of running half a command.
+A new terminal reads `starting` until its shell shows its first prompt. A
+command given to `terminal_execute` then waits for that prompt.
+`terminal_insert` refuses, and `terminal_interrupt` sends no Ctrl+C, since one
+that early can end the shell; try again once `terminal_list` shows it idle.
 A command that never went out ends `dispatch_failed`, and `dispatchError`
 says why, such as every live terminal buffer in use (Anbo has 16, shared by
 all workspaces). When it says nothing was sent, act on it, then run the
