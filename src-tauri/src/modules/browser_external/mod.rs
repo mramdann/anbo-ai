@@ -24,6 +24,14 @@ use tokio::sync::{mpsc, oneshot};
 
 const EVENT: &str = "anbo:external-browser-changed";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// The longest deadline the extension takes for a command.
+const LONGEST_DEADLINE: Duration = Duration::from_secs(15);
+/// A new tab first waits for its page to commit, which a slow site or a busy
+/// machine can take a while to do.
+const OPEN_TIMEOUT: Duration = LONGEST_DEADLINE;
+/// Anbo listens this much past a command's deadline, so the extension's own
+/// answer for it (done, timed out, or not sent) arrives first.
+const REPLY_GRACE: Duration = Duration::from_millis(1_500);
 /// How long a profile asked to reload its extension has to connect again and
 /// get its approval back.
 const RELOAD_RECONNECT: Duration = Duration::from_secs(60);
@@ -280,7 +288,7 @@ impl Registry {
             .duration_since(UNIX_EPOCH)
             .map_err(|error| error.to_string())?
             .as_millis()
-            + timeout.min(REQUEST_TIMEOUT).as_millis();
+            + timeout.min(LONGEST_DEADLINE).as_millis();
         let selection = connection
             .tabs
             .iter()
@@ -401,15 +409,25 @@ async fn request(
     method: &str,
     params: Value,
 ) -> Result<Value, String> {
+    request_within(connection_id, tab_id, method, params, REQUEST_TIMEOUT).await
+}
+
+async fn request_within(
+    connection_id: &str,
+    tab_id: i64,
+    method: &str,
+    params: Value,
+    budget: Duration,
+) -> Result<Value, String> {
     let (request_id, receiver) = REGISTRY
         .lock()
         .map_err(|_| "browser registry unavailable")?
-        .queue(connection_id, tab_id, method, params)?;
+        .queue_timed(connection_id, tab_id, method, params, budget)?;
     let _guard = RequestGuard {
         connection_id: connection_id.into(),
         request_id,
     };
-    tokio::time::timeout(REQUEST_TIMEOUT, receiver)
+    tokio::time::timeout(budget.min(LONGEST_DEADLINE) + REPLY_GRACE, receiver)
         .await
         .map_err(|_| "browser action timed out; it may already have run and will not be replayed")?
         .map_err(|_| "browser disconnected; action was not replayed")?
@@ -681,7 +699,7 @@ async fn extension_version(connection_id: &str) -> Option<String> {
         connection_id: connection_id.into(),
         request_id,
     };
-    match tokio::time::timeout(REQUEST_TIMEOUT, receiver).await {
+    match tokio::time::timeout(REQUEST_TIMEOUT + REPLY_GRACE, receiver).await {
         Ok(Ok(Ok(reply))) => Some(
             reply["version"]
                 .as_str()
@@ -748,11 +766,12 @@ pub async fn browser_external_open_tab(
 ) -> Result<Value, String> {
     ensure_main(&webview)?;
     let url = protocol::validate_url(&url)?;
-    request(
+    request_within(
         &connection_id,
         0,
         "anbo.openTab",
         json!({"url":url.as_str(),"activate":activate.unwrap_or(true)}),
+        OPEN_TIMEOUT,
     )
     .await
 }

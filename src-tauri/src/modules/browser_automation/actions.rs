@@ -163,6 +163,11 @@ const MAX_SCREENSHOT_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const SUBMISSION_OBSERVATION_MS: u64 = 3_000;
 const BROWSER_OPEN_REQUEST_EVENT: &str = "anbo:browser-open-request";
 const BROWSER_OPEN_RESPONSE_EVENT: &str = "anbo:browser-open-response";
+/// How long an open waits for the UI to create its tab.
+const UI_CREATE_TIMEOUT: Duration = Duration::from_secs(25);
+/// The UI's own deadline for an open comes this much earlier, so its answer
+/// for a late tab still arrives.
+const UI_CREATE_MARGIN: Duration = Duration::from_secs(1);
 /// The open's own find is done, so its Chrome or Edge tab may dock.
 const BROWSER_DOCK_HOLD_RELEASE_EVENT: &str = "anbo:browser-dock-hold-release";
 const BROWSER_CLOSE_REQUEST_EVENT: &str = "anbo:browser-close-request";
@@ -980,10 +985,12 @@ async fn handle_action_inner(
         ));
     }
     // Before the tab lock and any lookup: the dock takes that lock to bring the
-    // page in, and the page's layout changes as it comes.
+    // page in, and the page's layout changes as it comes. A Chrome or Edge tab
+    // keeps the dock's turn until its input is done.
+    let mut pointer_turn = None;
     if super::external_front::needs_shown_page(method) {
         if let Some(tab_id) = params.get("tabId").and_then(Value::as_i64) {
-            timings
+            pointer_turn = timings
                 .measure("front", super::external_front::bring_to_front(app, tab_id))
                 .await?;
         }
@@ -1379,7 +1386,8 @@ async fn handle_action_inner(
                 .clamp(100, MAX_WAIT_TIMEOUT_MS);
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|error| (error_codes::TAB_NOT_FOUND.to_string(), error))?;
-            let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+            let started = tokio::time::Instant::now();
+            let deadline = started + Duration::from_millis(timeout_ms);
 
             let mut empty_scans = 0;
             let mut last_empty_scan = None;
@@ -1412,7 +1420,11 @@ async fn handle_action_inner(
                         held.as_deref(),
                     ));
                 }
-                let current_state = page_scan_state(&webview).await;
+                let scan_by = scan_deadline(started, deadline, empty_scans == 0, clock.patient);
+                let current_state = tokio::time::timeout_at(scan_by, page_scan_state(&webview))
+                    .await
+                    .ok()
+                    .flatten();
                 if let Some(previous) = &scanned_state {
                     clock.page_read(previous, current_state.as_ref());
                     if current_state.as_ref().is_some_and(|current| {
@@ -1436,7 +1448,7 @@ async fn handle_action_inner(
                 scanned_at = tokio::time::Instant::now();
                 let scanned = scan_with_fresh_refs(
                     tab_id,
-                    deadline,
+                    scan_by,
                     |generation| collect_locator_matches(&webview, tab_id, generation, &locator),
                     |result| !result.matches.is_empty(),
                 )
@@ -1609,6 +1621,8 @@ async fn handle_action_inner(
             }) {
                 merge_reveal(&mut result, revealed);
             }
+            // The page needs the dock only for the input itself.
+            drop(pointer_turn.take());
             if let Some(expectation) = expectation {
                 result["postcondition"] = timings.measure("postcondition", wait_for_page_state(&webview, tab_id, &expectation)).await
                     .map_err(|(code, message)| (code, format!("click was dispatched, but {message}; inspect the page before retrying the click")))?;
@@ -4574,6 +4588,26 @@ fn describe_ambiguity(error: (String, String), matches: &[LocatorMatch]) -> (Str
 /// disappointments backs off to. Repeating a miss is cheap only in theory:
 /// every retry is a full document walk on the page's own main thread.
 const LOCATOR_RETRY_MS: u64 = 150;
+/// When the caller set no timeout, a lookup's first scan may end this long
+/// after the lookup began, past the lookup's own deadline: a Chrome or Edge
+/// page its browser is not showing, or one on a busy machine, can take seconds
+/// to answer a single scan, and a lookup that never read the page has nothing
+/// to say about it.
+const FIRST_SCAN_GRACE: Duration = Duration::from_secs(10);
+
+/// When the next scan of a lookup that began at `started` must end.
+fn scan_deadline(
+    started: tokio::time::Instant,
+    deadline: tokio::time::Instant,
+    first: bool,
+    patient: bool,
+) -> tokio::time::Instant {
+    if first && !patient {
+        deadline.max(started + FIRST_SCAN_GRACE)
+    } else {
+        deadline
+    }
+}
 const MAX_LOCATOR_RETRY_MS: u64 = 1_000;
 
 fn locator_retry_at(
@@ -5395,7 +5429,8 @@ async fn resolve_target_locator(
     let tab_id = extract_tab_id(params)?;
     let webview =
         get_embed_webview(app, tab_id).map_err(|e| (error_codes::TAB_NOT_FOUND.into(), e))?;
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+    let started = tokio::time::Instant::now();
+    let deadline = started + Duration::from_millis(timeout_ms);
     let mut last_scan = None;
     let mut completed_scans = 0;
     let mut scanned_state: Option<PageScanState> = None;
@@ -5426,7 +5461,11 @@ async fn resolve_target_locator(
                 held.as_deref(),
             ));
         }
-        let current_state = page_scan_state(&webview).await;
+        let scan_by = scan_deadline(started, deadline, completed_scans == 0, clock.patient);
+        let current_state = tokio::time::timeout_at(scan_by, page_scan_state(&webview))
+            .await
+            .ok()
+            .flatten();
         if let Some(previous) = &scanned_state {
             if settles {
                 clock.page_read(previous, current_state.as_ref());
@@ -5450,7 +5489,7 @@ async fn resolve_target_locator(
         scanned_at = tokio::time::Instant::now();
         let (generation, result) = scan_with_fresh_refs(
             tab_id,
-            deadline,
+            scan_by,
             |generation| collect_locator_matches(&webview, tab_id, generation, &locator),
             |result| !result.matches.is_empty(),
         )
@@ -6917,7 +6956,16 @@ async fn wait_for_page_state(
                 }
             }
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            execute_script_with_timeout(webview, &script, remaining.min(Duration::from_millis(750)))
+            // A Chrome or Edge page answers in order, so a check given up on
+            // still runs there and the next one waits behind it: on a busy
+            // machine checks piled up and a page that had navigated at once
+            // never matched. Each one waits for its answer instead.
+            let window = if webview.embedded().is_ok() {
+                remaining.min(Duration::from_millis(750))
+            } else {
+                remaining
+            };
+            execute_script_with_timeout(webview, &script, window)
                 .await
                 .is_ok_and(|value| value.trim() == "true")
         })
@@ -8296,12 +8344,20 @@ async fn open_browser(
     let listener_id = app.once(response_event, move |event| {
         let _ = sender.send(event.payload().to_string());
     });
+    // The UI starts no Chrome/Edge open after this, and closes a tab that opens
+    // later, so the agent is never told an open failed while its tab appears.
+    let deadline = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .saturating_add(UI_CREATE_TIMEOUT.saturating_sub(UI_CREATE_MARGIN))
+        .as_millis() as u64;
     if let Err(error) = app.emit(
         BROWSER_OPEN_REQUEST_EVENT,
         json!({
             "requestId": request_id,
             "url": url,
             "workspace": workspace,
+            "deadline": deadline,
             // Identity travels with the request so the tab carries its
             // controller from the first frame it is drawn.
             "actor": caller,
@@ -8319,12 +8375,12 @@ async fn open_browser(
     }
 
     // A tab opened in a connected Chrome or Edge profile first waits for its
-    // page to commit (up to the bridge's 10 s) and for its debugger; the
+    // page to commit (up to the bridge's 15 s) and for its debugger; the
     // built-in browser answers in milliseconds either way.
     let received = timings
         .measure(
             "uiCreate",
-            tokio::time::timeout(Duration::from_secs(25), receiver),
+            tokio::time::timeout(UI_CREATE_TIMEOUT, receiver),
         )
         .await;
     app.unlisten(listener_id);
@@ -10182,6 +10238,20 @@ mod tests {
             .unwrap(),
             ("https://example.com", "C:\\work\\alpha")
         );
+    }
+
+    #[test]
+    fn only_a_first_scan_without_a_caller_timeout_may_outlast_its_lookup() {
+        let started = tokio::time::Instant::now();
+        let deadline = started + Duration::from_secs(5);
+        assert_eq!(
+            scan_deadline(started, deadline, true, false),
+            started + FIRST_SCAN_GRACE
+        );
+        assert_eq!(scan_deadline(started, deadline, false, false), deadline);
+        assert_eq!(scan_deadline(started, deadline, true, true), deadline);
+        let far = started + Duration::from_secs(30);
+        assert_eq!(scan_deadline(started, far, true, false), far);
     }
 
     #[test]

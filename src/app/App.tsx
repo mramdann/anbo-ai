@@ -1789,13 +1789,20 @@ export default function App() {
       try {
         if (EXTERNAL_BROWSERS_ENABLED && resolved.space.root) {
           const service = await import("@/modules/browser/external/sync");
-          externalTabId = await service.openExternalBrowser(payload.url, resolved.space.root, tabsRef.current, spaceId, payload.holdDock === true, payload.profile ?? undefined);
+          externalTabId = await service.openExternalBrowser(payload.url, resolved.space.root, tabsRef.current, spaceId, payload.holdDock === true, payload.profile ?? undefined, payload.deadline ?? undefined);
         } else if (payload.profile) {
           // Opening Anbo's browser instead would switch logins without saying so.
           throw new Error("Chrome/Edge profiles are not available for this workspace; leave profile out to open the page in Anbo's browser.");
         }
       } catch (cause) {
         void emit(responseEvent, { error: String(cause) });
+        return;
+      }
+      // The agent stopped waiting for this open and would never learn of the
+      // tab. Closing it closes the page Anbo opened in the browser too.
+      if (externalTabId !== null && payload.deadline != null && Date.now() > payload.deadline) {
+        closeTab(externalTabId);
+        void emit(responseEvent, { error: "The page opened after Anbo stopped waiting for it, so its tab was closed again. Try again." });
         return;
       }
       const tabId = externalTabId ?? openBrowserTab(
@@ -1838,6 +1845,7 @@ export default function App() {
     });
   }, [
     automationTabSelection,
+    closeTab,
     openBrowserTab,
     setActiveBrowserTabId,
     setActiveId,

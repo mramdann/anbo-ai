@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDispatcher, NETWORK_EVENTS, networkSummary, profileLabel, RELOAD_RECONNECT_MS, reconnectsAfterReload, tabInfo, validateCommand } from "./bridge.js";
+import { createDispatcher, NETWORK_EVENTS, networkSummary, profileLabel, RELOAD_RECONNECT_MS, reconnectsAfterReload, STUCK_MS, tabInfo, validateCommand } from "./bridge.js";
 
 describe("networkSummary", () => {
   it("passes on what a request did, never its headers, body or credentials", () => {
@@ -209,7 +209,7 @@ describe("external browser bridge", () => {
     } finally { interval.mockRestore(); timeout.mockRestore(); }
   });
 
-  it("expires a stuck screenshot without replaying it or queued input, leaving other tabs live", async () => {
+  it("keeps a tab whose command outlives its deadline, and sends nothing queued behind it", async () => {
     vi.useFakeTimers();
     try {
       const state = harness([10, 11]);
@@ -220,25 +220,71 @@ describe("external browser bridge", () => {
       await state.dispatch(command({ id: 3, tabId: 11 }));
       await vi.advanceTimersByTimeAsync(10_000);
       await Promise.all([capture, input]);
-      expect(state.replies.find((reply) => reply.id === 1).error).toContain("timed out");
-      expect(state.replies.find((reply) => reply.id === 2).error).toBeTruthy();
-      expect(state.attached.has(10)).toBe(false);
+      const timedOut = state.replies.find((reply) => reply.id === 1).error;
+      expect(timedOut).toContain("timed out");
+      expect(timedOut).toContain("stays connected");
+      expect(timedOut).toContain("may still finish");
+      expect(state.replies.find((reply) => reply.id === 2).error).toContain("still running");
+      expect(state.attached.has(10)).toBe(true);
       expect(state.attached.has(11)).toBe(true);
-      expect(state.api.debugger.detach).toHaveBeenCalledExactlyOnceWith({ tabId: 10 });
+      expect(state.api.debugger.detach).not.toHaveBeenCalled();
       expect(state.api.debugger.sendCommand).toHaveBeenCalledTimes(2);
-      const replacement = { selectionId: "new-lease" };
-      state.attached.set(10, replacement);
       complete({ data: "late image" });
       await vi.advanceTimersByTimeAsync(0);
       expect(state.replies).toHaveLength(3);
-      expect(state.attached.get(10)).toBe(replacement);
-      await state.dispatch(command({ id: 4, selectionId: "new-lease" }));
+      await state.dispatch(command({ id: 4 }));
       expect(state.replies.at(-1).result).toEqual({ value: "ok" });
       expect(vi.getTimerCount()).toBe(0);
     } finally { vi.useRealTimers(); }
   });
 
-  it("does not revoke a replacement lease when an old action expires", async () => {
+  it("sends the next command for a tab only once the late one finished", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = harness();
+      let complete;
+      state.api.debugger.sendCommand.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+      const slow = state.dispatch(command({ method: "Input.dispatchMouseEvent", params: { type: "mousePressed" } }));
+      await vi.advanceTimersByTimeAsync(10_000);
+      await slow;
+      // Sent while the slow one still runs: each waits, up to its own deadline.
+      const gaveUp = state.dispatch(command({ id: 2, expiresAt: Date.now() + 2_000 }));
+      const waits = state.dispatch(command({ id: 3, expiresAt: Date.now() + 9_000 }));
+      await vi.advanceTimersByTimeAsync(2_000);
+      await gaveUp;
+      expect(state.replies.find((reply) => reply.id === 2).error).toContain("still running");
+      // The one that gave up never lets the next one overtake the slow one.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(state.api.debugger.sendCommand).toHaveBeenCalledTimes(1);
+      complete({});
+      await waits;
+      expect(state.replies.find((reply) => reply.id === 3).result).toEqual({ value: "ok" });
+      expect(state.api.debugger.sendCommand).toHaveBeenCalledTimes(2);
+      expect(state.attached.has(10)).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("lets go of a tab whose command never finishes", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = harness([10, 11]);
+      state.api.debugger.sendCommand.mockImplementationOnce(() => new Promise(() => {}));
+      const stuck = state.dispatch(command({ method: "Input.insertText", params: { text: "x" } }));
+      await vi.advanceTimersByTimeAsync(10_000);
+      await stuck;
+      expect(state.attached.has(10)).toBe(true);
+      await vi.advanceTimersByTimeAsync(STUCK_MS - 1);
+      expect(state.attached.has(10)).toBe(true);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(state.attached.has(10)).toBe(false);
+      expect(state.attached.has(11)).toBe(true);
+      expect(state.api.debugger.detach).toHaveBeenCalledExactlyOnceWith({ tabId: 10 });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not revoke a replacement lease when an old action never finishes", async () => {
     vi.useFakeTimers();
     try {
       const state = harness();
@@ -247,12 +293,24 @@ describe("external browser bridge", () => {
       await vi.advanceTimersByTimeAsync(0);
       const replacement = { selectionId: "new-lease" };
       state.attached.set(10, replacement);
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(10_000 + STUCK_MS);
       await action;
       expect(state.attached.get(10)).toBe(replacement);
       expect(state.api.debugger.detach).not.toHaveBeenCalled();
       expect(vi.getTimerCount()).toBe(0);
     } finally { vi.useRealTimers(); }
+  });
+
+  it("answers where the tab is while a page command is slow", async () => {
+    const state = harness();
+    let complete;
+    state.api.debugger.sendCommand.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const slow = state.dispatch(command());
+    await state.dispatch(command({ id: 2, method: "anbo.tabState" }));
+    expect(state.replies.map((reply) => reply.id)).toEqual([2]);
+    complete({});
+    await slow;
+    expect(state.replies.map((reply) => reply.id)).toEqual([2, 1]);
   });
 
   it("keeps tab control after a viewport screenshot timeout and bounds unresolved captures", async () => {
@@ -267,8 +325,8 @@ describe("external browser bridge", () => {
       const queued = state.dispatch(command({ id: 2, method: "Input.insertText", params: { text: "expired" } }));
       await vi.advanceTimersByTimeAsync(10_000);
       await Promise.all([capture, queued]);
-      expect(state.replies[0].error).toContain("Tab control remains connected");
-      expect(state.replies[1].error).toBeTruthy();
+      expect(state.replies.find((reply) => reply.id === 1).error).toContain("Tab control remains connected");
+      expect(state.replies.find((reply) => reply.id === 2).error).toBeTruthy();
       expect(state.attached.get(10)).toBe(selection);
       expect(state.api.debugger.detach).not.toHaveBeenCalled();
       await state.dispatch(command({ id: 3, method: "Page.captureScreenshot", params }));
@@ -289,7 +347,7 @@ describe("external browser bridge", () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it("does not exempt captures that can alter viewport emulation from timeout revocation", async () => {
+  it("holds the tab for a capture that can alter viewport emulation until it finishes", async () => {
     vi.useFakeTimers();
     try {
       for (const params of [
@@ -299,10 +357,18 @@ describe("external browser bridge", () => {
         const state = harness();
         state.api.debugger.sendCommand.mockImplementationOnce(() => new Promise(() => {}));
         const capture = state.dispatch(command({ method: "Page.captureScreenshot", params }));
-        await vi.advanceTimersByTimeAsync(10_000);
+        await vi.advanceTimersByTimeAsync(5_000);
+        const queued = state.dispatch(command({ id: 2, method: "Input.insertText", params: { text: "not sent" } }));
+        await vi.advanceTimersByTimeAsync(5_000);
         await capture;
+        expect(state.attached.has(10)).toBe(true);
+        await vi.advanceTimersByTimeAsync(5_000);
+        await queued;
+        expect(state.replies.find((reply) => reply.id === 2).error).toContain("still running");
+        await vi.advanceTimersByTimeAsync(STUCK_MS);
         expect(state.attached.has(10)).toBe(false);
         expect(state.api.debugger.detach).toHaveBeenCalledExactlyOnceWith({ tabId: 10 });
+        expect(state.api.debugger.sendCommand).toHaveBeenCalledTimes(1);
         expect(vi.getTimerCount()).toBe(0);
       }
     } finally { vi.useRealTimers(); }

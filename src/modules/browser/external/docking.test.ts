@@ -26,6 +26,7 @@ describe("automatic docking", () => {
     held: false,
     elsewhere: false,
     reading: false,
+    turn: false,
   };
 
   it("docks a shown, connected tab by itself", () => {
@@ -46,6 +47,8 @@ describe("automatic docking", () => {
     ["another tab's shown panel holds the page", { elsewhere: true }],
     // A dock move would stall the agent open's read of the new page.
     ["an agent's open still reads the new page", { reading: true }],
+    // Taking the dock would move another agent's page out from under its click.
+    ["another tab's agent pointer input holds the dock", { turn: true }],
   ] as const)("waits when %s", (_name, change) => {
     expect(shouldAttachDock({ ...ready, ...change })).toBe(false);
   });

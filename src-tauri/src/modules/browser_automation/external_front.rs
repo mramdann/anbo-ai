@@ -6,6 +6,10 @@
 //!
 //! Reads and waits leave the tab where it is, and its browser runs a hidden
 //! page slowly, so a lookup or wait that runs out of time there says so.
+//!
+//! The dock shows one page, so agents take turns: pointer input to a Chrome or
+//! Edge tab holds the turn until the input is done, and another agent's input
+//! waits for it instead of moving that page out from under it.
 
 use super::protocol::error_codes;
 use super::registry::get_embed_webview;
@@ -14,6 +18,7 @@ use crate::modules::browser_external::dock::{self, Standing};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Listener};
 
@@ -22,6 +27,18 @@ const SHOW_RESPONSE_EVENT: &str = "anbo:browser-show-response";
 /// A dock takes about 0.7 s, after the page it replaces went back to its own
 /// window.
 const SHOW_PATIENCE: Duration = Duration::from_secs(5);
+/// On a busy machine a dock can take several seconds, so the wait goes on this
+/// long while the dock is still bringing the page in.
+const DOCKING_PATIENCE: Duration = Duration::from_secs(15);
+/// A page not shown by then, with the dock idle, is asked for once more.
+const ASK_AGAIN: Duration = Duration::from_millis(2_500);
+/// How long pointer input waits for other agents' input on Chrome/Edge tabs.
+const TURN_PATIENCE: Duration = Duration::from_secs(30);
+/// The UI hears which tab holds the turn, and brings no agent's new tab to
+/// the front of a panel meanwhile.
+const TURN_EVENT: &str = "anbo:browser-pointer-turn";
+static TURN: LazyLock<Arc<tokio::sync::Mutex<()>>> =
+    LazyLock::new(|| Arc::new(tokio::sync::Mutex::new(())));
 /// A page counts as shown once it draws a frame. One in a window that Anbo
 /// covers can read as visible and still draw nothing, and then a pointer move
 /// waits for a frame that never comes.
@@ -45,6 +62,34 @@ pub fn needs_shown_page(method: &str) -> bool {
     )
 }
 
+/// One agent's turn at pointer input to a Chrome or Edge tab, until dropped.
+pub struct PointerTurn {
+    app: AppHandle,
+    _turn: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for PointerTurn {
+    fn drop(&mut self) {
+        let _ = self.app.emit(TURN_EVENT, json!({ "tabId": Value::Null }));
+    }
+}
+
+async fn take_turn(app: &AppHandle, tab_id: i64) -> Result<PointerTurn, (String, String)> {
+    let turn = tokio::time::timeout(TURN_PATIENCE, TURN.clone().lock_owned())
+        .await
+        .map_err(|_| {
+            (
+                error_codes::INPUT_NOT_READY.to_string(),
+                format!("other agents' clicks on Chrome/Edge tabs kept Anbo's browser panel, which shows one page at a time, busy for {} s. No input was sent. Retry.", TURN_PATIENCE.as_secs()),
+            )
+        })?;
+    let _ = app.emit(TURN_EVENT, json!({ "tabId": tab_id }));
+    Ok(PointerTurn {
+        app: app.clone(),
+        _turn: turn,
+    })
+}
+
 #[derive(Deserialize)]
 struct ShowResponse {
     shown: bool,
@@ -52,15 +97,23 @@ struct ShowResponse {
     reason: Option<String>,
 }
 
-/// Returns at once for Anbo's own browser, a docked page, or a page its
-/// browser already shows and draws.
-pub async fn bring_to_front(app: &AppHandle, tab_id: i64) -> Result<(), (String, String)> {
+/// Returns at once for Anbo's own browser. A Chrome or Edge tab first waits for
+/// its turn, then returns once its page is docked or its browser shows and
+/// draws it. The caller keeps the turn until its input is done.
+pub async fn bring_to_front(
+    app: &AppHandle,
+    tab_id: i64,
+) -> Result<Option<PointerTurn>, (String, String)> {
     let Ok(target) = get_embed_webview(app, tab_id) else {
         // The action reports a missing tab itself.
-        return Ok(());
+        return Ok(None);
     };
-    if target.embedded().is_ok() || docked_live(tab_id) || page_shown(&target).await {
-        return Ok(());
+    if target.embedded().is_ok() {
+        return Ok(None);
+    }
+    let turn = take_turn(app, tab_id).await?;
+    if docked_live(tab_id) || page_shown(&target).await {
+        return Ok(Some(turn));
     }
     if let Some(why) = not_in_front(dock::standing(app)) {
         return Err(refusal(why));
@@ -69,16 +122,45 @@ pub async fn bring_to_front(app: &AppHandle, tab_id: i64) -> Result<(), (String,
     if !answer.shown {
         return Err(refusal(not_shown(answer.reason.as_deref())));
     }
-    let deadline = tokio::time::Instant::now() + SHOW_PATIENCE;
-    while tokio::time::Instant::now() < deadline {
+    let started = tokio::time::Instant::now();
+    let mut asked_again = false;
+    loop {
         tokio::time::sleep(Duration::from_millis(100)).await;
         if docked_live(tab_id) || page_shown(&target).await {
-            return Ok(());
+            return Ok(Some(turn));
+        }
+        let docking = docking(tab_id);
+        // Nothing moved: the UI may have been too busy to dock the tab, or
+        // kept it from the dock after a failure. Asked again, it retries.
+        if !asked_again && !docking && started.elapsed() >= ASK_AGAIN {
+            asked_again = true;
+            if let Ok(answer) = request_show(app, tab_id).await {
+                if !answer.shown {
+                    return Err(refusal(not_shown(answer.reason.as_deref())));
+                }
+            }
+        }
+        if !keep_waiting(started.elapsed(), docking) {
+            break;
         }
     }
-    Err(refusal(not_docked(
+    Err(refusal(&not_docked(
         dock::docked(tab_id).and_then(|(_, reason)| reason),
+        started.elapsed(),
     )))
+}
+
+/// Whether the dock is still bringing this tab's page in.
+fn docking(tab_id: i64) -> bool {
+    dock::working()
+        || matches!(
+            dock::docked(tab_id),
+            Some((false, None | Some("measuring")))
+        )
+}
+
+fn keep_waiting(waited: Duration, docking: bool) -> bool {
+    waited < SHOW_PATIENCE || (docking && waited < DOCKING_PATIENCE)
 }
 
 /// A page the dock shows in its panel is drawn there.
@@ -221,11 +303,11 @@ fn not_shown(reason: Option<&str>) -> &'static str {
     }
 }
 
-fn not_docked(reason: Option<&str>) -> &'static str {
+fn not_docked(reason: Option<&str>, waited: Duration) -> String {
     match reason {
-        Some("panel-too-narrow") => "Anbo's panel is narrower than the browser allows, so the page cannot show there. Ask the user to widen the panel, then retry.",
-        Some("panel-outside-host") => "Anbo's panel reaches outside its window, so the page cannot show there. Ask the user to move the panel back inside, then retry.",
-        _ => "Anbo brought the tab to the front of its panel, but the page did not show within 5 s. Retry, or ask the user what the panel shows.",
+        Some("panel-too-narrow") => "Anbo's panel is narrower than the browser allows, so the page cannot show there. Ask the user to widen the panel, then retry.".into(),
+        Some("panel-outside-host") => "Anbo's panel reaches outside its window, so the page cannot show there. Ask the user to move the panel back inside, then retry.".into(),
+        _ => format!("Anbo brought the tab to the front of its panel, but the page did not show within {} s. Retry, or ask the user what the panel shows.", waited.as_secs_f32().round()),
     }
 }
 
@@ -253,6 +335,35 @@ mod tests {
         ] {
             assert!(!needs_shown_page(method), "{method}");
         }
+    }
+
+    #[test]
+    fn the_wait_for_a_page_goes_on_while_the_dock_brings_it_in() {
+        assert!(keep_waiting(Duration::from_secs(4), false));
+        assert!(!keep_waiting(SHOW_PATIENCE, false));
+        assert!(keep_waiting(Duration::from_secs(12), true));
+        assert!(!keep_waiting(DOCKING_PATIENCE, true));
+    }
+
+    #[tokio::test]
+    async fn pointer_input_takes_turns_in_order() {
+        let first = TURN.clone().lock_owned().await;
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut waiting = Vec::new();
+        for index in 0..3 {
+            let order = order.clone();
+            waiting.push(tokio::spawn(async move {
+                let _turn = TURN.clone().lock_owned().await;
+                order.lock().unwrap().push(index);
+            }));
+            tokio::task::yield_now().await;
+        }
+        assert!(order.lock().unwrap().is_empty());
+        drop(first);
+        for task in waiting {
+            task.await.unwrap();
+        }
+        assert_eq!(*order.lock().unwrap(), vec![0, 1, 2]);
     }
 
     #[test]
@@ -326,12 +437,17 @@ mod tests {
         assert!(refusal(not_shown(None))
             .1
             .contains("Ask the user to show the tab"));
-        assert!(refusal(not_docked(Some("panel-too-narrow")))
-            .1
-            .contains("widen the panel"));
-        assert!(refusal(not_docked(Some("measuring")))
+        assert!(
+            refusal(&not_docked(Some("panel-too-narrow"), SHOW_PATIENCE))
+                .1
+                .contains("widen the panel")
+        );
+        assert!(refusal(&not_docked(Some("measuring"), SHOW_PATIENCE))
             .1
             .contains("within 5 s"));
+        assert!(refusal(&not_docked(None, Duration::from_millis(14_960)))
+            .1
+            .contains("within 15 s"));
         assert_eq!(not_in_front(Standing::Front), None);
         assert!(refusal(not_in_front(Standing::Minimized).unwrap())
             .1

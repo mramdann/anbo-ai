@@ -7,6 +7,10 @@ import {
   openReadHoldsDock,
   subscribeOpenReads,
 } from "@/modules/browser/external/openReads";
+import {
+  pointerTurnElsewhere,
+  subscribePointerTurn,
+} from "@/modules/browser/external/pointerTurn";
 import { toPhysicalBounds } from "@/modules/browser/native";
 import {
   FLOATING_SURFACE_SELECTOR,
@@ -349,6 +353,8 @@ export type AutoDockState = {
   elsewhere: boolean;
   /** An agent's open still reads the new page (see openReads.ts). */
   reading: boolean;
+  /** Another tab's agent pointer input holds the dock (see pointerTurn.ts). */
+  turn: boolean;
 };
 
 /** A shown, connected tab takes the dock by itself, but only while Anbo is in
@@ -356,7 +362,8 @@ export type AutoDockState = {
  * over that app. A hold (a failure, or the page moved back to the browser)
  * lasts until the tab is shown again or someone clicks. From another shown
  * panel only a click or an agent's input takes the page, so it does not jump
- * between panels side by side when one appears or the workspace shows again. */
+ * between panels side by side when one appears or the workspace shows again.
+ * While another agent's pointer input holds the dock, a tab waits for it. */
 export function shouldAttachDock(state: AutoDockState): boolean {
   return (
     state.visible &&
@@ -368,7 +375,8 @@ export function shouldAttachDock(state: AutoDockState): boolean {
     !state.busy &&
     !state.held &&
     !state.elsewhere &&
-    !state.reading
+    !state.reading &&
+    !state.turn
   );
 }
 
@@ -476,6 +484,11 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
   const reading = useSyncExternalStore(
     subscribeOpenReads,
     () => openReadHoldsDock(tab.id),
+    () => false,
+  );
+  const turn = useSyncExternalStore(
+    subscribePointerTurn,
+    () => pointerTurnElsewhere(tab.id),
     () => false,
   );
   // A dockview drag needs its drop targets over the page, like any overlay.
@@ -844,6 +857,9 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     elsewhere: elsewhere && !asked,
     // A click on the panel or an agent's pointer input asks for the page.
     reading: reading && !asked,
+    // A tab shown while another agent clicks, as the next one after a closed
+    // tab is, takes the dock after that click; a click on it takes it now.
+    turn: turn && !asked,
   });
   const attachRef = useRef(attach);
   attachRef.current = attach;

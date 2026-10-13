@@ -23,6 +23,9 @@ export type BrowserOpenRequest = {
   // The Chrome/Edge profile to open in, by name or id, for a workspace that
   // has several approved.
   profile?: string | null;
+  // When the agent stops waiting, in ms since the epoch. A Chrome/Edge open
+  // still queued then is not started, and a tab that opens later is closed.
+  deadline?: number | null;
 };
 
 export type BrowserCloseRequest = {

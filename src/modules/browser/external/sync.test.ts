@@ -606,6 +606,150 @@ describe("external browser workspace synchronization", () => {
       ).resolves.toBe(101);
     });
 
+    it("opens in two profiles at once, and one after another in the same profile", async () => {
+      const state = twoProfiles();
+      const work = deferred<void>();
+      const listed = await state.calls("browser_external_connections");
+      const opened: string[] = [];
+      state.calls.mockImplementation(
+        async (command: string, args?: unknown) => {
+          if (command === "browser_external_connections") return listed;
+          if (command === "browser_external_open_tab") {
+            const { connectionId } = args as { connectionId: string };
+            opened.push(connectionId);
+            if (connectionId === "session" && opened.length === 1)
+              await work.promise;
+            return (listed as ExternalConnection[]).find(
+              (item) => item.connectionId === connectionId,
+            )?.tabs[0];
+          }
+          return undefined;
+        },
+      );
+      const first = state.service.open(
+        "https://example.org",
+        "D:/work",
+        false,
+        "Work",
+      );
+      const sameProfile = state.service.open(
+        "https://example.net",
+        "D:/work",
+        false,
+        "Work",
+      );
+      const other = state.service.open(
+        "https://example.com",
+        "D:/work",
+        false,
+        "Personal",
+      );
+      await expect(other).resolves.toBeTypeOf("number");
+      expect(opened).toEqual(["session", "personal"]);
+      work.resolve();
+      await Promise.all([first, sameProfile]);
+      expect(opened).toEqual(["session", "personal", "session"]);
+    });
+
+    it("does not start an open still waiting for its profile at its deadline", async () => {
+      const state = twoProfiles();
+      const work = deferred<void>();
+      const listed = await state.calls("browser_external_connections");
+      state.calls.mockImplementation(
+        async (command: string, args?: unknown) => {
+          if (command === "browser_external_connections") return listed;
+          if (command === "browser_external_open_tab") {
+            await work.promise;
+            return (listed as ExternalConnection[]).find(
+              (item) =>
+                item.connectionId ===
+                (args as { connectionId: string }).connectionId,
+            )?.tabs[0];
+          }
+          return undefined;
+        },
+      );
+      const first = state.service.open(
+        "https://example.org",
+        "D:/work",
+        false,
+        "Work",
+      );
+      const late = state.service.open(
+        "https://example.net",
+        "D:/work",
+        false,
+        "Work",
+        Date.now() + 20,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      work.resolve();
+      await first;
+      await expect(late).rejects.toThrow(
+        "Anbo was still opening other tabs in this browser profile, so this page was not opened.",
+      );
+      expect(
+        state.calls.mock.calls.filter(
+          ([command]) => command === "browser_external_open_tab",
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("does not open in a profile given to another workspace while the open waited", async () => {
+      const state = twoProfiles();
+      const work = deferred<void>();
+      let listed = (await state.calls(
+        "browser_external_connections",
+      )) as ExternalConnection[];
+      state.calls.mockImplementation(
+        async (command: string, args?: unknown) => {
+          if (command === "browser_external_connections") return listed;
+          if (command === "browser_external_open_tab") {
+            await work.promise;
+            return listed.find(
+              (item) =>
+                item.connectionId ===
+                (args as { connectionId: string }).connectionId,
+            )?.tabs[0];
+          }
+          return undefined;
+        },
+      );
+      const first = state.service.open(
+        "https://example.org",
+        "D:/work",
+        false,
+        "Personal",
+      );
+      const waiting = state.service.open(
+        "https://example.net",
+        "D:/work",
+        false,
+        "Personal",
+      );
+      await vi.waitFor(() =>
+        expect(state.calls).toHaveBeenCalledWith(
+          "browser_external_open_tab",
+          expect.objectContaining({ connectionId: "personal" }),
+        ),
+      );
+      listed = listed.map((item) =>
+        item.connectionId === "personal"
+          ? { ...item, workspace: "D:/other" }
+          : item,
+      );
+      work.resolve();
+      await first.catch(() => {});
+      await expect(waiting).rejects.toThrow(
+        "This browser profile is no longer approved for this workspace",
+      );
+      expect(
+        state.calls.mock.calls.filter(
+          ([command]) => command === "browser_external_open_tab",
+        ),
+      ).toHaveLength(1);
+    });
+
     it("never takes a named profile approved for another workspace, nor Anbo's browser", async () => {
       const state = harness();
       state.connections([{ ...connection(), workspace: "D:/other" }]);

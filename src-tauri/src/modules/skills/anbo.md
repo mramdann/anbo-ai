@@ -198,6 +198,9 @@ tabs show URLs whole.
 A workspace with a Chrome or Edge profile approved opens new tabs in that
 profile. Where several are approved, `browser_open` needs `profile`, one of the
 names (or ids) its error lists; Anbo never opens the page under another login.
+A Chrome or Edge action that times out keeps its tab, but may still finish in
+the page: read the page before repeating it. Clicks on Chrome and Edge tabs
+take turns, so with other agents at work one can wait for theirs first.
 
 When the active workspace has no tabs, `browser_open`, `terminal_open` and
 `agent_spawn` display their first tab automatically (`placement:

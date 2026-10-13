@@ -10,6 +10,17 @@ const COOKIE_METHODS = new Set([
 ]);
 const PROFILE_METHODS = new Set(["anbo.listTabs", "anbo.openTab", "anbo.version", "anbo.reloadExtension"]);
 const TAB_METHODS = new Set(["anbo.selectTab", "anbo.releaseTab", "anbo.closeTab"]);
+// Commands about the tab's place in its browser, not its page. They never wait
+// behind a page command that is slow to answer.
+const CONTROL_METHODS = new Set(["anbo.focusTab", "anbo.tabState", "anbo.dockPrepare", "anbo.dockCommit", "anbo.dockRelease", "anbo.dockSwap"]);
+// A command past its deadline can still finish in the page, so the tab's next
+// command waits for it. One still running this long after its deadline means
+// the tab stopped answering, and the tab is let go.
+export const STUCK_MS = 20_000;
+const TIMED_OUT = "Browser command timed out; the tab stays connected. It was not replayed and may still finish, so check the page before repeating it.";
+const STILL_RUNNING = "An earlier command on this tab is still running, so this one was not sent. Check the page before trying again.";
+const PROFILE_BUSY = "An earlier request to this browser profile is still running, so this one was not sent. Try again in a moment.";
+const CAPTURE_TIMED_OUT = "Screenshot timed out without focusing the browser. Tab control remains connected; show the browser tab before trying another capture.";
 
 export function validateCommand(message, attached, now = Date.now()) {
   if (!message || message.type !== "command" || !Number.isSafeInteger(message.id)
@@ -33,7 +44,7 @@ export function validateCommand(message, attached, now = Date.now()) {
   if (COOKIE_METHODS.has(message.method)) {
     throw new Error("Cookie access is not available to agents");
   }
-  if (!profile && !selection && !["anbo.focusTab", "anbo.tabState", "anbo.dockPrepare", "anbo.dockCommit", "anbo.dockRelease", "anbo.dockSwap"].includes(message.method) && !ALLOWED_DOMAINS.has(message.method.split(".")[0])) {
+  if (!profile && !selection && !CONTROL_METHODS.has(message.method) && !ALLOWED_DOMAINS.has(message.method.split(".")[0])) {
     throw new Error("Unsupported browser command domain");
   }
   if (message.method.startsWith("Target.")) {
@@ -160,6 +171,15 @@ export function webUrl(address) {
   return url.href;
 }
 
+/** Resolves once `previous` does, or fails with `busy` when `expiresAt` comes first. */
+function turnAfter(previous, expiresAt, busy) {
+  let timer;
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(busy)), Math.max(0, expiresAt - Date.now()));
+  });
+  return Promise.race([previous, late]).finally(() => clearTimeout(timer));
+}
+
 export function createDispatcher(api, attached, send, active, controls) {
   const queues = new Map();
   const captures = new Map();
@@ -171,7 +191,7 @@ export function createDispatcher(api, attached, send, active, controls) {
     let selection;
     let expired = false;
     const check = () => {
-      if (expired) throw new Error("Browser command timed out; select this tab again. The action was not replayed.");
+      if (expired) throw new Error(TIMED_OUT);
       validateCommand(message, attached);
       if (!active()) throw new Error("Browser connection revoked");
       if (selection && attached.get(message.tabId) !== selection) throw new Error("Tab selection revoked");
@@ -191,27 +211,38 @@ export function createDispatcher(api, attached, send, active, controls) {
       return;
     }
     pending += 1;
-    const previous = queues.get(message.tabId) ?? Promise.resolve();
-    const task = previous.catch(() => {}).then(async () => {
+    const lane = CONTROL_METHODS.has(message.method) ? `control:${message.tabId}` : message.tabId;
+    const previous = queues.get(lane);
+    let release;
+    const free = new Promise((resolve) => { release = resolve; });
+    queues.set(lane, free);
+    // Whether the lane stays taken after the reply, for an action still running.
+    let holding = false;
+    const turn = previous ? turnAfter(previous, message.expiresAt, message.tabId === 0 ? PROFILE_BUSY : STILL_RUNNING) : Promise.resolve();
+    const task = turn.then(async () => {
       check();
       if (execute) return await execute();
       const capture = message.method === "Page.captureScreenshot";
       const readonlyCapture = capture && message.params.fromSurface === true && message.params.captureBeyondViewport === false && !Object.hasOwn(message.params, "clip");
       if (capture && (captures.has(message.tabId) || captures.size >= 32)) throw new Error("A previous screenshot is still pending. Tab control remains connected; show the browser tab before trying another capture.");
       let timer;
+      let stuck;
       const deadline = new Promise((_, reject) => {
         timer = setTimeout(() => {
           expired = true;
-          if (!readonlyCapture && attached.get(message.tabId) === selection) {
-            if (controls?.expire) controls.expire(message.tabId, selection);
-            else {
-              attached.delete(message.tabId);
-              void api.debugger.detach({ tabId: message.tabId }).catch(() => {});
-            }
+          if (!readonlyCapture) {
+            stuck = setTimeout(() => {
+              if (attached.get(message.tabId) === selection) {
+                if (controls?.expire) controls.expire(message.tabId, selection);
+                else {
+                  attached.delete(message.tabId);
+                  void api.debugger.detach({ tabId: message.tabId }).catch(() => {});
+                }
+              }
+              release();
+            }, STUCK_MS);
           }
-          reject(new Error(readonlyCapture
-            ? "Screenshot timed out without focusing the browser. Tab control remains connected; show the browser tab before trying another capture."
-            : "Browser command timed out; select this tab again. The action was not replayed."));
+          reject(new Error(readonlyCapture ? CAPTURE_TIMED_OUT : TIMED_OUT));
         }, Math.max(0, message.expiresAt - Date.now()));
       });
       const action = (async () => {
@@ -236,10 +267,18 @@ export function createDispatcher(api, attached, send, active, controls) {
         const complete = () => { if (captures.get(message.tabId) === action) captures.delete(message.tabId); };
         void action.then(complete, complete);
       }
+      // A viewport capture changes nothing, so a late one holds nobody up.
+      if (!readonlyCapture) {
+        holding = true;
+        const settled = () => {
+          clearTimeout(stuck);
+          release();
+        };
+        void action.then(settled, settled);
+      }
       try { return await Promise.race([action, deadline]); }
       finally { clearTimeout(timer); }
     });
-    queues.set(message.tabId, task);
     try {
       send({ type: "reply", id: message.id, result: (await task) ?? {} });
     } catch (error) {
@@ -247,7 +286,9 @@ export function createDispatcher(api, attached, send, active, controls) {
     } finally {
       execute?.cancel?.();
       pending -= 1;
-      if (queues.get(message.tabId) === task) queues.delete(message.tabId);
+      // A command that never ran passes the lane on only once the one before it is done.
+      if (!holding) void (previous ?? Promise.resolve()).then(release);
+      void free.then(() => { if (queues.get(lane) === free) queues.delete(lane); });
     }
   };
 }

@@ -59,6 +59,7 @@ import {
 } from "@/modules/browser/automationActivity";
 import { automationLabel } from "@/modules/browser/automationState";
 import { BrowserAutomationIndicators } from "@/modules/browser/BrowserAutomationIndicators";
+import { pointerTurnHeld } from "@/modules/browser/external/pointerTurn";
 import { setNativeBrowserDragActive } from "@/modules/browser/nativeVisibility";
 import {
   createContext,
@@ -1934,6 +1935,9 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
     for (const request of pending) {
       handledReveals.current.set(props.spaceId, request.revision);
       if (!browserPanelSide(latest.current.layoutMode)) continue;
+      // Another agent's click is using the dock; this tab coming forward
+      // would move that page out from under it.
+      if (pointerTurnHeld()) continue;
       const panel = api.getPanel(workspaceDockviewPanelId(request.tabId));
       const group = panel?.api.group;
       if (

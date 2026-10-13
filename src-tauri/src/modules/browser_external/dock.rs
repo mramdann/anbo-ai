@@ -596,6 +596,18 @@ pub fn docked(tab_id: i64) -> Option<(bool, Option<&'static str>)> {
     }
 }
 
+/// Whether the dock is attaching, moving or releasing a page right now.
+pub fn working() -> bool {
+    #[cfg(windows)]
+    {
+        native::working()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 #[cfg(windows)]
 fn main_window<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<tauri::Window<R>, String> {
     use tauri::Manager;
@@ -1626,6 +1638,10 @@ mod native {
             "actualBounds": window_bounds(dock.lease.hwnd()).ok(),
             "lastWindowError": dock.last_error,
         }))
+    }
+
+    pub(super) fn working() -> bool {
+        OPERATIONS.try_lock().is_err()
     }
 
     pub(super) fn docked(tab_id: i64) -> Option<(bool, Option<&'static str>)> {

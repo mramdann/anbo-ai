@@ -5,7 +5,7 @@ import { createDockManager } from "./dock.js";
 // The version this code is, kept equal to manifest.json. After an update the
 // browser reads the new manifest but can keep running the old scripts until the
 // extension reloads, so the manifest alone would hide that a reload is due.
-export const EXTENSION_VERSION = "0.5.4";
+export const EXTENSION_VERSION = "0.5.5";
 
 const MAX_TABS = 128;
 
@@ -71,7 +71,7 @@ export function createTabManager(api, attached, publish, dockChanged, reload = (
       loading.add(cancel);
       api.tabs.onUpdated.addListener(updated);
       api.tabs.onRemoved.addListener(removed);
-      timer = setTimeout(() => finish(new Error("The new tab is still loading. Open it from Anbo's browser menu when ready.")), Math.max(0, expiresAt - Date.now()));
+      timer = setTimeout(() => finish(new Error("The new tab's page did not load in time.")), Math.max(0, expiresAt - Date.now()));
       void api.tabs.get(tabId).then(inspect, (error) => finish(error));
     });
   }
@@ -190,10 +190,30 @@ export function createTabManager(api, attached, publish, dockChanged, reload = (
         if (!window) throw new Error("Open a regular window in this connected browser profile first");
         const activate = message.params.activate !== false;
         const tab = await api.tabs.create({ windowId: window.id, url, active: activate });
-        check();
-        const info = await waitForPage(tab.id, message.expiresAt, check);
-        const result = await select(info.id, info.url, reserve(info.id), check, true);
-        check();
+        let result;
+        let timer;
+        // The answer goes out at the deadline even while the browser is still
+        // attaching; a step after it finds the open expired and stops.
+        const late = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("expired")), Math.max(0, message.expiresAt - Date.now()));
+        });
+        try {
+          result = await Promise.race([late, (async () => {
+            check();
+            const info = await waitForPage(tab.id, message.expiresAt, check);
+            const selected = await select(info.id, info.url, reserve(info.id), check, true);
+            check();
+            return selected;
+          })()]);
+        } catch (error) {
+          // Anbo stopped waiting for this open, so nobody would ever take the
+          // tab: it would stay behind in the user's browser.
+          if (disposed || Date.now() < message.expiresAt) throw error;
+          void track(discard(tab.id)).catch(() => {});
+          throw new Error("Opening the tab took longer than Anbo waits, so the tab was closed again. Nothing was replayed; try again.");
+        } finally {
+          clearTimeout(timer);
+        }
         if (activate) await api.windows.update(window.id, { focused: true });
         return result;
       };
@@ -222,6 +242,13 @@ export function createTabManager(api, attached, publish, dockChanged, reload = (
     return execute;
   }
 
+  async function discard(tabId) {
+    invalidate(tabId);
+    if (attached.delete(tabId)) publish();
+    if (owned.has(tabId)) await detach(tabId).catch(() => {});
+    await api.tabs.remove(tabId);
+  }
+
   function removed(tabId) {
     void dock.release(tabId).catch(() => {});
     transports.get(tabId)?.dispose();
@@ -236,7 +263,10 @@ export function createTabManager(api, attached, publish, dockChanged, reload = (
     invalidate(tabId);
     attached.delete(tabId);
     publish();
-    const recovery = track(detach(tabId, false)).finally(() => {
+    // A tab Anbo opened would stay behind in the browser: Anbo's tab for it
+    // can no longer reach it to close it.
+    const opened = selection.createdByAnbo === true;
+    const recovery = track(detach(tabId, false).finally(() => (opened ? api.tabs.remove(tabId) : undefined))).finally(() => {
       if (recovering.get(tabId) === recovery) recovering.delete(tabId);
     });
     recovering.set(tabId, recovery);

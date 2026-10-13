@@ -227,10 +227,10 @@ impl ExternalTarget {
             return Err("browser tab binding was released".into());
         }
         self.validate(&registry)?;
-        // The extension drops a tab whose command outlives its deadline, so it
-        // always gets the whole budget. A short timeout is only how long the
-        // caller listens (see `call`): a busy page then costs a retry, not the
-        // tab.
+        // Every command gets the whole budget in the extension, and one that
+        // outlives it keeps the tab: the tab's later commands wait there until
+        // it is done. A short timeout is only how long the caller listens (see
+        // `call`).
         let (request_id, receiver) = registry.queue_timed(
             &self.connection_id,
             self.browser_tab_id,
@@ -254,21 +254,20 @@ impl ExternalTarget {
         timeout: Duration,
     ) -> Result<Value, String> {
         let (_guard, receiver) = self.queue(method, params)?;
-        // Input and navigation are waited for in full: giving up early would
-        // report an action as not done while it can still land.
-        let wait = if changes_page(method) {
-            REQUEST_TIMEOUT
-        } else {
-            timeout.min(REQUEST_TIMEOUT)
-        };
+        let wait = listen_window(method, timeout);
         tokio::time::timeout(wait, receiver)
             .await
-            .map_err(|_| "browser action timed out; it was not replayed")?
-            .map_err(|_| "browser disconnected")?
+            .map_err(|_| {
+                format!(
+                    "browser action timed out after {:.1} s; it was not replayed and may still finish in the page, so check the page before repeating it",
+                    wait.as_secs_f32()
+                )
+            })?
+            .map_err(|_| "browser disconnected".to_string())?
     }
 
-    /// The extension drops a tab whose command expires, so an effect waiting on
-    /// a page that is busy for a moment gets as long as any other command.
+    /// An effect waiting on a page that is busy for a moment gets as long as
+    /// any other command.
     pub fn eval(&self, script: String) -> Result<(), String> {
         let (guard, receiver) = self.queue(
             "Runtime.evaluate",
@@ -276,10 +275,41 @@ impl ExternalTarget {
         )?;
         tauri::async_runtime::spawn(async move {
             let _guard = guard;
-            let _ = tokio::time::timeout(REQUEST_TIMEOUT, receiver).await;
+            let _ = tokio::time::timeout(REQUEST_TIMEOUT + REPLY_GRACE, receiver).await;
         });
         Ok(())
     }
+}
+
+/// A read asked to wait this long or longer is waited for in full.
+const LONG_READ: Duration = Duration::from_secs(1);
+
+/// How long `call` listens. Input and navigation are waited for in full, as
+/// giving up early would report an action as not done while it can still land.
+/// So is a read of the page that may take a second or more: a Chrome or Edge
+/// page its browser is not showing, or one on a busy machine, answers slowly
+/// but in order, so giving up early frees nothing. Anbo then listens a little
+/// past the command's deadline, so the extension's own answer arrives first.
+/// A shorter wait is a quick look whose caller does without the answer.
+fn listen_window(method: &str, requested: Duration) -> Duration {
+    if changes_page(method) || (reads_page(method) && requested >= LONG_READ) {
+        REQUEST_TIMEOUT + REPLY_GRACE
+    } else {
+        requested.min(REQUEST_TIMEOUT)
+    }
+}
+
+/// Whether a command reads or works the page itself, not the browser around it.
+fn reads_page(method: &str) -> bool {
+    [
+        "Runtime.",
+        "DOM.",
+        "DOMSnapshot.",
+        "Accessibility.",
+        "Page.",
+    ]
+    .iter()
+    .any(|domain| method.starts_with(domain))
 }
 
 /// Whether a command acts on the page rather than reading it.
@@ -416,7 +446,7 @@ pub async fn browser_external_unbind(
         activity::retire(tauri::Manager::app_handle(&webview), tab_id);
         design::remove(tab_id);
         let (_guard, receiver) = queued;
-        tokio::time::timeout(REQUEST_TIMEOUT, receiver)
+        tokio::time::timeout(REQUEST_TIMEOUT + REPLY_GRACE, receiver)
             .await
             .map_err(|_| "browser release timed out")?
             .map_err(|_| "browser disconnected")??;
@@ -699,5 +729,43 @@ mod tests {
         ] {
             assert!(!changes_page(method), "{method}");
         }
+    }
+
+    #[test]
+    fn a_slow_page_read_is_waited_for_in_full_and_a_quick_look_is_not() {
+        let full = REQUEST_TIMEOUT + REPLY_GRACE;
+        assert_eq!(
+            listen_window("Input.insertText", Duration::from_millis(500)),
+            full
+        );
+        for method in [
+            "Runtime.evaluate",
+            "Page.createIsolatedWorld",
+            "DOM.getDocument",
+        ] {
+            assert_eq!(
+                listen_window(method, Duration::from_secs(2)),
+                full,
+                "{method}"
+            );
+            assert_eq!(
+                listen_window(method, Duration::from_millis(600)),
+                Duration::from_millis(600),
+                "{method}"
+            );
+        }
+        // The dock and the network pick their own waits.
+        assert_eq!(
+            listen_window("anbo.dockCommit", Duration::from_secs(5)),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            listen_window("Network.enable", Duration::from_secs(2)),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            listen_window("anbo.tabState", Duration::from_secs(60)),
+            REQUEST_TIMEOUT
+        );
     }
 }

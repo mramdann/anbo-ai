@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDispatcher } from "./bridge.js";
+import { createDispatcher, STUCK_MS } from "./bridge.js";
 import { createTabManager, EXTENSION_VERSION } from "./tabs.js";
 import manifest from "./manifest.json";
 
@@ -297,6 +297,44 @@ describe("tabs selected directly from Anbo", () => {
     expect(state.api.tabs.remove).not.toHaveBeenCalled();
   });
 
+  it("closes a new tab again when its open runs out of time", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = harness();
+      state.api.tabs.create.mockImplementationOnce(async ({ url, windowId }) => {
+        const tab = { id: 12, url: "", pendingUrl: url, windowId };
+        state.tabs.set(12, tab);
+        return tab;
+      });
+      const opening = state.run("anbo.openTab", 0, { url: "https://example.com/", activate: false });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect((await opening).error).toContain("closed again");
+      expect(state.api.tabs.remove).toHaveBeenCalledExactlyOnceWith(12);
+      expect(state.api.debugger.attach).not.toHaveBeenCalled();
+      expect(state.selected.size).toBe(0);
+      expect(state.api.tabs.onUpdated.listeners.size).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("closes a new tab again when its selection outlasts the open", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = harness();
+      const attachment = deferred();
+      state.api.debugger.attach.mockReturnValueOnce(attachment.promise);
+      const opening = state.run("anbo.openTab", 0, { url: "https://example.com/", activate: false });
+      await vi.advanceTimersByTimeAsync(10_000);
+      // Answered at the deadline, while the browser still attaches.
+      expect((await opening).error).toContain("closed again");
+      attachment.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(state.api.debugger.detach).toHaveBeenCalledWith({ tabId: 12 });
+      expect(state.api.tabs.remove).toHaveBeenCalledExactlyOnceWith(12);
+      expect(state.selected.size).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("does not close or retry a newly opened tab when its attachment fails", async () => {
     const state = harness();
     state.api.debugger.attach.mockRejectedValueOnce(new Error("Debugger unavailable"));
@@ -386,7 +424,48 @@ describe("tabs selected directly from Anbo", () => {
     } finally { interval.mockRestore(); timeout.mockRestore(); }
   });
 
-  it("revokes a timed out capture and waits for detach before allowing reselection", async () => {
+  it("keeps a tab whose capture finishes late, and sends nothing queued behind it", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = harness();
+      await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+      const selection = state.selected.get(10);
+      const capture = deferred();
+      state.api.debugger.sendCommand.mockClear();
+      state.api.debugger.sendCommand.mockReturnValueOnce(capture.promise);
+      const screenshot = state.run("Page.captureScreenshot", 10);
+      const queued = state.run("Input.insertText", 10, { text: "never sent" });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect((await screenshot).error).toContain("stays connected");
+      expect((await queued).error).toContain("still running");
+      expect(state.selected.get(10)).toBe(selection);
+      expect(state.publications).toHaveLength(1);
+      capture.resolve({ data: "late screenshot" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect((await state.run("Runtime.evaluate", 10)).result).toEqual({});
+      expect(state.api.debugger.sendCommand.mock.calls.filter(([, method]) => method === "Input.insertText")).toHaveLength(0);
+      expect(state.api.debugger.detach).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("closes a tab Anbo opened once it stopped answering, and only that one", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = harness();
+      await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+      expect((await state.run("anbo.openTab", 0, { url: "https://example.com/", activate: false })).result.createdByAnbo).toBe(true);
+      state.api.debugger.sendCommand.mockImplementation(() => new Promise(() => {}));
+      const opened = state.run("Runtime.evaluate", 12);
+      const adopted = state.run("Runtime.evaluate", 10);
+      await vi.advanceTimersByTimeAsync(10_000 + STUCK_MS);
+      await Promise.all([opened, adopted]);
+      expect(state.selected.size).toBe(0);
+      expect(state.api.tabs.remove).toHaveBeenCalledExactlyOnceWith(12);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("lets go of a tab that stopped answering and waits for detach before allowing reselection", async () => {
     vi.useFakeTimers();
     try {
       const state = harness();
@@ -403,6 +482,8 @@ describe("tabs selected directly from Anbo", () => {
       await vi.advanceTimersByTimeAsync(10_000);
       expect((await screenshot).error).toContain("timed out");
       expect((await queued).error).toBeTruthy();
+      expect(state.selected.has(10)).toBe(true);
+      await vi.advanceTimersByTimeAsync(STUCK_MS);
       expect(state.selected.has(10)).toBe(false);
       expect(state.publications.at(-1).map((tab) => tab.id)).toEqual([11]);
       expect(state.api.debugger.detach).toHaveBeenCalledExactlyOnceWith({ tabId: 10 });

@@ -8,6 +8,10 @@ import {
   holdDockForOpenRead,
   releaseDockForOpenRead,
 } from "@/modules/browser/external/openReads";
+import {
+  POINTER_TURN_EVENT,
+  setPointerTurn,
+} from "@/modules/browser/external/pointerTurn";
 import { useExternalBrowsers } from "@/modules/browser/external/store";
 import type { BrowserTab, Tab, TabPatch } from "@/modules/tabs/lib/useTabs";
 import { invoke } from "@tauri-apps/api/core";
@@ -96,14 +100,30 @@ export function createExternalBrowserSync(
   // change event can make the new tab before the open learns its selection, so
   // the next tab made for that profile is taken as the page the open reads.
   const reading = new Set<string>();
-  // Opens and selections run one at a time, so a waiting selection is always
-  // the one being opened.
-  let queue: Promise<unknown> = Promise.resolve();
-  const exclusive = <T>(run: () => Promise<T>): Promise<T> => {
-    const next = queue.catch(() => {}).then(run);
-    queue = next;
+  // Opens and selections of one profile run one at a time, so a waiting
+  // selection is always the one being opened. Other profiles go on meanwhile.
+  const queues = new Map<string, Promise<unknown>>();
+  const exclusive = <T>(
+    connectionId: string,
+    run: () => Promise<T>,
+  ): Promise<T> => {
+    const next = (queues.get(connectionId) ?? Promise.resolve())
+      .catch(() => {})
+      .then(run);
+    queues.set(connectionId, next);
+    const forget = () => {
+      if (queues.get(connectionId) === next) queues.delete(connectionId);
+    };
+    next.then(forget, forget);
     return next;
   };
+  const approvedFor = (connectionId: string, workspace: string) =>
+    connections.find(
+      (connection) =>
+        connection.connectionId === connectionId &&
+        connection.workspace !== null &&
+        sameWorkspace(connection.workspace, workspace),
+    );
   const externalTabs = (tabs: Tab[]) =>
     new Map(
       tabs.flatMap((tab) =>
@@ -327,22 +347,11 @@ export function createExternalBrowserSync(
       );
   };
 
-  const open = (
-    url: string,
+  /** The profile an agent's open goes to, or null for Anbo's own browser. */
+  const openTarget = (
     workspace: string,
-    holdDock = false,
-    profile?: string,
-  ) => exclusive(() => openNow(url, workspace, holdDock, profile));
-
-  const openNow = async (
-    url: string,
-    workspace: string,
-    holdDock: boolean,
     profile: string | undefined,
-  ): Promise<number | null> => {
-    ensureRunning();
-    await refresh();
-    ensureRunning();
+  ): ExternalConnection | null => {
     const approved = connections.filter(
       (connection) =>
         connection.workspace && sameWorkspace(connection.workspace, workspace),
@@ -378,53 +387,91 @@ export function createExternalBrowserSync(
         );
       return null;
     }
-    const connection = profiles[0];
-    if (holdDock) reading.add(connection.connectionId);
-    try {
-      const remote = await call<{ selectionId: string }>(
-        "browser_external_open_tab",
-        { connectionId: connection.connectionId, url, activate: false },
-      );
+    return profiles[0];
+  };
+
+  /** `deadline` is when the agent stops waiting for the open. */
+  const open = async (
+    url: string,
+    workspace: string,
+    holdDock = false,
+    profile?: string,
+    deadline?: number,
+  ): Promise<number | null> => {
+    ensureRunning();
+    await refresh();
+    ensureRunning();
+    const connection = openTarget(workspace, profile);
+    if (!connection) return null;
+    const { connectionId } = connection;
+    return exclusive(connectionId, async () => {
       ensureRunning();
+      if (deadline !== undefined && Date.now() >= deadline)
+        throw new Error(
+          "Anbo was still opening other tabs in this browser profile, so this page was not opened. Try again.",
+        );
+      // Another open of this profile may have run meanwhile, and the profile
+      // may have gone to another workspace since.
       await refresh();
       ensureRunning();
-      const binding = bindings.get(
-        selectionKey(connection.connectionId, remote.selectionId),
-      );
-      if (!binding?.ready)
+      if (!approvedFor(connectionId, workspace))
         throw new Error(
-          "The browser tab opened but could not bind to Anbo. Check browser connections; the action was not replayed.",
+          "This browser profile is no longer approved for this workspace, so the page was not opened.",
         );
-      return binding.id;
-    } finally {
-      reading.delete(connection.connectionId);
-    }
+      if (holdDock) reading.add(connectionId);
+      try {
+        const remote = await call<{ selectionId: string }>(
+          "browser_external_open_tab",
+          { connectionId, url, activate: false },
+        );
+        ensureRunning();
+        await refresh();
+        ensureRunning();
+        const binding = bindings.get(
+          selectionKey(connectionId, remote.selectionId),
+        );
+        if (!binding?.ready)
+          throw new Error(
+            "The browser tab opened but could not bind to Anbo. Check browser connections; the action was not replayed.",
+          );
+        return binding.id;
+      } finally {
+        reading.delete(connectionId);
+      }
+    });
   };
 
   /** Opens a page in a profile approved for the workspace and turns this Anbo
    * tab (a new tab page started from that profile) into that page, rather
    * than adding another tab. */
-  const openInto = (
+  const openInto = async (
     url: string,
     workspace: string,
     tabId: number,
     profile: ExternalConnection["profile"],
-  ) =>
-    exclusive(async () => {
-      ensureRunning();
-      await refresh();
-      ensureRunning();
-      const connection = connections.find(
+  ) => {
+    const connected = () =>
+      connections.find(
         (connection) =>
           connection.workspace &&
           sameWorkspace(connection.workspace, workspace) &&
           connection.profile.browser === profile.browser &&
           connection.profile.profileId === profile.profileId,
       );
-      if (!connection)
-        throw new Error(
-          "This profile is not connected to this workspace. Reconnect it from the browser menu, or use Anbo's browser.",
-        );
+    const notConnected =
+      "This profile is not connected to this workspace. Reconnect it from the browser menu, or use Anbo's browser.";
+    ensureRunning();
+    await refresh();
+    ensureRunning();
+    const first = connected();
+    if (!first) throw new Error(notConnected);
+    return exclusive(first.connectionId, async () => {
+      ensureRunning();
+      await refresh();
+      ensureRunning();
+      const connection = connected();
+      if (connection?.connectionId !== first.connectionId)
+        throw new Error(notConnected);
       const { connectionId } = connection;
       let key: string;
       opening.add(connectionId);
@@ -452,10 +499,11 @@ export function createExternalBrowserSync(
         claims.delete(key);
       }
     });
+  };
 
   /** Brings a tab the profile already has into Anbo. */
   const select = (connectionId: string, browserTabId: number, url: string) =>
-    exclusive(async () => {
+    exclusive(connectionId, async () => {
       ensureRunning();
       const remote = await call<{ selectionId: string }>(
         "browser_external_select_tab",
@@ -499,6 +547,7 @@ export async function startExternalBrowserSync(host: Host) {
   current = service;
   let stopListening: (() => void) | undefined;
   let stopReads: (() => void) | undefined;
+  let stopTurns: (() => void) | undefined;
   try {
     stopListening = await listen("anbo:external-browser-changed", () => {
       void service.refresh().catch(() => {});
@@ -508,10 +557,15 @@ export async function startExternalBrowserSync(host: Host) {
       "anbo:browser-dock-hold-release",
       ({ payload }) => releaseDockForOpenRead(payload.tabId),
     );
+    stopTurns = await listen<{ tabId: number | null }>(
+      POINTER_TURN_EVENT,
+      ({ payload }) => setPointerTurn(payload.tabId),
+    );
     await service.refresh();
   } catch (cause) {
     stopListening?.();
     stopReads?.();
+    stopTurns?.();
     service.stop();
     if (current === service) current = undefined;
     void warn(`external browser sync did not start: ${String(cause)}`).catch(
@@ -522,6 +576,8 @@ export async function startExternalBrowserSync(host: Host) {
   return () => {
     stopListening?.();
     stopReads?.();
+    stopTurns?.();
+    setPointerTurn(null);
     service.stop();
     if (current === service) {
       current = undefined;
@@ -541,7 +597,8 @@ function running() {
 }
 /** Opens an agent's page in the workspace's approved Chrome or Edge profile
  *  (the one `profile` names, where several are approved), or returns null for
- *  Anbo's own browser. Without the service (Anbo still starting, or its start
+ *  Anbo's own browser. An open still waiting for another one of its profile at
+ *  `deadline` is not started. Without the service (Anbo still starting, or its start
  *  failed) the page still opens in Anbo's browser, unless the agent named a
  *  profile, the workspace has an approved profile or it shows a Chrome or Edge
  *  tab: those wait for the service instead of switching logins. */
@@ -552,8 +609,9 @@ export async function openExternalBrowser(
   spaceId: string,
   holdDock = false,
   profile?: string,
+  deadline?: number,
 ) {
-  if (current) return current.open(url, workspace, holdDock, profile);
+  if (current) return current.open(url, workspace, holdDock, profile, deadline);
   if (profile !== undefined || showsExternalTabs(tabs, spaceId))
     throw new Error(NOT_READY);
   const approvedHere = await invoke<ExternalConnection[]>(
