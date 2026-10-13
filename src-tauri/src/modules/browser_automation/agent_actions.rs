@@ -17,9 +17,10 @@ const MAX_MESSAGE_ID_BYTES: usize = 128;
 const MAX_CURSOR_BYTES: usize = 128;
 const MAX_READ_CHARS: u64 = 12_000;
 const MAX_TIMEOUT_MS: u64 = 60_000;
-/// Anbo listens this much past the deadline it gives the UI, so the UI's
-/// answer for an operation it refused at that deadline still arrives.
-const UI_GRACE_MS: u64 = 1_000;
+/// Anbo listens this much past the deadline it gives the UI. The UI may start
+/// an operation just before it while it is busy for seconds (20 terminals
+/// opened at once right after a start), and its answer then still arrives.
+const UI_GRACE_MS: u64 = 5_000;
 static AGENT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Deserialize)]

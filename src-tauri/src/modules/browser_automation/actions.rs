@@ -166,8 +166,8 @@ const BROWSER_OPEN_RESPONSE_EVENT: &str = "anbo:browser-open-response";
 /// How long an open waits for the UI to create its tab.
 const UI_CREATE_TIMEOUT: Duration = Duration::from_secs(25);
 /// The UI's own deadline for an open comes this much earlier, so its answer
-/// for a late tab still arrives.
-const UI_CREATE_MARGIN: Duration = Duration::from_secs(1);
+/// still arrives while it is busy for a few seconds.
+const UI_CREATE_MARGIN: Duration = Duration::from_secs(3);
 /// The open's own find is done, so its Chrome or Edge tab may dock.
 const BROWSER_DOCK_HOLD_RELEASE_EVENT: &str = "anbo:browser-dock-hold-release";
 const BROWSER_CLOSE_REQUEST_EVENT: &str = "anbo:browser-close-request";
