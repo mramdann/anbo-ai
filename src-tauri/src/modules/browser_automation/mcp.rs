@@ -150,7 +150,7 @@ pub fn tool_definitions() -> Value {
     let mut definitions = tool_array![
         { "name": "skills_list", "description": "List the skills available in a workspace: project procedures kept in .anbo/skills, plus the skills Anbo ships. Returns names, one-line descriptions and, for skills read on demand, their section titles, so it stays cheap to scan. Check this before solving a task from first principles.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
         { "name": "skills_read", "description": "Read a skill and follow it. A skill read on demand returns its essentials plus a section index; pass section to read one section in full. Names come from skills_list.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "name": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Skill name from skills_list." }, "section": { "type": "string", "minLength": 1, "maxLength": 120, "description": "A section title from the skill's index, matched case-insensitively." } }, "required": ["workspace", "name"] } },
-        { "name": "browser_open", "description": "Open a page in the user's real browser: a visible tab in this app, not a private fetch. Pass your own workspace root or space id. To read the page in this same call, add find:{by,value} or snapshot:true; both wait for it to load, so no separate wait or snapshot. With find, closeTab:true makes a one-off lookup one call. The reply carries the tabId and your controlId.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." } }, "required": ["url", "workspace"] } },
+        { "name": "browser_open", "description": "Open a page in the user's real browser: a visible tab in this app, not a private fetch. Pass your own workspace root or space id. To read the page in this same call, add find:{by,value} or snapshot:true; both wait for it to load, so no separate wait or snapshot. With find, closeTab:true makes a one-off lookup one call. The reply carries the tabId and your controlId.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." }, "profile": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Chrome/Edge profile name or id, when several are approved here." } }, "required": ["url", "workspace"] } },
         { "name": "browser_close", "description": "Close a native browser tab in an explicitly selected Anbo workspace. Pass endSession: true when this is the last tab of your task, so closing it and ending your session is one call instead of two.", "annotations": { "destructiveHint": true, "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." }, "endSession": { "type": "boolean", "default": false, "description": "Also end your control session after the tab closes; the reply then carries sessionEnded: true." } }, "required": ["tabId", "workspace"] } },
         { "name": "browser_tabs", "description": "List open browser tabs with foreground, workspace, space, loading, pendingUrl and automation metadata; while loading, url is the last committed URL. yours marks tabs you opened or drove (yourTabs counts them); otherTabsInSpace counts the shown space's terminal and editor tabs.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "browser_navigate", "description": "Navigate a browser tab to an http(s) URL. Returns at once unless waitFor names the page to wait for; browser_stop interrupts the load.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "url": { "type": "string" }, "waitFor": { "type": "object", "description": "As browser_press waitFor." } }, "required": ["tabId", "url"] } },
@@ -678,7 +678,9 @@ mod tests {
         // 41.2k since Oct 10 2026: browser_screenshot takes fullPage, the whole
         // page rather than only the viewport. 41.7k the same day for
         // browser_network_requests, the one tool a debugging agent missed.
-        assert!(size <= 41_700, "browser tool schemas are {size} characters");
+        // 41.8k since Oct 13 2026: browser_open takes profile, without which
+        // two profiles approved for one workspace refused every open.
+        assert!(size <= 41_800, "browser tool schemas are {size} characters");
     }
 
     #[test]
@@ -792,6 +794,26 @@ mod tests {
             .expect("browser_open");
         let description = open["description"].as_str().unwrap_or_default();
         assert!(description.contains("controlId"), "{description}");
+    }
+
+    #[test]
+    fn opening_a_tab_can_name_the_profile_among_several() {
+        // Two profiles approved for one workspace refused every open, and the
+        // agent had no way to say which one it meant (prod, Oct 13 2026).
+        let definitions = tool_definitions();
+        let open = definitions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "browser_open")
+            .unwrap();
+        let profile = &open["inputSchema"]["properties"]["profile"];
+        assert_eq!(profile["type"], "string");
+        assert!(profile["description"]
+            .as_str()
+            .unwrap()
+            .contains("when several are approved"));
+        assert_eq!(open["inputSchema"]["required"], json!(["url", "workspace"]));
     }
 
     #[test]

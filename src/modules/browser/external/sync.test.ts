@@ -512,6 +512,112 @@ describe("external browser workspace synchronization", () => {
     ).rejects.toThrow("Several browser profiles");
   });
 
+  describe("an agent's open among several approved profiles", () => {
+    const personal = {
+      profileId: "ffeeddcc-bbaa-9988-7766-554433221100",
+      browser: "edge" as const,
+      name: "Personal",
+    };
+    const twoProfiles = (second = personal) => {
+      const state = harness();
+      const listed: ExternalConnection[] = [
+        connection(),
+        {
+          connectionId: "personal",
+          profile: second,
+          workspace: "D:/work",
+          tabs: [
+            {
+              id: 20,
+              title: "Inbox",
+              url: "https://mail.example.com/",
+              selectionId: "lease-2",
+              loading: false,
+            },
+          ],
+        },
+      ];
+      state.connections(listed);
+      state.calls.mockImplementation(
+        async (command: string, args?: unknown) => {
+          if (command === "browser_external_connections") return listed;
+          if (command === "browser_external_open_tab")
+            return listed.find(
+              (item) =>
+                item.connectionId ===
+                (args as { connectionId: string }).connectionId,
+            )?.tabs[0];
+          return undefined;
+        },
+      );
+      return state;
+    };
+
+    it("names every approved profile when the agent named none", async () => {
+      const state = twoProfiles();
+      await expect(
+        state.service.open("https://example.org", "D:/work"),
+      ).rejects.toThrow(
+        'Several browser profiles are approved here: "Work" (Chrome), "Personal" (Edge). Pass one as profile,',
+      );
+      expect(state.calls).not.toHaveBeenCalledWith(
+        "browser_external_open_tab",
+        expect.anything(),
+      );
+    });
+
+    it("opens in the profile the agent named, by name in any case or by id", async () => {
+      for (const named of ["Personal", " personal ", personal.profileId]) {
+        const state = twoProfiles();
+        await expect(
+          state.service.open("https://example.org", "D:/work", false, named),
+        ).resolves.toBe(101);
+        expect(state.calls).toHaveBeenCalledWith("browser_external_open_tab", {
+          connectionId: "personal",
+          url: "https://example.org",
+          activate: false,
+        });
+      }
+    });
+
+    it("refuses a profile that is not approved here and lists those that are", async () => {
+      const state = twoProfiles();
+      await expect(
+        state.service.open("https://example.org", "D:/work", false, "Home"),
+      ).rejects.toThrow(
+        'No browser profile named "Home" is approved here. Approved here: "Work" (Chrome), "Personal" (Edge).',
+      );
+    });
+
+    it("asks for the id when two approved profiles share the name", async () => {
+      const state = twoProfiles({ ...personal, name: "Work" });
+      await expect(
+        state.service.open("https://example.org", "D:/work", false, "work"),
+      ).rejects.toThrow(
+        `Several approved profiles are named "work": "Work" (Chrome, id ${profile.profileId}), "Work" (Edge, id ${personal.profileId}). Pass the profile's id instead.`,
+      );
+      await expect(
+        state.service.open(
+          "https://example.org",
+          "D:/work",
+          false,
+          personal.profileId,
+        ),
+      ).resolves.toBe(101);
+    });
+
+    it("never takes a named profile approved for another workspace, nor Anbo's browser", async () => {
+      const state = harness();
+      state.connections([{ ...connection(), workspace: "D:/other" }]);
+      // Null would open the page in Anbo's browser, with another login.
+      await expect(
+        state.service.open("https://example.org", "D:/work", false, "Work"),
+      ).rejects.toThrow(
+        'No Chrome/Edge profile is approved for this workspace, so "Work" cannot be used.',
+      );
+    });
+  });
+
   it("opens agent tabs without focusing Chrome and uses the bound Anbo ID", async () => {
     const state = harness();
     expect(await state.service.open("https://example.com/", "D:/work")).toBe(
@@ -743,6 +849,21 @@ describe("agent opens before the service runs", () => {
     await expect(
       openExternalBrowser("https://example.org/", "d:\\work", [plain], "work"),
     ).rejects.toThrow("not ready");
+  });
+
+  it("waits when the agent named a profile, which only the service can find", async () => {
+    listed.mockClear();
+    await expect(
+      openExternalBrowser(
+        "https://example.org/",
+        "D:/work",
+        [plain],
+        "work",
+        false,
+        "Work",
+      ),
+    ).rejects.toThrow("not ready");
+    expect(listed).not.toHaveBeenCalled();
   });
 
   it("waits while the workspace shows a Chrome or Edge tab", async () => {

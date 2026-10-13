@@ -108,7 +108,9 @@ connections or permissions. After explicit reapproval and selection, a unique
 matching saved panel can reconnect; duplicate URL panels are not guessed.
 
 Agent-created tabs use the workspace's unique approved profile and open in the
-background. Multiple approved profiles require explicit disambiguation. A workspace
+background. Multiple approved profiles require explicit disambiguation: the agent
+passes `browser_open`'s `profile` (a name, or an id when names repeat), and a refusal
+lists the approved profiles. A named profile that is not approved fails. A workspace
 with disconnected external tabs fails instead of falling back to WebView2 or another
 login. Selected tabs remain live across workspace switches, not cross-workspace moves.
 

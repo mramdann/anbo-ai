@@ -49,6 +49,33 @@ function showsExternalTabs(tabs: Tab[], spaceId: string | undefined) {
   );
 }
 
+/** Whether an agent's open names this profile, by its name in any case or by
+ *  its id. */
+function namesProfile(
+  profile: ExternalConnection["profile"],
+  requested: string,
+): boolean {
+  const wanted = requested.trim().toLowerCase();
+  return (
+    profile.name.trim().toLowerCase() === wanted ||
+    profile.profileId.toLowerCase() === wanted
+  );
+}
+
+/** Approved profiles the way an error names them, so the agent can pass one
+ *  back as the open's profile. A name two of them share comes with ids. */
+function listProfiles(connections: ExternalConnection[]): string {
+  return connections
+    .map(({ profile }) => {
+      const browser = profile.browser === "edge" ? "Edge" : "Chrome";
+      const shared =
+        connections.filter((other) => namesProfile(other.profile, profile.name))
+          .length > 1;
+      return `"${profile.name}" (${browser}${shared ? `, id ${profile.profileId}` : ""})`;
+    })
+    .join(", ");
+}
+
 export function createExternalBrowserSync(
   host: Host,
   call: typeof invoke = invoke,
@@ -300,24 +327,43 @@ export function createExternalBrowserSync(
       );
   };
 
-  const open = (url: string, workspace: string, holdDock = false) =>
-    exclusive(() => openNow(url, workspace, holdDock));
+  const open = (
+    url: string,
+    workspace: string,
+    holdDock = false,
+    profile?: string,
+  ) => exclusive(() => openNow(url, workspace, holdDock, profile));
 
   const openNow = async (
     url: string,
     workspace: string,
     holdDock: boolean,
+    profile: string | undefined,
   ): Promise<number | null> => {
     ensureRunning();
     await refresh();
     ensureRunning();
-    const profiles = connections.filter(
+    const approved = connections.filter(
       (connection) =>
         connection.workspace && sameWorkspace(connection.workspace, workspace),
     );
+    const profiles =
+      profile === undefined
+        ? approved
+        : approved.filter((connection) =>
+            namesProfile(connection.profile, profile),
+          );
     if (profiles.length > 1)
       throw new Error(
-        "Several browser profiles are approved here. Use a selected tab ID or disconnect the unused profile before opening a tab.",
+        profile === undefined
+          ? `Several browser profiles are approved here: ${listProfiles(approved)}. Pass one as profile, use a selected tab ID, or disconnect the unused profile before opening a tab.`
+          : `Several approved profiles are named "${profile}": ${listProfiles(profiles)}. Pass the profile's id instead.`,
+      );
+    if (!profiles.length && profile !== undefined)
+      throw new Error(
+        approved.length
+          ? `No browser profile named "${profile}" is approved here. Approved here: ${listProfiles(approved)}.`
+          : `No Chrome/Edge profile is approved for this workspace, so "${profile}" cannot be used. Connect it from the browser menu, or leave profile out to open the page in Anbo's browser.`,
       );
     if (!profiles.length) {
       const space = host
@@ -493,10 +539,11 @@ function running() {
   if (!current) throw new Error(NOT_READY);
   return current;
 }
-/** Opens an agent's page in the workspace's approved Chrome or Edge profile,
- *  or returns null for Anbo's own browser. Without the service (Anbo still
- *  starting, or its start failed) the page still opens in Anbo's browser,
- *  unless the workspace has an approved profile or shows a Chrome or Edge
+/** Opens an agent's page in the workspace's approved Chrome or Edge profile
+ *  (the one `profile` names, where several are approved), or returns null for
+ *  Anbo's own browser. Without the service (Anbo still starting, or its start
+ *  failed) the page still opens in Anbo's browser, unless the agent named a
+ *  profile, the workspace has an approved profile or it shows a Chrome or Edge
  *  tab: those wait for the service instead of switching logins. */
 export async function openExternalBrowser(
   url: string,
@@ -504,9 +551,11 @@ export async function openExternalBrowser(
   tabs: Tab[],
   spaceId: string,
   holdDock = false,
+  profile?: string,
 ) {
-  if (current) return current.open(url, workspace, holdDock);
-  if (showsExternalTabs(tabs, spaceId)) throw new Error(NOT_READY);
+  if (current) return current.open(url, workspace, holdDock, profile);
+  if (profile !== undefined || showsExternalTabs(tabs, spaceId))
+    throw new Error(NOT_READY);
   const approvedHere = await invoke<ExternalConnection[]>(
     "browser_external_connections",
   ).then(

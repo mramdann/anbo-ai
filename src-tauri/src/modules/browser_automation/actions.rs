@@ -150,6 +150,8 @@ async fn seen_by_page_after_clear(
 }
 const MAX_KEY_BYTES: usize = 64;
 const MAX_WORKSPACE_BYTES: usize = 4 * 1024;
+// A profile name is at most 64 characters, an id 36.
+const MAX_PROFILE_BYTES: usize = 256;
 const MAX_REF_BYTES: usize = 32;
 const MAX_FILE_PATH_BYTES: usize = 32 * 1024;
 const MAX_UPLOAD_FILES: usize = 16;
@@ -8272,6 +8274,7 @@ async fn open_browser(
     hold_dock: bool,
 ) -> Result<Value, (String, String)> {
     let (url, workspace) = extract_browser_open_params(params)?;
+    let profile = extract_browser_open_profile(params)?;
     timings
         .measure(
             "admission",
@@ -8304,6 +8307,8 @@ async fn open_browser(
             "actor": caller,
             // The open's find reads the page before the dock takes it.
             "holdDock": hold_dock,
+            // The Chrome/Edge profile to open in, where several are approved.
+            "profile": profile,
         }),
     ) {
         app.unlisten(listener_id);
@@ -8531,6 +8536,26 @@ fn extract_browser_open_params(params: &Value) -> Result<(&str, &str), (String, 
         })?;
     ensure_bounded(workspace, MAX_WORKSPACE_BYTES, "workspace")?;
     Ok((url, workspace))
+}
+
+/// The Chrome/Edge profile an open names, by name or id. An agent needs it only
+/// where several profiles are approved for the workspace; the UI matches it.
+fn extract_browser_open_profile(params: &Value) -> Result<Option<&str>, (String, String)> {
+    let Some(value) = params.get("profile").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let profile = value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            (
+                error_codes::INVALID_REQUEST.to_string(),
+                "'profile' must be a Chrome/Edge profile name or id".to_string(),
+            )
+        })?;
+    ensure_bounded(profile, MAX_PROFILE_BYTES, "profile")?;
+    Ok(Some(profile))
 }
 
 fn extract_browser_close_params(params: &Value) -> Result<(i64, &str), (String, String)> {
@@ -10157,6 +10182,23 @@ mod tests {
             .unwrap(),
             ("https://example.com", "C:\\work\\alpha")
         );
+    }
+
+    #[test]
+    fn browser_open_may_name_a_profile() {
+        assert_eq!(extract_browser_open_profile(&json!({})).unwrap(), None);
+        assert_eq!(
+            extract_browser_open_profile(&json!({ "profile": null })).unwrap(),
+            None
+        );
+        assert_eq!(
+            extract_browser_open_profile(&json!({ "profile": " MR OMS " })).unwrap(),
+            Some("MR OMS")
+        );
+        for profile in [json!(""), json!("   "), json!(7), json!("x".repeat(257))] {
+            let error = extract_browser_open_profile(&json!({ "profile": profile })).unwrap_err();
+            assert_eq!(error.0, error_codes::INVALID_REQUEST);
+        }
     }
 
     #[test]

@@ -20,6 +20,9 @@ export type BrowserOpenRequest = {
   // The open reads the new page with find before it answers. The dock waits
   // for that read, which a dock move would stall.
   holdDock?: boolean;
+  // The Chrome/Edge profile to open in, by name or id, for a workspace that
+  // has several approved.
+  profile?: string | null;
 };
 
 export type BrowserCloseRequest = {

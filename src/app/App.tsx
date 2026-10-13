@@ -1788,7 +1788,10 @@ export default function App() {
       try {
         if (EXTERNAL_BROWSERS_ENABLED && resolved.space.root) {
           const service = await import("@/modules/browser/external/sync");
-          externalTabId = await service.openExternalBrowser(payload.url, resolved.space.root, tabsRef.current, spaceId, payload.holdDock === true);
+          externalTabId = await service.openExternalBrowser(payload.url, resolved.space.root, tabsRef.current, spaceId, payload.holdDock === true, payload.profile ?? undefined);
+        } else if (payload.profile) {
+          // Opening Anbo's browser instead would switch logins without saying so.
+          throw new Error("Chrome/Edge profiles are not available for this workspace; leave profile out to open the page in Anbo's browser.");
         }
       } catch (cause) {
         void emit(responseEvent, { error: String(cause) });

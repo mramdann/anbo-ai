@@ -195,6 +195,10 @@ extension's tab says how many requests it could not list. Its URLs show
 password, session or signature parameter, or a token-like value); Anbo's own
 tabs show URLs whole.
 
+A workspace with a Chrome or Edge profile approved opens new tabs in that
+profile. Where several are approved, `browser_open` needs `profile`, one of the
+names (or ids) its error lists; Anbo never opens the page under another login.
+
 When the active workspace has no tabs, `browser_open`, `terminal_open` and
 `agent_spawn` display their first tab automatically (`placement:
 visible-first-tab`); any existing tab keeps later opens in the background, and
