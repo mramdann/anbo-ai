@@ -10,7 +10,7 @@ The pool lives in `src/modules/terminal/lib/rendererPool.ts`.
 
 ## Slot lifecycle
 
-- The warm buffer budget is 5 and the hard live-buffer budget is 16 (`rendererCapacity.ts`). GPU contexts have an independent hard cap of 5. Each slot owns one xterm `Terminal`, `FitAddon`, `SearchAddon`, `SerializeAddon`, and optionally a `WebglAddon`.
+- The warm buffer budget is 5, and the hard live-buffer bound follows a memory budget (`liveBufferLimit` in `rendererCapacity.ts`): 256 MiB at 12 bytes a cell for 200 columns of the configured scrollback plus 0.75 MiB a buffer, between 16 and 48 (47 at the default 2,000 lines). GPU contexts have an independent hard cap of 5. Each slot owns one xterm `Terminal`, `FitAddon`, `SearchAddon`, `SerializeAddon`, and optionally a `WebglAddon`.
 - A slot is created on demand and assigned to a leaf on bind.
 - `releaseSlot` detaches a slot from a leaf. If the leaf is idle, the slot is parked with `display:none` so xterm stops rendering but keeps parsing PTY bytes.
 - After a grace period, idle slots may be reaped to keep the pool size down.
@@ -29,7 +29,7 @@ When the leaf becomes visible again, `acquireSlot` looks for:
 2. A retained slot for this leaf (`retainedLeafId === leafId`) - fast path, no snapshot replay.
 3. A clean idle slot.
 4. Reuse the oldest safe hidden buffer. Visible panes, busy/alternate-screen buffers (including retained ones), and queued parser writes are never eviction candidates.
-5. If none is safe, allocate a live buffer up to the hard bound. At capacity, attachment returns an explicit failure; automation must not submit a command, and its `dispatch_failed` carries a `dispatchError` that says all 16 buffers are in use and what frees one (`terminalAutomationRefusal`). Close an unused terminal and select the pending tab again to retry.
+5. If none is safe, allocate a live buffer up to the hard bound. At capacity, attachment returns an explicit failure; automation must not submit a command, and its `dispatch_failed` carries a `dispatchError` that says every buffer is in use and what frees one (`terminalAutomationRefusal`). A pane on screen waits for the next buffer that frees and is reported only if none frees within 400 ms (`bufferWait.ts`); the user's toast then counts who holds the buffers and offers to close waiting agents after a confirmation, and the waiting pane takes the first buffer that frees.
 
 ## The DormantRing
 
@@ -53,7 +53,7 @@ WebGL addons are created only for visible slots and reaped after a grace period 
 
 ## Invariants
 
-- Never allow the pool to grow without bound; max is `LIVE_BUFFER_LIMIT`
+- Never allow the pool to grow without bound; max is `liveBufferLimit(scrollback)`
   (`rendererCapacity.ts`).
 - Never serialize or evict a leaf that is mid-command or in alt-screen.
 - A hidden busy leaf keeps its live grid parked with `display:none`.

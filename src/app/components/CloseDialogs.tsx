@@ -12,6 +12,10 @@ import {
 import type { Tab } from "@/modules/tabs";
 import { useState } from "react";
 import {
+  type IdleAgentTab,
+  idleAgentLabel,
+} from "../lib/terminalCapacityNotice";
+import {
   retainTerminalClosePrompt,
   terminalCloseCopy,
   type TerminalClosePrompt,
@@ -29,6 +33,9 @@ type Props = {
   pendingDeleteTabs: number[] | null;
   onCancelDeleteClose: () => void;
   onConfirmDeleteClose: () => void;
+  pendingIdleAgents: IdleAgentTab[] | null;
+  onCancelIdleAgentClose: () => void;
+  onConfirmIdleAgentClose: () => void;
   pendingAppClose: AppCloseBlocker | null;
   onCancelAppClose: () => void;
   onConfirmAppClose: () => void;
@@ -51,6 +58,18 @@ function appCloseMessage(blocker: AppCloseBlocker): string {
   return "A process is still running in a terminal. Quitting will terminate it.";
 }
 
+const LISTED_AGENTS = 8;
+
+function idleAgentsMessage(agents: IdleAgentTab[]): string {
+  const names = agents.slice(0, LISTED_AGENTS).map(idleAgentLabel);
+  const more = agents.length - names.length;
+  const list =
+    more > 0 ? `${names.join(", ")} and ${more} more` : names.join(", ");
+  return agents.length === 1
+    ? `Its CLI ends and its tab closes, which frees its live buffer: ${list}.`
+    : `Their CLIs end and their tabs close, which frees their live buffers: ${list}.`;
+}
+
 /** Confirmation dialogs for closing dirty editors and terminals with live processes. */
 export function CloseDialogs({
   tabs,
@@ -64,6 +83,9 @@ export function CloseDialogs({
   pendingDeleteTabs,
   onCancelDeleteClose,
   onConfirmDeleteClose,
+  pendingIdleAgents,
+  onCancelIdleAgentClose,
+  onConfirmIdleAgentClose,
   pendingAppClose,
   onCancelAppClose,
   onConfirmAppClose,
@@ -156,6 +178,32 @@ export function CloseDialogs({
             </AlertDialogCancel>
             <AlertDialogAction onClick={onConfirmDeleteClose}>
               Close Anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={pendingIdleAgents !== null}
+        onOpenChange={(open) => !open && onCancelIdleAgentClose()}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {pendingIdleAgents?.length === 1
+                ? "Close 1 waiting agent?"
+                : `Close ${pendingIdleAgents?.length ?? 0} waiting agents?`}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingIdleAgents ? idleAgentsMessage(pendingIdleAgents) : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={onCancelIdleAgentClose}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={onConfirmIdleAgentClose}>
+              Close Agents
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

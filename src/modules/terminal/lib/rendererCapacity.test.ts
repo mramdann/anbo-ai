@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   type BufferCandidate,
   chooseTerminalBuffer,
-  LIVE_BUFFER_LIMIT,
+  LIVE_BUFFER_CEILING,
+  LIVE_BUFFER_FLOOR,
+  liveBufferLimit,
 } from "./rendererCapacity";
 
 const busy = (leafId: number): BufferCandidate => ({
@@ -42,7 +44,7 @@ describe("terminal buffer admission", () => {
   });
 
   it("refuses at the hard bound without corrupting any live buffer", () => {
-    const buffers = Array.from({ length: LIVE_BUFFER_LIMIT }, (_, i) =>
+    const buffers = Array.from({ length: LIVE_BUFFER_FLOOR }, (_, i) =>
       busy(i + 1),
     );
     expect(chooseTerminalBuffer(buffers, 99)).toBe("full");
@@ -52,12 +54,24 @@ describe("terminal buffer admission", () => {
   });
 
   it("does not steal another visible pane even when idle", () => {
-    const buffers = Array.from({ length: LIVE_BUFFER_LIMIT }, (_, i) => ({
+    const buffers = Array.from({ length: LIVE_BUFFER_FLOOR }, (_, i) => ({
       ...busy(i + 1),
       protected: false,
       visible: true,
     }));
     expect(chooseTerminalBuffer(buffers, 99)).toBe("full");
+  });
+
+  // A prod user with a dozen agents across spaces kept meeting "All 16 live
+  // buffers are in use": every live agent CLI holds its buffer.
+  it("lets more agents keep a buffer when the budget allows it", () => {
+    const limit = liveBufferLimit(2_000);
+    const buffers = Array.from({ length: LIVE_BUFFER_FLOOR }, (_, i) =>
+      busy(i + 1),
+    );
+    expect(chooseTerminalBuffer(buffers, 99, limit)).toBe("create");
+    while (buffers.length < limit) buffers.push(busy(buffers.length + 1));
+    expect(chooseTerminalBuffer(buffers, 99, limit)).toBe("full");
   });
 
   it("keeps a small warm cache and reuses genuinely empty buffers", () => {
@@ -68,5 +82,31 @@ describe("terminal buffer admission", () => {
     expect(chooseTerminalBuffer([{ ...busy(1), leafId: null }], 2)).toBe(
       "create",
     );
+  });
+});
+
+describe("live buffer budget", () => {
+  it("gives the default 2,000-line scrollback about three times the old limit", () => {
+    expect(liveBufferLimit(2_000)).toBe(47);
+  });
+
+  it("never drops below the old fixed limit, however long the scrollback", () => {
+    expect(liveBufferLimit(10_000)).toBe(LIVE_BUFFER_FLOOR);
+    expect(liveBufferLimit(50_000)).toBe(LIVE_BUFFER_FLOOR);
+  });
+
+  it("stops at the ceiling for a short scrollback", () => {
+    expect(liveBufferLimit(200)).toBe(LIVE_BUFFER_CEILING);
+  });
+
+  it("allows fewer buffers as the scrollback grows", () => {
+    let previous = Number.POSITIVE_INFINITY;
+    for (const scrollback of [
+      200, 1_000, 2_000, 3_000, 5_000, 10_000, 50_000,
+    ]) {
+      const limit = liveBufferLimit(scrollback);
+      expect(limit).toBeLessThanOrEqual(previous);
+      previous = limit;
+    }
   });
 });

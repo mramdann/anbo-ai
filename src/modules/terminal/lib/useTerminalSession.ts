@@ -17,6 +17,7 @@ import {
   type VisibleBlocks,
 } from "../block/lib/blockDecorations";
 import type { BlockMode } from "../block/lib/modeMachine";
+import { BufferWaitList } from "./bufferWait";
 import { DormantRing } from "./dormantRing";
 import {
   awaitingFirstPrompt,
@@ -31,7 +32,6 @@ import {
   registerPromptTracker,
 } from "./osc-handlers";
 import { openPty, type PtySession } from "./pty-bridge";
-import { LIVE_BUFFER_LIMIT } from "./rendererCapacity";
 import { joinTerminalBufferRows } from "./terminalBuffer";
 import "../block/block.css";
 import { ensureAgentActivityListener, isAgentActivePty } from "./agentActivity";
@@ -46,12 +46,14 @@ import {
   applyTerminalFont,
   applyWebglPreference,
   configureRendererPool,
+  currentLiveBufferLimit,
   discardRetainedSlot,
   disposeLeafSlot,
   focusSlot,
   getLiveSlotForLeaf,
   getSlotForLeaf,
   isLeafAltScreen,
+  liveBufferLeaves,
   parkLeafSlot,
   poolSize,
   poolSlotStats,
@@ -358,9 +360,10 @@ export function terminalAutomationRefusal(leafId: number): string {
     return "The shell had not started yet, so nothing was sent. Try again once it shows its prompt.";
   if (!session.container)
     return "The terminal has no view in Anbo right now, so nothing was sent. Showing its tab once brings it back; or use another terminal.";
-  if (poolSize() < LIVE_BUFFER_LIMIT)
+  const limit = currentLiveBufferLimit();
+  if (poolSize() < limit)
     return "The terminal could not get a live buffer, so nothing was sent. Run the command again.";
-  return `All ${LIVE_BUFFER_LIMIT} live terminal buffers are in use, so nothing was sent. Every workspace shares them, and running commands, agent CLIs and terminals on screen keep theirs. Close a terminal or agent tab that is no longer needed (terminal_close closes one you opened) or let a command finish, then try again.`;
+  return `All ${limit} live terminal buffers are in use, so nothing was sent. Every workspace shares them, and running commands, agent CLIs and terminals on screen keep theirs. Close a terminal or agent tab that is no longer needed (terminal_close closes one you opened) or let a command finish, then try again.`;
 }
 
 export async function writeToReadySession(
@@ -939,6 +942,89 @@ function applyBlockMode(leafId: number, mode: BlockMode): void {
   for (const l of s.blockListeners) l();
 }
 
+type TerminalCapacityHolder = {
+  leafId: number;
+  /** What keeps its buffer: an agent CLI, a command or full-screen program,
+   *  a pane on screen, or a busy check that has not answered yet. */
+  kind: "agent" | "command" | "screen" | "busy";
+  visible: boolean;
+};
+
+export type TerminalCapacityReport = {
+  limit: number;
+  /** The leaf that found no buffer, and whether it is on screen. */
+  leafId: number;
+  visible: boolean;
+  holders: TerminalCapacityHolder[];
+};
+
+const CAPACITY_TOAST_ID = "terminal-capacity";
+let capacityHandler: ((report: TerminalCapacityReport) => void) | null = null;
+
+/** Who tells the user the pool is full; without one, a plain toast does. */
+export function setTerminalCapacityHandler(
+  next: ((report: TerminalCapacityReport) => void) | null,
+): void {
+  capacityHandler = next;
+}
+
+function capacityReport(leafId: number, s: Session): TerminalCapacityReport {
+  return {
+    limit: currentLiveBufferLimit(),
+    leafId,
+    visible: s.visibleNow,
+    holders: liveBufferLeaves().map((held) => {
+      const session = sessions.get(held.leafId);
+      const kind =
+        session?.pty && isAgentActivePty(session.pty.id)
+          ? "agent"
+          : session?.commandRunning || held.altScreen
+            ? "command"
+            : held.visible
+              ? "screen"
+              : "busy";
+      return { leafId: held.leafId, kind, visible: held.visible };
+    }),
+  };
+}
+
+function reportCapacity(leafId: number, s: Session): void {
+  const report = capacityReport(leafId, s);
+  if (capacityHandler) capacityHandler(report);
+  else
+    toast.error("Terminal capacity reached", {
+      id: CAPACITY_TOAST_ID,
+      description: `All ${report.limit} live buffers are in use. Close an unused terminal and select this tab again. Running agents were not evicted.`,
+    });
+}
+
+// Leaves on screen that found every buffer held get the next one that frees
+// (bufferWait.ts); the pool is reported full only if none frees in time.
+const waitingForBuffer = new BufferWaitList(400);
+
+function waitForBuffer(leafId: number): void {
+  waitingForBuffer.wait(leafId, () => {
+    const s = sessions.get(leafId);
+    if (!s || s.disposed || s.hasSlot || !s.visibleNow) {
+      waitingForBuffer.stop(leafId);
+      return;
+    }
+    reportCapacity(leafId, s);
+  });
+}
+
+/** A buffer may have freed: give it to a leaf still waiting on screen. */
+function retryWaitingForBuffer(): void {
+  waitingForBuffer.retrySoon((leafId) => {
+    const s = sessions.get(leafId);
+    if (!s || s.disposed || s.hasSlot || !s.visibleNow || !s.container) {
+      waitingForBuffer.stop(leafId);
+      return;
+    }
+    bindLeafToSlot(leafId, s);
+  });
+}
+
 function bindLeafToSlot(leafId: number, s: Session): void {
   if (!s.container) return;
   const altScreen = s.altScreenAtRelease;
@@ -1009,13 +1095,12 @@ function bindLeafToSlot(leafId: number, s: Session): void {
     onSearchReady: (addon) => s.callbacks.onSearchReady?.(addon),
   });
   if (!slot) {
-    toast.error("Terminal capacity reached", {
-      id: "terminal-capacity",
-      description:
-        "All 16 live buffers are in use. Close an unused terminal and select this tab again. Running agents were not evicted.",
-    });
+    if (s.visibleNow) waitForBuffer(leafId);
+    else reportCapacity(leafId, s);
     return;
   }
+  // A report already on screen no longer holds.
+  if (waitingForBuffer.stop(leafId)) toast.dismiss(CAPACITY_TOAST_ID);
   s.altScreenAtRelease = false;
   s.snapshot = null;
   s.hasSlot = true;
@@ -1036,6 +1121,7 @@ function unbindLeafFromSlot(leafId: number, s: Session): void {
     if (out.rows > 0) s.rows = out.rows;
   }
   s.hasSlot = false;
+  retryWaitingForBuffer();
 }
 
 function attachSession(
@@ -1134,6 +1220,8 @@ export function disposeSession(leafId: number): void {
   cancelHiddenRelease(s);
   disposeLeafSlot(leafId);
   s.hasSlot = false;
+  waitingForBuffer.stop(leafId);
+  retryWaitingForBuffer();
   s.snapshot = null;
   s.pty?.close();
   s.pty = null;

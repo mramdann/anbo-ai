@@ -27,7 +27,11 @@ import {
   pasteIntoTerminal,
   textPasteAction,
 } from "./terminalPaste";
-import { chooseTerminalBuffer, WEBGL_CONTEXT_LIMIT } from "./rendererCapacity";
+import {
+  chooseTerminalBuffer,
+  liveBufferLimit,
+  WEBGL_CONTEXT_LIMIT,
+} from "./rendererCapacity";
 
 const FIT_DEBOUNCE_MS = 8;
 const PTY_RESIZE_DEBOUNCE_MS = 256;
@@ -282,6 +286,35 @@ export function configureRendererPool(a: SlotAdapter): void {
 
 export function poolSize(): number {
   return slots.length;
+}
+
+/** How many live buffers the pool may hold with the scrollback set now. */
+export function currentLiveBufferLimit(): number {
+  return liveBufferLimit(usePreferencesStore.getState().terminalScrollback);
+}
+
+export type LiveBufferLeaf = {
+  leafId: number;
+  visible: boolean;
+  altScreen: boolean;
+};
+
+/** The leaf each live buffer serves, for a notice that says who holds the
+ *  pool when it is full. */
+export function liveBufferLeaves(): LiveBufferLeaf[] {
+  return slots.flatMap((s) => {
+    const leafId = s.currentLeafId ?? s.retainedLeafId;
+    if (leafId === null) return [];
+    return [
+      {
+        leafId,
+        visible:
+          s.currentLeafId !== null &&
+          (adapter?.isLeafVisible(s.currentLeafId) ?? false),
+        altScreen: isAltScreen(s),
+      },
+    ];
+  });
 }
 
 export type PoolSlotStat = {
@@ -603,6 +636,7 @@ function pickSlotFor(leafId: number): PickResult | null {
       lastUsedAt: s.lastUsedAt,
     })),
     leafId,
+    currentLiveBufferLimit(),
   );
   if (choice === "full") return null;
   if (choice === "create") return { slot: createSlot(), previousLeafId: null };

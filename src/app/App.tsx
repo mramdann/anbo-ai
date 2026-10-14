@@ -251,6 +251,7 @@ const WorkspaceWelcome = lazy(() =>
 
 import { useAppCloseGuard } from "./hooks/useAppCloseGuard";
 import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
+import { useTerminalCapacityNotice } from "./hooks/useTerminalCapacityNotice";
 import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
 
 async function discoverAgentSession({
@@ -854,6 +855,8 @@ export default function App() {
     cancelDeleteClose,
     handlePathDeleted,
   } = useTabCloseGuards({ tabs, disposeTab, disposePane: closePaneByLeaf });
+  const { pendingIdleAgents, confirmIdleAgentClose, cancelIdleAgentClose } =
+    useTerminalCapacityNotice({ tabsRef, disposeTab });
 
   const flushPersistenceBeforeClose = useCallback(async () => {
     flushWorkspaceLayoutNow();
@@ -3381,6 +3384,9 @@ export default function App() {
                 pendingDeleteTabs={pendingDeleteTabs}
                 onCancelDeleteClose={cancelDeleteClose}
                 onConfirmDeleteClose={confirmDeleteClose}
+                pendingIdleAgents={pendingIdleAgents}
+                onCancelIdleAgentClose={cancelIdleAgentClose}
+                onConfirmIdleAgentClose={confirmIdleAgentClose}
                 pendingAppClose={pendingAppClose}
                 onCancelAppClose={cancelAppClose}
                 onConfirmAppClose={confirmAppClose}

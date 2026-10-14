@@ -255,9 +255,9 @@ command given to `terminal_execute` then waits for that prompt.
 `terminal_insert` refuses, and `terminal_interrupt` sends no Ctrl+C, since one
 that early can end the shell; try again once `terminal_list` shows it idle.
 A command that never went out ends `dispatch_failed`, and `dispatchError`
-says why, such as every live terminal buffer in use (Anbo has 16, shared by
-all workspaces). When it says nothing was sent, act on it, then run the
-command again.
+says why, such as every live terminal buffer in use (47 by default, 16 to 48
+with the scrollback setting, shared by all workspaces; each live agent holds
+one). When it says nothing was sent, act on it, then run the command again.
 `terminal_wait` freezes the exit code, completion reason and output of one
 `executionId`, so a later command cannot overwrite the answer you were waiting
 for. `terminal_interrupt` cancels a specific execution, including one still
