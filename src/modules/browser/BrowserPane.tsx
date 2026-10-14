@@ -138,6 +138,11 @@ const DesignSendDialog = lazy(() => import("./design/DesignSendDialog"));
 
 const EMPTY_BOUNDS = { x: 0, y: 0, width: 0, height: 0 };
 
+// How many of its own URL reports a pane remembers while its tab catches up.
+// The tab shows the newest report in its next render; only the few that come
+// in between a render and its effects are ever behind it.
+const MAX_REPORTED_URLS = 16;
+
 // How long a hidden pane's box has to keep one size before the page behind it
 // is resized: a window resize drag would otherwise lay out every hidden page
 // again in each frame.
@@ -240,6 +245,16 @@ export const BrowserPane = memo(
     const contentRef = useRef<HTMLDivElement>(null);
     const ownerIdRef = useRef(createBrowserOwnerId(id));
     const currentUrlRef = useRef(url);
+    // The URLs this pane sent up to its tab that the tab has yet to show,
+    // oldest first. The tab follows the page a render or more behind, so its
+    // URL landing on one of them is the tab catching up, not a request to
+    // navigate. Taken as one, a slow UI reloaded a page that had changed its
+    // own URL back to where it had been, and each reload's reports kept it
+    // bouncing between the two.
+    const reportedUrlsRef = useRef<string[]>([]);
+    // Moves on whenever the pane learns where the page is other than from its
+    // periodic read: a navigation event, or a navigation it asked for.
+    const urlSequenceRef = useRef(0);
     const workspaceContextRef = useRef({ root: workspaceRoot, workspace });
     const urlPropRef = useRef(url);
     const onUrlChangeRef = useRef(onUrlChange);
@@ -447,6 +462,20 @@ export const BrowserPane = memo(
     const reportNativeError = useCallback((error: unknown) => {
       boundsErrorRef.current = false;
       setNativeError(error instanceof Error ? error.message : String(error));
+    }, []);
+
+    // Sends a URL the page reached up to its tab, unless the tab holds it
+    // already or has it on the way; `always` sends it anyway.
+    const reportUrl = useCallback((next: string, always = false) => {
+      const reported = reportedUrlsRef.current;
+      const held =
+        next === (reported[reported.length - 1] ?? urlPropRef.current);
+      if (held && !always) return;
+      if (!held) {
+        reported.push(next);
+        if (reported.length > MAX_REPORTED_URLS) reported.shift();
+      }
+      onUrlChangeRef.current(next);
     }, []);
 
     const sendDesiredBounds = useCallback(() => {
@@ -747,6 +776,9 @@ export const BrowserPane = memo(
       const reconcileLiveUrl = () => {
         if (reading) return;
         reading = true;
+        // A navigation event or request that comes in while this read is out
+        // is newer than its answer, which a busy UI can take up late.
+        const sequence = urlSequenceRef.current;
         void browserEmbedUrl(id, ownerIdRef.current)
           .then((liveUrl) => {
             // A page just created reads about:blank until its first navigation
@@ -754,6 +786,7 @@ export const BrowserPane = memo(
             // the next read, so this takes only what navigation events take.
             if (
               !alive ||
+              sequence !== urlSequenceRef.current ||
               !liveUrl ||
               liveUrl === currentUrlRef.current ||
               !isReportableBrowserNavUrl(liveUrl)
@@ -761,9 +794,7 @@ export const BrowserPane = memo(
               return;
             }
             currentUrlRef.current = liveUrl;
-            if (liveUrl !== urlPropRef.current) {
-              onUrlChangeRef.current(liveUrl);
-            }
+            reportUrl(liveUrl);
           })
           .catch(() => {})
           .finally(() => {
@@ -775,7 +806,7 @@ export const BrowserPane = memo(
         alive = false;
         clearInterval(interval);
       };
-    }, [id, native, visible]);
+    }, [id, native, reportUrl, visible]);
 
     useEffect(() => {
       dragActiveRef.current = dragActive;
@@ -859,6 +890,7 @@ export const BrowserPane = memo(
           !isReportableBrowserNavUrl(payload.url)
         )
           return;
+        urlSequenceRef.current += 1;
         if (payload.kind === "navigated") {
           setLoading(true);
         } else if (payload.kind === "loaded") {
@@ -875,12 +907,7 @@ export const BrowserPane = memo(
           recordBrowserVisit(payload.url, title);
         }
         currentUrlRef.current = payload.url;
-        if (
-          payload.kind === "navigated" ||
-          payload.url !== urlPropRef.current
-        ) {
-          onUrlChangeRef.current(payload.url);
-        }
+        reportUrl(payload.url, payload.kind === "navigated");
       }).then((dispose) => {
         if (alive) unlisten = dispose;
         else dispose();
@@ -889,7 +916,7 @@ export const BrowserPane = memo(
         alive = false;
         unlisten?.();
       };
-    }, [id, native]);
+    }, [id, native, reportUrl]);
 
     useEffect(() => {
       if (!native || !url) return;
@@ -898,8 +925,18 @@ export const BrowserPane = memo(
         return;
       }
       setNativeError(null);
+      // The tab catching up with a URL this pane reported: the page was there
+      // already and may have moved on since, so it is no request to go back.
+      const reported = reportedUrlsRef.current;
+      const caughtUp = reported.lastIndexOf(url);
+      if (caughtUp >= 0) {
+        reported.splice(0, caughtUp + 1);
+        return;
+      }
+      reported.length = 0;
       if (url === currentUrlRef.current) return;
       currentUrlRef.current = url;
+      urlSequenceRef.current += 1;
       setLoading(true);
       void browserEmbedNavigate(
         id,
@@ -912,7 +949,8 @@ export const BrowserPane = memo(
     const navigate = useCallback(
       (next: string) => {
         currentUrlRef.current = next;
-        onUrlChangeRef.current(next);
+        urlSequenceRef.current += 1;
+        reportUrl(next, true);
         setNativeError(null);
         if (native) {
           const validationError = browserUrlError(next);
@@ -933,7 +971,7 @@ export const BrowserPane = memo(
           recordBrowserVisit(next);
         }
       },
-      [id, native, reportNativeError, syncBounds],
+      [id, native, reportNativeError, reportUrl, syncBounds],
     );
 
     // A new tab started from a Chrome or Edge profile in the browser menu

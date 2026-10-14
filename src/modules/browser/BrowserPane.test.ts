@@ -146,6 +146,28 @@ describe("BrowserPane native layering", () => {
     );
   });
 
+  it("never sends the page back to a URL it reported itself", () => {
+    // The tab follows the page's reports a render or more behind. Taken as a
+    // request to navigate, its URL catching up reloaded a page that had
+    // changed its own URL, back and forth while the UI was slow.
+    const caughtUp = src.indexOf("const caughtUp = reported.lastIndexOf(url);");
+    expect(caughtUp).toBeGreaterThan(-1);
+    expect(caughtUp).toBeLessThan(
+      src.indexOf("if (url === currentUrlRef.current) return"),
+    );
+    // Every report reaches the tab through the one place that records it.
+    expect(src.match(/onUrlChangeRef\.current\(/g)).toHaveLength(1);
+    expect(src).toContain("reported.push(next);");
+  });
+
+  it("drops a live URL read that a newer navigation overtook", () => {
+    expect(src).toMatch(
+      /const sequence = urlSequenceRef\.current;\s+void browserEmbedUrl\(id, ownerIdRef\.current\)[\s\S]{0,700}sequence !== urlSequenceRef\.current/,
+    );
+    // Navigation events and the navigations the pane asks for move it on.
+    expect(src.match(/urlSequenceRef\.current \+= 1;/g)).toHaveLength(3);
+  });
+
   it("keeps which panes hold a browser through a hot update", () => {
     // A hot update re-runs every pane's effects; the release the old cleanup
     // queued is called off only if the new mount finds it in the same map.
