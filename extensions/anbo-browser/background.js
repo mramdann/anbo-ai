@@ -43,7 +43,10 @@ async function connect(name) {
       if (active()) post({ type: "tabs", tabs: [...attached.values()] }, current);
     }, (tabId, selectionId, token) => {
       if (active()) post({ type: "event", tabId, selectionId, method: "anbo.dockReleased", params: { token } }, current);
-    }, () => reloadSoon(current));
+    }, () => reloadSoon(current), (ids) => {
+      // For the native host itself, which keeps these renderers scheduled.
+      post({ type: "host", method: "keepRenderers", params: { ids } }, current);
+    });
     session = current;
     const dispatch = createDispatcher(chrome, attached, (message) => post(message, current), active, current.tabs);
     port.onMessage.addListener((message) => {
@@ -104,6 +107,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     post({ type: "event", tabId: tab.id, selectionId: tab.selectionId, method, params }, current);
   }
 });
+chrome.webNavigation?.onCommitted.addListener((details) => session?.tabs.committed(details));
 chrome.tabs.onRemoved.addListener((tabId) => session?.tabs.removed(tabId));
 chrome.tabs.onUpdated.addListener((tabId, change, tab) => session?.tabs.updated(tabId, change, tab));
 chrome.tabs.onCreated.addListener((tab) => session?.tabs.dockTopology({ kind: "created", tabId: tab.id, windowId: tab.windowId, active: tab.active }));

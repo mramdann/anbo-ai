@@ -9,7 +9,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-function harness(reload) {
+function harness(reload, { renderers } = {}) {
   const tabs = new Map([
     [10, { id: 10, title: "Work", url: "https://example.com/", windowId: 20 }],
     [11, { id: 11, title: "Other", url: "https://other.example/", windowId: 20 }],
@@ -51,14 +51,21 @@ function harness(reload) {
     },
   };
   api.runtime = { getManifest: () => ({ version: "0.5.1" }) };
-  const manager = createTabManager(api, selected, () => publications.push([...selected.values()].map((tab) => ({ ...tab }))), undefined, reload);
+  // The browser's id for each tab's renderer, when the profile grants webNavigation.
+  // getFrame leaves processId out, as the browser does.
+  if (renderers) api.webNavigation = {
+    getFrame: vi.fn(async ({ frameId }) => ({ frameType: frameId === 0 ? "outermost_frame" : "sub_frame", parentFrameId: frameId === 0 ? -1 : 0 })),
+    getAllFrames: vi.fn(async ({ tabId }) => (renderers.has(tabId) ? [{ frameId: 3, parentFrameId: 0, processId: 99 }, { frameId: 0, parentFrameId: -1, processId: renderers.get(tabId) }] : null)),
+  };
+  const kept = [];
+  const manager = createTabManager(api, selected, () => publications.push([...selected.values()].map((tab) => ({ ...tab }))), undefined, reload, (ids) => kept.push(ids));
   const dispatch = createDispatcher(api, selected, (reply) => replies.push(reply), () => active, manager);
   const run = async (method, tabId = 0, params = {}) => {
     const id = ++nextId;
     await dispatch({ type: "command", id, tabId, selectionId: selected.get(tabId)?.selectionId, method, params, expiresAt: Date.now() + 10_000 });
     return replies.find((reply) => reply.id === id);
   };
-  return { api, tabs, selected, publications, manager, run, revoke: () => { active = false; } };
+  return { api, tabs, selected, publications, kept, manager, run, revoke: () => { active = false; } };
 }
 
 describe("tabs selected directly from Anbo", () => {
@@ -124,6 +131,45 @@ describe("tabs selected directly from Anbo", () => {
     expect(state.selected.get(10).generation).toBeGreaterThan(original.generation);
     expect(state.selected.get(10).selectionId).toBe(original.selectionId);
   });
+  it("names a tab's renderer to the host before attaching, and lets it go with the tab", async () => {
+    const state = harness(undefined, { renderers: new Map([[10, 7], [12, 9]]) });
+    const order = [];
+    state.api.debugger.attach.mockImplementation(async ({ tabId }) => { order.push(`attach ${tabId} with ${state.kept.at(-1)}`); });
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    expect(state.kept).toEqual([[7]]);
+    await state.run("anbo.openTab", 0, { url: "https://example.com/", activate: false });
+    expect(state.kept).toEqual([[7], [7, 9]]);
+    expect(order).toEqual(["attach 10 with 7", "attach 12 with 7,9"]);
+    await state.run("anbo.releaseTab", 10);
+    expect(state.kept.at(-1)).toEqual([9]);
+    await state.run("anbo.closeTab", 12);
+    expect(state.kept.at(-1)).toEqual([]);
+  });
+
+  it("forgets the renderer of a tab whose selection fails", async () => {
+    const state = harness(undefined, { renderers: new Map([[10, 7]]) });
+    state.api.debugger.attach.mockRejectedValueOnce(new Error("Another debugger is already attached"));
+    expect((await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" })).error).toContain("Another debugger");
+    expect(state.kept).toEqual([[7], []]);
+  });
+
+  it("follows a driven tab to the renderer of the site it moved to", async () => {
+    const state = harness(undefined, { renderers: new Map([[10, 7]]) });
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    state.manager.committed({ tabId: 10, frameId: 0, processId: 15 });
+    state.manager.committed({ tabId: 10, frameId: 3, processId: 21 });
+    state.manager.committed({ tabId: 11, frameId: 0, processId: 22 });
+    state.manager.committed({ tabId: 10, frameId: 0, processId: 15 });
+    expect(state.kept).toEqual([[7], [15]]);
+  });
+
+  it("drives tabs as before where the browser names no renderer", async () => {
+    const state = harness();
+    expect((await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" })).error).toBeUndefined();
+    await state.run("anbo.releaseTab", 10);
+    expect(state.kept).toEqual([]);
+  });
+
   it("tells Anbo which extension version runs", async () => {
     const state = harness();
     expect((await state.run("anbo.version")).result).toEqual({ version: EXTENSION_VERSION });

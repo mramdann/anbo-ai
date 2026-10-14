@@ -38,6 +38,49 @@ struct HostConfig {
     allowed_origins: Vec<String>,
 }
 
+/// Frames for the host itself are small; larger ones go to Anbo unread.
+const HOST_FRAME_LIMIT: usize = 16 * 1024;
+
+/// What the extension asked of the host itself, which Anbo never sees: its
+/// bridge closes on a message it does not know.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+enum HostFrame {
+    /// The renderers of the tabs Anbo drives, to keep scheduled.
+    KeepRenderers(Vec<u32>),
+    /// A word this host does not know, which goes nowhere.
+    Unknown,
+}
+
+/// A frame the extension sent the host itself, or None for one on its way to
+/// Anbo. Most frames carry page data, so only a small one that says it is for
+/// the host is read.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn host_frame(bytes: &[u8]) -> Option<HostFrame> {
+    const MARK: &[u8] = br#""type":"host""#;
+    if bytes.len() > HOST_FRAME_LIMIT || !bytes.windows(MARK.len()).any(|window| window == MARK) {
+        return None;
+    }
+    let frame: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    if frame["type"] != "host" {
+        return None;
+    }
+    if frame["method"] != "keepRenderers" {
+        return Some(HostFrame::Unknown);
+    }
+    let ids = frame["params"]["ids"]
+        .as_array()
+        .map(|ids| {
+            ids.iter()
+                .filter_map(serde_json::Value::as_u64)
+                .filter_map(|id| u32::try_from(id).ok())
+                .filter(|id| *id > 0)
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(HostFrame::KeepRenderers(ids))
+}
+
 fn valid_origin(origin: &str) -> bool {
     origin
         .strip_prefix("chrome-extension://")
@@ -59,7 +102,7 @@ async fn connect(origin: &str) -> Result<(), String> {
         return Err("invalid extension origin".into());
     }
     // Started first, while the popup that asked for this connection is open.
-    let _priority = extension_priority::keep();
+    let priority = extension_priority::keep();
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let config_path = executable.with_file_name("anbo-browser-native-host.json");
     let read_bounded = |path: &std::path::Path| -> Result<String, String> {
@@ -126,7 +169,14 @@ async fn connect(origin: &str) -> Result<(), String> {
     let mut output = tokio::io::stdout();
     let incoming = async {
         while let Some(bytes) = wire::read_frame(&mut input, wire::FROM_BROWSER_LIMIT).await? {
-            wire::write_frame(&mut *writer.lock().await, &bytes, wire::FROM_BROWSER_LIMIT).await?;
+            match host_frame(&bytes) {
+                Some(HostFrame::KeepRenderers(ids)) => priority.renderers(ids),
+                Some(HostFrame::Unknown) => {}
+                None => {
+                    wire::write_frame(&mut *writer.lock().await, &bytes, wire::FROM_BROWSER_LIMIT)
+                        .await?
+                }
+            }
         }
         Err::<(), String>("browser disconnected".into())
     };
@@ -186,7 +236,37 @@ async fn connect(_origin: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_origin;
+    use super::{host_frame, valid_origin, HostFrame};
+
+    #[test]
+    fn the_host_keeps_its_own_frames_and_passes_every_other_one_on() {
+        // As the browser writes it: keys in order, no spaces.
+        let keep = br#"{"method":"keepRenderers","params":{"ids":[11,14,0,-3,4294967296,"7"]},"type":"host"}"#;
+        assert_eq!(
+            host_frame(keep),
+            Some(HostFrame::KeepRenderers(vec![11, 14]))
+        );
+        assert_eq!(
+            host_frame(br#"{"method":"keepRenderers","params":{"ids":[]},"type":"host"}"#),
+            Some(HostFrame::KeepRenderers(Vec::new()))
+        );
+        assert_eq!(
+            host_frame(br#"{"method":"later","params":{},"type":"host"}"#),
+            Some(HostFrame::Unknown)
+        );
+        for passed in [
+            &br#"{"tabs":[],"type":"tabs"}"#[..],
+            br#"{"id":4,"result":{"text":""type":"host""},"type":"reply"}"#,
+            br#"{"type":"host""#,
+        ] {
+            assert_eq!(host_frame(passed), None);
+        }
+        let mut large =
+            br#"{"method":"keepRenderers","params":{"ids":[1]},"type":"host","pad":""#.to_vec();
+        large.extend(std::iter::repeat_n(b'x', 20 * 1024));
+        large.extend(br#""}"#);
+        assert_eq!(host_frame(&large), None);
+    }
 
     #[test]
     fn origin_requires_an_exact_extension_id_not_a_web_origin() {

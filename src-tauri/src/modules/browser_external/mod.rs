@@ -366,6 +366,7 @@ impl Registry {
                 }
                 Ok(false)
             }
+            protocol::Incoming::Host { .. } => Ok(false),
         }
     }
 

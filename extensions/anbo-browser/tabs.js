@@ -5,11 +5,11 @@ import { createDockManager } from "./dock.js";
 // The version this code is, kept equal to manifest.json. After an update the
 // browser reads the new manifest but can keep running the old scripts until the
 // extension reloads, so the manifest alone would hide that a reload is due.
-export const EXTENSION_VERSION = "0.5.5";
+export const EXTENSION_VERSION = "0.5.6";
 
 const MAX_TABS = 128;
 
-export function createTabManager(api, attached, publish, dockChanged, reload = () => {}) {
+export function createTabManager(api, attached, publishTabs, dockChanged, reload = () => {}, keepRenderers = () => {}) {
   const dock = createDockManager(api, dockChanged);
   const pending = new Map();
   const attaching = new Map();
@@ -18,7 +18,53 @@ export function createTabManager(api, attached, publish, dockChanged, reload = (
   const loading = new Set();
   const transports = new Map();
   const recovering = new Map();
+  // The renderer of each tab Anbo drives or is connecting to, by the browser's
+  // own process id (webNavigation's processId, which that renderer carries as
+  // --renderer-client-id). The browser runs a tab it does not show at idle
+  // priority with EcoQoS, so on a busy machine each command to it waited for
+  // the CPU: an open's setup took 6.7 s (Oct 14 2026). The native host keeps
+  // these renderers at normal priority meanwhile.
+  const renderers = new Map();
+  const connecting = new Map();
+  let keptRenderers = "";
   let disposed = false;
+
+  function publish() {
+    publishTabs();
+    keepDriven();
+  }
+
+  function keepDriven() {
+    const ids = new Set();
+    for (const [tabId, processId] of renderers) {
+      if (attached.has(tabId) || connecting.has(tabId)) ids.add(processId);
+      else renderers.delete(tabId);
+    }
+    const sorted = [...ids].sort((left, right) => left - right);
+    const key = sorted.join(",");
+    if (key === keptRenderers) return;
+    keptRenderers = key;
+    keepRenderers(sorted);
+  }
+
+  function noteRenderer(tabId, processId) {
+    if (!Number.isInteger(processId) || processId <= 0 || renderers.get(tabId) === processId) return;
+    renderers.set(tabId, processId);
+    keepDriven();
+  }
+
+  // getFrame leaves processId out of its answer; getAllFrames includes it.
+  async function learnRenderer(tabId) {
+    try {
+      const frames = await api.webNavigation?.getAllFrames({ tabId });
+      noteRenderer(tabId, frames?.find((frame) => frame.frameId === 0)?.processId);
+    } catch {}
+  }
+
+  // A navigation to another site can move the tab to another renderer.
+  function committed(details) {
+    if (details.frameId === 0 && (attached.has(details.tabId) || connecting.has(details.tabId))) noteRenderer(details.tabId, details.processId);
+  }
 
   function track(task) {
     running.add(task);
@@ -108,6 +154,10 @@ export function createTabManager(api, attached, publish, dockChanged, reload = (
       if (before.url !== expectedUrl || (initial.pendingUrl && initial.pendingUrl !== expectedUrl)) throw new Error("This tab navigated. Refresh the tab list and select it again.");
       if (attached.has(tabId)) return { ...attached.get(tabId) };
       attaching.set(tabId, token);
+      // Before the setup below, whose commands the tab's renderer answers.
+      connecting.set(tabId, token);
+      await learnRenderer(tabId);
+      verify();
       await api.debugger.attach({ tabId }, "1.3");
       didAttach = true;
       owned.add(tabId);
@@ -140,6 +190,8 @@ export function createTabManager(api, attached, publish, dockChanged, reload = (
     } finally {
       if (pending.get(tabId) === token) pending.delete(tabId);
       if (attaching.get(tabId) === token) attaching.delete(tabId);
+      if (connecting.get(tabId) === token) connecting.delete(tabId);
+      keepDriven();
     }
   }
 
@@ -306,6 +358,8 @@ export function createTabManager(api, attached, publish, dockChanged, reload = (
     for (const cancel of [...loading]) cancel();
     for (const token of pending.values()) token.valid = false;
     pending.clear();
+    renderers.clear();
+    connecting.clear();
     const ids = [...owned];
     attached.clear();
     await Promise.allSettled([...running, ...ids.map((tabId) => detach(tabId))]);
@@ -322,5 +376,5 @@ export function createTabManager(api, attached, publish, dockChanged, reload = (
     return transport.command(message.method, message.params);
   }
 
-  return { prepare, removed, detached, updated, expire, dispose, publish, event, command, dockTopology: dock.topology };
+  return { prepare, removed, detached, updated, committed, expire, dispose, publish, event, command, dockTopology: dock.topology };
 }

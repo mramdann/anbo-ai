@@ -126,11 +126,34 @@ pub enum Incoming {
         result: Option<Value>,
         error: Option<String>,
     },
+    /// A word the extension meant for the native host, such as the renderers
+    /// it keeps scheduled. The host keeps these; one an older host passes on
+    /// is left alone.
+    Host {
+        #[serde(rename = "method")]
+        _method: String,
+        #[serde(default, rename = "params")]
+        _params: Value,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_word_for_the_native_host_reads_as_one_and_leaves_other_types_strict() {
+        let host: Incoming = serde_json::from_str(
+            r#"{"method":"keepRenderers","params":{"ids":[11]},"type":"host"}"#,
+        )
+        .unwrap();
+        assert!(matches!(host, Incoming::Host { _method, .. } if _method == "keepRenderers"));
+        assert!(serde_json::from_str::<Incoming>(r#"{"type":"later"}"#).is_err());
+        assert!(serde_json::from_str::<Incoming>(
+            r#"{"method":"keepRenderers","type":"host","extra":1}"#
+        )
+        .is_err());
+    }
 
     #[test]
     fn rejects_invalid_profiles_and_unknown_browsers() {
