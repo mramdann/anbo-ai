@@ -589,6 +589,7 @@ pub fn run() {
             browser_automation::browser_automation_handle_action,
             browser_automation::browser_set_agent_callsigns,
             browser_automation::browser_automation_finish_turn,
+            browser_automation::ui_reply,
             browser_automation::browser_design_set,
             browser_automation::browser_design_command,
             browser_automation::browser_design_capture,

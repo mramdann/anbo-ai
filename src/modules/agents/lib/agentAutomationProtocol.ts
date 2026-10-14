@@ -1,5 +1,5 @@
+// The UI answers each request through ui_reply (uiReply.ts).
 export const AGENT_REQUEST_EVENT = "anbo:agent-request";
-export const AGENT_RESPONSE_EVENT = "anbo:agent-response";
 
 export type TerminalAutomationMethod =
   | "terminal_open"

@@ -1,14 +1,12 @@
 import { createRequestListener } from "@/lib/requestListener";
 
+// Anbo's requests to the UI. One that waits for an answer gets it through
+// ui_reply (uiReply.ts).
 export const BROWSER_OPEN_REQUEST_EVENT = "anbo:browser-open-request";
-export const BROWSER_OPEN_RESPONSE_EVENT = "anbo:browser-open-response";
 export const BROWSER_CLOSE_REQUEST_EVENT = "anbo:browser-close-request";
-export const BROWSER_CLOSE_RESPONSE_EVENT = "anbo:browser-close-response";
 export const BROWSER_TABS_REQUEST_EVENT = "anbo:browser-tabs-request";
-export const BROWSER_TABS_RESPONSE_EVENT = "anbo:browser-tabs-response";
 export const BROWSER_POPUP_REQUEST_EVENT = "anbo:browser-popup-request";
 export const BROWSER_SHOW_REQUEST_EVENT = "anbo:browser-show-request";
-export const BROWSER_SHOW_RESPONSE_EVENT = "anbo:browser-show-response";
 
 export type BrowserOpenRequest = {
   requestId: string;

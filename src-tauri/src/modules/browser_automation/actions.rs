@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
 use tauri::Emitter;
-use tauri::Listener;
 
 use super::accessible_name::ACCESSIBLE_NAME_JS;
 use super::context_block::{Ancestors, CONTEXT_BLOCK_JS};
@@ -49,6 +48,7 @@ use crate::modules::browser_automation::snapshot::{
     DEFAULT_SNAPSHOT_MAX_CHARS, REF_GENERATIONS_KEPT,
 };
 use crate::modules::browser_automation::timings::ActionTimings;
+use crate::modules::browser_automation::ui_answer::{self, Answer};
 use crate::modules::browser_automation::visibility::VISIBILITY_JS;
 const VALUE_ACTION_JS: &str = include_str!("valueAction.js");
 const REF_REPLACEMENT_JS: &str = include_str!("refReplacement.js");
@@ -162,7 +162,6 @@ const MAX_SNAPSHOT_ELEMENTS: usize = 1_000;
 const MAX_SCREENSHOT_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const SUBMISSION_OBSERVATION_MS: u64 = 3_000;
 const BROWSER_OPEN_REQUEST_EVENT: &str = "anbo:browser-open-request";
-const BROWSER_OPEN_RESPONSE_EVENT: &str = "anbo:browser-open-response";
 /// How long an open waits for the UI to create its tab.
 const UI_CREATE_TIMEOUT: Duration = Duration::from_secs(25);
 /// The UI's own deadline for an open comes this much earlier, so its answer
@@ -171,10 +170,7 @@ const UI_CREATE_MARGIN: Duration = Duration::from_secs(3);
 /// The open's own find is done, so its Chrome or Edge tab may dock.
 const BROWSER_DOCK_HOLD_RELEASE_EVENT: &str = "anbo:browser-dock-hold-release";
 const BROWSER_CLOSE_REQUEST_EVENT: &str = "anbo:browser-close-request";
-const BROWSER_CLOSE_RESPONSE_EVENT: &str = "anbo:browser-close-response";
 const BROWSER_TABS_REQUEST_EVENT: &str = "anbo:browser-tabs-request";
-const BROWSER_TABS_RESPONSE_EVENT: &str = "anbo:browser-tabs-response";
-static OPEN_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 static SUBMISSION_OBSERVATION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(serde::Deserialize)]
@@ -8060,28 +8056,13 @@ async fn observe_submission(
 }
 
 async fn request_browser_tabs_metadata(app: &AppHandle) -> Option<BrowserTabsResponse> {
-    let request_id = format!(
-        "{}-{}",
-        std::process::id(),
-        OPEN_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-    );
-    let response_event = format!("{BROWSER_TABS_RESPONSE_EVENT}:{request_id}");
-    let (sender, receiver) = tokio::sync::oneshot::channel::<String>();
-    let listener_id = app.once(response_event, move |event| {
-        let _ = sender.send(event.payload().to_string());
-    });
-    if app
-        .emit(
-            BROWSER_TABS_REQUEST_EVENT,
-            json!({ "requestId": request_id }),
-        )
-        .is_err()
-    {
-        app.unlisten(listener_id);
-        return None;
-    }
-    let received = tokio::time::timeout(Duration::from_secs(2), receiver).await;
-    app.unlisten(listener_id);
+    let mut answer = Answer::expect();
+    app.emit(
+        BROWSER_TABS_REQUEST_EVENT,
+        json!({ "requestId": answer.request_id() }),
+    )
+    .ok()?;
+    let received = tokio::time::timeout(Duration::from_secs(2), answer.receiver()).await;
     let payload = received.ok()?.ok()?;
     serde_json::from_str(&payload).ok()
 }
@@ -8334,16 +8315,7 @@ async fn open_browser(
         .await
         .map_err(|message| ("resource_exhausted".to_string(), message))?;
 
-    let request_id = format!(
-        "{}-{}",
-        std::process::id(),
-        OPEN_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-    );
-    let response_event = format!("{BROWSER_OPEN_RESPONSE_EVENT}:{request_id}");
-    let (sender, receiver) = tokio::sync::oneshot::channel::<String>();
-    let listener_id = app.once(response_event, move |event| {
-        let _ = sender.send(event.payload().to_string());
-    });
+    let mut answer = Answer::expect();
     // The UI starts no Chrome/Edge open after this, and closes a tab that opens
     // later, so the agent is never told an open failed while its tab appears.
     let deadline = SystemTime::now()
@@ -8354,7 +8326,7 @@ async fn open_browser(
     if let Err(error) = app.emit(
         BROWSER_OPEN_REQUEST_EVENT,
         json!({
-            "requestId": request_id,
+            "requestId": answer.request_id(),
             "url": url,
             "workspace": workspace,
             "deadline": deadline,
@@ -8367,7 +8339,6 @@ async fn open_browser(
             "profile": profile,
         }),
     ) {
-        app.unlisten(listener_id);
         return Err((
             error_codes::INTERNAL.to_string(),
             format!("failed to request browser tab: {error}"),
@@ -8380,10 +8351,9 @@ async fn open_browser(
     let received = timings
         .measure(
             "uiCreate",
-            tokio::time::timeout(UI_CREATE_TIMEOUT, receiver),
+            tokio::time::timeout(UI_CREATE_TIMEOUT, answer.receiver()),
         )
         .await;
-    app.unlisten(listener_id);
     let payload = received
         .map_err(|_| {
             (
@@ -8423,11 +8393,7 @@ async fn open_browser(
             let _ = app.emit(
                 BROWSER_CLOSE_REQUEST_EVENT,
                 json!({
-                    "requestId": format!(
-                        "{}-{}",
-                        std::process::id(),
-                        OPEN_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-                    ),
+                    "requestId": ui_answer::request_id(),
                     "tabId": tab_id,
                     "workspace": response.workspace,
                 }),
@@ -8458,34 +8424,23 @@ async fn close_browser(app: &AppHandle, params: &Value) -> Result<Value, (String
     // No precheck here. A tab whose embed registration was already dropped is
     // exactly the tab that most needs closing, and rejecting it as not-found
     // left it running with nothing able to reach it.
-    let request_id = format!(
-        "{}-{}",
-        std::process::id(),
-        OPEN_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-    );
-    let response_event = format!("{BROWSER_CLOSE_RESPONSE_EVENT}:{request_id}");
-    let (sender, receiver) = tokio::sync::oneshot::channel::<String>();
-    let listener_id = app.once(response_event, move |event| {
-        let _ = sender.send(event.payload().to_string());
-    });
+    let mut answer = Answer::expect();
     let had_browser = get_embed_webview(app, tab_id).is_ok();
     if let Err(error) = app.emit(
         BROWSER_CLOSE_REQUEST_EVENT,
         json!({
-            "requestId": request_id,
+            "requestId": answer.request_id(),
             "tabId": tab_id,
             "workspace": workspace,
         }),
     ) {
-        app.unlisten(listener_id);
         return Err((
             error_codes::INTERNAL.to_string(),
             format!("failed to request browser tab close: {error}"),
         ));
     }
 
-    let mut receiver = receiver;
-    let received = match tokio::time::timeout(Duration::from_secs(10), &mut receiver).await {
+    let received = match tokio::time::timeout(Duration::from_secs(10), answer.receiver()).await {
         Ok(received) => Some(received),
         // A saturated UI can answer late while the close itself goes through:
         // with eight agents at once the tab was gone and the agent was told the
@@ -8498,21 +8453,19 @@ async fn close_browser(app: &AppHandle, params: &Value) -> Result<Value, (String
                     break None;
                 }
                 if tokio::time::Instant::now() >= grace {
-                    app.unlisten(listener_id);
                     return Err((
                         error_codes::TIMEOUT.to_string(),
                         "Anbo UI did not close the browser tab in time".to_string(),
                     ));
                 }
                 if let Ok(received) =
-                    tokio::time::timeout(Duration::from_millis(100), &mut receiver).await
+                    tokio::time::timeout(Duration::from_millis(100), answer.receiver()).await
                 {
                     break Some(received);
                 }
             }
         }
     };
-    app.unlisten(listener_id);
     let Some(received) = received else {
         remove_tab_lock(tab_id);
         return Ok(json!({

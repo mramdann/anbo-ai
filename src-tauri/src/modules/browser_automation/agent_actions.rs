@@ -1,13 +1,12 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Listener};
+use tauri::{AppHandle, Emitter};
 
 use crate::modules::browser_automation::protocol::error_codes;
+use crate::modules::browser_automation::ui_answer::Answer;
 
 const AGENT_REQUEST_EVENT: &str = "anbo:agent-request";
-const AGENT_RESPONSE_EVENT: &str = "anbo:agent-response";
 const MAX_WORKSPACE_BYTES: usize = 4 * 1024;
 const MAX_AGENT_ID_BYTES: usize = 512;
 const MAX_TERMINAL_ID_BYTES: usize = 128;
@@ -21,7 +20,6 @@ const MAX_TIMEOUT_MS: u64 = 60_000;
 /// an operation just before it while it is busy for seconds (20 terminals
 /// opened at once right after a start), and its answer then still arrives.
 const UI_GRACE_MS: u64 = 5_000;
-static AGENT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Deserialize)]
 struct AgentAutomationError {
@@ -225,16 +223,7 @@ pub async fn handle_agent_action(
     params: Value,
 ) -> Result<Value, (String, String)> {
     let timeout_ms = validate_params(method, &params)?;
-    let request_id = format!(
-        "{}-{}",
-        std::process::id(),
-        AGENT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-    );
-    let response_event = format!("{AGENT_RESPONSE_EVENT}:{request_id}");
-    let (sender, receiver) = tokio::sync::oneshot::channel::<String>();
-    let listener_id = app.once(response_event, move |event| {
-        let _ = sender.send(event.payload().to_string());
-    });
+    let mut answer = Answer::expect();
     let deadline = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -243,22 +232,23 @@ pub async fn handle_agent_action(
     if let Err(error) = app.emit(
         AGENT_REQUEST_EVENT,
         json!({
-            "requestId": request_id,
+            "requestId": answer.request_id(),
             "method": method,
             "params": params,
             "deadline": deadline,
         }),
     ) {
-        app.unlisten(listener_id);
         return Err((
             error_codes::INTERNAL.to_string(),
             format!("failed to request agent operation: {error}"),
         ));
     }
 
-    let received =
-        tokio::time::timeout(Duration::from_millis(timeout_ms + UI_GRACE_MS), receiver).await;
-    app.unlisten(listener_id);
+    let received = tokio::time::timeout(
+        Duration::from_millis(timeout_ms + UI_GRACE_MS),
+        answer.receiver(),
+    )
+    .await;
     let payload = received
         .map_err(|_| {
             (

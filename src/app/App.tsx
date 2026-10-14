@@ -12,6 +12,7 @@ import {
   hasExplicitLaunchDir,
 } from "@/lib/launchDir";
 import { quoteShellArg } from "@/lib/shellQuote";
+import { replyToAnbo } from "@/lib/uiReply";
 import { usePresence } from "@/lib/usePresence";
 import { useZoom } from "@/lib/useZoom";
 import { isMarkdownPath } from "@/lib/utils";
@@ -41,7 +42,6 @@ import {
 } from "@/modules/agents";
 import { setAgentRequestHandler } from "@/modules/agents/lib/agentAutomationBridge";
 import {
-  AGENT_RESPONSE_EVENT,
   type AgentAutomationRequest,
   type AgentAutomationResponse,
   lateRequest,
@@ -67,10 +67,6 @@ import { AiComposerProvider } from "@/modules/ai/lib/composer";
 import { native } from "@/modules/ai/lib/native";
 import {
   acceptBrowserPopupRequest,
-  BROWSER_CLOSE_RESPONSE_EVENT,
-  BROWSER_OPEN_RESPONSE_EVENT,
-  BROWSER_SHOW_RESPONSE_EVENT,
-  BROWSER_TABS_RESPONSE_EVENT,
   type BrowserPaneHandle,
   BrowserStack,
   type BrowserTabMetadata,
@@ -221,7 +217,7 @@ import {
   workspaceScopeKey,
 } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import type { SearchAddon } from "@xterm/addon-search";
 import {
   type CSSProperties,
@@ -1758,7 +1754,8 @@ export default function App() {
 
   useEffect(() => {
     setBrowserOpenRequestHandler(async (payload) => {
-      const responseEvent = `${BROWSER_OPEN_RESPONSE_EVENT}:${payload.requestId}`;
+      const reply = (response: unknown) =>
+        void replyToAnbo(payload.requestId, response);
       let protocol: string;
       try {
         protocol = new URL(payload.url).protocol;
@@ -1766,13 +1763,13 @@ export default function App() {
         protocol = "";
       }
       if (protocol !== "http:" && protocol !== "https:") {
-        void emit(responseEvent, { error: "only HTTP(S) URLs are allowed" });
+        reply({ error: "only HTTP(S) URLs are allowed" });
         return;
       }
       const { spaces, activeId: currentSpaceId } = useSpaces.getState();
       const resolved = resolveBrowserOpenSpace(spaces, payload.workspace);
       if (!resolved.ok) {
-        void emit(responseEvent, { error: resolved.error });
+        reply({ error: resolved.error });
         return;
       }
       const spaceId = resolved.space.id;
@@ -1797,14 +1794,14 @@ export default function App() {
           throw new Error("Chrome/Edge profiles are not available for this workspace; leave profile out to open the page in Anbo's browser.");
         }
       } catch (cause) {
-        void emit(responseEvent, { error: String(cause) });
+        reply({ error: String(cause) });
         return;
       }
       // The agent stopped waiting for this open and would never learn of the
       // tab. Closing it closes the page Anbo opened in the browser too.
       if (externalTabId !== null && payload.deadline != null && Date.now() > payload.deadline) {
         closeTab(externalTabId);
-        void emit(responseEvent, { error: "The page opened after Anbo stopped waiting for it, so its tab was closed again. Try again." });
+        reply({ error: "The page opened after Anbo stopped waiting for it, so its tab was closed again. Try again." });
         return;
       }
       const tabId = externalTabId ?? openBrowserTab(
@@ -1838,7 +1835,7 @@ export default function App() {
         queueMicrotask(restoreForeground);
         requestAnimationFrame(() => requestAnimationFrame(restoreForeground));
       }
-      void emit(responseEvent, {
+      reply({
         tabId,
         spaceId,
         workspace: resolved.space.root,
@@ -1855,7 +1852,8 @@ export default function App() {
 
   useEffect(() => {
     setBrowserCloseRequestHandler(async (payload) => {
-      const responseEvent = `${BROWSER_CLOSE_RESPONSE_EVENT}:${payload.requestId}`;
+      const reply = (response: unknown) =>
+        void replyToAnbo(payload.requestId, response);
       const { spaces } = useSpaces.getState();
       const resolved = resolveBrowserCloseTarget(
         tabsRef.current,
@@ -1864,17 +1862,17 @@ export default function App() {
         payload.workspace,
       );
       if (!resolved.ok) {
-        void emit(responseEvent, { error: resolved.error });
+        reply({ error: resolved.error });
         return;
       }
       const target = tabsRef.current.find((tab) => tab.id === payload.tabId);
       if (target?.kind === "browser" && target.external?.connected) {
         try { await invoke("browser_external_unbind", { tabId: payload.tabId, connectionId: target.external.connectionId, selectionId: target.external.selectionId }); }
-        catch (cause) { void emit(responseEvent, { error: String(cause) }); return; }
+        catch (cause) { reply({ error: String(cause) }); return; }
       }
       closeTab(payload.tabId);
       automationTabSelection.closed(payload.tabId);
-      void emit(responseEvent, {
+      reply({
         ok: true,
         tabId: payload.tabId,
         spaceId: resolved.space.id,
@@ -1920,7 +1918,7 @@ export default function App() {
           : tab.spaceId !== (useSpaces.getState().activeId ?? DEFAULT_SPACE_ID)
             ? "workspace"
             : showBrowserTabForInput(tab.spaceId, tab.id);
-      void emit(`${BROWSER_SHOW_RESPONSE_EVENT}:${payload.requestId}`, {
+      void replyToAnbo(payload.requestId, {
         shown: outcome === "shown",
         reason: outcome === "shown" ? null : outcome,
       });
@@ -1989,7 +1987,7 @@ export default function App() {
       const otherTabs = tabsRef.current.filter(
         (tab) => tab.kind !== "browser" && tab.spaceId === currentSpaceId,
       ).length;
-      void emit(`${BROWSER_TABS_RESPONSE_EVENT}:${requestId}`, {
+      void replyToAnbo(requestId, {
         activeTabId: activeBrowserId,
         activeSpaceId: currentSpaceId,
         otherTabs,
@@ -2136,11 +2134,9 @@ export default function App() {
             ? lateRequest("start it")
             : service.handle(payload),
         )
-        .then((response) =>
-          emit(`${AGENT_RESPONSE_EVENT}:${payload.requestId}`, response),
-        )
+        .then((response) => replyToAnbo(payload.requestId, response))
         .catch((caught: unknown) =>
-          emit(`${AGENT_RESPONSE_EVENT}:${payload.requestId}`, {
+          replyToAnbo(payload.requestId, {
             error: {
               code: "internal",
               message:

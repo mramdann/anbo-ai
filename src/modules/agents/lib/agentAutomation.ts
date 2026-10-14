@@ -23,10 +23,7 @@ export type {
   AgentAutomationRequest,
   AgentAutomationResponse,
 } from "./agentAutomationProtocol";
-export {
-  AGENT_REQUEST_EVENT,
-  AGENT_RESPONSE_EVENT,
-} from "./agentAutomationProtocol";
+export { AGENT_REQUEST_EVENT } from "./agentAutomationProtocol";
 export { agentIdFor } from "./agentIdentity";
 
 const MAX_MESSAGE_CHARS = 8_000;

@@ -29,6 +29,7 @@ pub mod server;
 pub mod snapshot;
 pub(crate) mod target;
 mod timings;
+mod ui_answer;
 mod visibility;
 
 use tauri::AppHandle;
@@ -45,6 +46,21 @@ pub fn browser_automation_finish_turn(
         return Err("main webview required".into());
     }
     Ok(activity::end_observed(&app, &target))
+}
+
+/// The main window's answer to one of Anbo's requests, and whether the
+/// request still waited for it (`ui_answer`).
+#[tauri::command]
+pub async fn ui_reply(
+    webview: tauri::Webview,
+    request_id: String,
+    response: serde_json::Value,
+) -> Result<bool, String> {
+    // Embedded browser tabs are webviews of the main window as well.
+    if webview.label() != "main" {
+        return Err("only Anbo's main window answers its requests".into());
+    }
+    Ok(ui_answer::deliver(&request_id, response.to_string()))
 }
 
 #[tauri::command]

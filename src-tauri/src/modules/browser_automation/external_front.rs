@@ -14,16 +14,15 @@
 use super::protocol::error_codes;
 use super::registry::get_embed_webview;
 use super::target::BrowserTarget;
+use super::ui_answer::Answer;
 use crate::modules::browser_external::dock::{self, Standing};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Listener};
+use tauri::{AppHandle, Emitter};
 
 const SHOW_REQUEST_EVENT: &str = "anbo:browser-show-request";
-const SHOW_RESPONSE_EVENT: &str = "anbo:browser-show-response";
 /// A dock takes about 0.7 s, after the page it replaces went back to its own
 /// window.
 const SHOW_PATIENCE: Duration = Duration::from_secs(5);
@@ -49,7 +48,6 @@ const DRAWN_JS: &str = "document.visibilityState !== 'visible' ? 'hidden' : new 
 /// tab, against 0.8 to 1.6 s docked (Oct 11 2026). An agent's input turns on
 /// focus emulation, under which the page runs as if shown.
 const HIDDEN_PAGE_NOTE: &str = "this Chrome/Edge tab is not shown, so its browser runs the page's timers about once a second and content that waits on them comes late: retry with a longer timeout; after a click, hover or key press on the tab, its page runs at full speed until your session ends";
-static SHOW_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Actions that reach the page as pointer input. Typing, selecting, scrolling
 /// and uploads work on a hidden page. Focus is here because agents reach for it
@@ -200,30 +198,17 @@ fn shown_in_window(state: &serde_json::Value) -> bool {
 }
 
 async fn request_show(app: &AppHandle, tab_id: i64) -> Result<ShowResponse, (String, String)> {
-    let request_id = format!(
-        "{}-{}",
-        std::process::id(),
-        SHOW_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-    );
-    let (sender, receiver) = tokio::sync::oneshot::channel::<String>();
-    let listener_id = app.once(
-        format!("{SHOW_RESPONSE_EVENT}:{request_id}"),
-        move |event| {
-            let _ = sender.send(event.payload().to_string());
-        },
-    );
+    let mut answer = Answer::expect();
     if let Err(error) = app.emit(
         SHOW_REQUEST_EVENT,
-        json!({ "requestId": request_id, "tabId": tab_id }),
+        json!({ "requestId": answer.request_id(), "tabId": tab_id }),
     ) {
-        app.unlisten(listener_id);
         return Err((
             error_codes::INTERNAL.to_string(),
             format!("failed to ask Anbo to show the tab: {error}; no input was sent"),
         ));
     }
-    let received = tokio::time::timeout(Duration::from_secs(2), receiver).await;
-    app.unlisten(listener_id);
+    let received = tokio::time::timeout(Duration::from_secs(2), answer.receiver()).await;
     let payload = received
         .map_err(|_| {
             (
