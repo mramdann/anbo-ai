@@ -929,7 +929,45 @@ fn as_count(value: &Value) -> Option<u64> {
     (float.is_finite() && float >= 0.0).then(|| float.trunc() as u64)
 }
 
+/// A Chrome or Edge page can leave the dock between the check that it shows
+/// and the pointer input: another tab of its panel takes the dock window over,
+/// as a tab an agent has just opened there does, and the dock's record names
+/// the old page until that is done. Every click sent within 45 ms of such an
+/// open's answer was refused (Oct 14 2026). Nothing was sent, so the action
+/// runs once more, and bringing the tab forward again shows the page.
 async fn handle_action_inner(
+    app: &AppHandle,
+    method: &str,
+    params: Value,
+    timings: &mut ActionTimings,
+    caller: &super::caller::Caller,
+) -> Result<Value, (String, String)> {
+    let again = params
+        .get("tabId")
+        .and_then(Value::as_i64)
+        .filter(|_| super::external_front::needs_shown_page(method))
+        .filter(|&tab_id| crate::modules::browser_external::get_target(tab_id).is_some())
+        .map(|_| params.clone());
+    let result = handle_action_attempt(app, method, params, timings, caller).await;
+    match (result, again) {
+        (Err(error), Some(params)) if went_out_of_view(&error) => {
+            log::info!(
+                "[browser_automation] {method}: the page went out of view before any input; bringing the tab forward again"
+            );
+            super::external_front::settle_dock().await;
+            handle_action_attempt(app, method, params, timings, caller).await
+        }
+        (result, _) => result,
+    }
+}
+
+/// Pointer input refused because the page went out of view while the action
+/// ran, before anything was sent.
+fn went_out_of_view((code, message): &(String, String)) -> bool {
+    code == error_codes::INPUT_NOT_READY && message.starts_with(HIDDEN_TAB)
+}
+
+async fn handle_action_attempt(
     app: &AppHandle,
     method: &str,
     mut params: Value,
@@ -9918,6 +9956,31 @@ mod tests {
         assert_eq!(absence_settle(5_000, true), Duration::from_millis(2_500));
         assert_eq!(absence_settle(8_000, true), Duration::from_millis(4_000));
         assert_eq!(absence_settle(60_000, true), Duration::from_millis(5_000));
+    }
+
+    #[test]
+    fn only_a_page_gone_out_of_view_before_input_is_tried_again() {
+        let refusal = |code: &str, message: String| (code.to_string(), message);
+        let not_ready = error_codes::INPUT_NOT_READY;
+        assert!(went_out_of_view(&refusal(
+            not_ready,
+            format!("{HIDDEN_TAB} No input was sent.")
+        )));
+        // A page that stopped drawing usually has a lasting cause, a covered
+        // or locked screen, where a second try only waits longer.
+        assert!(!went_out_of_view(&refusal(
+            not_ready,
+            format!("{UNDRAWN_TAB} No input was sent.")
+        )));
+        // Refusals from bringing the tab forward already name what is wrong.
+        assert!(!went_out_of_view(&refusal(
+            not_ready,
+            "the tab is hidden in its browser, which delivers no pointer input to a hidden page, and Anbo is minimized".into()
+        )));
+        assert!(!went_out_of_view(&refusal(
+            error_codes::TIMEOUT,
+            HIDDEN_TAB.to_string()
+        )));
     }
 
     #[test]

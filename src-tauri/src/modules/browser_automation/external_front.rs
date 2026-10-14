@@ -9,7 +9,10 @@
 //!
 //! The dock shows one page, so agents take turns: pointer input to a Chrome or
 //! Edge tab holds the turn until the input is done, and another agent's input
-//! waits for it instead of moving that page out from under it.
+//! waits for it instead of moving that page out from under it. A page can still
+//! leave the dock before the input, when another tab of its panel takes the dock
+//! window over; nothing is sent then, and the action runs once more
+//! (`actions.rs` `handle_action_inner`).
 
 use super::protocol::error_codes;
 use super::registry::get_embed_webview;
@@ -31,6 +34,8 @@ const SHOW_PATIENCE: Duration = Duration::from_secs(5);
 const DOCKING_PATIENCE: Duration = Duration::from_secs(15);
 /// A page not shown by then, with the dock idle, is asked for once more.
 const ASK_AGAIN: Duration = Duration::from_millis(2_500);
+/// How long a second try at pointer input waits for a dock move under way.
+const SETTLE_PATIENCE: Duration = Duration::from_secs(2);
 /// How long pointer input waits for other agents' input on Chrome/Edge tabs.
 const TURN_PATIENCE: Duration = Duration::from_secs(30);
 /// The UI hears which tab holds the turn, and brings no agent's new tab to
@@ -146,6 +151,15 @@ pub async fn bring_to_front(
         dock::docked(tab_id).and_then(|(_, reason)| reason),
         started.elapsed(),
     )))
+}
+
+/// Waits a moment for a dock move under way to finish, so the next look at a
+/// page reads where that move left it.
+pub async fn settle_dock() {
+    let started = tokio::time::Instant::now();
+    while dock::working() && started.elapsed() < SETTLE_PATIENCE {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 /// Whether the dock is still bringing this tab's page in.
