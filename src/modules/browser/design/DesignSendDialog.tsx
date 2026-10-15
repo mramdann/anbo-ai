@@ -168,9 +168,16 @@ export default function DesignSendDialog({
         if (response.error) {
           throw new Error(response.error.message);
         }
-        toast.success(`Design feedback sent to ${agent?.name ?? "the agent"}`, {
-          description: capture.imagePath,
-        });
+        const name = agent?.name ?? "the agent";
+        const stillTyping =
+          (response.result as { delivery?: string } | undefined)?.delivery ===
+          "typing";
+        toast.success(
+          stillTyping
+            ? `Anbo is still typing the design feedback into ${name}`
+            : `Design feedback sent to ${name}`,
+          { description: capture.imagePath },
+        );
       }
       setMessage("");
       onOpenChange(false);

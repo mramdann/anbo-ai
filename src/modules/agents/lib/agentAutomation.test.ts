@@ -7,7 +7,9 @@ import {
   agentIdFor,
   collectWorkspaceAgents,
   createAgentAutomationService as createService,
+  echoedLength,
   isAgentTuiReady,
+  isTypedInput,
   resolveAgentWorkspace,
   sanitizeAgentMessage,
   submitAgentMessage,
@@ -1006,6 +1008,333 @@ describe("agent messages", () => {
         agent: { status: "working", phase: "attention" },
       },
     });
+    service.dispose();
+  });
+});
+
+const CODEX_READY =
+  "OpenAI Codex\nmodel: gpt-5.6-sol /model to change\n\n› Ask Codex to do anything";
+
+/**
+ * A Codex terminal starved of CPU: it shows what it is sent a few characters a
+ * tick and reports every input the way a terminal session does. Enter empties
+ * its input box, and the turn's answer shows a moment later.
+ */
+function starvedCodex(charsPerTick: number, tickMs: number) {
+  const writes: string[] = [];
+  const listeners = new Set<(leafId: number, data: string) => void>();
+  let shown = "";
+  let unread = "";
+  let answers = 0;
+  let taking = true;
+  const ticker = setInterval(() => {
+    if (!taking) return;
+    shown += unread.slice(0, charsPerTick);
+    unread = unread.slice(charsPerTick);
+  }, tickMs);
+  return {
+    writes,
+    getBuffer: () => `${"Answered.\n".repeat(answers)}${CODEX_READY}\n${shown}`,
+    write: (leafId: number, data: string) => {
+      writes.push(data);
+      for (const listener of listeners) listener(leafId, data);
+      if (data === "\r") {
+        shown = "";
+        setTimeout(() => {
+          answers += 1;
+        }, 300);
+      } else if (data === "\x03") {
+        shown = "";
+        unread = "";
+      } else {
+        unread += data;
+      }
+      return true;
+    },
+    subscribeInput: (listener: (leafId: number, data: string) => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    typeByHand: (data: string) => {
+      for (const listener of listeners) listener(101, data);
+    },
+    stopTaking: () => {
+      taking = false;
+    },
+    dispose: () => clearInterval(ticker),
+  };
+}
+
+const starvedCodexService = (terminal: ReturnType<typeof starvedCodex>) =>
+  createAgentAutomationService({
+    getTabs: () => [terminalTab()] as Tab[],
+    getSpaces: () => [space()],
+    getSessions: () => ({ 101: session({ agent: "codex", name: "Spica" }) }),
+    getActiveTabId: () => null,
+    getBuffer: terminal.getBuffer,
+    write: terminal.write,
+    subscribeInput: terminal.subscribeInput,
+    spawn: () => null,
+    subscribeSessions: () => () => {},
+  });
+
+// Every 120-character stretch of this is unique, as a real instruction's is.
+const numberedSteps = (count: number) =>
+  Array.from(
+    { length: count },
+    (_, index) =>
+      `Langkah ${index + 1}: catat harga barang nomor ${index * 37 + 11}.`,
+  ).join(" ");
+
+describe("agent messages a CPU-starved CLI takes in slowly", () => {
+  it("measures how much of a message a screen shows", () => {
+    const typed =
+      "Langkah1:catathargabarangnomor11.Langkah2:catathargabarangnomor48.";
+    expect(echoedLength(`›${typed.slice(0, 40)}`, typed, 0)).toBe(40);
+    expect(echoedLength(`›${typed}`, typed, 10)).toBe(typed.length);
+    // Too short to tell apart from other text on the screen.
+    expect(echoedLength(`›${typed.slice(0, 8)}`, typed, 0)).toBe(0);
+    // An echo only grows.
+    expect(echoedLength("›", typed, 30)).toBe(30);
+  });
+
+  it("tells keys someone typed from what a terminal sends by itself", () => {
+    for (const report of [
+      "\x1b[I",
+      "\x1b[O",
+      "\x1b[<64;10;5M",
+      "\x1b[12;40R",
+      "\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\",
+      "\x1bP>|xterm.js(6.0.0)\x1b\\",
+      "\x1bOA",
+    ]) {
+      expect(isTypedInput(report)).toBe(false);
+    }
+    for (const typed of [
+      "x",
+      "\r",
+      "\x7f",
+      "\x03",
+      "\x1b",
+      "\x1b[200~halo\x1b[201~",
+    ]) {
+      expect(isTypedInput(typed)).toBe(true);
+    }
+  });
+
+  it("keeps typing a message the agent still takes in when the answer is due", async () => {
+    vi.useFakeTimers();
+    const terminal = starvedCodex(10, 200);
+    const service = starvedCodexService(terminal);
+    const message = numberedSteps(18);
+    const pending = service.handle({
+      requestId: "starved",
+      method: "agent_send",
+      params: {
+        workspace: "space-a",
+        agentId: "spica-codex:10",
+        message,
+        timeout: 2_000,
+      },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+    await expect(pending).resolves.toMatchObject({
+      result: { ok: true, delivery: "typing" },
+    });
+    expect(terminal.writes).toEqual([message.slice(0, 256)]);
+    // A focus report from the terminal is not someone typing.
+    terminal.typeByHand("\x1b[I");
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(terminal.writes.slice(0, -1).join("")).toBe(message);
+    expect(terminal.writes[terminal.writes.length - 1]).toBe("\r");
+    expect(terminal.writes).not.toContain("\x03");
+    terminal.dispose();
+    service.dispose();
+  });
+
+  it("clears a message once its agent takes no more of it for 30 s", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const terminal = starvedCodex(10, 200);
+    const service = starvedCodexService(terminal);
+    const message = numberedSteps(18);
+    const pending = service.handle({
+      requestId: "stalled",
+      method: "agent_send",
+      params: {
+        workspace: "space-a",
+        agentId: "spica-codex:10",
+        message,
+        timeout: 2_000,
+      },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+    await expect(pending).resolves.toMatchObject({
+      result: { delivery: "typing" },
+    });
+    terminal.stopTaking();
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(terminal.writes).toEqual([message.slice(0, 256)]);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(terminal.writes).toEqual([message.slice(0, 256), "\x03"]);
+    expect(warn).toHaveBeenCalledWith(
+      "[anbo] agent_send:",
+      expect.stringContaining("showed no more of the message for 30 s"),
+    );
+    warn.mockRestore();
+    terminal.dispose();
+    service.dispose();
+  });
+
+  it("waits the caller's whole timeout before giving up a message that never shows, not the 30 s stall", async () => {
+    // A CLI whose TUI repaints nothing under load (Claude Code goes quiet)
+    // shows no progress at all. The 30 s no-progress stall is for background
+    // typing only, so within a 40 s wait nothing is cancelled until 40 s.
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab()] as Tab[],
+      getSpaces: () => [space()],
+      getSessions: () => ({ 101: session({ agent: "codex", name: "Spica" }) }),
+      getActiveTabId: () => null,
+      // A ready prompt that never echoes anything typed into it.
+      getBuffer: () => CODEX_READY,
+      write: (_leafId, data) => {
+        writes.push(data);
+        return true;
+      },
+      spawn: () => null,
+      subscribeSessions: () => () => {},
+    });
+    const pending = service.handle({
+      requestId: "quiet-tui",
+      method: "agent_send",
+      params: {
+        workspace: "space-a",
+        agentId: "spica-codex:10",
+        message: numberedSteps(6),
+        timeout: 40_000,
+      },
+    });
+    // At 35 s, past the stall but inside the caller's wait: still typing, the
+    // first chunk written, no Ctrl+C, no answer yet.
+    await vi.advanceTimersByTimeAsync(35_000);
+    expect(writes).toEqual([numberedSteps(6).slice(0, 256)]);
+    await vi.advanceTimersByTimeAsync(6_000);
+    await expect(pending).resolves.toMatchObject({
+      error: {
+        code: "agent_not_ready",
+        message: expect.stringContaining("none of the message showed"),
+      },
+    });
+    expect(writes).toEqual([numberedSteps(6).slice(0, 256), "\x03"]);
+    service.dispose();
+  });
+
+  it("holds the next message to that agent until the one being typed is sent", async () => {
+    vi.useFakeTimers();
+    const terminal = starvedCodex(10, 200);
+    const service = starvedCodexService(terminal);
+    const send = (agentId: string, message: string, timeout: number) =>
+      service.handle({
+        requestId: `${agentId}-${message.length}`,
+        method: "agent_send",
+        params: { workspace: "space-a", agentId, message, timeout },
+      });
+    const first = numberedSteps(18);
+    const second = "Lalu kirim ringkasannya.";
+    const firstSent = send("spica-codex:10", first, 2_000);
+    await vi.advanceTimersByTimeAsync(2_500);
+    await expect(firstSent).resolves.toMatchObject({
+      result: { delivery: "typing" },
+    });
+    // Sending it again would deliver it twice.
+    await expect(send("spica-codex:10", first, 2_000)).resolves.toMatchObject({
+      result: { delivery: "typing" },
+    });
+    // The callsign names the same terminal, so it waits its turn too.
+    const secondSent = send("Spica", second, 20_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(terminal.writes).not.toContain(second);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await expect(secondSent).resolves.toMatchObject({
+      result: { ok: true, delivery: "submitted" },
+    });
+    expect(terminal.writes.slice(0, -3).join("")).toBe(first);
+    expect(terminal.writes.slice(-3)).toEqual(["\r", second, "\r"]);
+    terminal.dispose();
+    service.dispose();
+  });
+
+  it("tells a send its turn did not come in time, and never types it later", async () => {
+    vi.useFakeTimers();
+    const terminal = starvedCodex(10, 200);
+    const service = starvedCodexService(terminal);
+    const send = (message: string, timeout: number) =>
+      service.handle({
+        requestId: `late-${message.length}`,
+        method: "agent_send",
+        params: {
+          workspace: "space-a",
+          agentId: "spica-codex:10",
+          message,
+          timeout,
+        },
+      });
+    const first = numberedSteps(18);
+    const late = "Pesan yang menunggu terlalu lama.";
+    const firstSent = send(first, 2_000);
+    await vi.advanceTimersByTimeAsync(2_500);
+    await expect(firstSent).resolves.toMatchObject({
+      result: { delivery: "typing" },
+    });
+    const lateSent = send(late, 1_000);
+    await vi.advanceTimersByTimeAsync(1_100);
+    await expect(lateSent).resolves.toMatchObject({
+      error: {
+        code: "timeout",
+        message: expect.stringContaining("earlier message to Spica"),
+      },
+    });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(terminal.writes).not.toContain(late);
+    expect(terminal.writes[terminal.writes.length - 1]).toBe("\r");
+    terminal.dispose();
+    service.dispose();
+  });
+
+  it("stops typing, without Ctrl+C or Enter, once someone types in the terminal", async () => {
+    vi.useFakeTimers();
+    const terminal = starvedCodex(10, 200);
+    const service = starvedCodexService(terminal);
+    const message = numberedSteps(18);
+    const pending = service.handle({
+      requestId: "typed-over",
+      method: "agent_send",
+      params: {
+        workspace: "space-a",
+        agentId: "spica-codex:10",
+        message,
+        timeout: 30_000,
+      },
+    });
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(terminal.writes).toEqual([
+      message.slice(0, 256),
+      message.slice(256, 512),
+    ]);
+    terminal.typeByHand("halo");
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(pending).resolves.toMatchObject({
+      error: {
+        code: "agent_not_ready",
+        message: expect.stringContaining("someone typed in its terminal"),
+      },
+    });
+    expect(terminal.writes).toHaveLength(2);
+    terminal.dispose();
     service.dispose();
   });
 });

@@ -276,7 +276,10 @@ user to review, or answer a prompt that is not a shell command.
 
 `agent_list` shows the agents in a workspace and whether each is idle.
 `agent_send` gives one an instruction; it waits for the agent to be ready
-rather than typing over a running task. `agent_spawn` starts a new one. Some
+rather than typing over a running task. On a busy machine an agent can take a
+long message in more slowly than your timeout: the result then says
+`delivery: "typing"`, and Anbo finishes typing it and presses Enter itself, so
+do not send it again. `agent_spawn` starts a new one. Some
 CLIs are capped: OpenCode allows two at once, so a third `agent_spawn` is
 refused rather than risking an out-of-memory crash.
 On a memory-constrained machine, test one CLI and one heavy browser tab at a

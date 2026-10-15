@@ -34,6 +34,12 @@ const ANTIGRAVITY_SUBMIT_DELAY_MS = 750;
 const INPUT_READY_TIMEOUT_MS = 8_000;
 const INPUT_READY_POLL_MS = 25;
 const INPUT_CHUNK_CHARS = 256;
+const INPUT_ECHO_CHARS = 120;
+const INPUT_ECHO_MIN_CHARS = 12;
+const INPUT_PROGRESS_READ_MS = 500;
+const INPUT_STALL_MS = 30_000;
+const INPUT_TYPING_LIMIT_MS = 600_000;
+const INPUT_QUIET_LIMIT_MS = 5_000;
 const TUI_READY_POLL_MS = 100;
 const TUI_READY_STABLE_POLLS = 3;
 const SUBMIT_SETTLE_POLLS = 2;
@@ -77,6 +83,10 @@ type ServiceDependencies = {
   /** Why prepare refused a leaf, such as every live terminal buffer in use. */
   unpreparedReason?: (leafId: number) => string;
   write: (leafId: number, data: string) => boolean;
+  /** Every input sent to a terminal, Anbo's own writes included. */
+  subscribeInput?: (
+    listener: (leafId: number, data: string) => void,
+  ) => () => void;
   spawn: (
     workspace: ResolvedWorkspace,
     agent: string,
@@ -325,6 +335,322 @@ async function waitForQuietBuffer(
   }
 }
 
+const delay = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** The value of `promise` if it settles within `ms`, otherwise null. */
+async function settledWithin<T>(
+  promise: Promise<T>,
+  ms: number,
+): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function compactEcho(value: string): string {
+  return (
+    value
+      .replace(
+        /\x1b\[[0-9;>?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][AB012]|\x1b[78=>]|\x1bc|\x1b[NOP\]X^_]/g,
+        "",
+      )
+      // A message wider than the prompt wraps inside the input box, and a
+      // TUI that draws a border paints its edge at the start of every
+      // wrapped row. Those edges land between the echoed fragments, so the
+      // needle would never match a long message. Both sides go through this
+      // same pass, so dropping the border glyphs keeps the comparison honest
+      // even when the message itself contains them.
+      .replace(/[\s\u0000-\u001f\u007f\u2500-\u259f]+/g, "")
+  );
+}
+
+/**
+ * How much of `typed` a screen shows, in compacted characters from its start:
+ * the longest prefix whose last characters appear on the screen. An echo only
+ * grows, so the search starts from `shown`, the count already seen, and a
+ * prefix too short to tell apart from other text never counts.
+ */
+export function echoedLength(
+  screen: string,
+  typed: string,
+  shown: number,
+): number {
+  const appears = (count: number) =>
+    count >= INPUT_ECHO_MIN_CHARS &&
+    screen.includes(typed.slice(Math.max(0, count - INPUT_ECHO_CHARS), count));
+  let low = Math.min(shown, typed.length);
+  let high = typed.length + 1;
+  let probe = Math.max(low + 1, INPUT_ECHO_MIN_CHARS);
+  for (let step = 2; probe < high; probe = low + step, step *= 2) {
+    if (!appears(probe)) {
+      high = probe;
+      break;
+    }
+    low = probe;
+  }
+  while (high - low > 1) {
+    const middle = (low + high) >>> 1;
+    if (appears(middle)) low = middle;
+    else high = middle;
+  }
+  return low;
+}
+
+const TERMINAL_REPORTS =
+  /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[PX^_][^\x1b]*\x1b\\|\x1bO.|\x1b[ -~]/g;
+
+/**
+ * Whether terminal input carries something a person typed, not only the
+ * focus, mouse and query replies a terminal sends by itself.
+ */
+export function isTypedInput(data: string): boolean {
+  return data.replace(TERMINAL_REPORTS, "").length > 0;
+}
+
+/** Why a message stopped short of its Enter. */
+type InputStop =
+  | "not shown"
+  | "stalled"
+  | "too long"
+  | "write failed"
+  | "typed over"
+  | "stopped"
+  | "failed";
+
+type InputOutcome = { ok: true } | { ok: false; reason: InputStop };
+
+type AgentInputDelivery =
+  | { state: "submitted" }
+  | { state: "cancelled"; reason: InputStop }
+  // Still being typed when the answer was due: settles at Enter, or when
+  // typing stops.
+  | { state: "typing"; finished: Promise<InputOutcome> };
+
+type AgentInputIo = {
+  write: (leafId: number, data: string) => boolean;
+  getBuffer: (leafId: number) => string | null;
+  subscribeInput?: ServiceDependencies["subscribeInput"];
+};
+
+function startVerifiedTyping(
+  io: AgentInputIo,
+  leafId: number,
+  message: string,
+  submitDelayMs: number,
+  stopped: () => boolean,
+): {
+  finished: Promise<InputOutcome>;
+  progressing: () => boolean;
+  markBackground: () => void;
+  cancel: () => void;
+} {
+  const startedAt = Date.now();
+  let shown = 0;
+  let shownAt = startedAt;
+  let wrote = false;
+  let landed = false;
+  let cancelled = false;
+  let typedOver = false;
+  let writing = false;
+  // The 30 s no-progress stall only bounds typing we chose to keep going in the
+  // background; within the caller's own wait, a message that shows nothing is
+  // only given up when that wait ends, never sooner.
+  let background = false;
+  const unsubscribe =
+    io.subscribeInput?.((inputLeafId, data) => {
+      if (inputLeafId === leafId && !writing && isTypedInput(data)) {
+        typedOver = true;
+      }
+    }) ?? (() => {});
+  const write = (data: string) => {
+    writing = true;
+    try {
+      return io.write(leafId, data);
+    } finally {
+      writing = false;
+    }
+  };
+  const see = (count: number) => {
+    if (count <= shown) return;
+    shown = count;
+    shownAt = Date.now();
+  };
+  const interruption = (): InputStop | null => {
+    if (stopped()) return "stopped";
+    if (typedOver) return "typed over";
+    if (landed) return null;
+    if (cancelled) return shown === 0 ? "not shown" : "stalled";
+    const now = Date.now();
+    if (background && now - shownAt >= INPUT_STALL_MS) return "stalled";
+    if (now - startedAt >= INPUT_TYPING_LIMIT_MS) return "too long";
+    return null;
+  };
+  const stop = (reason: InputStop): InputOutcome => {
+    // Clear the half-typed text, but never over what someone else typed.
+    if (wrote && reason !== "typed over" && reason !== "stopped") {
+      write("\x03");
+    }
+    return { ok: false, reason };
+  };
+  const run = async (): Promise<InputOutcome> => {
+    // Keep each paste below TUI collapse thresholds so acknowledgement uses
+    // actual echoed text, never an unverified "Pasted text" placeholder.
+    for (let offset = 0; offset < message.length; ) {
+      const pending = interruption();
+      if (pending) return stop(pending);
+      let end = Math.min(offset + INPUT_CHUNK_CHARS, message.length);
+      const last = message.charCodeAt(end - 1);
+      if (end < message.length && last >= 0xd800 && last <= 0xdbff) end -= 1;
+      const before = io.getBuffer(leafId);
+      if (!write(message.slice(offset, end))) return stop("write failed");
+      wrote = true;
+      const typed = compactEcho(message.slice(0, end));
+      const needle = typed.slice(-INPUT_ECHO_CHARS);
+      let measured = before;
+      let measuredAt = 0;
+      for (;;) {
+        await delay(INPUT_READY_POLL_MS);
+        const stopping = interruption();
+        if (stopping) return stop(stopping);
+        const current = io.getBuffer(leafId);
+        if (current === null || current === before) continue;
+        const screen = compactEcho(current);
+        if (needle && screen.includes(needle)) {
+          see(typed.length);
+          break;
+        }
+        // A CLI starved of CPU shows a piece a few characters at a time.
+        // That growth is what tells it from one that stopped taking input.
+        if (
+          current !== measured &&
+          Date.now() - measuredAt >= INPUT_PROGRESS_READ_MS
+        ) {
+          measured = current;
+          measuredAt = Date.now();
+          see(echoedLength(screen, typed, shown));
+        }
+      }
+      offset = end;
+    }
+    landed = true;
+    // Enter is only a send once the paste it follows has landed. A message
+    // long enough to be written in more than one piece arrives as a burst,
+    // and a carriage return caught inside that burst reads as a newline in
+    // the input box rather than a submit -- the message then sits there,
+    // typed but never sent. Let the prompt go quiet first, then press Enter
+    // on a settled screen.
+    await waitForQuietBuffer(
+      io.getBuffer,
+      leafId,
+      Date.now() + INPUT_QUIET_LIMIT_MS,
+    );
+    await delay(submitDelayMs);
+    const stopping = interruption();
+    if (stopping) return stop(stopping);
+    return write("\r") ? { ok: true } : { ok: false, reason: "write failed" };
+  };
+  const finished = run()
+    .catch((): InputOutcome => ({ ok: false, reason: "failed" }))
+    .finally(unsubscribe);
+  return {
+    finished,
+    progressing: () => shown > 0 && Date.now() - shownAt < INPUT_STALL_MS,
+    markBackground: () => {
+      background = true;
+    },
+    cancel: () => {
+      cancelled = true;
+    },
+  };
+}
+
+/**
+ * Type a message into an agent's terminal and press Enter.
+ *
+ * With `verifyInput` the message goes in pieces, each shown on screen before
+ * the next is sent. A CLI starved of CPU takes a long message in a few
+ * characters a second (Codex took 40 s for its first 256 at full load), so
+ * with `keepTyping` a message whose echo still grows when the answer is due
+ * is answered as typing and finished afterwards. It is cleared with Ctrl+C
+ * only once its terminal shows no more of it for 30 s, and typing stops,
+ * with neither Ctrl+C nor Enter, when someone types into that terminal.
+ */
+async function deliverAgentMessage(
+  io: AgentInputIo,
+  leafId: number,
+  message: string,
+  {
+    verifyInput = false,
+    submitDelayMs = SUBMIT_DELAY_MS,
+    answerWithinMs = INPUT_READY_TIMEOUT_MS,
+    keepTyping = false,
+    stopped = () => false,
+  }: {
+    verifyInput?: boolean;
+    submitDelayMs?: number;
+    answerWithinMs?: number;
+    keepTyping?: boolean;
+    stopped?: () => boolean;
+  } = {},
+): Promise<AgentInputDelivery> {
+  if (!verifyInput) {
+    if (!io.write(leafId, message)) {
+      return { state: "cancelled", reason: "write failed" };
+    }
+    await delay(submitDelayMs);
+    return io.write(leafId, "\r")
+      ? { state: "submitted" }
+      : { state: "cancelled", reason: "write failed" };
+  }
+  const typing = startVerifiedTyping(
+    io,
+    leafId,
+    message,
+    submitDelayMs,
+    stopped,
+  );
+  let outcome = await settledWithin(typing.finished, answerWithinMs);
+  if (outcome === null) {
+    if (keepTyping && typing.progressing()) {
+      typing.markBackground();
+      return { state: "typing", finished: typing.finished };
+    }
+    typing.cancel();
+    outcome = await typing.finished;
+  }
+  return outcome.ok
+    ? { state: "submitted" }
+    : { state: "cancelled", reason: outcome.reason };
+}
+
+function inputStopMessage(name: string, reason: InputStop): string {
+  switch (reason) {
+    case "not shown":
+      return `${name} input cancelled: none of the message showed in its terminal in time`;
+    case "stalled":
+      return `${name} input cancelled: its terminal showed no more of the message for 30 s`;
+    case "too long":
+      return `${name} input cancelled: typing the message took over 10 minutes`;
+    case "write failed":
+      return `${name} input cancelled: its terminal closed`;
+    case "typed over":
+      return `${name} input stopped: someone typed in its terminal, so Anbo typed no more of the message and pressed neither Ctrl+C nor Enter`;
+    case "stopped":
+      return `${name} input stopped: Anbo's agent service closed`;
+    case "failed":
+      return `${name} input cancelled`;
+  }
+}
+
 export async function submitAgentMessage(
   write: (leafId: number, data: string) => boolean,
   getBuffer: (leafId: number) => string | null,
@@ -334,72 +660,13 @@ export async function submitAgentMessage(
   submitDelayMs = SUBMIT_DELAY_MS,
   inputReadyTimeoutMs = INPUT_READY_TIMEOUT_MS,
 ): Promise<boolean> {
-  if (verifyInput) {
-    const compactEcho = (value: string) =>
-      value
-        .replace(
-          /\x1b\[[0-9;>?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][AB012]|\x1b[78=>]|\x1bc|\x1b[NOP\]X^_]/g,
-          "",
-        )
-        // A message wider than the prompt wraps inside the input box, and a
-        // TUI that draws a border paints its edge at the start of every
-        // wrapped row. Those edges land between the echoed fragments, so the
-        // needle would never match a long message. Both sides go through this
-        // same pass, so dropping the border glyphs keeps the comparison honest
-        // even when the message itself contains them.
-        .replace(/[\s\u0000-\u001f\u007f\u2500-\u259f]+/g, "");
-    const deadline = Date.now() + inputReadyTimeoutMs;
-    // Keep each paste below TUI collapse thresholds so acknowledgement uses
-    // actual echoed text, never an unverified "Pasted text" placeholder.
-    for (let offset = 0; offset < message.length; ) {
-      if (Date.now() >= deadline) {
-        if (offset > 0) write(leafId, "\x03");
-        return false;
-      }
-      let end = Math.min(offset + INPUT_CHUNK_CHARS, message.length);
-      const last = message.charCodeAt(end - 1);
-      if (end < message.length && last >= 0xd800 && last <= 0xdbff) end -= 1;
-      const before = getBuffer(leafId);
-      if (!write(leafId, message.slice(offset, end))) {
-        if (offset > 0) write(leafId, "\x03");
-        return false;
-      }
-      const needle = compactEcho(message.slice(0, end)).slice(-120);
-      let observed = false;
-      while (Date.now() < deadline) {
-        await new Promise<void>((resolve) =>
-          setTimeout(resolve, INPUT_READY_POLL_MS),
-        );
-        const current = getBuffer(leafId);
-        if (
-          needle &&
-          current !== null &&
-          current !== before &&
-          compactEcho(current).includes(needle)
-        ) {
-          observed = true;
-          break;
-        }
-      }
-      if (!observed) {
-        write(leafId, "\x03");
-        return false;
-      }
-      offset = end;
-    }
-    // Enter is only a send once the paste it follows has landed. A message
-    // long enough to be written in more than one piece arrives as a burst,
-    // and a carriage return caught inside that burst reads as a newline in
-    // the input box rather than a submit -- the message then sits there,
-    // typed but never sent. Let the prompt go quiet first, then press Enter
-    // on a settled screen.
-    await waitForQuietBuffer(getBuffer, leafId, deadline);
-    await new Promise<void>((resolve) => setTimeout(resolve, submitDelayMs));
-  } else {
-    if (!write(leafId, message)) return false;
-    await new Promise<void>((resolve) => setTimeout(resolve, submitDelayMs));
-  }
-  return write(leafId, "\r");
+  const delivery = await deliverAgentMessage(
+    { write, getBuffer },
+    leafId,
+    message,
+    { verifyInput, submitDelayMs, answerWithinMs: inputReadyTimeoutMs },
+  );
+  return delivery.state === "submitted";
 }
 
 export class AgentOutputTracker {
@@ -430,15 +697,39 @@ export class AgentOutputTracker {
   }
 }
 
+const sendTimeout = (params: Record<string, unknown>) =>
+  typeof params.timeout === "number" && Number.isInteger(params.timeout)
+    ? Math.max(100, Math.min(60_000, params.timeout))
+    : 30_000;
+
+const typingResponse = (
+  agent: AgentDescriptor,
+  message: string,
+  queued: boolean,
+): AgentAutomationResponse => ({
+  result: {
+    ok: true,
+    agent,
+    sent: message,
+    queued,
+    delivery: "typing",
+    note: `${agent.name} is taking this message in slowly, so Anbo is still typing it and presses Enter once all of it shows. Do not send it again; agent_wait with status working tells when ${agent.name} starts on it. If ${agent.name} takes no more of it for 30 s, Anbo clears it instead.`,
+  },
+});
+
 export function createAgentAutomationService(deps: ServiceDependencies) {
   const output = new AgentOutputTracker();
-  const sendQueues = new Map<string, Promise<AgentAutomationResponse>>();
+  // One send at a time per terminal, whichever id or callsign names it, and a
+  // message still being typed after its answer keeps the terminal's turn.
+  const sendTurns = new Map<number, Promise<void>>();
+  const typingInBackground = new Map<number, string>();
   const sendAcknowledgements = new Map<
     string,
     { lastActivityAt: number; buffer: string | null }
   >();
   const messageIds = new Map<string, number>();
   const initialSpawnLeaves = new Set<number>();
+  let disposed = false;
 
   const resolveWorkspace = (
     params: Record<string, unknown>,
@@ -626,7 +917,8 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
 
   const send = async (
     params: Record<string, unknown>,
-    deadline?: number,
+    deadline: number | undefined,
+    keepTurn: (finished: Promise<void>) => void,
   ): Promise<AgentAutomationResponse> => {
     let target = resolveTarget(params);
     if (!target.ok) return target.response;
@@ -651,10 +943,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     }
 
     const waitForReady = params.waitForReady !== false;
-    const timeout =
-      typeof params.timeout === "number" && Number.isInteger(params.timeout)
-        ? Math.max(100, Math.min(60_000, params.timeout))
-        : 30_000;
+    const timeout = sendTimeout(params);
     const normalizedCli = target.agent.cli
       .replace(/^custom:/, "")
       .toLowerCase();
@@ -752,43 +1041,77 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         messageIds.delete(oldest);
       }
     }
-    const submitted = await submitAgentMessage(
-      deps.write,
-      readPreparedBuffer,
+    const delivery = await deliverAgentMessage(
+      {
+        write: deps.write,
+        getBuffer: readPreparedBuffer,
+        subscribeInput: deps.subscribeInput,
+      },
       current.leafId,
       message.message,
-      !isAntigravity &&
-        (acceptsInitialSpawnMessage ||
-          needsEchoedInput(normalizedCli) ||
-          message.message.length > INPUT_CHUNK_CHARS),
-      isAntigravity ? ANTIGRAVITY_SUBMIT_DELAY_MS : SUBMIT_DELAY_MS,
-      // Typing stops, and is cleared, when the caller stops waiting.
-      deadline === undefined
-        ? timeout
-        : Math.min(timeout, Math.max(0, deadline - Date.now())),
+      {
+        verifyInput:
+          !isAntigravity &&
+          (acceptsInitialSpawnMessage ||
+            needsEchoedInput(normalizedCli) ||
+            message.message.length > INPUT_CHUNK_CHARS),
+        submitDelayMs: isAntigravity
+          ? ANTIGRAVITY_SUBMIT_DELAY_MS
+          : SUBMIT_DELAY_MS,
+        // The caller hears back by the time it stops waiting; a message its
+        // agent is still taking in is finished after that.
+        answerWithinMs:
+          deadline === undefined
+            ? timeout
+            : Math.min(timeout, Math.max(0, deadline - Date.now())),
+        keepTyping: true,
+        stopped: () => disposed,
+      },
     );
-    if (!submitted) {
+    if (delivery.state === "cancelled") {
       return automationError(
         "agent_not_ready",
-        `${current.agent.name} input cancelled`,
+        inputStopMessage(current.agent.name, delivery.reason),
       );
     }
-    initialSpawnLeaves.delete(current.leafId);
-    sendAcknowledgements.set(current.agent.agentId, {
-      lastActivityAt: current.agent.lastActivityAt,
-      buffer: deps.getBuffer(current.leafId),
-    });
-    while (sendAcknowledgements.size > MAX_TRACKED_AGENTS) {
-      const oldest = sendAcknowledgements.keys().next().value;
-      if (oldest === undefined) break;
-      sendAcknowledgements.delete(oldest);
+    const delivered = () => {
+      initialSpawnLeaves.delete(current.leafId);
+      sendAcknowledgements.set(current.agent.agentId, {
+        lastActivityAt: current.agent.lastActivityAt,
+        buffer: deps.getBuffer(current.leafId),
+      });
+      while (sendAcknowledgements.size > MAX_TRACKED_AGENTS) {
+        const oldest = sendAcknowledgements.keys().next().value;
+        if (oldest === undefined) break;
+        sendAcknowledgements.delete(oldest);
+      }
+    };
+    const queued = target.agent.status !== "waiting";
+    if (delivery.state === "typing") {
+      typingInBackground.set(current.leafId, message.message);
+      keepTurn(
+        delivery.finished.then((outcome) => {
+          typingInBackground.delete(current.leafId);
+          if (disposed) return;
+          if (outcome.ok) delivered();
+          else {
+            console.warn(
+              "[anbo] agent_send:",
+              inputStopMessage(current.agent.name, outcome.reason),
+            );
+          }
+        }),
+      );
+      return typingResponse(current.agent, message.message, queued);
     }
+    delivered();
     return {
       result: {
         ok: true,
         agent: current.agent,
         sent: message.message,
-        queued: target.agent.status !== "waiting",
+        queued,
+        delivery: "submitted",
       },
     };
   };
@@ -890,16 +1213,53 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         const agentId = paramString(params, "agentId");
         if (!agentId)
           return automationError("invalid_request", "agentId is required");
-        const previous = sendQueues.get(agentId);
-        const pending = (
-          previous ?? Promise.resolve<AgentAutomationResponse>({ result: null })
-        )
-          .catch(() => ({ result: null }))
-          .then(() => send(params, request.deadline));
-        sendQueues.set(agentId, pending);
-        const result = await pending;
-        if (sendQueues.get(agentId) === pending) sendQueues.delete(agentId);
-        return result;
+        const target = resolveTarget(params);
+        if (!target.ok) return target.response;
+        const { leafId } = target;
+        const typing = typingInBackground.get(leafId);
+        const message = sanitizeAgentMessage(params.message);
+        // The caller was told this message is still being typed; sending it
+        // again would deliver it twice.
+        if (message.ok && message.message === typing) {
+          return typingResponse(
+            target.agent,
+            typing,
+            target.agent.status !== "waiting",
+          );
+        }
+        const previous = sendTurns.get(leafId) ?? Promise.resolve();
+        let release = () => {};
+        const turn = previous.then(
+          () =>
+            new Promise<void>((resolve) => {
+              release = () => resolve();
+            }),
+        );
+        sendTurns.set(leafId, turn);
+        void turn.then(() => {
+          if (sendTurns.get(leafId) === turn) sendTurns.delete(leafId);
+        });
+        const turnWaitMs =
+          request.deadline === undefined
+            ? sendTimeout(params)
+            : Math.max(0, request.deadline - Date.now());
+        if ((await settledWithin(previous, turnWaitMs)) === null) {
+          // Give the turn on as soon as it comes; this send starts nothing.
+          void previous.then(() => release());
+          return automationError(
+            "timeout",
+            `timed out waiting for an earlier message to ${target.agent.name} to be delivered`,
+          );
+        }
+        let typingOn: Promise<void> | undefined;
+        try {
+          return await send(params, request.deadline, (finished) => {
+            typingOn = finished;
+          });
+        } finally {
+          if (typingOn) void typingOn.then(() => release());
+          else release();
+        }
       }
       if (request.method === "agent_wait") {
         const target = resolveTarget(params);
@@ -930,7 +1290,9 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       );
     },
     dispose() {
-      sendQueues.clear();
+      disposed = true;
+      sendTurns.clear();
+      typingInBackground.clear();
       sendAcknowledgements.clear();
       messageIds.clear();
       initialSpawnLeaves.clear();

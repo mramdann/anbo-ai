@@ -191,6 +191,7 @@ import {
   refitVisibleTerminalSlots,
   selectBackgroundTerminalTabs,
   setTerminalAutomationHandler,
+  subscribeTerminalInput,
   type TerminalPaneHandle,
   TerminalStack,
   terminalAutomationRefusal,
@@ -2030,6 +2031,7 @@ export default function App() {
             ...shared,
             prepare: prepareTerminalAutomationSession,
             unpreparedReason: terminalAutomationRefusal,
+            subscribeInput: subscribeTerminalInput,
             spawn: async (workspace, agent) => {
               const space = useSpaces
                 .getState()
