@@ -48,6 +48,8 @@ const HOST_FRAME_LIMIT: usize = 16 * 1024;
 enum HostFrame {
     /// The renderers of the tabs Anbo drives, to keep scheduled.
     KeepRenderers(Vec<u32>),
+    /// When the extension's worker started, in ms since 1970.
+    Worker(u64),
     /// A word this host does not know, which goes nowhere.
     Unknown,
 }
@@ -64,6 +66,14 @@ fn host_frame(bytes: &[u8]) -> Option<HostFrame> {
     let frame: serde_json::Value = serde_json::from_slice(bytes).ok()?;
     if frame["type"] != "host" {
         return None;
+    }
+    if frame["method"] == "worker" {
+        return Some(
+            frame["params"]["started"]
+                .as_u64()
+                .filter(|started| *started > 0)
+                .map_or(HostFrame::Unknown, HostFrame::Worker),
+        );
     }
     if frame["method"] != "keepRenderers" {
         return Some(HostFrame::Unknown);
@@ -148,6 +158,9 @@ async fn connect(origin: &str) -> Result<(), String> {
     .ok_or("missing browser handshake")?;
     let profile: serde_json::Value =
         serde_json::from_slice(&hello).map_err(|error| error.to_string())?;
+    if let Some(id) = profile["profileId"].as_str() {
+        priority.profile(id);
+    }
     let mut pipe = super::open_instance_pipe(&descriptor)?;
     let handshake = super::BrowserRequest {
         version: 1,
@@ -171,6 +184,7 @@ async fn connect(origin: &str) -> Result<(), String> {
         while let Some(bytes) = wire::read_frame(&mut input, wire::FROM_BROWSER_LIMIT).await? {
             match host_frame(&bytes) {
                 Some(HostFrame::KeepRenderers(ids)) => priority.renderers(ids),
+                Some(HostFrame::Worker(started)) => priority.worker_started(started),
                 Some(HostFrame::Unknown) => {}
                 None => {
                     wire::write_frame(&mut *writer.lock().await, &bytes, wire::FROM_BROWSER_LIMIT)
@@ -250,6 +264,17 @@ mod tests {
             host_frame(br#"{"method":"keepRenderers","params":{"ids":[]},"type":"host"}"#),
             Some(HostFrame::KeepRenderers(Vec::new()))
         );
+        assert_eq!(
+            host_frame(br#"{"method":"worker","params":{"started":1791972000000},"type":"host"}"#),
+            Some(HostFrame::Worker(1_791_972_000_000))
+        );
+        for odd in [
+            &br#"{"method":"worker","params":{"started":-5},"type":"host"}"#[..],
+            br#"{"method":"worker","params":{"started":"soon"},"type":"host"}"#,
+            br#"{"method":"worker","params":{},"type":"host"}"#,
+        ] {
+            assert_eq!(host_frame(odd), Some(HostFrame::Unknown));
+        }
         assert_eq!(
             host_frame(br#"{"method":"later","params":{},"type":"host"}"#),
             Some(HostFrame::Unknown)

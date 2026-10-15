@@ -63,6 +63,9 @@ async function connect(name) {
       void disconnect();
     });
     port.postMessage({ version: 3, profileId, browser: navigator.userAgent.includes("Edg/") ? "edge" : "chrome", name });
+    // For the native host itself: when this worker started tells its process
+    // apart from the profile's others, as after a reload, with no popup open.
+    port.postMessage({ type: "host", method: "worker", params: { started: Math.round(performance.timeOrigin) } });
   } catch (cause) {
     await disconnect();
     throw cause;
