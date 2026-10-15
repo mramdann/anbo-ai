@@ -19,8 +19,11 @@ const inspect = (el, name, position) => {
         return {error:name + ' is outside the viewport; both drag endpoints must be visible together'};
     }
     const root = el.getRootNode();
-    let hit = (root.elementFromPoint ? root : document).elementFromPoint(x, y);
-    for (let depth = 0; hit && depth < 256; depth++) {
+    const first = (root.elementFromPoint ? root : document).elementFromPoint(x, y);
+    // No element answers at a point outside the page's content area, such as
+    // on its scrollbar: nothing covers it there (actionRect.js's 'none').
+    if (!first) return {error:name + ': the hit test at its point found no element, so nothing covers it'};
+    for (let hit = first, depth = 0; hit && depth < 256; depth++) {
         if (hit === el) return {x,y};
         hit = hit.parentNode || hit.host || null;
     }

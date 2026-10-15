@@ -14,10 +14,13 @@ function waitForActionableSample(probe, requirement, scroll, valueAction, onRead
     const quickSpanMs = 16;
     const now = () => (typeof performance === 'object' ? performance.now() : NaN);
     const keys = ['x', 'y', 'width', 'height'];
+    // A value goes in by script, so a field needs only that nothing covers it:
+    // it takes the hit test, has focus, or no element answers there at all.
     const ready = value => value?.ok === true && value.visible === true &&
       keys.every(key => Number.isFinite(value[key])) &&
       (requirement === 'focus' || requirement === 'select' ? value.enabled === true :
-        requirement === 'editable' ? value.editable === true && (value.receives === true || value.active === true) :
+        requirement === 'editable' ? value.editable === true &&
+          (value.receives === true || value.active === true || value.unanswered === true) :
           value.enabled === true && value.receives === true);
     const stable = (a, b) => keys.every(key => Math.abs(a[key] - b[key]) <= 0.5);
     const cleanup = () => {

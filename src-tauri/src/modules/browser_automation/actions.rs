@@ -5962,6 +5962,13 @@ enum ActionabilityRequirement {
     Select,
 }
 
+/// Why a pointer action's target is not ready when the hit test at its point
+/// names no element at all (actionRect.js's 'none'). It is not "covered": an
+/// Edge tab the dock had just left named none at a textarea for five seconds,
+/// and "covered by another element (another element)" sent the agent after a
+/// cover that was not there.
+const NO_ELEMENT_AT_POINT: &str = "the hit test at its point found no element";
+
 struct ActionableElement {
     x: f64,
     y: f64,
@@ -6000,11 +6007,32 @@ fn actionability_failure_reason(
     {
         if !flag("inViewport") {
             "outside the viewport after scrolling"
+        } else if flag("unanswered") {
+            NO_ELEMENT_AT_POINT
         } else {
             "covered by another element"
         }
     } else {
         "not stable"
+    }
+}
+
+/// Whether a probe sample has what `requirement` needs of its target.
+fn sample_meets_requirement(parsed: &Value, requirement: ActionabilityRequirement) -> bool {
+    let flag = |key| parsed.get(key).and_then(Value::as_bool) == Some(true);
+    match requirement {
+        ActionabilityRequirement::Click
+        | ActionabilityRequirement::Check(_)
+        | ActionabilityRequirement::ClickAt(_)
+        | ActionabilityRequirement::Hover(_) => flag("enabled") && flag("receives"),
+        ActionabilityRequirement::Focus | ActionabilityRequirement::Select => flag("enabled"),
+        // The value goes in by script, so the field needs only that nothing
+        // covers it. An already-focused one takes it even when it cannot be
+        // scrolled into the viewport (canvas/terminal/remote-desktop hidden
+        // textareas), and so does one whose point no element answers at.
+        ActionabilityRequirement::Editable => {
+            flag("editable") && (flag("receives") || flag("active") || flag("unanswered"))
+        }
     }
 }
 
@@ -6032,6 +6060,8 @@ fn actionability_timeout_message_with(
         .unwrap_or_default();
     let hint = if matches!(requirement, ActionabilityRequirement::ClickAt(_)) {
         "; requested drag position was not ready; no mouse button was pressed. Inspect the current bounds and visible page before retrying; do not repeat unchanged blocked positions"
+    } else if reason == NO_ELEMENT_AT_POINT {
+        "; nothing covers it, but the page is not taking the pointer there (the point may be on a scrollbar, or the page hidden or changing); no pointer input was sent"
     } else {
         ""
     };
@@ -6228,7 +6258,9 @@ fn actionable_probe_script(ref_id: &str, scroll: &str, position: Option<(f64, f6
             const editable = enabled && !el.readOnly && (
                 el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable
             );
-            const receives = visible && receivesActionPointer(el, point);
+            const pointerHit = visible ? actionPointerHit(el, point) : null;
+            const receives = pointerHit === 'element';
+            const unanswered = pointerHit === 'none';
             let active = false;
             for (let node = document.activeElement, depth = 0; node && depth < 257; depth++) {{
                 if (node === el) {{ active = true; break; }}
@@ -6242,6 +6274,7 @@ fn actionable_probe_script(ref_id: &str, scroll: &str, position: Option<(f64, f6
                 enabled,
                 editable,
                 receives,
+                unanswered,
                 active,
                 popupUrl,
                 ...point,
@@ -6511,12 +6544,6 @@ async fn wait_for_actionable_attempt(
             ));
         }
         let visible = parsed.get("visible").and_then(Value::as_bool) == Some(true);
-        let enabled = parsed.get("enabled").and_then(Value::as_bool) == Some(true);
-        let editable = parsed.get("editable").and_then(Value::as_bool) == Some(true);
-        let receives = parsed.get("receives").and_then(Value::as_bool) == Some(true);
-        // An already-focused editable element accepts typing even when it cannot be scrolled
-        // into the viewport (canvas/terminal/remote-desktop hidden textareas); relax receives for it.
-        let active = parsed.get("active").and_then(Value::as_bool) == Some(true);
         let rect = (
             parsed.get("x").and_then(Value::as_f64).unwrap_or_default(),
             parsed.get("y").and_then(Value::as_f64).unwrap_or_default(),
@@ -6530,14 +6557,7 @@ async fn wait_for_actionable_attempt(
                 .unwrap_or_default(),
         );
         let stable = parsed.get("stable").and_then(Value::as_bool) == Some(true);
-        let requirement_met = match requirement {
-            ActionabilityRequirement::Click
-            | ActionabilityRequirement::Check(_)
-            | ActionabilityRequirement::ClickAt(_)
-            | ActionabilityRequirement::Hover(_) => enabled && receives,
-            ActionabilityRequirement::Focus | ActionabilityRequirement::Select => enabled,
-            ActionabilityRequirement::Editable => editable && (receives || active),
-        };
+        let requirement_met = sample_meets_requirement(&parsed, requirement);
         let needs_stability = !matches!(
             requirement,
             ActionabilityRequirement::Editable | ActionabilityRequirement::Select
@@ -6588,6 +6608,8 @@ async fn wait_for_actionable_attempt(
             });
         }
         let reason = actionability_failure_reason(&parsed, requirement);
+        // A point no element answers at has no cover to explain and may
+        // answer again, so it keeps the full wait.
         let blocked = matches!(
             reason,
             "covered by another element" | "outside the viewport after scrolling"
@@ -7530,6 +7552,16 @@ async fn dispatch_mouse_click(
     .await
 }
 
+/// pointerGuard.js's reason for refusing a mouse-down, in the words the agent
+/// reads; "unavailable" for one it never gives.
+fn pointer_guard_reason(guard: &Value) -> &str {
+    match guard.get("reason").and_then(Value::as_str) {
+        Some(reason @ ("hidden" | "disabled" | "moved" | "covered")) => reason,
+        Some("unanswered") => "the hit test found no element there",
+        _ => "unavailable",
+    }
+}
+
 async fn dispatch_mouse_click_profiled(
     webview: &Webview,
     actionable: &ActionableElement,
@@ -7571,11 +7603,7 @@ async fn dispatch_mouse_click_profiled(
             let reason = if stale {
                 ref_failure_reason(&guard)
             } else {
-                guard
-                    .get("reason")
-                    .and_then(Value::as_str)
-                    .filter(|reason| matches!(*reason, "hidden" | "disabled" | "moved" | "covered"))
-                    .unwrap_or("unavailable")
+                pointer_guard_reason(&guard)
             };
             return Err((
                 if stale { error_codes::STALE_REF } else { error_codes::INPUT_NOT_READY }.to_string(),
@@ -10623,6 +10651,148 @@ mod tests {
     }
 
     #[test]
+    fn a_point_no_element_answers_at_is_not_covered() {
+        // An Edge tab the dock had just left named no element at a textarea's
+        // centre for five seconds, and "covered by another element (another
+        // element)" sent the agent after a cover that was not there.
+        let sample = json!({
+            "visible": true, "enabled": true, "editable": true,
+            "receives": false, "unanswered": true, "inViewport": true
+        });
+        // A value goes in by script, so the field takes it.
+        assert!(sample_meets_requirement(
+            &sample,
+            ActionabilityRequirement::Editable
+        ));
+        assert!(sample_meets_requirement(
+            &sample,
+            ActionabilityRequirement::Select
+        ));
+        // Pointer input does not, and the agent is told why.
+        for requirement in [
+            ActionabilityRequirement::Click,
+            ActionabilityRequirement::Check(true),
+            ActionabilityRequirement::Hover(None),
+            ActionabilityRequirement::Hover(Some((0.6, 0.5))),
+            ActionabilityRequirement::ClickAt(Some((0.6, 0.5))),
+        ] {
+            assert!(!sample_meets_requirement(&sample, requirement));
+            assert_eq!(
+                actionability_failure_reason(&sample, requirement),
+                NO_ELEMENT_AT_POINT
+            );
+        }
+        assert_eq!(
+            actionability_timeout_message("g1-e1", &sample, ActionabilityRequirement::Click),
+            "element ref 'g1-e1' did not become actionable: the hit test at its point found no element; nothing covers it, but the page is not taking the pointer there (the point may be on a scrollbar, or the page hidden or changing); no pointer input was sent"
+        );
+        let drag = actionability_timeout_message(
+            "g1-e1",
+            &sample,
+            ActionabilityRequirement::ClickAt(None),
+        );
+        assert!(drag.contains(NO_ELEMENT_AT_POINT));
+        assert!(drag.contains("no mouse button was pressed"));
+        // A field another element covers still waits, as does one that takes
+        // no typing, and a point off the viewport is still off it.
+        let mut covered = sample.clone();
+        covered["unanswered"] = json!(false);
+        assert!(!sample_meets_requirement(
+            &covered,
+            ActionabilityRequirement::Editable
+        ));
+        assert_eq!(
+            actionability_failure_reason(&covered, ActionabilityRequirement::Editable),
+            "covered by another element"
+        );
+        let mut read_only = sample.clone();
+        read_only["editable"] = json!(false);
+        assert!(!sample_meets_requirement(
+            &read_only,
+            ActionabilityRequirement::Editable
+        ));
+        assert_eq!(
+            actionability_failure_reason(&read_only, ActionabilityRequirement::Editable),
+            "not editable"
+        );
+        let mut outside = sample.clone();
+        outside["inViewport"] = json!(false);
+        assert_eq!(
+            actionability_failure_reason(&outside, ActionabilityRequirement::Click),
+            "outside the viewport after scrolling"
+        );
+    }
+
+    #[test]
+    fn each_action_needs_only_its_own_readiness() {
+        let flags = |enabled: bool, editable: bool, receives: bool, active: bool| json!({"enabled": enabled, "editable": editable, "receives": receives, "active": active});
+        // Pointer input: enabled, and the hit test reaching the target.
+        for requirement in [
+            ActionabilityRequirement::Click,
+            ActionabilityRequirement::Check(false),
+            ActionabilityRequirement::ClickAt(None),
+            ActionabilityRequirement::Hover(None),
+        ] {
+            assert!(sample_meets_requirement(
+                &flags(true, false, true, false),
+                requirement
+            ));
+            assert!(!sample_meets_requirement(
+                &flags(true, true, false, true),
+                requirement
+            ));
+            assert!(!sample_meets_requirement(
+                &flags(false, false, true, false),
+                requirement
+            ));
+        }
+        // Focus and select: enabled only.
+        for requirement in [
+            ActionabilityRequirement::Focus,
+            ActionabilityRequirement::Select,
+        ] {
+            assert!(sample_meets_requirement(
+                &flags(true, false, false, false),
+                requirement
+            ));
+            assert!(!sample_meets_requirement(
+                &flags(false, true, true, true),
+                requirement
+            ));
+        }
+        // Type: editable, and reached or already focused.
+        let editable = ActionabilityRequirement::Editable;
+        assert!(sample_meets_requirement(
+            &flags(true, true, true, false),
+            editable
+        ));
+        assert!(sample_meets_requirement(
+            &flags(true, true, false, true),
+            editable
+        ));
+        assert!(!sample_meets_requirement(
+            &flags(true, true, false, false),
+            editable
+        ));
+        assert!(!sample_meets_requirement(
+            &flags(true, false, true, true),
+            editable
+        ));
+    }
+
+    #[test]
+    fn the_pointer_guard_names_a_point_no_element_answers_at() {
+        let reason =
+            |value: &str| pointer_guard_reason(&json!({"ok": false, "reason": value})).to_string();
+        for known in ["hidden", "disabled", "moved", "covered"] {
+            assert_eq!(reason(known), known);
+        }
+        assert_eq!(reason("unanswered"), "the hit test found no element there");
+        assert_eq!(reason("something new"), "unavailable");
+        assert_eq!(pointer_guard_reason(&json!({"ok": false})), "unavailable");
+    }
+
+    #[test]
     fn a_cleared_override_is_read_once_the_page_has_its_own_size_back() {
         let own = Some((440, 814));
         let overridden = Some((412, 915));
@@ -10756,7 +10926,7 @@ mod tests {
             assert!(script.contains(&format!(
                 "prepareActionPoint(el, {scroll}, {{\"x\":0.6,\"y\":0.5}})"
             )));
-            assert!(script.contains("receivesActionPointer(el, point)"));
+            assert!(script.contains("actionPointerHit(el, point)"));
         }
         assert!(actionable_probe_script("g1-e1", "false", None)
             .contains("prepareActionPoint(el, false, null)"));
@@ -10767,9 +10937,9 @@ mod tests {
         // YouTube's Skip button covers its own "Skip" text with a full-size
         // ::after; the click must reach the button, and a control stays strict.
         let script = actionable_probe_script("g1-e1", "true", None);
-        assert!(script.contains("if (!first || element.matches?.(ACTION_CONTROL)) return false;"));
+        assert!(script.contains("if (element.matches?.(ACTION_CONTROL)) return 'other';"));
         assert!(script.contains("const owner = element.parentElement?.closest?.(ACTION_CONTROL);"));
-        assert!(script.contains("return !!owner && owner.contains(first);"));
+        assert!(script.contains("return owner && owner.contains(first) ? 'element' : 'other';"));
         assert!(script.contains("[role=\"button\"]"));
     }
 

@@ -263,6 +263,30 @@ describe("bounded actionability frame sampling", () => {
     expect(h.probe).toHaveBeenCalledTimes(1);
     expect(h.frames.size + h.timers.size).toBe(0);
   });
+  it("fills a field whose point no element answers at, which nothing covers", async () => {
+    const action = vi.fn(() => ({ ok: true, valueVerified: true }));
+    const h = harness(
+      [ready({ receives: false, unanswered: true })],
+      "editable",
+      true,
+      action,
+    );
+    expect(await h.result).toMatchObject({
+      ok: true,
+      valueActionResult: { ok: true, valueVerified: true },
+    });
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(h.frames.size + h.timers.size).toBe(0);
+  });
+  it("sends no pointer input to a point no element answers at", async () => {
+    const h = harness(
+      [ready({ receives: false, unanswered: true })],
+      "pointer",
+    );
+    expect(await h.result).toMatchObject({ stable: false });
+    expect(h.probe).toHaveBeenCalledTimes(1);
+    expect(h.frames.size + h.timers.size).toBe(0);
+  });
   it("retains failed value verification without replaying input", async () => {
     const action = vi.fn(() => ({ ok: false, error: "input_mismatch" }));
     const h = harness([ready()], "editable", true, action);

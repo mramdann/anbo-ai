@@ -18,6 +18,7 @@ function probe(
     disabled?: boolean;
     ariaDisabled?: boolean;
     covered?: boolean;
+    unanswered?: boolean;
     left?: number;
     pointX?: number;
   } = {},
@@ -43,7 +44,11 @@ function probe(
       isRenderedElement: () => !options.hidden,
       document: {
         elementFromPoint: () =>
-          options.covered ? {} : { parentNode: element },
+          options.unanswered
+            ? null
+            : options.covered
+              ? {}
+              : { parentNode: element },
       },
     },
   );
@@ -90,6 +95,12 @@ describe("native pointer pre-press guard", () => {
   });
   it("rejects a new overlay without sending a click through it", () => {
     expect(probe({ covered: true })).toEqual({ ok: false, reason: "covered" });
+  });
+  it("does not call a point no element answers at covered", () => {
+    expect(probe({ unanswered: true })).toEqual({
+      ok: false,
+      reason: "unanswered",
+    });
   });
   it("rejects offscreen geometry", () => {
     expect(probe({ left: 700 })).toEqual({ ok: false, reason: "moved" });

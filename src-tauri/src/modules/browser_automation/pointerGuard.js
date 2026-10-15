@@ -5,6 +5,7 @@ const point = actionPoint(el);
 if (!point.inViewport || !Number.isFinite(x) || !Number.isFinite(y) || Math.abs(point.x - x) > 0.5 || Math.abs(point.y - y) > 0.5) {
     return { ok: false, reason: 'moved' };
 }
-if (!receivesActionPointer(el, { ...point, x, y })) return { ok: false, reason: 'covered' };
+const hit = actionPointerHit(el, { ...point, x, y });
+if (hit !== 'element') return { ok: false, reason: hit === 'none' ? 'unanswered' : 'covered' };
 captureAnnounceBaseline(el);
 return { ok: true };

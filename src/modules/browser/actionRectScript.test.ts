@@ -128,6 +128,22 @@ describe("action target scrolling", () => {
     expect(result).toBe(true);
   });
 
+  it("tells a point no element answers at from a covered one", () => {
+    // On the page's own scrollbar, and for five seconds on an Edge tab the
+    // dock had just left, the hit test names no element: nothing covers it.
+    const element = {};
+    const hit = (first: unknown, inViewport = true) =>
+      vm.runInNewContext(`${source}; actionPointerHit(element, point)`, {
+        element,
+        point: { x: 20, y: 20, inViewport },
+        document: { elementFromPoint: () => first },
+      });
+    expect(hit(null)).toBe("none");
+    expect(hit({})).toBe("other");
+    expect(hit({ parentNode: element })).toBe("element");
+    expect(hit(element, false)).toBe("outside");
+  });
+
   it("bounds composed hit-target ancestry", () => {
     const element = {};
     const cyclic: { parentNode?: unknown } = {};

@@ -135,7 +135,14 @@ describe("shipped drag endpoint probe", () => {
     f.to.hidden = true;
     expect(f.run().error).toContain("target is not visible");
     f.to.hidden = false;
+    f.root.elementFromPoint = () => f.to;
+    expect(f.run().error).toContain("source is covered by another element");
+  });
+  it("does not call a point no element answers at covered", () => {
+    const f = fixture();
     f.root.elementFromPoint = () => null;
-    expect(f.run().error).toContain("covered by another element");
+    expect(f.run().error).toBe(
+      "drag source: the hit test at its point found no element, so nothing covers it",
+    );
   });
 });
