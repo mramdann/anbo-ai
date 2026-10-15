@@ -14,5 +14,16 @@ fn main() {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        // Restore normal Ctrl+C handling, so Ctrl+C stops commands in terminal.
+        // Windows passes "ignore Ctrl+C" from parent to child, and Git Bash
+        // starts programs with it set, so every shell Anbo opened inherited it.
+        use windows_sys::Win32::{Foundation::FALSE, System::Console::SetConsoleCtrlHandler};
+        unsafe {
+            SetConsoleCtrlHandler(None, FALSE);
+        }
+    }
+
     anbo_lib::run()
 }
