@@ -1,7 +1,9 @@
-//! The clipboard's text for a terminal paste. WebView2's
-//! `navigator.clipboard.readText` first asks the user for a permission in a
-//! small prompt: a paste waits on it, a later Allow delivers every paste that
-//! waited at once, and no context menu opens while the prompt is up.
+//! The clipboard's text, read for a terminal paste and written for AnboVoice's
+//! orb. WebView2's `navigator.clipboard.readText` first asks the user for a
+//! permission in a small prompt: a paste waits on it, a later Allow delivers
+//! every paste that waited at once, and no context menu opens while the prompt
+//! is up. A web clipboard write needs a focused document, and the orb never
+//! takes focus.
 
 /// The clipboard's text, or `None` when it holds no text (an image, files).
 #[tauri::command]
@@ -18,6 +20,22 @@ pub async fn clipboard_read_text() -> Result<Option<String>, String> {
     }
 }
 
+/// Puts `text` on the clipboard as its only content.
+#[tauri::command]
+pub async fn clipboard_write_text(text: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        tauri::async_runtime::spawn_blocking(move || win32::write_text(&text))
+            .await
+            .map_err(|error| error.to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = text;
+        Err("the native clipboard write is only used on Windows".to_string())
+    }
+}
+
 /// Clipboard text is NUL-terminated UTF-16 in a block that may be larger.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn text_until_nul(units: &[u16]) -> String {
@@ -28,14 +46,22 @@ fn text_until_nul(units: &[u16]) -> String {
     String::from_utf16_lossy(&units[..end])
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+fn text_with_nul(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 #[cfg(windows)]
 mod win32 {
     use std::time::Duration;
-    use windows::Win32::Foundation::HGLOBAL;
+    use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
     use windows::Win32::System::DataExchange::{
-        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+        CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
+        OpenClipboard, SetClipboardData,
     };
-    use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    use windows::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
+    };
     use windows::Win32::System::Ole::CF_UNICODETEXT;
 
     /// Another program can hold the clipboard open for a moment, a clipboard
@@ -45,7 +71,7 @@ mod win32 {
     const OPEN_ATTEMPTS: u32 = 20;
     const OPEN_RETRY: Duration = Duration::from_millis(15);
 
-    pub fn read_text() -> Result<Option<String>, String> {
+    fn open() -> Result<(), String> {
         let mut attempt = 0;
         while unsafe { OpenClipboard(None) }.is_err() {
             attempt += 1;
@@ -54,9 +80,42 @@ mod win32 {
             }
             std::thread::sleep(OPEN_RETRY);
         }
+        Ok(())
+    }
+
+    pub fn read_text() -> Result<Option<String>, String> {
+        open()?;
         let text = open_clipboard_text();
         let _ = unsafe { CloseClipboard() };
         text
+    }
+
+    pub fn write_text(text: &str) -> Result<(), String> {
+        let units = super::text_with_nul(text);
+        // Filled before the clipboard opens, so no other program waits on it
+        // longer than the hand-over takes.
+        let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, units.len() * 2) }
+            .map_err(|error| error.to_string())?;
+        let block = unsafe { GlobalLock(memory) }.cast::<u16>();
+        if block.is_null() {
+            let _ = unsafe { GlobalFree(Some(memory)) };
+            return Err("the clipboard text could not be written".to_string());
+        }
+        unsafe { std::ptr::copy_nonoverlapping(units.as_ptr(), block, units.len()) };
+        let _ = unsafe { GlobalUnlock(memory) };
+        if let Err(error) = open() {
+            let _ = unsafe { GlobalFree(Some(memory)) };
+            return Err(error);
+        }
+        let format = u32::from(CF_UNICODETEXT.0);
+        let written = unsafe { EmptyClipboard() }
+            .and_then(|()| unsafe { SetClipboardData(format, Some(HANDLE(memory.0))) });
+        let _ = unsafe { CloseClipboard() };
+        // The block is the clipboard's once SetClipboardData has taken it.
+        written.map(|_| ()).map_err(|error| {
+            let _ = unsafe { GlobalFree(Some(memory)) };
+            error.to_string()
+        })
     }
 
     /// Only called while this thread has the clipboard open.
@@ -80,7 +139,7 @@ mod win32 {
 
 #[cfg(test)]
 mod tests {
-    use super::text_until_nul;
+    use super::{text_until_nul, text_with_nul};
 
     #[test]
     fn clipboard_text_stops_at_its_terminator() {
@@ -92,5 +151,14 @@ mod tests {
         let unterminated: Vec<u16> = "no end".encode_utf16().collect();
         assert_eq!(text_until_nul(&unterminated), "no end");
         assert_eq!(text_until_nul(&[0]), "");
+    }
+
+    #[test]
+    fn written_text_ends_with_its_terminator() {
+        let text = "Halo, apa kabar? \u{1F600}";
+        let units = text_with_nul(text);
+        assert_eq!(units.last(), Some(&0));
+        assert_eq!(text_until_nul(&units), text);
+        assert_eq!(text_with_nul(""), [0]);
     }
 }

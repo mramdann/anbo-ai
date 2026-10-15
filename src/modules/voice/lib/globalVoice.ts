@@ -105,3 +105,9 @@ export function insertGlobalVoiceText(
 ): Promise<GlobalVoiceInsertResult> {
   return invoke("global_voice_insert_text", { text, keepTarget });
 }
+
+/** Puts a transcript that could not be typed on the clipboard. The web
+ * clipboard writes only for a focused document, and the orb never has focus. */
+export function copyGlobalVoiceText(text: string): Promise<void> {
+  return invoke("clipboard_write_text", { text });
+}

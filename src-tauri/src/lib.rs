@@ -526,6 +526,7 @@ pub fn run() {
             pty::pty_shell_name,
             pty::pty_list_shells,
             modules::clipboard::clipboard_read_text,
+            modules::clipboard::clipboard_write_text,
             fs::tree::list_subdirs_command,
             fs::tree::fs_read_dir_command,
             fs::file::fs_read_file,

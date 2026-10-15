@@ -1,9 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  copyGlobalVoiceText,
   isPushToTalkKey,
   PUSH_TO_TALK_KEYS,
   shortcutLabel,
 } from "./globalVoice";
+
+const core = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => core);
 
 describe("shortcutLabel", () => {
   it("shows the shell's shortcut in Anbo's casing", () => {
@@ -30,5 +34,19 @@ describe("isPushToTalkKey", () => {
     for (const value of ["Win", "ctrl+win", "", null, 3, undefined]) {
       expect(isPushToTalkKey(value)).toBe(false);
     }
+  });
+});
+
+describe("copyGlobalVoiceText", () => {
+  it("copies through the native clipboard, which needs no focused document", async () => {
+    core.invoke.mockResolvedValueOnce(undefined);
+    await copyGlobalVoiceText("Halo, apa kabar?");
+    expect(core.invoke).toHaveBeenCalledWith("clipboard_write_text", {
+      text: "Halo, apa kabar?",
+    });
+    core.invoke.mockRejectedValueOnce("another program holds the clipboard");
+    await expect(copyGlobalVoiceText("Halo")).rejects.toBe(
+      "another program holds the clipboard",
+    );
   });
 });

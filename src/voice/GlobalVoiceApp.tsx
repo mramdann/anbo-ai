@@ -7,6 +7,7 @@ import { onKeysChanged } from "@/modules/settings/store";
 import {
   captureGlobalVoiceTarget,
   clearGlobalVoiceTarget,
+  copyGlobalVoiceText,
   GLOBAL_VOICE_PTT_EVENT,
   GLOBAL_VOICE_TOGGLE_EVENT,
   type GlobalVoiceTarget,
@@ -213,7 +214,7 @@ export function GlobalVoiceApp() {
         setError(detail);
         setFallbackTranscript(normalized);
         try {
-          await navigator.clipboard.writeText(normalized);
+          await copyGlobalVoiceText(normalized);
           setError(`${detail} Transcript copied to the clipboard.`);
         } catch {
           // The transcript remains in memory and can be copied on right click.
@@ -622,7 +623,7 @@ export function GlobalVoiceApp() {
         onContextMenu={(event) => {
           event.preventDefault();
           if (fallbackTranscript) {
-            void navigator.clipboard.writeText(fallbackTranscript);
+            void copyGlobalVoiceText(fallbackTranscript).catch(() => {});
           } else {
             cancel();
           }
