@@ -351,6 +351,128 @@ describe("shared terminal input", () => {
     expect(close).not.toHaveBeenCalled();
   });
 
+  it("closes an opened terminal once an agent CLI run in it has ended", async () => {
+    // `kimi --version` made the tab an agent tab, and the CLI is gone again.
+    const adoptedTab = terminal({
+      id: 20,
+      title: "Kimi",
+      agent: { launcherId: "kimi", icon: "kimi", label: "Kimi", name: "Kimi" },
+      paneTree: { kind: "leaf", id: 201, cwd: workspaceRoot },
+      activeLeafId: 201,
+    });
+    const close = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({
+        getTabs: () => [terminal(), adoptedTab],
+        open: () => ({ tabId: 20, leafId: 201 }),
+        close,
+      }),
+    );
+
+    await service.handle("terminal_open", {
+      workspace: workspaceRoot,
+      title: "Probe",
+    });
+    // Other tools still see an agent tab, not a shared terminal.
+    const listed = await service.handle("terminal_list", {
+      workspace: workspaceRoot,
+    });
+    expect(
+      (listed.result as { terminals: { terminalId: string }[] }).terminals.map(
+        (entry) => entry.terminalId,
+      ),
+    ).toEqual(["terminal:10:101"]);
+    await expect(
+      service.handle("terminal_read", {
+        workspace: workspaceRoot,
+        terminalId: "terminal:20:201",
+      }),
+    ).resolves.toMatchObject({ error: { code: "terminal_not_found" } });
+    await expect(
+      service.handle("terminal_close", {
+        workspace: workspaceRoot,
+        terminalId: "terminal:20:201",
+      }),
+    ).resolves.toMatchObject({
+      result: { ok: true, closed: true, terminalId: "terminal:20:201" },
+    });
+    expect(close).toHaveBeenCalledWith(20, 201);
+  });
+
+  it("refuses an opened terminal while an agent CLI runs in it", async () => {
+    const adoptedTab = terminal({
+      id: 20,
+      title: "Kimi",
+      agent: { launcherId: "kimi", icon: "kimi", label: "Kimi", name: "Kimi" },
+      paneTree: { kind: "leaf", id: 201, cwd: workspaceRoot },
+      activeLeafId: 201,
+    });
+    const close = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({
+        getTabs: () => [terminal(), adoptedTab],
+        getSessions: () => ({
+          201: {
+            leafId: 201,
+            tabId: 20,
+            agent: "kimi",
+            name: "Kimi",
+            status: "waiting",
+            phase: "finished",
+            startedAt: 1,
+            lastActivityAt: 1,
+            attentionSince: null,
+          },
+        }),
+        open: () => ({ tabId: 20, leafId: 201 }),
+        close,
+      }),
+    );
+
+    await service.handle("terminal_open", {
+      workspace: workspaceRoot,
+      title: "Probe",
+    });
+    await expect(
+      service.handle("terminal_close", {
+        workspace: workspaceRoot,
+        terminalId: "terminal:20:201",
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: "terminal_busy",
+        message: expect.stringContaining("agent CLI"),
+      },
+    });
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it("refuses an agent tab that terminal_open did not make", async () => {
+    const agentTab = terminal({
+      id: 12,
+      agent: {
+        launcherId: "claude",
+        icon: "claude",
+        label: "Claude",
+        name: "Claude",
+      },
+      paneTree: { kind: "leaf", id: 121 },
+      activeLeafId: 121,
+    });
+    const close = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({ getTabs: () => [terminal(), agentTab], close }),
+    );
+
+    await expect(
+      service.handle("terminal_close", {
+        workspace: workspaceRoot,
+        terminalId: "terminal:12:121",
+      }),
+    ).resolves.toMatchObject({ error: { code: "terminal_not_found" } });
+    expect(close).not.toHaveBeenCalled();
+  });
+
   it("rejects multiline and control input", () => {
     expect(sanitizeTerminalInput("pnpm test")).toEqual({
       ok: true,

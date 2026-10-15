@@ -2100,10 +2100,12 @@ export default function App() {
               const tab = tabsRef.current.find(
                 (candidate) => candidate.id === tabId,
               );
+              // An agent CLI started in a terminal_open terminal makes it an
+              // agent tab, which its opener may close once the CLI has ended.
               if (
                 tab?.kind !== "terminal" ||
                 tab.private ||
-                tab.agent ||
+                useAgentStore.getState().sessions[leafId] !== undefined ||
                 tab.activeLeafId !== leafId ||
                 leafIds(tab.paneTree).length !== 1
               ) {

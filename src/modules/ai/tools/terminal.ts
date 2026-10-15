@@ -29,7 +29,7 @@ export function buildTerminalTools(ctx: ToolContext) {
 
     terminal_close: tool({
       description:
-        "Close an idle terminal_open terminal from this app session. Refuses user/agent terminals, pending input, and foreground jobs.",
+        "Close an idle terminal_open terminal from this app session, also after an agent CLI ran in it and ended. Refuses user/agent terminals, pending input, and foreground jobs.",
       inputSchema: z.object({ terminalId: z.string().min(1) }),
       execute: async ({ terminalId }) =>
         sharedTerminalRequest("terminal_close", { terminalId }),

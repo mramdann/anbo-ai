@@ -205,6 +205,9 @@ export async function collectSharedTerminals(
   deps: TerminalAutomationDependencies,
   space: { id: string; root: string },
   verifyForeground = true,
+  /** Terminals kept even after an agent CLI started in one made its tab an
+   *  agent tab: the ones terminal_open made, which stay theirs to close. */
+  opened?: ReadonlySet<string>,
 ): Promise<SharedTerminalDescriptor[]> {
   const sessions = deps.getSessions();
   const activeTabId = deps.getActiveTabId();
@@ -212,18 +215,21 @@ export async function collectSharedTerminals(
     .getTabs()
     .filter(
       (tab): tab is TerminalTab =>
-        tab.kind === "terminal" &&
-        tab.spaceId === space.id &&
-        !tab.private &&
-        !tab.agent,
+        tab.kind === "terminal" && tab.spaceId === space.id && !tab.private,
     )
     .flatMap((tab) =>
       leafIds(tab.paneTree).flatMap((leafId) => {
-        if (isAgentLeaf(sessions, tab.id, leafId)) return [];
+        const id = terminalId(tab.id, leafId);
+        if (
+          (tab.agent || isAgentLeaf(sessions, tab.id, leafId)) &&
+          !opened?.has(id)
+        ) {
+          return [];
+        }
         const state = deps.getSessionState(leafId);
         return [
           {
-            terminalId: terminalId(tab.id, leafId),
+            terminalId: id,
             title: tab.title,
             tabId: tab.id,
             leafId,
@@ -536,6 +542,7 @@ export function createTerminalAutomationService(
   const resolve = async (
     params: Record<string, unknown>,
     verifyForeground = true,
+    opened?: ReadonlySet<string>,
   ): Promise<
     | {
         ok: true;
@@ -558,6 +565,7 @@ export function createTerminalAutomationService(
         deps,
         workspace.space,
         verifyForeground,
+        opened,
       ),
     };
   };
@@ -565,8 +573,9 @@ export function createTerminalAutomationService(
   const resolveTarget = async (
     params: Record<string, unknown>,
     verifyForeground = true,
+    opened?: ReadonlySet<string>,
   ) => {
-    const resolved = await resolve(params, verifyForeground);
+    const resolved = await resolve(params, verifyForeground, opened);
     if (!resolved.ok) return resolved;
     const id = paramString(params, "terminalId");
     if (!id) {
@@ -702,13 +711,25 @@ export function createTerminalAutomationService(
       }
 
       if (method === "terminal_close") {
-        const target = await resolveTarget(params, false);
+        const target = await resolveTarget(params, false, openedTerminals);
         if (!target.ok) return target.response;
         const id = target.terminal.terminalId;
         if (!openedTerminals.has(id)) {
           return automationError(
             "terminal_not_owned",
             `${id} was not opened by terminal_open in this application session`,
+          );
+        }
+        if (
+          isAgentLeaf(
+            deps.getSessions(),
+            target.terminal.tabId,
+            target.terminal.leafId,
+          )
+        ) {
+          return automationError(
+            "terminal_busy",
+            `${id} is running an agent CLI, which agent_list shows; end it before closing the terminal`,
           );
         }
         if (await hasPendingExecution(id)) {

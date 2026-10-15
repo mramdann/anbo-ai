@@ -245,7 +245,9 @@ terminal on purpose. `terminal_execute` queues a command and returns an
 one and requires a purpose-specific title such as Dev Server or Tests. Only
 that terminal is yours to close, and only while it is idle: `terminal_close`
 refuses user-created terminals, agent CLI terminals, and anything holding a
-foreground process.
+foreground process. An agent CLI started in your terminal makes it an agent
+tab, gone from `terminal_list`; once that CLI has ended, `terminal_close`
+still closes it.
 
 Every execute needs an idle prompt. Anbo revalidates that the PTY is attached,
 sitting at a prompt, and free of a foreground job immediately before writing,
