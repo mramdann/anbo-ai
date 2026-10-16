@@ -3,6 +3,7 @@ import {
   createDockHolders,
   createDockLayoutOwnership,
   createDockLayoutPublisher,
+  createFrontRecheck,
   createWindowFront,
   type DockLayout,
   type DockStatus,
@@ -11,6 +12,7 @@ import {
   orderedLayout,
   panelLayout,
   shouldAttachDock,
+  type WindowFront,
 } from "@/modules/browser/external/docking";
 import { describe, expect, it, vi } from "vitest";
 
@@ -55,9 +57,11 @@ describe("automatic docking", () => {
 });
 
 describe("where the user is", () => {
+  const unasked = () => Promise.reject(new Error("not asked"));
+
   it("keeps the newest word, whatever order it arrives in", () => {
     const onChange = vi.fn();
-    const front = createWindowFront(onChange);
+    const front = createWindowFront(onChange, unasked);
     // Nothing heard yet: no dock by itself.
     expect(front.current()).toBe(false);
     front.note({ front: true, seq: 3 });
@@ -73,10 +77,116 @@ describe("where the user is", () => {
   });
 
   it("takes every reply while the watch could not start", () => {
-    const front = createWindowFront(() => {});
+    const front = createWindowFront(() => {}, unasked);
     front.note({ front: true, seq: 0 });
     front.note({ front: false, seq: 0 });
     expect(front.current()).toBe(false);
+  });
+
+  it("answers an ask with Windows' word, unless newer news came first", async () => {
+    // The watch said the user is in Anbo, but they left without an event,
+    // as from a window Windows once refused to bring forward.
+    const onChange = vi.fn();
+    const request = vi.fn().mockResolvedValue({ front: false, seq: 5 });
+    const front = createWindowFront(onChange, request);
+    front.note({ front: true, seq: 4 });
+    await expect(front.ask()).resolves.toBe(false);
+    expect(front.current()).toBe(false);
+    expect(onChange).toHaveBeenCalledTimes(2);
+    // A reply that an event overtook.
+    let answer: (next: WindowFront) => void = () => {};
+    request.mockReturnValueOnce(
+      new Promise<WindowFront>((resolve) => {
+        answer = resolve;
+      }),
+    );
+    const late = front.ask();
+    front.note({ front: true, seq: 7 });
+    answer({ front: false, seq: 6 });
+    await expect(late).resolves.toBe(true);
+  });
+
+  it("keeps the last word when Windows cannot be asked", async () => {
+    const front = createWindowFront(() => {}, unasked);
+    front.note({ front: true, seq: 1 });
+    await expect(front.ask()).resolves.toBe(true);
+  });
+});
+
+describe("asking again while a tab waits for the user", () => {
+  it("asks at once, then each second, and only while a tab waits", async () => {
+    vi.useFakeTimers();
+    try {
+      const ask = vi.fn().mockResolvedValue(false);
+      const waitForUser = createFrontRecheck(ask, 1000);
+      const first = waitForUser();
+      expect(ask).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(ask).toHaveBeenCalledTimes(4);
+      // A second waiting tab asks for itself once and shares the timer.
+      const second = waitForUser();
+      expect(ask).toHaveBeenCalledTimes(5);
+      expect(vi.getTimerCount()).toBe(1);
+      first();
+      // A cleanup that runs twice must not stop the other tab's asks.
+      first();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(ask).toHaveBeenCalledTimes(6);
+      second();
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(ask).toHaveBeenCalledTimes(6);
+      // A tab waiting again starts asking again.
+      const third = waitForUser();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(ask).toHaveBeenCalledTimes(8);
+      third();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("tells a waiting tab when its first ask is answered, not after it stops", async () => {
+    let answer = () => {};
+    const ask = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          answer = () => resolve();
+        }),
+    );
+    const waitForUser = createFrontRecheck(ask, 1000);
+    const answered = vi.fn();
+    const stop = waitForUser(answered);
+    await Promise.resolve();
+    // Until Windows answers, the word kept may be stale: no "Show the page".
+    expect(answered).not.toHaveBeenCalled();
+    answer();
+    await vi.waitFor(() => expect(answered).toHaveBeenCalledTimes(1));
+    stop();
+    // A tab that stopped waiting before the answer came hears nothing.
+    const late = vi.fn();
+    const gone = waitForUser(late);
+    gone();
+    answer();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(late).not.toHaveBeenCalled();
+  });
+
+  it("still tells a waiting tab when the ask fails", async () => {
+    vi.useFakeTimers();
+    try {
+      const ask = vi.fn().mockRejectedValue(new Error("no answer"));
+      const answered = vi.fn();
+      const stop = createFrontRecheck(ask, 1000)(answered);
+      await vi.advanceTimersByTimeAsync(2000);
+      // The panel then says it waits rather than staying on "Opening".
+      expect(answered).toHaveBeenCalledTimes(1);
+      expect(ask).toHaveBeenCalledTimes(3);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

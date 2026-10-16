@@ -386,18 +386,60 @@ export type WindowFront = { front: boolean; seq: number };
 
 /** Keeps the newest word on where the user is. A reply to an ask can arrive
  * after an event newer than it, so the watch's change count decides. */
-export function createWindowFront(onChange: () => void) {
+export function createWindowFront(
+  onChange: () => void,
+  request: () => Promise<WindowFront>,
+) {
   let front = false;
   let seq = -1;
+  const note = (next: WindowFront) => {
+    if (next.seq < seq) return;
+    seq = next.seq;
+    if (next.front === front) return;
+    front = next.front;
+    onChange();
+  };
   return {
     current: () => front,
-    note(next: WindowFront) {
-      if (next.seq < seq) return;
-      seq = next.seq;
-      if (next.front === front) return;
-      front = next.front;
-      onChange();
-    },
+    note,
+    /** Where the user is now, or the last word when Windows cannot be asked. */
+    ask: () =>
+      request().then(
+        (next) => {
+          note(next);
+          return front;
+        },
+        () => front,
+      ),
+  };
+}
+
+/** While any tab waits only for the user to come into Anbo, asks where they
+ * are at once and then every `everyMs`: Windows does not announce every
+ * change of the window in front, and the tab would wait for a click.
+ * `answered` hears when that first ask is answered. */
+export function createFrontRecheck(
+  ask: () => Promise<unknown>,
+  everyMs: number,
+) {
+  let waiting = 0;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  return (answered?: () => void) => {
+    let done = false;
+    const settled = () => {
+      if (!done) answered?.();
+    };
+    void ask().then(settled, settled);
+    waiting += 1;
+    timer ??= setInterval(() => void ask().catch(() => {}), everyMs);
+    return () => {
+      if (done) return;
+      done = true;
+      waiting -= 1;
+      if (waiting > 0) return;
+      clearInterval(timer);
+      timer = undefined;
+    };
   };
 }
 
@@ -406,16 +448,17 @@ export function createWindowFront(onChange: () => void) {
 // the page could not: WebView2's document.hasFocus() stayed true behind
 // another app, and the main window may not read its own focus.
 const focusListeners = new Set<() => void>();
-const windowFront = createWindowFront(() => {
-  for (const notify of focusListeners) notify();
-});
+const windowFront = createWindowFront(
+  () => {
+    for (const notify of focusListeners) notify();
+  },
+  () => invoke<WindowFront>("browser_external_front"),
+);
 let watchingFocus = false;
 function syncAnboFocus() {
-  void invoke<WindowFront>("browser_external_front").then(
-    (front) => windowFront.note(front),
-    () => {},
-  );
+  void windowFront.ask();
 }
+const waitForUser = createFrontRecheck(windowFront.ask, 1000);
 function subscribeAnboFocus(listener: () => void) {
   focusListeners.add(listener);
   if (!watchingFocus) {
@@ -804,6 +847,10 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     }
     try {
       const result = await exclusiveDock(async () => {
+        // A dock window opening while the user is in another app would
+        // flash over it, and the word kept can be stale (see
+        // createFrontRecheck).
+        if (!requested && !(await windowFront.ask())) return null;
         for (let attempt = 0; ; attempt++) {
           // A shown panel may have kept or taken the page meanwhile.
           if (!requested && holders.heldElsewhere(tab.id)) return null;
@@ -845,7 +892,7 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     }
   }, [call, apply, measure, tab.id, connectionId]);
 
-  const wanted = shouldAttachDock({
+  const autoDock: AutoDockState = {
     visible,
     connected: Boolean(external?.connected),
     focused: focused || asked,
@@ -860,12 +907,27 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     // A tab shown while another agent clicks, as the next one after a closed
     // tab is, takes the dock after that click; a click on it takes it now.
     turn: turn && !asked,
-  });
+  };
+  const wanted = shouldAttachDock(autoDock);
   const attachRef = useRef(attach);
   attachRef.current = attach;
   useEffect(() => {
     if (wanted) void attachRef.current();
   }, [wanted]);
+
+  const awaitsUser =
+    !autoDock.focused && shouldAttachDock({ ...autoDock, focused: true });
+  // The word kept on where the user is can be stale, so the panel says it
+  // waits for them only once Windows has been asked again.
+  const [awayConfirmed, setAwayConfirmed] = useState(false);
+  useEffect(() => {
+    if (!awaitsUser) return;
+    const stop = waitForUser(() => setAwayConfirmed(true));
+    return () => {
+      stop();
+      setAwayConfirmed(false);
+    };
+  }, [awaitsUser]);
 
   const retry = useCallback(() => {
     setError(null);
@@ -905,7 +967,7 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
       hold === null &&
       visible &&
       Boolean(external?.connected) &&
-      (!focused || !presented),
+      (!presented || (!focused && awayConfirmed)),
     retry,
   };
 }

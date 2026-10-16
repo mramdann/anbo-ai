@@ -544,9 +544,10 @@ fn front_value(packed: u64) -> Option<Front> {
 }
 
 /// The packed value after the watch sees `front`, or None when nothing
-/// changed.
-fn front_next(packed: u64, front: bool) -> Option<u64> {
-    let state = if front { 1 } else { 2 };
+/// changed. A look while no window has the input (`None`, as for a moment in
+/// every switch) says nothing about where the user went.
+fn front_next(packed: u64, front: Option<bool>) -> Option<u64> {
+    let state = if front? { 1 } else { 2 };
     (packed & 3 != state).then(|| (((packed >> 2) + 1) << 2) | state)
 }
 
@@ -1667,30 +1668,39 @@ mod native {
         }
     }
 
-    // The foreground watch, read by its hook without a lock: what it last saw
-    // (see front_value), the main window, and where to tell it.
+    // The foreground watch: what it last saw (see front_value), read without
+    // a lock, the main window, and where to tell it. Its looks take turns, so
+    // an older look is never stored over a newer one.
     static FRONT: AtomicU64 = AtomicU64::new(0);
+    static FRONT_LOOK: Mutex<()> = Mutex::new(());
     static FRONT_HOST: AtomicUsize = AtomicUsize::new(0);
     static FRONT_APP: OnceLock<AppHandle> = OnceLock::new();
 
     /// The user is in Anbo while its main window or the page the dock shows
-    /// has their input. A minimized window can stay in front; the dock also
-    /// needs the panel presented, so it does not dock then either.
-    fn user_in(host: HWND) -> bool {
-        let window = unsafe { GetForegroundWindow() };
-        !window.0.is_null()
-            && (window == host || window.0 as usize == BROWSER.load(Ordering::Acquire))
+    /// has their input; None while no window has it. A minimized window can
+    /// stay in front; the dock also needs the panel presented, so it does not
+    /// dock then either.
+    fn user_in(host: HWND) -> Option<bool> {
+        // Windows can name a child window as the one in front for a moment,
+        // as WebView2's when Anbo's page takes the focus.
+        let window = unsafe { GetAncestor(GetForegroundWindow(), GA_ROOT) };
+        (!window.0.is_null())
+            .then(|| window == host || window.0 as usize == BROWSER.load(Ordering::Acquire))
     }
 
     pub(super) fn front<R: tauri::Runtime>(app: &AppHandle<R>) -> Front {
-        // The watch's own answer, so the reply orders with its events.
+        // Windows does not announce every change (see note_front), so each
+        // ask looks again, through the watch so the reply orders with its
+        // events.
+        note_front();
         if let Some(front) = front_value(FRONT.load(Ordering::Acquire)) {
             return front;
         }
         let front = main_window(app)
             .ok()
             .and_then(|window| window.hwnd().ok())
-            .is_some_and(|handle| user_in(HWND(handle.0 as *mut _)));
+            .and_then(|handle| user_in(HWND(handle.0 as *mut _)))
+            .unwrap_or(false);
         Front { front, seq: 0 }
     }
 
@@ -1754,23 +1764,25 @@ mod native {
 
     /// Looks again at what the user is in, and tells the main window when
     /// that changed. Also called when the dock takes or gives up its window,
-    /// which can change it without a foreground change.
+    /// which can change it without a foreground change, and on each ask:
+    /// a window Windows refused to bring forward raises its event then, and
+    /// none when it comes forward later, and Anbo started behind another app
+    /// gets none either when it is brought forward.
     fn note_front() {
         let host = FRONT_HOST.load(Ordering::Acquire);
         if host == 0 {
             return;
         }
-        let front = user_in(HWND(host as *mut _));
-        let mut packed = FRONT.load(Ordering::Acquire);
-        let next = loop {
-            let Some(next) = front_next(packed, front) else {
+        let next = {
+            let _look = FRONT_LOOK.lock();
+            let seen = user_in(HWND(host as *mut _));
+            let Some(next) = front_next(FRONT.load(Ordering::Acquire), seen) else {
                 return;
             };
-            match FRONT.compare_exchange(packed, next, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => break next,
-                Err(current) => packed = current,
-            }
+            FRONT.store(next, Ordering::Release);
+            next
         };
+        // Sent after the turn: the change count orders what arrives late.
         if let (Some(app), Some(payload)) = (FRONT_APP.get(), front_value(next)) {
             let _ = app.emit_to("main", FRONT_EVENT, payload);
         }
@@ -2174,7 +2186,8 @@ mod tests {
     fn the_foreground_watch_counts_only_changes() {
         // Nothing seen yet: the reply asks Windows itself.
         assert_eq!(front_value(0), None);
-        let inside = front_next(0, true).unwrap();
+        assert_eq!(front_next(0, None), None);
+        let inside = front_next(0, Some(true)).unwrap();
         assert_eq!(
             front_value(inside),
             Some(Front {
@@ -2183,8 +2196,11 @@ mod tests {
             })
         );
         // Another look at the same window is no news.
-        assert_eq!(front_next(inside, true), None);
-        let outside = front_next(inside, false).unwrap();
+        assert_eq!(front_next(inside, Some(true)), None);
+        // Nor is a look in the middle of a switch, when no window has the
+        // input: an ask landing there must not send the user away.
+        assert_eq!(front_next(inside, None), None);
+        let outside = front_next(inside, Some(false)).unwrap();
         assert_eq!(
             front_value(outside),
             Some(Front {
@@ -2192,7 +2208,8 @@ mod tests {
                 seq: 2
             })
         );
-        let back = front_next(outside, true).unwrap();
+        assert_eq!(front_next(outside, None), None);
+        let back = front_next(outside, Some(true)).unwrap();
         assert_eq!(front_value(back).map(|front| front.seq), Some(3));
         assert_eq!(
             serde_json::to_value(front_value(back).unwrap()).unwrap(),
