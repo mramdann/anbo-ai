@@ -22,9 +22,11 @@ export const PROMPT_END_LENGTH = PROMPT_END.length;
  * How long after its start a shell may still end its first prompt. A shell
  * without the integration, or whose profile broke it, never writes the mark
  * and must not read as starting for good. Terminal automation waits as long
- * for a first prompt before it gives up on a command.
+ * for a first prompt before it gives up on a command. Twenty Windows
+ * PowerShells started together on a busy machine took up to 33 s to their
+ * first prompt, outside Anbo too, so 30 s refused some of their commands.
  */
-export const FIRST_PROMPT_WAIT_MS = 30_000;
+export const FIRST_PROMPT_WAIT_MS = 60_000;
 
 /**
  * How many bytes of OSC 133 B the output ends with once `bytes` follows output

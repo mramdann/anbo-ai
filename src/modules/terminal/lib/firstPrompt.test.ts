@@ -64,6 +64,11 @@ describe("awaitingFirstPrompt", () => {
     expect(awaitingFirstPrompt(true, 1_000, 3_500)).toBe(false);
   });
 
+  it("still waits for a shell started with many others", () => {
+    // Twenty Windows PowerShells started together took up to 33 s.
+    expect(awaitingFirstPrompt(false, 1_000, 1_000 + 45_000)).toBe(true);
+  });
+
   it("stops waiting for a shell that never marks a prompt", () => {
     expect(
       awaitingFirstPrompt(false, 1_000, 1_000 + FIRST_PROMPT_WAIT_MS - 1),

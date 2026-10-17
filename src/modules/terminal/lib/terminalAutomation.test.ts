@@ -1474,6 +1474,74 @@ describe("shared terminal input", () => {
     expect(write).not.toHaveBeenCalled();
   });
 
+  it("sends a command to a shell that takes most of a minute to its first prompt", async () => {
+    // Twenty Windows PowerShells started together took up to 33 s to their
+    // first prompt, and 30 s refused some of their commands.
+    vi.useFakeTimers();
+    try {
+      let state = startingShell();
+      const write = vi.fn(() => true);
+      const service = createTerminalAutomationService(
+        dependencies({ getSessionState: () => state, write }),
+      );
+      await service.handle("terminal_execute", {
+        workspace: workspace.root,
+        terminalId: "terminal:10:101",
+        text: "echo late",
+      });
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(write).not.toHaveBeenCalled();
+
+      state = {
+        ...state,
+        awaitingFirstPrompt: false,
+        commandGeneration: 1,
+        commandCompletions: [{ generation: 1, exitCode: 0 }],
+      };
+      await vi.advanceTimersByTimeAsync(100);
+      expect(write).toHaveBeenCalledWith(101, "echo late\r");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up on a first prompt a minute after the command came", async () => {
+    vi.useFakeTimers();
+    try {
+      const write = vi.fn(() => true);
+      const service = createTerminalAutomationService(
+        dependencies({ getSessionState: () => startingShell(), write }),
+      );
+      const executed = await service.handle("terminal_execute", {
+        workspace: workspace.root,
+        terminalId: "terminal:10:101",
+        text: "echo never",
+      });
+      const executionId = (executed.result as { executionId: string })
+        .executionId;
+      await vi.advanceTimersByTimeAsync(60_300);
+
+      const waited = service.handle("terminal_wait", {
+        workspace: workspace.root,
+        terminalId: "terminal:10:101",
+        executionId,
+        timeout: 100,
+      });
+      await vi.advanceTimersByTimeAsync(200);
+      await expect(waited).resolves.toMatchObject({
+        result: {
+          completionReason: "dispatch_failed",
+          dispatchError: expect.stringContaining(
+            "The shell did not mark its first prompt within 60 s",
+          ),
+        },
+      });
+      expect(write).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("refuses a command before the terminal has a session at all", async () => {
     const write = vi.fn(() => true);
     const service = createTerminalAutomationService(

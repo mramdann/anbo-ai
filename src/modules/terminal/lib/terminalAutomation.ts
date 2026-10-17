@@ -11,6 +11,7 @@ import type { AgentSession } from "@/modules/agents/lib/types";
 import { OutputTracker } from "@/modules/agents/lib/outputTracker";
 import type { SpaceMeta } from "@/modules/spaces/lib/store";
 import type { Tab, TerminalTab } from "@/modules/tabs";
+import { FIRST_PROMPT_WAIT_MS } from "@/modules/terminal/lib/firstPrompt";
 import { findLeafCwd, leafIds } from "@/modules/terminal/lib/panes";
 import type { TerminalSessionState } from "@/modules/terminal/lib/useTerminalSession";
 
@@ -20,7 +21,6 @@ const MAX_TRACKED_TERMINALS = 100;
 const MAX_EXECUTIONS = 100;
 const WAIT_POLL_MS = 75;
 const DISPATCH_DELAY_MS = 200;
-const INITIAL_PROMPT_SYNC_TIMEOUT_MS = 30_000;
 const INITIAL_PROMPT_SYNC_POLL_MS = 25;
 const INPUT_VISIBILITY_TIMEOUT_MS = 500;
 const INPUT_VISIBILITY_POLL_MS = 25;
@@ -138,7 +138,7 @@ function shellSupportsOsc(shell: string | null | undefined): boolean {
 /** A shell with Anbo's integration that has not ended its first prompt. A
  *  Ctrl+C now can end Windows PowerShell or stop its integration script, and
  *  typing lands ahead of the prompt. The session stops waiting for the mark
- *  30 s after the shell started (firstPrompt.ts). */
+ *  a minute after the shell started (firstPrompt.ts). */
 function shellStarting(state: TerminalSessionState): boolean {
   return state.awaitingFirstPrompt === true && shellSupportsOsc(state.shell);
 }
@@ -501,9 +501,9 @@ export function createTerminalAutomationService(
       return;
     }
     // One wait for the first prompt, whether the shell is still starting or
-    // only its live buffer has yet to parse the mark.
-    const timeoutMs =
-      deps.initialPromptSyncTimeoutMs ?? INITIAL_PROMPT_SYNC_TIMEOUT_MS;
+    // only its live buffer has yet to parse the mark, as long as the session
+    // looks for it.
+    const timeoutMs = deps.initialPromptSyncTimeoutMs ?? FIRST_PROMPT_WAIT_MS;
     const deadline = Date.now() + timeoutMs;
     const state = await awaitShellStart(
       execution.terminal.leafId,
