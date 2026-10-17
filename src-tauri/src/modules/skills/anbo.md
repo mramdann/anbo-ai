@@ -92,6 +92,11 @@ failed, keep the returned path instead of automatically taking another shot.
 first failure and names the fields already done; submit separately with
 `browser_click` or `browser_press`.
 
+Choose a `<select>` option with `browser_select_option` or a field's `option`,
+not by clicking the select or pressing arrow keys: the browser's own option
+list never shows in a snapshot. The select's snapshot line names its choice as
+`[selected="..."]`.
+
 Refs are generation-scoped. A reused link whose resolved URL changes also
 returns `stale_ref`, including refs inside that link, as do controls in
 recognizable list items, rows and cards whose identity changed; large or

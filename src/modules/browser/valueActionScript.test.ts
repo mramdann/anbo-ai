@@ -300,3 +300,194 @@ describe("guarded value actions", () => {
     });
   });
 });
+
+// A select whose own option list a click left open. Chromium on Windows closes
+// that list the same way whatever closes it: it applies the option the arrow
+// keys highlighted and tells the page, unless a listener earlier on the event
+// path stops the news.
+function openList({
+  closes = true,
+  customizable = false,
+  knowsOpen = true,
+} = {}) {
+  type Heard = {
+    type: string;
+    composedPath: () => unknown[];
+    stopImmediatePropagation: () => void;
+  };
+  const capture = new Map<string, Array<(event: Heard) => void>>();
+  const heard: string[] = [];
+  const view = {
+    addEventListener(
+      type: string,
+      listener: (event: Heard) => void,
+      useCapture: boolean,
+    ) {
+      expect(useCapture).toBe(true);
+      capture.set(type, [...(capture.get(type) ?? []), listener]);
+    },
+    removeEventListener(type: string, listener: (event: Heard) => void) {
+      capture.set(
+        type,
+        (capture.get(type) ?? []).filter((held) => held !== listener),
+      );
+    },
+    getComputedStyle: (_el: unknown, pseudo: string) => ({
+      appearance:
+        customizable && pseudo === "::picker(select)" ? "base-select" : "none",
+    }),
+  };
+  const document = { defaultView: view };
+  const options = [
+    ["", "Pilih"],
+    ["reguler", "Reguler"],
+    ["ekspres", "Ekspres"],
+  ].map(([value, textContent], index) => ({
+    value,
+    textContent,
+    disabled: false,
+    selected: index === 0,
+    matches: () => false,
+  }));
+  const state = { open: true, focused: true };
+  const el = {
+    tagName: "SELECT",
+    disabled: false,
+    isConnected: true,
+    options,
+    ownerDocument: document,
+    getRootNode: () => document,
+    get selectedIndex() {
+      return options.findIndex((option) => option.selected);
+    },
+    set selectedIndex(index: number) {
+      options.forEach((option, at) => {
+        option.selected = at === index;
+      });
+    },
+    get value() {
+      return options.find((option) => option.selected)?.value ?? "";
+    },
+    set value(value: string) {
+      for (const option of options) option.selected = option.value === value;
+    },
+    getAttribute: () => null,
+    matches(selector: string) {
+      if (selector !== ":open") return false;
+      if (!knowsOpen) throw new SyntaxError("unknown pseudo-class");
+      return state.open;
+    },
+    dispatchEvent(event: { type: string }) {
+      fire(event.type);
+      return true;
+    },
+    blur() {
+      if (!state.focused) return;
+      if (state.open && closes) {
+        state.open = false;
+        el.value = "ekspres";
+        fire("input");
+        fire("change");
+      }
+      state.focused = false;
+      fire("blur");
+      fire("focusout");
+    },
+    focus() {
+      if (state.focused) return;
+      state.focused = true;
+      fire("focus");
+      fire("focusin");
+    },
+  };
+  function fire(type: string) {
+    let stopped = false;
+    const event = {
+      type,
+      composedPath: () => [el],
+      stopImmediatePropagation: () => {
+        stopped = true;
+      },
+    };
+    for (const listener of capture.get(type) ?? []) {
+      listener(event);
+      if (stopped) return;
+    }
+    heard.push(`${type}:${el.value}`);
+  }
+  class Event {
+    constructor(public type: string) {}
+  }
+  const context = vm.createContext({
+    el,
+    refRegistry: { resolve: () => el },
+    HTMLInputElement: class {},
+    HTMLTextAreaElement: class {},
+    Event,
+    InputEvent: Event,
+    isRenderedElement: () => true,
+  });
+  vm.runInContext(`${baselineSource}\n${source}`, context);
+  return {
+    el,
+    state,
+    heard,
+    listening: () =>
+      Array.from(capture.values()).reduce((sum, held) => sum + held.length, 0),
+    run: (want: string) =>
+      vm.runInContext(
+        `selectValue(el, refRegistry, 'g1-e1', ${JSON.stringify(want)})`,
+        context,
+      ),
+  };
+}
+
+describe("a select whose own option list is open", () => {
+  it("closes the list out of the page's sight before choosing", () => {
+    // An agent clicked the select, pressed ArrowDown twice, then chose
+    // Reguler: the list applied Ekspres at the next click, after the choice
+    // had been reported as held, and the order went out with Ekspres.
+    const h = openList();
+    expect(h.run("Reguler")).toMatchObject({
+      ok: true,
+      value: "reguler",
+      valueVerified: true,
+      closedPicker: true,
+    });
+    expect(h.state).toEqual({ open: false, focused: true });
+    expect(h.heard).toEqual(["input:reguler", "change:reguler"]);
+    expect(h.listening()).toBe(0);
+  });
+
+  it("writes nothing when the list does not close", () => {
+    const h = openList({ closes: false });
+    expect(h.run("Reguler")).toEqual({ ok: false, error: "picker_open" });
+    expect(h.el.value).toBe("");
+    expect(h.state.focused).toBe(true);
+    expect(h.heard).toEqual([]);
+    expect(h.listening()).toBe(0);
+  });
+
+  it("leaves a customizable select's list alone, which applies nothing on close", () => {
+    const h = openList({ customizable: true });
+    expect(h.run("Reguler")).toMatchObject({ ok: true, closedPicker: false });
+    expect(h.state.open).toBe(true);
+    expect(h.heard).toEqual(["input:reguler", "change:reguler"]);
+  });
+
+  it("chooses as before where there is no open list or no way to tell", () => {
+    const closed = openList();
+    closed.state.open = false;
+    expect(closed.run("Reguler")).toMatchObject({
+      ok: true,
+      closedPicker: false,
+    });
+    expect(closed.heard).toEqual(["input:reguler", "change:reguler"]);
+    const older = openList({ knowsOpen: false });
+    expect(older.run("Reguler")).toMatchObject({
+      ok: true,
+      closedPicker: false,
+    });
+    expect(older.heard).toEqual(["input:reguler", "change:reguler"]);
+  });
+});

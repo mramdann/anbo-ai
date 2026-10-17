@@ -104,6 +104,13 @@ pub struct SnapshotElement {
     /// re-opening what is in front of it.
     #[serde(default)]
     pub expanded: Option<bool>,
+    /// What a <select> shows as chosen (at most three) and how many options it
+    /// has chosen in all. A click on it opens the browser's own option list,
+    /// which no snapshot shows, so this is where a caller reads the choice.
+    #[serde(default)]
+    pub selected: Option<Vec<String>>,
+    #[serde(default)]
+    pub selected_count: usize,
 }
 
 pub fn remove_generation(tab_id: i64) {
@@ -436,6 +443,9 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                     const haspopup = el.getAttribute('aria-haspopup');
                     const controls = el.getAttribute('aria-controls') || el.getAttribute('aria-owns');
                     const expandedAttr = el.getAttribute('aria-expanded');
+                    const chosen = tag === 'select'
+                        ? Array.from(el.selectedOptions || [], option => clip(squash(option.text || option.label || ''), 80))
+                        : null;
 
                     add({{
                         type: 'element',
@@ -448,7 +458,9 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                         disabled: el.disabled || false,
                         in_viewport: inViewport,
                         opens: !!(haspopup && haspopup !== 'false') || !!controls || expandedAttr !== null,
-                        expanded: expandedAttr === null ? null : expandedAttr === 'true'
+                        expanded: expandedAttr === null ? null : expandedAttr === 'true',
+                        selected: chosen && chosen.slice(0, 3),
+                        selected_count: chosen ? chosen.length : 0
                     }});
                     processShadow(el, depth, nowHidden);
                     return;
@@ -553,6 +565,17 @@ fn format_item(item: &SnapshotElement) -> Option<String> {
     if let Some(value) = &item.value {
         if !value.is_empty() && role.starts_with("input") {
             extra.push_str(&format!(" [value=\"{value}\"]"));
+        }
+    }
+    if let Some(selected) = item.selected.as_deref().filter(|chosen| !chosen.is_empty()) {
+        let shown = selected
+            .iter()
+            .map(|label| format!("\"{label}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        match item.selected_count.saturating_sub(selected.len()) {
+            0 => extra.push_str(&format!(" [selected={shown}]")),
+            more => extra.push_str(&format!(" [selected={shown} +{more} more]")),
         }
     }
     if let Some(true) = item.checked {
@@ -695,6 +718,8 @@ mod tests {
                     in_viewport: true,
                     opens: false,
                     expanded: None,
+                    selected: None,
+                    selected_count: 0,
                 },
                 SnapshotElement {
                     element_type: "element".to_string(),
@@ -709,6 +734,8 @@ mod tests {
                     in_viewport: true,
                     opens: false,
                     expanded: None,
+                    selected: None,
+                    selected_count: 0,
                 },
             ],
             source_truncated: false,
@@ -812,6 +839,8 @@ mod tests {
                 in_viewport: true,
                 opens: false,
                 expanded: None,
+                selected: None,
+                selected_count: 0,
             }],
             source_truncated: false,
             citations_omitted: 0,
@@ -901,6 +930,8 @@ mod tests {
                     in_viewport: false,
                     opens: false,
                     expanded: None,
+                    selected: None,
+                    selected_count: 0,
                 })
                 .collect(),
             source_truncated: false,
@@ -930,6 +961,8 @@ mod tests {
             in_viewport: true,
             opens,
             expanded,
+            selected: None,
+            selected_count: 0,
         };
         // A caller cannot tell a date field from a plain text box without this,
         // and guessing wrong costs a whole call.
@@ -958,6 +991,44 @@ mod tests {
         assert!(script.contains("el.getAttribute('aria-haspopup')"));
         assert!(script.contains("el.getAttribute('aria-controls') || el.getAttribute('aria-owns')"));
         assert!(script.contains("expanded: expandedAttr === null ? null : expandedAttr === 'true'"));
+    }
+
+    #[test]
+    fn a_select_line_says_which_option_is_chosen() {
+        let select = |selected: Option<Vec<&str>>, selected_count: usize| SnapshotElement {
+            element_type: "element".to_string(),
+            ref_id: Some("g1-e5".to_string()),
+            tag: Some("select".to_string()),
+            role: Some("select".to_string()),
+            label: Some("Pengiriman PilihReguler (Rp 10.000)Ekspres (Rp 25.000)".to_string()),
+            value: Some("reguler".to_string()),
+            checked: None,
+            disabled: Some(false),
+            text: None,
+            in_viewport: true,
+            opens: false,
+            expanded: None,
+            selected: selected.map(|labels| labels.into_iter().map(String::from).collect()),
+            selected_count,
+        };
+        // The browser's own option list never reaches a snapshot, so an agent
+        // that checked this line before paying could not see that the list had
+        // swapped its shipping choice.
+        assert_eq!(
+            format_item(&select(Some(vec!["Reguler (Rp 10.000)"]), 1)).unwrap(),
+            "[g1-e5] <select> Pengiriman PilihReguler (Rp 10.000)Ekspres (Rp 25.000) [selected=\"Reguler (Rp 10.000)\"]"
+        );
+        assert!(format_item(&select(Some(vec!["A", "B", "C"]), 5))
+            .unwrap()
+            .ends_with(" [selected=\"A\", \"B\", \"C\" +2 more]"));
+        for nothing in [None, Some(Vec::new())] {
+            assert!(!format_item(&select(nothing, 0))
+                .unwrap()
+                .contains("[selected"));
+        }
+        let script = build_snapshot_js(3);
+        assert!(script.contains("const chosen = tag === 'select'"));
+        assert!(script.contains("selected: chosen && chosen.slice(0, 3)"));
     }
 
     #[test]
@@ -1000,6 +1071,8 @@ mod tests {
                 in_viewport: index >= 2,
                 opens: false,
                 expanded: None,
+                selected: None,
+                selected_count: 0,
             })
             .collect::<Vec<_>>();
         assert!(prioritize_snapshot_elements(&mut elements, 3));

@@ -60,6 +60,9 @@ const BLOCKED_POINT_JS: &str = include_str!("blockedPoint.js");
 const SCRIPT_POLL_TIMEOUT: Duration = Duration::from_secs(2);
 const HIDDEN_TAB: &str = "the page went out of view in its browser while the action ran (another tab came in front of it, or its window was minimized), and the browser delivers no pointer input to a hidden page. Retry: Anbo brings the tab forward first.";
 const UNDRAWN_TAB: &str = "the browser stopped drawing this tab while the action ran (its window went out of view), and a pointer move waits for a drawn frame. Retry: Anbo brings the tab forward first.";
+/// A click on a select opens the browser's own option list, which no snapshot
+/// shows; arrow keys then highlight an option the list applies when it closes.
+const SELECT_PICKER_CLOSED_NOTE: &str = "The select's own option list was open; Anbo closed it without applying the option highlighted in it, then chose this one. Choose options with this tool rather than by clicking the select.";
 const MAX_TEXT_OUTPUT_CHARS: u64 = 16_000;
 /// The longest a wait may actually run.
 ///
@@ -3085,14 +3088,19 @@ async fn handle_action_attempt(
             )
             .await?;
             if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-                Ok(json!({
+                let mut result = json!({
                     "tabId": tab_id,
                     "ref": ref_id,
                     "value": parsed.get("value").cloned().unwrap_or(Value::Null),
                     "label": parsed.get("label").cloned().unwrap_or(Value::Null),
                     "valueVerified": true,
                     "ok": true
-                }))
+                });
+                if parsed.get("closedPicker").and_then(Value::as_bool) == Some(true) {
+                    result["closedPicker"] = Value::Bool(true);
+                    result["note"] = json!(SELECT_PICKER_CLOSED_NOTE);
+                }
+                Ok(result)
             } else {
                 let err = parsed
                     .get("error")
@@ -3102,6 +3110,12 @@ async fn handle_action_attempt(
                     return Err((
                         error_codes::INPUT_NOT_READY.to_string(),
                         "select or option changed before selection; no value was written".into(),
+                    ));
+                }
+                if err == "picker_open" {
+                    return Err((
+                        error_codes::INPUT_NOT_READY.to_string(),
+                        "the select's own option list is open and did not close; no value was written. Press Escape, then select again".into(),
                     ));
                 }
                 if err == "input_mismatch" {

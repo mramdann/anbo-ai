@@ -477,7 +477,7 @@ export function buildBrowserTools(ctx: ToolContext) {
 
     browser_select_option: tool({
       description:
-        "Select a <select> option by ref using its value attribute or visible label.",
+        "Select a <select> option by ref using its value attribute or visible label, rather than clicking it: the browser's own option list never shows in snapshots.",
       inputSchema: withLocator(
         z.object({
           value: z.string().describe("Option value or visible label."),

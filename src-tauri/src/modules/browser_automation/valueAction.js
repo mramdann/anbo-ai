@@ -53,6 +53,42 @@ function fillValue(el, refRegistry, refId, text, append, verify = true, captureR
   return { ok: true, dispatched: true, valueRetained, popup, before };
 }
 
+// Chromium on Windows applies the option a select's own list has highlighted
+// (by arrow keys) whenever that list closes, whatever closes it: Escape, a
+// click elsewhere, a blur. A value set while the list is open was replaced by
+// the page's next click, after select_option had reported it held. So the
+// list is closed first, out of the page's sight: listeners do not hear the
+// close or the focus round trip it takes, and the selection the page had is
+// put back. A customizable select (base-select) draws its list in the page and
+// applies nothing when it closes, so it is left as it is.
+// null: no list to close; true: closed; false: the list stayed open.
+function closeSelectPicker(el) {
+  let view;
+  try {
+    if (!el.matches(':open')) return null;
+    view = el.ownerDocument.defaultView;
+    if (view.getComputedStyle(el, '::picker(select)').appearance === 'base-select') return null;
+  } catch (_) {
+    return null;
+  }
+  const root = el.getRootNode();
+  const hosts = root === el.ownerDocument ? [view] : [view, root];
+  const hush = event => {
+    if (event.composedPath()[0] === el) event.stopImmediatePropagation();
+  };
+  const types = ['input', 'change', 'blur', 'focusout', 'focus', 'focusin'];
+  const selected = el.selectedIndex;
+  for (const host of hosts) for (const type of types) host.addEventListener(type, hush, true);
+  try {
+    el.blur();
+    el.selectedIndex = selected;
+    el.focus({ preventScroll: true });
+  } finally {
+    for (const host of hosts) for (const type of types) host.removeEventListener(type, hush, true);
+  }
+  return !el.matches(':open');
+}
+
 function selectValue(el, refRegistry, refId, want) {
   let error = valueActionGuard(el, refRegistry, refId, false);
   if (error) return { ok: false, error };
@@ -62,6 +98,8 @@ function selectValue(el, refRegistry, refId, want) {
   if (!matched) return { ok: false, error: 'option_not_found' };
   const available = () => !matched.disabled && !matched.matches(':disabled') && matchesWanted(matched) && Array.from(el.options).includes(matched);
   if (!available()) return { ok: false, error: 'input_not_ready' };
+  const closedPicker = closeSelectPicker(el);
+  if (closedPicker === false) return { ok: false, error: 'picker_open' };
   el.focus();
   error = valueActionGuard(el, refRegistry, refId, false);
   if (error || !available()) return { ok: false, error: error || 'input_not_ready' };
@@ -70,5 +108,5 @@ function selectValue(el, refRegistry, refId, want) {
   el.dispatchEvent(new Event('input', { bubbles: true }));
   el.dispatchEvent(new Event('change', { bubbles: true }));
   if (!el.isConnected || refRegistry.resolve(refId) !== el || el.value !== expected || !matched.selected) return { ok: false, error: 'input_mismatch' };
-  return { ok: true, value: expected, label: (matched.textContent || '').trim(), valueVerified: true };
+  return { ok: true, value: expected, label: (matched.textContent || '').trim(), valueVerified: true, closedPicker: closedPicker === true };
 }
