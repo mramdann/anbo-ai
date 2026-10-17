@@ -11,6 +11,7 @@ import {
   createExternalBrowserSync,
   openExternalBrowser,
 } from "@/modules/browser/external/sync";
+import { noteTabClosed } from "@/modules/tabs/lib/closedTabs";
 import type { BrowserTab, Tab, TabPatch } from "@/modules/tabs/lib/useTabs";
 import { invoke } from "@tauri-apps/api/core";
 import { describe, expect, it, vi } from "vitest";
@@ -63,21 +64,36 @@ function harness(initial: Tab[] = []) {
     if (command === "browser_external_open_tab") return connections[0].tabs[0];
     return undefined;
   });
+  // The tab whose panel shows.
+  let active = -1;
   const create = vi.fn(
     (
       url: string,
       _activate: boolean,
       spaceId: string,
       external: ExternalBrowser,
+      after?: number,
     ) => {
       const id = nextId++;
-      tabs = [
-        ...tabs,
-        { id, kind: "browser", url, title: url, spaceId, external },
-      ];
+      const tab: Tab = {
+        id,
+        kind: "browser",
+        url,
+        title: url,
+        spaceId,
+        external,
+      };
+      const at = tabs.findIndex((other) => other.id === after);
+      tabs =
+        at < 0
+          ? [...tabs, tab]
+          : [...tabs.slice(0, at + 1), tab, ...tabs.slice(at + 1)];
       return id;
     },
   );
+  const activate = vi.fn((id: number) => {
+    active = id;
+  });
   const update = (id: number, patch: TabPatch) => {
     tabs = tabs.map((tab) =>
       tab.id === id ? ({ ...tab, ...patch } as Tab) : tab,
@@ -93,6 +109,8 @@ function harness(initial: Tab[] = []) {
       create,
       update,
       warm,
+      shown: (id) => id === active,
+      activate,
     },
     calls as typeof invoke,
   );
@@ -101,6 +119,10 @@ function harness(initial: Tab[] = []) {
     calls,
     create,
     warm,
+    activate,
+    setShown: (id: number) => {
+      active = id;
+    },
     tabs: () => tabs as BrowserTab[],
     connections: (next: ExternalConnection[]) => {
       connections = next;
@@ -148,6 +170,7 @@ describe("external browser workspace synchronization", () => {
         connectionId: "session",
         selectionId: "lease",
         forget: false,
+        close: false,
       });
     },
   );
@@ -177,6 +200,7 @@ describe("external browser workspace synchronization", () => {
       connectionId: "session",
       selectionId: "lease",
       forget: true,
+      close: false,
     });
   });
 
@@ -397,6 +421,7 @@ describe("external browser workspace synchronization", () => {
       connectionId: "reconnected",
       selectionId: "new-lease",
       forget: true,
+      close: false,
     });
   });
 
@@ -408,6 +433,7 @@ describe("external browser workspace synchronization", () => {
       false,
       "work",
       expect.any(Object),
+      undefined,
     );
     expect(state.tabs()[0].external?.connected).toBe(true);
     expect(state.calls).toHaveBeenCalledWith("browser_external_bind", {
@@ -474,7 +500,101 @@ describe("external browser workspace synchronization", () => {
       connectionId: "session",
       selectionId: "lease",
       forget: true,
+      close: false,
     });
+  });
+
+  it("closes the browser's tab with an Anbo tab closed on purpose", async () => {
+    const state = harness();
+    await state.service.refresh();
+    state.service.reconcile();
+    noteTabClosed(100);
+    state.setTabs([]);
+    state.service.reconcile();
+    expect(state.calls).toHaveBeenCalledWith("browser_external_unbind", {
+      tabId: 100,
+      connectionId: "session",
+      selectionId: "lease",
+      forget: true,
+      close: true,
+    });
+  });
+
+  it("leaves the browser's tab open when its workspace takes the Anbo tab along", async () => {
+    const state = harness();
+    await state.service.refresh();
+    state.service.reconcile();
+    // A deleted workspace drops its space, then its tabs, closing none of
+    // them on purpose.
+    state.setSpaces([{ id: "other", root: "D:/other" }]);
+    state.setTabs([]);
+    state.service.reconcile();
+    expect(state.calls).toHaveBeenCalledWith(
+      "browser_external_unbind",
+      expect.objectContaining({ tabId: 100, close: false }),
+    );
+  });
+
+  const openedTab = (
+    id: number,
+    selectionId: string,
+    how: { background?: boolean; agent?: boolean } = {},
+  ): ExternalConnection["tabs"][number] => ({
+    id,
+    title: "Next",
+    url: `https://example.com/${selectionId}`,
+    selectionId,
+    loading: false,
+    openedFrom: {
+      selectionId: "lease",
+      background: false,
+      agent: false,
+      ...how,
+    },
+  });
+
+  it("opens a tab a shown page opened beside it, in front for the user's own click", async () => {
+    const state = harness();
+    await state.service.refresh();
+    state.service.reconcile();
+    state.setShown(100);
+    const tabs = [...connection().tabs, openedTab(12, "child")];
+    state.connections([{ ...connection(), tabs }]);
+    await state.service.refresh();
+    expect(state.create).toHaveBeenLastCalledWith(
+      "https://example.com/child",
+      false,
+      "work",
+      expect.any(Object),
+      100,
+    );
+    expect(state.activate).toHaveBeenCalledExactlyOnceWith(101);
+    // A Ctrl or middle click: after the one before it, and behind.
+    state.setShown(100);
+    tabs.push(openedTab(13, "second", { background: true }));
+    state.connections([{ ...connection(), tabs }]);
+    await state.service.refresh();
+    expect(state.tabs().map((tab) => tab.id)).toEqual([100, 101, 102]);
+    expect(state.activate).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps behind a tab an agent's input opened, or one from a page not shown", async () => {
+    const state = harness();
+    await state.service.refresh();
+    state.service.reconcile();
+    state.setShown(100);
+    const tabs = [
+      ...connection().tabs,
+      openedTab(12, "agent", { agent: true }),
+    ];
+    state.connections([{ ...connection(), tabs }]);
+    await state.service.refresh();
+    state.setShown(-1);
+    tabs.push(openedTab(13, "behind"));
+    state.connections([{ ...connection(), tabs }]);
+    await state.service.refresh();
+    expect(state.create).toHaveBeenCalledTimes(3);
+    expect(state.activate).not.toHaveBeenCalled();
   });
 
   it("disconnects cross-workspace moves instead of inheriting the wrong login", async () => {

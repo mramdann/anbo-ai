@@ -206,6 +206,10 @@ names (or ids) its error lists; Anbo never opens the page under another login.
 A Chrome or Edge action that times out keeps its tab, but may still finish in
 the page: read the page before repeating it. Clicks on Chrome and Edge tabs
 take turns, so with other agents at work one can wait for theirs first.
+`browser_close` on a Chrome or Edge tab closes it in that browser too. A tab a
+page there opens (a `target=_blank` link, `window.open`) becomes an Anbo tab of
+its own, in the background when your click opened it: find it in
+`browser_tabs`.
 
 When the active workspace has no tabs, `browser_open`, `terminal_open` and
 `agent_spawn` display their first tab automatically (`placement:

@@ -32,6 +32,7 @@ import {
 } from "@/modules/terminal/lib/panes";
 import { disposeSession } from "@/modules/terminal/lib/useTerminalSession";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { noteTabClosed } from "./closedTabs";
 import {
   type RuntimeIdAllocator,
   reserveRuntimeIds,
@@ -595,6 +596,15 @@ export function createTerminalTab(
     paneTree: { kind: "leaf", id: leafId, cwd },
     activeLeafId: leafId,
   };
+}
+
+/** The tabs with `tab` right after `after`, as a browser places a tab one of
+ *  its pages opened, or at the end when there is no such tab. */
+export function insertTabAfter(tabs: Tab[], tab: Tab, after?: number): Tab[] {
+  const at = after === undefined ? -1 : tabs.findIndex((t) => t.id === after);
+  return at < 0
+    ? [...tabs, tab]
+    : [...tabs.slice(0, at + 1), tab, ...tabs.slice(at + 1)];
 }
 
 export function planSpaceRemoval(
@@ -1191,19 +1201,22 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   }, []);
 
   const newBrowserTab = useCallback(
-    (url: string, activate = true, spaceId = activeSpaceIdRef.current, external?: ExternalBrowser) => {
+    (url: string, activate = true, spaceId = activeSpaceIdRef.current, external?: ExternalBrowser, after?: number) => {
       const id = nextIdRef.current++;
-      setTabs((t) => [
-        ...t,
-        {
-          id,
-          kind: "browser",
-          spaceId,
-          title: titleFromUrl(url),
-          url,
-          ...(external && { external, loading: false }),
-        },
-      ]);
+      setTabs((t) =>
+        insertTabAfter(
+          t,
+          {
+            id,
+            kind: "browser",
+            spaceId,
+            title: titleFromUrl(url),
+            url,
+            ...(external && { external, loading: false }),
+          },
+          after,
+        ),
+      );
       if (activate) setActiveId(id);
       return id;
     },
@@ -1384,6 +1397,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
 
   const closeTab = useCallback((id: number) => {
     let toDispose: number[] = [];
+    noteTabClosed(id);
     setTabs((curr) => {
       const fallback = nextActiveInSpace(curr, id);
       const target = curr.find((t) => t.id === id);

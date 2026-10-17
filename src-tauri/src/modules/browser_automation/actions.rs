@@ -1605,8 +1605,9 @@ async fn handle_action_attempt(
                 let target = get_ref_frame_target(tab_id, &ref_id);
                 let (dispatch, popup_url) =
                     click_ref_profiled(&webview, tab_id, &ref_id, click_count, timings).await?;
-                // Chrome and Edge open a new-tab link themselves; only the
-                // embedded browser leaves it to Anbo.
+                // Chrome and Edge open a new-tab link themselves, and from
+                // extension 0.5.7 the bridge brings that tab into Anbo; only
+                // the embedded browser leaves it to Anbo.
                 if let Some(url) = popup_url.filter(|_| webview.embedded().is_ok()) {
                     let _ = app.emit(
                         BROWSER_POPUP_REQUEST_EVENT,

@@ -47,6 +47,7 @@ function harness(reload, { renderers } = {}) {
     },
     windows: {
       getAll: vi.fn(async () => [{ id: 20, incognito: false, focused: true }]),
+      get: vi.fn(async (windowId) => ({ id: windowId, type: windowId === 21 ? "popup" : "normal", incognito: false })),
       update: vi.fn(async () => ({})),
     },
   };
@@ -118,6 +119,22 @@ describe("tabs selected directly from Anbo", () => {
     expect(state.api.tabs.remove).toHaveBeenCalledExactlyOnceWith(12);
     await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
     expect((await state.run("anbo.closeTab", 10)).result).toEqual({ closed: false });
+    expect(state.api.tabs.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes the browser's tab of any Anbo tab closed on purpose, and never one let go first", async () => {
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    expect((await state.run("anbo.closeTab", 10, { close: true })).result).toEqual({ closed: true });
+    expect(state.api.tabs.remove).toHaveBeenCalledExactlyOnceWith(10);
+    // A tab Anbo opened stays when its Anbo tab only moved on.
+    await state.run("anbo.openTab", 0, { url: "https://example.com/", activate: false });
+    expect((await state.run("anbo.closeTab", 12, { close: false })).result).toEqual({ closed: false });
+    expect(state.api.tabs.remove).toHaveBeenCalledTimes(1);
+    // The menu's return lets go first; the close after it finds nothing to close.
+    await state.run("anbo.selectTab", 11, { expectedUrl: "https://other.example/" });
+    await state.run("anbo.releaseTab", 11);
+    expect((await state.run("anbo.closeTab", 11, { close: true })).result).toEqual({ closed: false });
     expect(state.api.tabs.remove).toHaveBeenCalledTimes(1);
   });
 
@@ -572,5 +589,78 @@ describe("tabs selected directly from Anbo", () => {
       expect(state.api.windows.update).not.toHaveBeenCalled();
       expect(vi.getTimerCount()).toBe(0);
     } finally { vi.useRealTimers(); }
+  });
+});
+
+describe("tabs a page Anbo drives opens", () => {
+  // As the browser announces a tab a link opened: it names its opener, and its
+  // address is still pending.
+  function openedTab(state, id, extra = {}) {
+    const tab = { id, title: "Next", url: "https://example.com/next", windowId: 20, status: "complete", ...extra };
+    state.tabs.set(id, tab);
+    return { ...tab, url: "", pendingUrl: tab.url, openerTabId: 10, active: true, ...extra };
+  }
+
+  it("connects a tab a link in the docked page opened and tells Anbo from where and how", async () => {
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    const lease = state.selected.get(10).selectionId;
+    state.manager.created(openedTab(state, 13), true);
+    await vi.waitFor(() => expect(state.selected.has(13)).toBe(true));
+    expect(state.selected.get(13)).toMatchObject({ createdByAnbo: true, openedFrom: { selectionId: lease, background: false, agent: false } });
+    expect(state.publications.at(-1).map((tab) => tab.id)).toEqual([10, 13]);
+    // A Ctrl or middle click: the browser opens it behind.
+    state.manager.created(openedTab(state, 14, { active: false }), true);
+    await vi.waitFor(() => expect(state.selected.get(14)?.openedFrom.background).toBe(true));
+  });
+
+  it("tells an agent's click from the user's by the input Anbo sent just before", async () => {
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    await state.run("Runtime.evaluate", 10);
+    state.manager.created(openedTab(state, 13), true);
+    await vi.waitFor(() => expect(state.selected.has(13)).toBe(true));
+    expect(state.selected.get(13).openedFrom.agent).toBe(false);
+    // An agent's key on a tab Anbo does not show: no dock window involved.
+    await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter" });
+    state.manager.created(openedTab(state, 14));
+    await vi.waitFor(() => expect(state.selected.has(14)).toBe(true));
+    expect(state.selected.get(14).openedFrom.agent).toBe(true);
+  });
+
+  it("leaves to the browser a tab the user opens there from a tab Anbo holds but does not show", async () => {
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    state.manager.created(openedTab(state, 13));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect([...state.selected.keys()]).toEqual([10]);
+    expect(state.api.debugger.attach).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves to the browser what no driven page opened, what is no web page, and popup windows", async () => {
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    state.manager.created(openedTab(state, 13, { openerTabId: 11 }), true);
+    state.manager.created(openedTab(state, 14, { pendingUrl: "chrome://newtab/" }), true);
+    state.manager.created(openedTab(state, 15, { windowId: 21 }), true);
+    state.manager.created(openedTab(state, 16, { incognito: true }), true);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect([...state.selected.keys()]).toEqual([10]);
+    expect(state.api.debugger.attach).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not connect a tab whose page comes after the profile disconnected", async () => {
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    const announced = openedTab(state, 13);
+    state.tabs.set(13, { ...state.tabs.get(13), url: "about:blank" });
+    state.manager.created(announced, true);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await state.manager.dispose();
+    state.tabs.set(13, { ...state.tabs.get(13), url: "https://example.com/next" });
+    state.api.tabs.onUpdated.emit(13, { url: "https://example.com/next" }, state.tabs.get(13));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(state.selected.has(13)).toBe(false);
+    expect(state.api.debugger.attach).toHaveBeenCalledTimes(1);
   });
 });

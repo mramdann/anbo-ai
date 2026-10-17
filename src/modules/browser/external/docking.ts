@@ -300,6 +300,12 @@ export function handoverFrom(
 // into view stays there until that tab has taken the dock window over.
 const shownPanes = new Map<number, string>();
 const handovers = new Set<{ connectionId: string; done: Promise<void> }>();
+
+/** Whether this Chrome or Edge tab's panel shows in Anbo now, in the main
+ *  area or a side panel, so the user sees its page. */
+export function externalPaneShown(tabId: number): boolean {
+  return shownPanes.has(tabId);
+}
 const HANDOVER_START_MS = 400;
 const HANDOVER_LIMIT_MS = 1500;
 
@@ -643,7 +649,7 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     if (!dockId) return;
     let cancelled = false;
     const listeners = [
-      listen<{ tabId: number; dockId: string }>(
+      listen<{ tabId: number; dockId: string; takenOver?: boolean }>(
         "anbo:browser-dock-released",
         ({ payload }) => {
           if (
@@ -653,8 +659,12 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
           ) {
             apply({ dockId: null, live: false, reason: null });
             // The page left the dock in the browser; taking it straight back
-            // would fight whoever moved it.
-            setHold("moved");
+            // would fight whoever moved it. A tab of the same browser that
+            // took the dock window over is no such fight, and this panel may
+            // be in view again already: a click back on it the moment a new
+            // tab's page arrived used to leave it on "went back" for good.
+            // Beside a shown panel that holds the page, it still waits.
+            if (!payload.takenOver) setHold("moved");
           }
         },
       ),

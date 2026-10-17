@@ -60,6 +60,35 @@ pub struct Tab {
     pub loading: bool,
     #[serde(default)]
     pub created_by_anbo: bool,
+    /// For a tab the extension connected because a page Anbo drives opened
+    /// it (a link, a script): which tab, and how.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opened_from: Option<OpenedFrom>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenedFrom {
+    /// The opening tab's selection.
+    pub selection_id: String,
+    /// The browser opened it behind its opener (a Ctrl or middle click).
+    #[serde(default)]
+    pub background: bool,
+    /// Anbo had just sent its opener input: an agent's click or key opened it.
+    #[serde(default)]
+    pub agent: bool,
+}
+
+/// A selection's id, as the extension makes one: a UUID.
+fn lease_shaped(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
 }
 
 pub fn validate_url(address: &str) -> Result<url::Url, String> {
@@ -89,17 +118,14 @@ pub fn validate_tabs(tabs: &[Tab]) -> Result<(), String> {
             || !ids.insert(tab.id)
             || tab.title.len() > 1024
             || tab.url.len() > 8192
-            || tab.selection_id.as_ref().is_some_and(|id| {
-                id.len() != 36
-                    || !id.bytes().enumerate().all(|(index, byte)| {
-                        if matches!(index, 8 | 13 | 18 | 23) {
-                            byte == b'-'
-                        } else {
-                            byte.is_ascii_hexdigit()
-                        }
-                    })
-                    || !leases.insert(id)
-            })
+            || tab
+                .selection_id
+                .as_ref()
+                .is_some_and(|id| !lease_shaped(id) || !leases.insert(id))
+            || tab
+                .opened_from
+                .as_ref()
+                .is_some_and(|opened| !lease_shaped(&opened.selection_id))
         {
             return Err("invalid browser tab".into());
         }
@@ -198,6 +224,43 @@ mod tests {
         assert!(!valid_tab_id(0));
         assert!(!valid_tab_id(i64::MAX));
         assert!(valid_tab_id(10));
+    }
+
+    #[test]
+    fn a_tab_a_page_opened_names_its_opener_by_its_lease() {
+        let opened: Tab = serde_json::from_str(
+            r#"{"id":12,"title":"New","url":"https://example.com/","selectionId":"00112233-4455-6677-8899-aabbccddeeff","generation":1,"createdByAnbo":true,"openedFrom":{"selectionId":"aabbccdd-4455-6677-8899-001122334455","background":true,"agent":false}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            opened.opened_from,
+            Some(OpenedFrom {
+                selection_id: "aabbccdd-4455-6677-8899-001122334455".into(),
+                background: true,
+                agent: false,
+            })
+        );
+        assert!(validate_tabs(std::slice::from_ref(&opened)).is_ok());
+        let mut odd = opened.clone();
+        odd.opened_from = Some(OpenedFrom {
+            selection_id: "not-a-lease".into(),
+            ..Default::default()
+        });
+        assert!(validate_tabs(&[odd]).is_err());
+        assert!(serde_json::from_str::<Tab>(
+            r#"{"id":12,"title":"","url":"https://example.com/","openedFrom":{"selectionId":"aabbccdd-4455-6677-8899-001122334455","later":1}}"#
+        )
+        .is_err());
+        // A tab the user or an agent selected says nothing of an opener.
+        let plain = Tab {
+            id: 1,
+            title: String::new(),
+            url: "https://example.com/".into(),
+            ..Default::default()
+        };
+        assert!(!serde_json::to_string(&plain)
+            .unwrap()
+            .contains("openedFrom"));
     }
 
     #[test]

@@ -366,6 +366,7 @@ export default function App() {
         create: newBrowserTab,
         update: updateTab,
         warm: warmTab,
+        activate: setActiveId,
       });
       if (disposed) close();
       else {
@@ -374,7 +375,7 @@ export default function App() {
       }
     }).catch(() => {});
     return () => { disposed = true; stop?.(); externalSyncRef.current = undefined; };
-  }, [newBrowserTab, updateTab, warmTab]);
+  }, [newBrowserTab, updateTab, warmTab, setActiveId]);
   useEffect(() => { externalSyncRef.current?.(tabs); }, [tabs]);
 
   const activeIdRef = useRef(activeId);
@@ -1871,7 +1872,8 @@ export default function App() {
       }
       const target = tabsRef.current.find((tab) => tab.id === payload.tabId);
       if (target?.kind === "browser" && target.external?.connected) {
-        try { await invoke("browser_external_unbind", { tabId: payload.tabId, connectionId: target.external.connectionId, selectionId: target.external.selectionId }); }
+        // Closed on purpose: the page closes in its browser too.
+        try { await invoke("browser_external_unbind", { tabId: payload.tabId, connectionId: target.external.connectionId, selectionId: target.external.selectionId, close: true }); }
         catch (cause) { reply({ error: String(cause) }); return; }
       }
       closeTab(payload.tabId);

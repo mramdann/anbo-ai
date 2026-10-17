@@ -34,6 +34,15 @@ function fixture() {
   return { api, tabs, windows, manager, changed, run, revoke: () => { revoked = true; } };
 }
 
+// Holds the browser's next tab move until finish().
+function deferredMove(state) {
+  let finish;
+  const gate = new Promise((resolve) => { finish = resolve; });
+  const move = state.api.tabs.move.getMockImplementation();
+  state.api.tabs.move.mockImplementationOnce(async (...args) => { await gate; return move(...args); });
+  return { finish };
+}
+
 describe("dedicated native dock window", () => {
   it("does not move the selected tab until the native challenge has been verified", async () => {
     const state = fixture();
@@ -125,6 +134,59 @@ describe("dedicated native dock window", () => {
     expect(state.api.tabs.update).toHaveBeenCalledWith(50, { active: true });
     expect(state.changed).not.toHaveBeenCalled();
     expect(state.tabs.get(10).windowId).toBe(40);
+  });
+  it("says when a tab the docked page opened has left the dock window", async () => {
+    const state = fixture();
+    await state.run("Prepare");
+    await state.run("Commit");
+    const move = deferredMove(state);
+    state.tabs.set(50, { id: 50, windowId: 40, url: "https://user.example/" });
+    expect(state.manager.topology({ kind: "created", tabId: 50, windowId: 40, active: true })).toBe(true);
+    // One the user opened in their own window did not come from the dock.
+    expect(state.manager.topology({ kind: "created", tabId: 52, windowId: 20, active: true })).toBe(false);
+    let left = false;
+    const departure = state.manager.departure(50).then(() => { left = true; });
+    await Promise.resolve();
+    expect(left).toBe(false);
+    move.finish();
+    await departure;
+    expect(state.tabs.get(50).windowId).toBe(20);
+    // A tab that never was in the dock window has nothing to wait for.
+    await state.manager.departure(51);
+  });
+  it("lets a tab the page opens the moment it moves in leave the dock window, and still docks", async () => {
+    const state = fixture();
+    await state.run("Prepare");
+    const update = state.api.tabs.update.getMockImplementation();
+    let fromDock;
+    state.api.tabs.update.mockImplementationOnce(async (id, options) => {
+      const result = await update(id, options);
+      // Just shown in the dock window, the page opens a tab there at once.
+      state.tabs.set(50, { id: 50, windowId: 40, url: "https://user.example/", active: true });
+      fromDock = state.manager.topology({ kind: "created", tabId: 50, windowId: 40, active: true });
+      return result;
+    });
+    await expect(state.run("Commit")).resolves.toEqual({ windowId: 40 });
+    expect(fromDock).toBe(true);
+    expect(state.tabs.get(50).windowId).toBe(20);
+    expect(state.tabs.get(10).windowId).toBe(40);
+    expect(state.changed).not.toHaveBeenCalled();
+  });
+  it("never brings the page forward in the user's window while the dock is not done", async () => {
+    const state = fixture();
+    await state.run("Prepare");
+    const bootstrap = [...state.tabs.values()].find((tab) => tab.windowId === 40);
+    // The dock window's own first page is no stray.
+    expect(state.manager.topology({ kind: "created", tabId: bootstrap.id, windowId: 40, active: true })).toBe(false);
+    state.tabs.set(50, { id: 50, windowId: 40, url: "https://user.example/" });
+    expect(state.manager.topology({ kind: "created", tabId: 50, windowId: 40, active: false })).toBe(true);
+    await state.manager.departure(50);
+    expect(state.tabs.get(50).windowId).toBe(20);
+    expect(state.api.tabs.update).not.toHaveBeenCalledWith(10, { active: true });
+    // Showing another tab in the dock window before the commit is the commit's own business.
+    state.manager.topology({ kind: "activated", tabId: bootstrap.id, windowId: 40 });
+    expect(state.changed).not.toHaveBeenCalled();
+    await expect(state.run("Commit")).resolves.toEqual({ windowId: 40 });
   });
   it("gives an opened tab its own window when the user's window is gone", async () => {
     const state = fixture();

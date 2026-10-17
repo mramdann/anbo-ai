@@ -400,6 +400,15 @@ pub(super) fn cleanup_retired(app: &AppHandle) {
     }
 }
 
+/// What the extension does with the browser's tab when Anbo lets go of it:
+/// closes it when the Anbo tab was closed on purpose (by the user or an
+/// agent), or leaves it open when the Anbo tab only moved on (to another
+/// workspace, or with its workspace). Without the word, as from an older UI,
+/// the extension closes only a tab Anbo opened.
+fn close_params(close: Option<bool>) -> Value {
+    close.map_or_else(|| json!({}), |close| json!({ "close": close }))
+}
+
 #[tauri::command]
 pub async fn browser_external_unbind(
     webview: Webview,
@@ -407,6 +416,7 @@ pub async fn browser_external_unbind(
     connection_id: Option<String>,
     selection_id: Option<String>,
     forget: Option<bool>,
+    close: Option<bool>,
 ) -> Result<(), String> {
     ensure_main(&webview)?;
     let lock = registry::get_tab_lock(tab_id);
@@ -432,7 +442,7 @@ pub async fn browser_external_unbind(
             &target.connection_id,
             target.browser_tab_id,
             "anbo.closeTab",
-            json!({}),
+            close_params(close),
         )?;
         (
             RequestGuard {
@@ -565,6 +575,15 @@ pub(super) fn event(
 mod tests {
     use super::*;
     const LEASE: &str = "00112233-4455-6677-8899-aabbccddeeff";
+
+    #[test]
+    fn the_close_word_says_whether_the_browser_tab_closes_too() {
+        assert_eq!(close_params(Some(true)), json!({ "close": true }));
+        assert_eq!(close_params(Some(false)), json!({ "close": false }));
+        // An older UI says nothing; the extension then closes only a tab Anbo
+        // opened.
+        assert_eq!(close_params(None), json!({}));
+    }
 
     #[test]
     fn console_capture_is_bounded_by_rows_and_bytes() {

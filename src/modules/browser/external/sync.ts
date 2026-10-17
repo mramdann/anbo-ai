@@ -1,3 +1,4 @@
+import { externalPaneShown } from "@/modules/browser/external/docking";
 import {
   type ExternalBrowser,
   type ExternalConnection,
@@ -13,6 +14,7 @@ import {
   setPointerTurn,
 } from "@/modules/browser/external/pointerTurn";
 import { useExternalBrowsers } from "@/modules/browser/external/store";
+import { takeTabClosed } from "@/modules/tabs/lib/closedTabs";
 import type { BrowserTab, Tab, TabPatch } from "@/modules/tabs/lib/useTabs";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -27,9 +29,14 @@ type Host = {
     activate: boolean,
     spaceId: string,
     external: ExternalBrowser,
+    /** The tab to place it after. */
+    after?: number,
   ) => number;
   update: (id: number, patch: TabPatch) => void;
   warm: (id: number) => void;
+  /** Whether a tab's panel shows now, and bringing a tab to the front. */
+  shown?: (id: number) => boolean;
+  activate?: (id: number) => void;
   /** Receives every connection list the service reads. */
   publish?: (connections: ExternalConnection[]) => void;
 };
@@ -100,6 +107,9 @@ export function createExternalBrowserSync(
   // change event can make the new tab before the open learns its selection, so
   // the next tab made for that profile is taken as the page the open reads.
   const reading = new Set<string>();
+  // The newest tab each Anbo tab's page opened, so the next one goes after it
+  // the way a browser lines them up.
+  const opened = new Map<number, number>();
   // Opens and selections of one profile run one at a time, so a waiting
   // selection is always the one being opened. Other profiles go on meanwhile.
   const queues = new Map<string, Promise<unknown>>();
@@ -162,6 +172,9 @@ export function createExternalBrowserSync(
         connectionId: binding.connectionId,
         selectionId: binding.selectionId,
         forget: !tab,
+        // Closed on purpose, the browser's tab closes too; moved to another
+        // workspace, or gone with its workspace, it stays open there.
+        close: !tab && takeTabClosed(binding.id),
       }).catch(() => {});
     }
     for (const [id, external] of knownTabs) {
@@ -171,8 +184,11 @@ export function createExternalBrowserSync(
           connectionId: external.connectionId,
           selectionId: external.selectionId,
           forget: true,
+          close: takeTabClosed(id),
         }).catch(() => {});
     }
+    for (const openerId of opened.keys())
+      if (!nextTabs.has(openerId)) opened.delete(openerId);
     knownTabs = nextTabs;
   };
 
@@ -260,13 +276,32 @@ export function createExternalBrowserSync(
                 tab.external?.connectionId === connection.connectionId &&
                 tab.external.selectionId === remote.selectionId,
             ) ?? (candidates.length === 1 ? candidates[0] : undefined);
+          // A page shown in Anbo opened this tab: it goes beside that page's
+          // tab, after the ones that page opened before.
+          const opener = remote.openedFrom
+            ? bindings.get(
+                selectionKey(
+                  connection.connectionId,
+                  remote.openedFrom.selectionId,
+                ),
+              )
+            : undefined;
+          const beside = opener?.spaceId === space.id ? opener : undefined;
+          const last = beside && opened.get(beside.id);
+          const after =
+            last !== undefined && host.tabs().some((tab) => tab.id === last)
+              ? last
+              : beside?.id;
           const id =
             claimedTab?.id ??
             saved?.id ??
-            host.create(remote.url, false, space.id, external);
+            host.create(remote.url, false, space.id, external, after);
+          if (beside) opened.set(beside.id, id);
           // The agent's open reads this page before it answers, and a dock
-          // move would stall that read, so the dock waits for it.
-          if (reading.delete(connection.connectionId)) holdDockForOpenRead(id);
+          // move would stall that read, so the dock waits for it. A tab a
+          // page opened is never that page.
+          if (!remote.openedFrom && reading.delete(connection.connectionId))
+            holdDockForOpenRead(id);
           binding = {
             id,
             spaceId: space.id,
@@ -292,6 +327,17 @@ export function createExternalBrowserSync(
             binding.ready = true;
             external.connected = true;
             host.warm(id);
+            // In front, as the browser opened it, when the user's own click
+            // on the page they see opened it. One an agent's input or a Ctrl
+            // or middle click opened stays behind.
+            if (
+              beside &&
+              remote.openedFrom &&
+              !remote.openedFrom.background &&
+              !remote.openedFrom.agent &&
+              host.shown?.(beside.id)
+            )
+              host.activate?.(id);
           } catch (cause) {
             if (stopped) return;
             reconcile();
@@ -540,6 +586,7 @@ let current: ReturnType<typeof createExternalBrowserSync> | undefined;
 
 export async function startExternalBrowserSync(host: Host) {
   const service = createExternalBrowserSync({
+    shown: externalPaneShown,
     ...host,
     publish: (connections) =>
       useExternalBrowsers.getState().setConnections(connections),

@@ -5,9 +5,15 @@ import { createDockManager } from "./dock.js";
 // The version this code is, kept equal to manifest.json. After an update the
 // browser reads the new manifest but can keep running the old scripts until the
 // extension reloads, so the manifest alone would hide that a reload is due.
-export const EXTENSION_VERSION = "0.5.6";
+export const EXTENSION_VERSION = "0.5.7";
 
 const MAX_TABS = 128;
+// A new tab opened this soon after Anbo sent input to the tab it opened from
+// came from an agent's click or key, not the user's.
+const AGENT_INPUT_MS = 2_000;
+// How long a tab a page opened may take to reach a web page before it is left
+// to the browser.
+const ADOPT_WAIT_MS = 15_000;
 
 export function createTabManager(api, attached, publishTabs, dockChanged, reload = () => {}, keepRenderers = () => {}) {
   const dock = createDockManager(api, dockChanged);
@@ -26,6 +32,9 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
   // these renderers at normal priority meanwhile.
   const renderers = new Map();
   const connecting = new Map();
+  // When Anbo last sent each tab input (Input.* commands, an agent's clicks
+  // and keys).
+  const inputAt = new Map();
   let keptRenderers = "";
   let disposed = false;
 
@@ -139,7 +148,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     return token;
   }
 
-  async function select(tabId, expectedUrl, token, check, createdByAnbo = false) {
+  async function select(tabId, expectedUrl, token, check, createdByAnbo = false, openedFrom = undefined) {
     const verify = () => {
       check();
       if (disposed || !token.valid) throw new Error("Tab selection revoked");
@@ -169,6 +178,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
       info.selectionId = crypto.randomUUID();
       info.generation = 1;
       info.createdByAnbo = createdByAnbo;
+      if (openedFrom) info.openedFrom = openedFrom;
       const transport = createFrameTransport(api, tabId, () => {
         const current = attached.get(tabId);
         if (current) { current.generation += 1; publish(); }
@@ -219,7 +229,13 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
         if (pending.get(message.tabId) === token) pending.delete(message.tabId);
       };
     } else if (message.method === "anbo.releaseTab" || message.method === "anbo.closeTab") {
-      const close = message.method === "anbo.closeTab" && attached.get(message.tabId)?.createdByAnbo === true;
+      const selection = attached.get(message.tabId);
+      // Anbo says whether its tab was closed on purpose, by the user or an
+      // agent, which closes this one too, or only let go (moved to another
+      // workspace, or its workspace went). Without that word, from an older
+      // Anbo, only a tab Anbo opened closes. A tab already let go stays open.
+      const wanted = typeof message.params.close === "boolean" ? message.params.close : selection?.createdByAnbo === true;
+      const close = message.method === "anbo.closeTab" && selection !== undefined && wanted;
       invalidate(message.tabId);
       if (attached.delete(message.tabId)) publish();
       const cleanup = track((async () => {
@@ -301,12 +317,57 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     await api.tabs.remove(tabId);
   }
 
+  // A link, a script or a shortcut in a page Anbo drives opened a tab, from
+  // where Anbo shows that page (its dock window) or after input an agent sent
+  // it. It opens in Anbo too, connected the way a tab Anbo opens is, so
+  // closing it in Anbo closes it here; Anbo learns which tab it came from,
+  // whether the browser opened it in front, and whether an agent opened it. A
+  // click the user makes in the browser itself, on a tab Anbo holds but does
+  // not show, opens a tab of the browser's. So do a tab that does not start
+  // out for a web page (a new tab page, an empty window a script fills) and a
+  // popup window (a sign-in, which talks to its opener).
+  function created(tab, fromDock = false) {
+    const opener = attached.get(tab.openerTabId);
+    const first = tab.pendingUrl || tab.url;
+    if (disposed || !opener || tab.incognito || !Number.isSafeInteger(tab.id) || attached.has(tab.id) || pending.has(tab.id)) return;
+    if ((first && !/^https?:/i.test(first)) || attached.size + pending.size >= MAX_TABS) return;
+    const agent = Date.now() - (inputAt.get(opener.id) ?? Number.NEGATIVE_INFINITY) < AGENT_INPUT_MS;
+    if (!fromDock && !agent) return;
+    const openedFrom = { selectionId: opener.selectionId, background: tab.active !== true, agent };
+    void track(adopt(tab, openedFrom)).catch(() => {});
+  }
+
+  async function adopt(tab, openedFrom) {
+    const window = await api.windows.get(tab.windowId);
+    if (window.type !== "normal" || window.incognito) return;
+    const check = () => { if (disposed) throw new Error("Browser connection revoked"); };
+    let info = await waitForPage(tab.id, Date.now() + ADOPT_WAIT_MS, check);
+    // One opened in the dock window joins the user's other tabs first, so the
+    // dock only ever holds the page Anbo shows.
+    await dock.departure(info.id);
+    // A page that moves on by itself right after its first one (a script
+    // redirect) gets one more try at its new address.
+    for (let attempt = 0; ; attempt += 1) {
+      check();
+      if (attached.has(info.id) || pending.has(info.id) || attached.size + pending.size >= MAX_TABS) return;
+      try {
+        await select(info.id, info.url, reserve(info.id), check, true, openedFrom);
+        return;
+      } catch (error) {
+        if (attempt > 0) throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      info = tabInfo(await api.tabs.get(info.id));
+    }
+  }
+
   function removed(tabId) {
     void dock.release(tabId).catch(() => {});
     transports.get(tabId)?.dispose();
     transports.delete(tabId);
     invalidate(tabId);
     owned.delete(tabId);
+    inputAt.delete(tabId);
     if (attached.delete(tabId)) publish();
   }
 
@@ -330,6 +391,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     transports.get(tabId)?.dispose();
     transports.delete(tabId);
     owned.delete(tabId);
+    inputAt.delete(tabId);
     const token = attaching.get(tabId);
     if (token) token.valid = false;
     if (attached.delete(tabId)) publish();
@@ -360,6 +422,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     pending.clear();
     renderers.clear();
     connecting.clear();
+    inputAt.clear();
     const ids = [...owned];
     attached.clear();
     await Promise.allSettled([...running, ...ids.map((tabId) => detach(tabId))]);
@@ -373,8 +436,9 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     if (["anbo.dockPrepare", "anbo.dockCommit", "anbo.dockRelease", "anbo.dockSwap"].includes(message.method)) return dock.command(message, check);
     const transport = transports.get(message.tabId);
     if (!transport) throw new Error("Browser tab transport unavailable");
+    if (message.method.startsWith("Input.")) inputAt.set(message.tabId, Date.now());
     return transport.command(message.method, message.params);
   }
 
-  return { prepare, removed, detached, updated, committed, expire, dispose, publish, event, command, dockTopology: dock.topology };
+  return { prepare, removed, detached, updated, committed, created, expire, dispose, publish, event, command, dockTopology: dock.topology };
 }

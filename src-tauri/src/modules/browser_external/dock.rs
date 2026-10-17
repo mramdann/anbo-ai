@@ -2087,10 +2087,14 @@ mod native {
             "[browser_dock] page swapped into the dock window in {} ms",
             started.elapsed().as_millis()
         );
+        // Another Anbo tab took the window over, not the browser: the tab
+        // that had it takes it back by being shown again, even when that came
+        // first, as it does for a click back on it the moment the new page is
+        // in place.
         let _ = previous.app.emit_to(
             "main",
             "anbo:browser-dock-released",
-            json!({"tabId":previous.target.tab_id,"dockId":from}),
+            json!({"tabId":previous.target.tab_id,"dockId":from,"takenOver":true}),
         );
         if let Some(handle) = registry::find_target(&previous.app, previous.target.tab_id) {
             activity::restore(&handle);

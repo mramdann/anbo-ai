@@ -21,6 +21,14 @@ export type ExternalConnection = {
     url: string;
     selectionId: string;
     loading: boolean;
+    /** A page Anbo drives opened this tab (a link, a script). */
+    openedFrom?: {
+      selectionId: string;
+      /** The browser opened it behind its opener: a Ctrl or middle click. */
+      background: boolean;
+      /** An agent's click or key opened it. */
+      agent: boolean;
+    };
   }[];
 };
 

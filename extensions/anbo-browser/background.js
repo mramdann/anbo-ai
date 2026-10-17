@@ -113,7 +113,12 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 chrome.webNavigation?.onCommitted.addListener((details) => session?.tabs.committed(details));
 chrome.tabs.onRemoved.addListener((tabId) => session?.tabs.removed(tabId));
 chrome.tabs.onUpdated.addListener((tabId, change, tab) => session?.tabs.updated(tabId, change, tab));
-chrome.tabs.onCreated.addListener((tab) => session?.tabs.dockTopology({ kind: "created", tabId: tab.id, windowId: tab.windowId, active: tab.active }));
+chrome.tabs.onCreated.addListener((tab) => {
+  const current = session;
+  const fromDock = current?.tabs.dockTopology({ kind: "created", tabId: tab.id, windowId: tab.windowId, active: tab.active }) === true;
+  // A tab the page Anbo shows (or an agent's input) opened opens in Anbo too.
+  if (current?.approved) current.tabs.created(tab, fromDock);
+});
 chrome.tabs.onDetached.addListener((tabId, info) => session?.tabs.dockTopology({ kind: "detached", tabId, windowId: info.oldWindowId }));
 chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
   const current = session;

@@ -8,6 +8,8 @@ function openingBounds(bounds) {
 
 export function createDockManager(api, changed = () => {}) {
   const entries = new Map();
+  // Tabs a link opened in the dock window, on their way to the user's window.
+  const departures = new Map();
   let closed = false;
   let flight = Promise.resolve();
   const enqueue = (run) => { const task = flight.catch(() => {}).then(run); flight = task; return task; };
@@ -135,7 +137,12 @@ export function createDockManager(api, changed = () => {}) {
       check();
       await api.tabs.update(tabId, { active: true });
       await removeBootstrap(entry);
-      const current = await api.tabs.query({ windowId: entry.windowId });
+      // A tab the page opened the moment it came in is on its way out.
+      let current = await api.tabs.query({ windowId: entry.windowId });
+      for (let wait = 0; wait < 3 && current.some((tab) => entry.moving.has(tab.id)); wait++) {
+        await Promise.all([...entry.moving].map((id) => departures.get(id)));
+        current = await api.tabs.query({ windowId: entry.windowId });
+      }
       if (current.length !== 1 || current[0].id !== tabId || !current[0].active) throw new Error("Dock window tabs changed before attachment");
       check();
       entry.committed = true;
@@ -151,27 +158,47 @@ export function createDockManager(api, changed = () => {}) {
       if (original && !original.incognito) await api.tabs.move(tabId, { windowId: entry.originalWindow, index: -1 });
       else await api.windows.create({ tabId, focused: false });
       if (active) await api.tabs.update(tabId, { active: true });
-      if (entries.get(selected) === entry) await api.tabs.update(selected, { active: true });
+      // The page comes to the front only where Anbo shows it, never in the
+      // user's own window, where it still is before the dock is done.
+      const page = entries.get(selected) === entry ? await api.tabs.get(selected).catch(() => null) : null;
+      if (page?.windowId === entry.windowId) await api.tabs.update(selected, { active: true });
     } finally {
       entry.moving.delete(tabId);
     }
   }
 
+  // Whether a created tab opened in the dock window, from the page Anbo shows.
+  // That holds while the page is still moving in too: a tab it opened then
+  // stayed in the dock window, and the dock gave up (round 52).
   function topology({ kind, tabId, windowId, active }) {
+    let docked = false;
     for (const [selected, entry] of entries) {
-      if (!entry.committed || entry.windowId !== windowId || entry.moving.has(tabId)) continue;
-      if (kind === "created" && tabId !== selected) {
+      if (entry.windowId !== windowId || entry.moving.has(tabId)) continue;
+      if (kind === "created" && tabId !== selected && tabId !== entry.bootstrapId) {
         entry.moving.add(tabId);
-        void moveOut(selected, entry, tabId, active).catch(() => {});
+        const departure = moveOut(selected, entry, tabId, active).catch(() => {});
+        departures.set(tabId, departure);
+        void departure.finally(() => { if (departures.get(tabId) === departure) departures.delete(tabId); });
+        docked = true;
         continue;
       }
+      if (!entry.committed) continue;
       if ((kind === "detached" && tabId === selected) || (kind === "activated" && tabId !== selected)) {
         entry.committed = false;
         changed(selected, entry.selectionId, entry.token);
         void enqueue(() => releaseNow(selected, entry.token)).catch(() => {});
       }
     }
+    return docked;
   }
 
-  return { topology, ownsWindow: (windowId) => [...entries.values()].some((entry) => entry.windowId === windowId), command: (message, check) => enqueue(() => command(message, check)), release: (tabId, token) => enqueue(() => releaseNow(tabId, token)), dispose: async () => { closed = true; await flight.catch(() => {}); await Promise.allSettled([...entries.keys()].map((tabId) => releaseNow(tabId))); } };
+  return {
+    topology,
+    ownsWindow: (windowId) => [...entries.values()].some((entry) => entry.windowId === windowId),
+    // Resolves once a tab opened in the dock window has left it.
+    departure: (tabId) => departures.get(tabId) ?? Promise.resolve(),
+    command: (message, check) => enqueue(() => command(message, check)),
+    release: (tabId, token) => enqueue(() => releaseNow(tabId, token)),
+    dispose: async () => { closed = true; await flight.catch(() => {}); await Promise.allSettled([...entries.keys()].map((tabId) => releaseNow(tabId))); },
+  };
 }
