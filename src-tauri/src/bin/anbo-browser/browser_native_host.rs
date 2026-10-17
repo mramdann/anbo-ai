@@ -15,6 +15,10 @@ mod browser_process;
 mod extension_priority;
 
 #[cfg(windows)]
+#[path = "../../modules/browser_external/host_log.rs"]
+mod host_log;
+
+#[cfg(windows)]
 #[derive(Default)]
 struct DockGuards(Vec<dock_window::Lease>);
 
@@ -100,6 +104,8 @@ fn valid_origin(origin: &str) -> bool {
 
 pub async fn run(origin: &str) {
     if let Err(error) = connect(origin).await {
+        #[cfg(windows)]
+        host_log::line(&format!("ended: {error}"));
         let bytes =
             serde_json::to_vec(&json!({"type":"error", "message":error})).unwrap_or_default();
         let _ = wire::write_frame(&mut tokio::io::stdout(), &bytes, wire::TO_BROWSER_LIMIT).await;

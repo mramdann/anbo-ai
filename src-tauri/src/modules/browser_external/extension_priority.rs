@@ -17,11 +17,16 @@
 //! 2026 that made the host of a second or third connected profile find two
 //! foreground processes and keep none: its opens took 5 s idle and timed out
 //! on a busy machine, while the first profile's took under 1 s.
+//!
+//! Once, on Oct 17 2026, one of five profiles' processes still went unkept,
+//! and nothing told why. So the host now logs (host_log.rs) what each look
+//! for the process saw while it kept none, which one it kept and why, and how
+//! long the connection lasted.
 
-use super::browser_process;
+use super::{browser_process, host_log};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, SetLastError, ERROR_ALREADY_EXISTS, FILETIME, HANDLE,
 };
@@ -65,8 +70,22 @@ struct Candidate {
 
 impl Candidate {
     fn started_ms(&self) -> u64 {
-        self.started.saturating_sub(UNIX_EPOCH_FILETIME) / 10_000
+        filetime_ms(self.started)
     }
+}
+
+/// A FILETIME in ms since 1970.
+fn filetime_ms(filetime: u64) -> u64 {
+    filetime.saturating_sub(UNIX_EPOCH_FILETIME) / 10_000
+}
+
+/// Now, in ms since 1970.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 enum Order {
@@ -80,42 +99,67 @@ enum Order {
 
 /// Stops keeping the processes scheduled when dropped.
 pub struct Keeper {
-    orders: mpsc::Sender<Order>,
+    orders: Option<mpsc::Sender<Order>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Keeper {
+    fn drop(&mut self) {
+        // The keeper stops as soon as its orders do, and logs how the
+        // connection went; the host exits right after, which would cut that.
+        self.orders.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 impl Keeper {
+    fn send(&self, order: Order) {
+        if let Some(orders) = &self.orders {
+            let _ = orders.send(order);
+        }
+    }
+
     /// The renderers of the tabs Anbo drives, by the id the browser gave each.
     /// The list replaces the one before.
     pub fn renderers(&self, ids: Vec<u32>) {
-        let _ = self.orders.send(Order::Renderers(ids));
+        self.send(Order::Renderers(ids));
     }
 
     /// When the extension's worker started, in ms since 1970, which tells its
     /// process apart from the profile's others when no popup is open, as when
     /// a reload connects again on its own.
     pub fn worker_started(&self, started: u64) {
-        let _ = self.orders.send(Order::Worker(started));
+        self.send(Order::Worker(started));
     }
 
     /// The profile that connected, whose last host may have noted the process
     /// it kept: an extension that reloads mostly does so in the same process.
     pub fn profile(&self, id: &str) {
-        let _ = self.orders.send(Order::Profile(id.to_owned()));
+        self.send(Order::Profile(id.to_owned()));
     }
 }
 
 pub fn keep() -> Keeper {
     let (orders, received) = mpsc::channel();
-    let _ = std::thread::Builder::new()
+    let thread = std::thread::Builder::new()
         .name("extension-priority".into())
-        .spawn(move || run(&received));
-    Keeper { orders }
+        .spawn(move || run(&received))
+        .ok();
+    Keeper {
+        orders: Some(orders),
+        thread,
+    }
 }
 
 fn run(orders: &mpsc::Receiver<Order>) {
+    let began = Instant::now();
     let Some(browser) = browser_process::browser_ancestor(std::process::id()) else {
+        host_log::line("found no Chrome or Edge among this host's parents, so it keeps no process");
         return;
     };
+    host_log::line(&format!("started by browser process {browser}"));
     // The popup that asked for this connection is still open for a moment,
     // which is what tells this extension's process apart from the others.
     let mut search_until = Instant::now() + INTERVAL * SEARCH_ATTEMPTS;
@@ -124,55 +168,265 @@ fn run(orders: &mpsc::Receiver<Order>) {
     let mut noted = None;
     let mut extension: Option<(Process, Claim)> = None;
     let mut renderers = Renderers::default();
+    let mut log = Log::default();
     loop {
-        if extension.is_none() && Instant::now() < search_until {
-            extension = find_extension(browser, worker, noted);
-            if let (Some((_, claim)), Some(id)) = (&extension, &profile) {
-                note(id, claim.process);
+        if extension.is_none() {
+            if Instant::now() < search_until {
+                let (look, found) = find_extension(browser, worker, noted);
+                match found {
+                    Ok((process, claim, why)) => {
+                        host_log::line(&look.kept(claim.process, why, now_ms()));
+                        if let Some(id) = &profile {
+                            note(id, claim.process);
+                        }
+                        extension = Some((process, claim));
+                    }
+                    Err(miss) => log.missed(&look, &miss, worker, noted),
+                }
+            } else {
+                log.stopped();
             }
         }
-        if let Some((process, _)) = &extension {
-            process.keep_normal();
+        if let Some((process, claim)) = &extension {
+            log.kept(claim.process.0, process.keep_normal());
         }
         renderers.keep(browser);
         match orders.recv_timeout(INTERVAL) {
             Ok(Order::Renderers(ids)) => renderers.want(ids),
             Ok(Order::Worker(started)) => {
+                host_log::line(&format!(
+                    "the extension's worker started {} ago",
+                    ago(now_ms().saturating_sub(started))
+                ));
                 worker = Some(started);
                 search_until = search_until.max(Instant::now() + INTERVAL * SEARCH_ATTEMPTS);
+                log.searching();
             }
             Ok(Order::Profile(id)) => {
                 noted = recall(&id);
+                host_log::line(&profile_line(&id, noted, now_ms()));
                 if let Some((_, claim)) = &extension {
                     note(&id, claim.process);
                 }
                 profile = Some(id);
                 search_until = search_until.max(Instant::now() + INTERVAL * SEARCH_ATTEMPTS);
+                log.searching();
             }
             Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => return,
+            Err(RecvTimeoutError::Disconnected) => {
+                let kept = extension.as_ref().map(|(_, claim)| claim.process.0);
+                host_log::line(&log.ended(began.elapsed(), kept));
+                return;
+            }
         }
     }
 }
 
-/// This extension's process, opened and marked as kept by this host.
+/// This extension's process, opened and marked as kept by this host, with
+/// why it is this one; and what the look found.
 fn find_extension(
     browser: u32,
     worker: Option<u64>,
     noted: Option<(u32, u64)>,
-) -> Option<(Process, Claim)> {
-    let candidates: Vec<Candidate> = candidates(browser)
-        .into_iter()
-        .filter(|candidate| !Claim::held(candidate))
-        .collect();
-    let chosen = choose(&candidates, worker, noted)?;
-    let candidate = candidates
-        .iter()
-        .find(|candidate| candidate.pid == chosen)?;
-    let process = Process::open(chosen)?;
-    // Another host may have marked it in the meantime; then it is not ours.
-    let claim = Claim::take(candidate)?;
-    Some((process, claim))
+) -> (Look, Result<(Process, Claim, Why), Miss>) {
+    let (held, mut free): (Vec<Candidate>, Vec<Candidate>) =
+        candidates(browser).into_iter().partition(Claim::held);
+    // In one order every time, so that the log tells looks apart only by
+    // what changed; the choice does not depend on it.
+    free.sort_unstable_by_key(|candidate| candidate.pid);
+    let mut held: Vec<u32> = held.iter().map(|candidate| candidate.pid).collect();
+    held.sort_unstable();
+    let look = Look { free, held };
+    let found = decide(&look.free, worker, noted)
+        .map_err(Miss::Undecided)
+        .and_then(|(candidate, why)| {
+            let pid = candidate.pid;
+            let process = Process::open(pid).map_err(|error| Miss::Unopened { pid, error })?;
+            // Another host may have marked it in the meantime; then it is not ours.
+            let claim = Claim::take(candidate).map_err(|error| Miss::Unmarked { pid, error })?;
+            Ok((process, claim, why))
+        });
+    (look, found)
+}
+
+/// What one look for the extension's process found, for the log.
+struct Look {
+    /// The browser's extension processes no other host keeps.
+    free: Vec<Candidate>,
+    /// The ones other hosts keep.
+    held: Vec<u32>,
+}
+
+impl Look {
+    /// The processes as the log tells looks apart: without their ages.
+    fn shape(&self) -> Vec<(u32, bool)> {
+        self.free
+            .iter()
+            .map(|candidate| (candidate.pid, candidate.foreground))
+            .collect()
+    }
+
+    fn processes(&self, now: u64) -> String {
+        let free: Vec<String> = self
+            .free
+            .iter()
+            .map(|candidate| {
+                format!(
+                    "{} ({}, started {} ago)",
+                    candidate.pid,
+                    if candidate.foreground {
+                        "foreground"
+                    } else {
+                        "background"
+                    },
+                    ago(now.saturating_sub(candidate.started_ms()))
+                )
+            })
+            .collect();
+        let held: Vec<String> = self.held.iter().map(u32::to_string).collect();
+        let listed = |items: &[String]| {
+            if items.is_empty() {
+                "none".to_owned()
+            } else {
+                items.join(", ")
+            }
+        };
+        format!(
+            "free: {}; other hosts keep: {}",
+            listed(&free),
+            listed(&held)
+        )
+    }
+
+    fn kept(&self, (pid, started): (u32, u64), why: Why, now: u64) -> String {
+        format!(
+            "keeping process {pid} (started {} ago): {}; {}",
+            ago(now.saturating_sub(filetime_ms(started))),
+            why.words(),
+            self.processes(now)
+        )
+    }
+
+    fn missed(&self, miss: &Miss, now: u64) -> String {
+        format!(
+            "no process kept yet: {}; {}",
+            miss.words(),
+            self.processes(now)
+        )
+    }
+}
+
+/// Why no process was kept after a look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Miss {
+    /// None was clearly this extension's.
+    Undecided(Undecided),
+    /// The chosen one could not be opened to set its priority.
+    Unopened { pid: u32, error: u32 },
+    /// The chosen one could not be marked as kept: another host marked it
+    /// first (ERROR_ALREADY_EXISTS), or Windows refused.
+    Unmarked { pid: u32, error: u32 },
+}
+
+impl Miss {
+    fn words(&self) -> String {
+        match *self {
+            Self::Undecided(undecided) => undecided.words(),
+            Self::Unopened { pid, error } => {
+                format!("process {pid} was chosen but could not be opened (error {error})")
+            }
+            Self::Unmarked { pid, error } if error == ERROR_ALREADY_EXISTS => {
+                format!("process {pid} was chosen but another host marked it first")
+            }
+            Self::Unmarked { pid, error } => {
+                format!("process {pid} was chosen but could not be marked as kept (error {error})")
+            }
+        }
+    }
+}
+
+/// What the keeper logged, so that it logs each change once.
+#[derive(Default)]
+struct Log {
+    /// The last look that kept nothing, as `Look::shape` and the rest.
+    missed: Option<String>,
+    stopped: bool,
+    /// How often the host undid the browser's demotion of the kept process.
+    restored: u32,
+    refused: bool,
+}
+
+impl Log {
+    fn missed(&mut self, look: &Look, miss: &Miss, worker: Option<u64>, noted: Option<(u32, u64)>) {
+        let seen = format!(
+            "{:?} {:?} {miss:?} {} {noted:?}",
+            look.shape(),
+            look.held,
+            worker.is_some()
+        );
+        if self.missed.as_ref() != Some(&seen) {
+            host_log::line(&look.missed(miss, now_ms()));
+            self.missed = Some(seen);
+        }
+    }
+
+    /// The search goes on, with more to go by.
+    fn searching(&mut self) {
+        self.stopped = false;
+    }
+
+    fn stopped(&mut self) {
+        if !self.stopped {
+            self.stopped = true;
+            host_log::line("stopped looking: no extension process was clearly this one, so the browser schedules it");
+        }
+    }
+
+    fn kept(&mut self, pid: u32, kept: Result<bool, u32>) {
+        match kept {
+            Ok(restored) => self.restored += u32::from(restored),
+            Err(error) if !self.refused => {
+                self.refused = true;
+                host_log::line(&format!(
+                    "Windows refused to keep process {pid} at normal priority (error {error})"
+                ));
+            }
+            Err(_) => {}
+        }
+    }
+
+    fn ended(&self, lasted: Duration, kept: Option<u32>) -> String {
+        let seconds = lasted.as_secs();
+        let Some(pid) = kept else {
+            return format!("connection ended after {seconds} s; kept no extension process");
+        };
+        let undone = match self.restored {
+            0 => "the browser never demoted it".to_owned(),
+            1 => "the browser demoted it once, and the host undid that".to_owned(),
+            times => format!("the browser demoted it {times} times, and the host undid each"),
+        };
+        format!("connection ended after {seconds} s; kept process {pid}: {undone}")
+    }
+}
+
+/// A span in ms as the log writes it: tenths of a second below 100 s.
+fn ago(ms: u64) -> String {
+    if ms < 100_000 {
+        format!("{}.{} s", ms / 1000, ms % 1000 / 100)
+    } else {
+        format!("{} s", ms / 1000)
+    }
+}
+
+fn profile_line(id: &str, noted: Option<(u32, u64)>, now: u64) -> String {
+    let id = if uuid_shaped(id) { id } else { "(not an id)" };
+    match noted {
+        Some((pid, started)) => format!(
+            "profile {id}: its last host kept process {pid} (started {} ago)",
+            ago(now.saturating_sub(filetime_ms(started)))
+        ),
+        None => format!("profile {id}: no earlier host noted a process"),
+    }
 }
 
 /// The page renderers kept scheduled, by the id the browser gave each.
@@ -199,14 +453,14 @@ impl Renderers {
             self.scanned = Some(Instant::now());
             for (id, pid) in renderers(browser) {
                 if self.wanted.contains(&id) && !self.open.contains_key(&id) {
-                    if let Some(process) = Process::open(pid) {
+                    if let Ok(process) = Process::open(pid) {
                         self.open.insert(id, process);
                     }
                 }
             }
         }
         for process in self.open.values() {
-            process.keep_normal();
+            let _ = process.keep_normal();
         }
     }
 }
@@ -258,22 +512,73 @@ fn candidates(browser: u32) -> Vec<Candidate> {
         .collect()
 }
 
+/// Why a process was taken for this extension's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Why {
+    Noted,
+    Only,
+    Popup,
+    Worker,
+    PopupAndWorker,
+}
+
+impl Why {
+    fn words(self) -> &'static str {
+        match self {
+            Self::Noted => "the one this profile's last host kept",
+            Self::Only => "the only extension process no other host keeps",
+            Self::Popup => "the only one in the foreground, where the Connect popup runs",
+            Self::Worker => "the only one that started with the extension's worker",
+            Self::PopupAndWorker => "the only one in the foreground that started with the worker",
+        }
+    }
+}
+
+/// How the free processes looked when none was clearly this extension's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Undecided {
+    free: usize,
+    foreground: usize,
+    /// How many started with the worker; None while its start is unknown.
+    with_worker: Option<usize>,
+}
+
+impl Undecided {
+    fn words(self) -> String {
+        if self.free == 0 {
+            return "no extension process of the browser is free".to_owned();
+        }
+        let worker = self.with_worker.map_or_else(
+            || "the worker's start not known yet".to_owned(),
+            |count| format!("{count} started with the worker"),
+        );
+        format!(
+            "none of {} free extension processes is clearly this one ({} in the foreground, {worker})",
+            self.free, self.foreground
+        )
+    }
+}
+
 /// This extension's process among those no other host keeps: the one this
 /// profile's last host kept, the only one, the one in the foreground while the
 /// Connect popup is open, or the one that started with the extension's worker.
 /// A reload connects with no popup, in the same process or a new one. Where
 /// the popup and the worker point at different processes, or neither at one
 /// alone, it is left to the browser.
-fn choose(candidates: &[Candidate], worker: Option<u64>, noted: Option<(u32, u64)>) -> Option<u32> {
+fn decide(
+    candidates: &[Candidate],
+    worker: Option<u64>,
+    noted: Option<(u32, u64)>,
+) -> Result<(&Candidate, Why), Undecided> {
     if let Some(known) = noted.and_then(|(pid, started)| {
         candidates
             .iter()
             .find(|candidate| candidate.pid == pid && candidate.started == started)
     }) {
-        return Some(known.pid);
+        return Ok((known, Why::Noted));
     }
     if let [only] = candidates {
-        return Some(only.pid);
+        return Ok((only, Why::Only));
     }
     let foreground: Vec<&Candidate> = candidates.iter().filter(|c| c.foreground).collect();
     let with_worker: Vec<&Candidate> = worker.map_or_else(Vec::new, |started| {
@@ -287,9 +592,14 @@ fn choose(candidates: &[Candidate], worker: Option<u64>, noted: Option<(u32, u64
         .filter(|candidate| with_worker.contains(candidate))
         .collect();
     match (&foreground[..], &with_worker[..], &both[..]) {
-        (_, _, [only]) => Some(only.pid),
-        ([only], other, _) | (other, [only], _) if other.len() != 1 => Some(only.pid),
-        _ => None,
+        (_, _, [only]) => Ok((**only, Why::PopupAndWorker)),
+        ([only], other, _) if other.len() != 1 => Ok((*only, Why::Popup)),
+        (other, [only], _) if other.len() != 1 => Ok((*only, Why::Worker)),
+        _ => Err(Undecided {
+            free: candidates.len(),
+            foreground: foreground.len(),
+            with_worker: worker.map(|_| with_worker.len()),
+        }),
     }
 }
 
@@ -300,14 +610,18 @@ fn started_with_worker(process: u64, worker: u64) -> bool {
         && worker.saturating_sub(process) <= WORKER_EARLY_MS
 }
 
-/// Where a profile's host notes the process it keeps (its id and start time),
-/// for the profile's next host. The id is the extension's random UUID.
-fn note_path(profile: &str) -> Option<std::path::PathBuf> {
-    let uuid = profile.len() == 36
+/// The extension names its profile by a random UUID.
+fn uuid_shaped(profile: &str) -> bool {
+    profile.len() == 36
         && profile
             .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-');
-    if !uuid {
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+}
+
+/// Where a profile's host notes the process it keeps (its id and start time),
+/// for the profile's next host.
+fn note_path(profile: &str) -> Option<std::path::PathBuf> {
+    if !uuid_shaped(profile) {
         return None;
     }
     Some(
@@ -384,21 +698,25 @@ impl Claim {
         true
     }
 
-    /// None when another host marked the process first.
-    fn take(candidate: &Candidate) -> Option<Self> {
+    /// Fails with ERROR_ALREADY_EXISTS when another host marked the process
+    /// first, or with the error Windows gave.
+    fn take(candidate: &Candidate) -> Result<Self, u32> {
         let name = Self::name(candidate);
         let handle = unsafe {
             SetLastError(0);
             CreateMutexW(std::ptr::null(), 0, name.as_ptr())
         };
         if handle.is_null() {
-            return None;
+            return Err(unsafe { GetLastError() });
         }
         let claim = Self {
             handle,
             process: (candidate.pid, candidate.started),
         };
-        (unsafe { GetLastError() } != ERROR_ALREADY_EXISTS).then_some(claim)
+        match unsafe { GetLastError() } {
+            ERROR_ALREADY_EXISTS => Err(ERROR_ALREADY_EXISTS),
+            _ => Ok(claim),
+        }
     }
 }
 
@@ -436,7 +754,7 @@ impl Process {
             .then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
     }
 
-    fn open(pid: u32) -> Option<Self> {
+    fn open(pid: u32) -> Result<Self, u32> {
         let handle = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
@@ -444,7 +762,10 @@ impl Process {
                 pid,
             )
         };
-        (!handle.is_null()).then_some(Self(handle))
+        if handle.is_null() {
+            return Err(unsafe { GetLastError() });
+        }
+        Ok(Self(handle))
     }
 
     /// Whether the browser lowered the priority class, and whether it turned
@@ -473,13 +794,13 @@ impl Process {
         )
     }
 
-    /// Undoes a demotion: normal priority, EcoQoS explicitly off.
-    fn keep_normal(&self) {
+    /// Undoes a demotion: normal priority, EcoQoS explicitly off. Whether
+    /// there was one, or the error of the first call Windows refused.
+    fn keep_normal(&self) -> Result<bool, u32> {
         let (lowered, throttled) = self.demoted();
-        if lowered {
-            unsafe {
-                SetPriorityClass(self.0, NORMAL_PRIORITY_CLASS);
-            }
+        let mut refused = None;
+        if lowered && unsafe { SetPriorityClass(self.0, NORMAL_PRIORITY_CLASS) } == 0 {
+            refused = Some(unsafe { GetLastError() });
         }
         if throttled {
             let state = PROCESS_POWER_THROTTLING_STATE {
@@ -487,15 +808,19 @@ impl Process {
                 ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
                 StateMask: 0,
             };
-            unsafe {
+            let set = unsafe {
                 SetProcessInformation(
                     self.0,
                     ProcessPowerThrottling,
                     (&raw const state).cast(),
                     size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
-                );
+                )
+            };
+            if set == 0 {
+                refused = refused.or(Some(unsafe { GetLastError() }));
             }
         }
+        refused.map_or(Ok(lowered || throttled), Err)
     }
 }
 
@@ -513,6 +838,187 @@ mod tests {
             foreground,
             started: UNIX_EPOCH_FILETIME + (NOW_MS - ago_ms) * 10_000,
         }
+    }
+
+    fn choose(
+        candidates: &[Candidate],
+        worker: Option<u64>,
+        noted: Option<(u32, u64)>,
+    ) -> Option<u32> {
+        decide(candidates, worker, noted)
+            .ok()
+            .map(|(candidate, _)| candidate.pid)
+    }
+
+    fn why(
+        candidates: &[Candidate],
+        worker: Option<u64>,
+        noted: Option<(u32, u64)>,
+    ) -> Result<(u32, Why), Undecided> {
+        decide(candidates, worker, noted).map(|(candidate, why)| (candidate.pid, why))
+    }
+
+    #[test]
+    fn the_host_says_why_a_process_is_this_extensions_or_why_none_is() {
+        let old = 3_600_000;
+        let noted = [candidate(7, false, old), candidate(8, false, old)];
+        assert_eq!(
+            why(&noted, None, Some((7, noted[0].started))),
+            Ok((7, Why::Noted))
+        );
+        assert_eq!(
+            why(&[candidate(7, false, old)], None, None),
+            Ok((7, Why::Only))
+        );
+        assert_eq!(
+            why(
+                &[candidate(7, false, old), candidate(8, true, old)],
+                None,
+                None
+            ),
+            Ok((8, Why::Popup))
+        );
+        assert_eq!(
+            why(
+                &[candidate(7, false, old), candidate(8, false, 2_500)],
+                Some(NOW_MS),
+                None
+            ),
+            Ok((8, Why::Worker))
+        );
+        assert_eq!(
+            why(
+                &[candidate(7, true, 1_000), candidate(8, false, 1_500)],
+                Some(NOW_MS),
+                None
+            ),
+            Ok((7, Why::PopupAndWorker))
+        );
+        assert_eq!(
+            why(
+                &[candidate(7, true, old), candidate(8, true, old)],
+                None,
+                None
+            ),
+            Err(Undecided {
+                free: 2,
+                foreground: 2,
+                with_worker: None
+            })
+        );
+        assert_eq!(
+            why(
+                &[candidate(7, false, 1_000), candidate(8, false, 1_200)],
+                Some(NOW_MS),
+                None
+            ),
+            Err(Undecided {
+                free: 2,
+                foreground: 0,
+                with_worker: Some(2)
+            })
+        );
+        assert_eq!(
+            why(&[], Some(NOW_MS), None),
+            Err(Undecided {
+                free: 0,
+                foreground: 0,
+                with_worker: Some(0)
+            })
+        );
+    }
+
+    #[test]
+    fn the_log_tells_what_a_look_found_and_what_was_kept() {
+        let look = Look {
+            free: vec![
+                candidate(15208, true, 3_149),
+                candidate(9999, false, 3_600_000),
+            ],
+            held: vec![14968, 856],
+        };
+        assert_eq!(
+            look.missed(
+                &Miss::Undecided(Undecided {
+                    free: 2,
+                    foreground: 1,
+                    with_worker: None
+                }),
+                NOW_MS
+            ),
+            "no process kept yet: none of 2 free extension processes is clearly this one (1 in the foreground, the worker's start not known yet); free: 15208 (foreground, started 3.1 s ago), 9999 (background, started 3600 s ago); other hosts keep: 14968, 856"
+        );
+        let alone = Look {
+            free: vec![candidate(15208, false, 99_999)],
+            held: Vec::new(),
+        };
+        assert_eq!(
+            alone.kept((15208, alone.free[0].started), Why::Only, NOW_MS),
+            "keeping process 15208 (started 99.9 s ago): the only extension process no other host keeps; free: 15208 (background, started 99.9 s ago); other hosts keep: none"
+        );
+        let empty = Look {
+            free: Vec::new(),
+            held: vec![14968],
+        };
+        assert_eq!(
+            empty.missed(
+                &Miss::Undecided(Undecided {
+                    free: 0,
+                    foreground: 0,
+                    with_worker: Some(0)
+                }),
+                NOW_MS
+            ),
+            "no process kept yet: no extension process of the browser is free; free: none; other hosts keep: 14968"
+        );
+        assert_eq!(
+            Miss::Unmarked {
+                pid: 7,
+                error: ERROR_ALREADY_EXISTS
+            }
+            .words(),
+            "process 7 was chosen but another host marked it first"
+        );
+        assert_eq!(
+            Miss::Unopened { pid: 7, error: 5 }.words(),
+            "process 7 was chosen but could not be opened (error 5)"
+        );
+        assert_eq!(ago(0), "0.0 s");
+        assert_eq!(ago(100_000), "100 s");
+    }
+
+    #[test]
+    fn the_log_names_the_profile_only_by_its_id_and_tells_how_long_it_lasted() {
+        let id = "0f3b0e1c-6c6f-4f2a-9a43-2a5b8c1d7e90";
+        let started = candidate(7, false, 60_000).started;
+        assert_eq!(
+            profile_line(id, Some((7, started)), NOW_MS),
+            format!("profile {id}: its last host kept process 7 (started 60.0 s ago)")
+        );
+        assert_eq!(
+            profile_line("evil\nline", None, NOW_MS),
+            "profile (not an id): no earlier host noted a process"
+        );
+        let mut log = Log::default();
+        assert_eq!(
+            log.ended(Duration::from_secs(9), Some(7)),
+            "connection ended after 9 s; kept process 7: the browser never demoted it"
+        );
+        log.kept(7, Ok(true));
+        log.kept(7, Ok(false));
+        assert_eq!(
+            log.ended(Duration::from_secs(9), Some(7)),
+            "connection ended after 9 s; kept process 7: the browser demoted it once, and the host undid that"
+        );
+        log.kept(7, Ok(true));
+        assert_eq!(
+            log.ended(Duration::from_millis(312_400), Some(7)),
+            "connection ended after 312 s; kept process 7: the browser demoted it 2 times, and the host undid each"
+        );
+        assert_eq!(
+            Log::default().ended(Duration::from_secs(4), None),
+            "connection ended after 4 s; kept no extension process"
+        );
     }
 
     #[test]
