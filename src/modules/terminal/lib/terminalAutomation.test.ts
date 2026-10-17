@@ -2,6 +2,7 @@ import type { SpaceMeta } from "@/modules/spaces/lib/store";
 import type { TerminalTab } from "@/modules/tabs";
 import { describe, expect, it, vi } from "vitest";
 import {
+  batchJobQuestion,
   collectSharedTerminals,
   createTerminalAutomationService,
   sanitizeTerminalInput,
@@ -697,19 +698,24 @@ describe("shared terminal input", () => {
         phase: "interrupted",
         completionReason: "interrupted",
         interrupted: true,
-        exitCode: 130,
+        interruptRequested: true,
+        cancelledBeforeDispatch: true,
+        exitCode: null,
       },
     });
   });
 
   it("targets a dispatched execution before shell busy metadata catches up", async () => {
     let generation = 2;
-    let completions: Array<{ generation: number; exitCode: number | null }> =
-      [];
+    let completions: Array<{
+      generation: number;
+      exitCode: number | null;
+      at?: number;
+    }> = [];
     const write = vi.fn((_leafId: number, data: string) => {
       if (data === "\x03") {
         generation = 3;
-        completions = [{ generation: 3, exitCode: 1 }];
+        completions = [{ generation: 3, exitCode: 1, at: Date.now() }];
       }
       return true;
     });
@@ -759,9 +765,187 @@ describe("shared terminal input", () => {
       result: {
         phase: "interrupted",
         completionReason: "interrupted",
-        exitCode: 130,
+        interruptRequested: true,
+        endedAfterInterruptMs: expect.any(Number),
+        // The shell's own code, as PowerShell reports a stopped cmdlet.
+        exitCode: 1,
       },
     });
+  });
+
+  it("reports a command that ran on after the Ctrl+C as exited, with its shell's exit code", async () => {
+    let generation = 2;
+    let completions: Array<{
+      generation: number;
+      exitCode: number | null;
+      at?: number;
+    }> = [];
+    const write = vi.fn((_leafId: number, data: string) => {
+      // The program catches the Ctrl+C and fails on its own 5 s later.
+      if (data === "\x03") {
+        generation = 3;
+        completions = [{ generation: 3, exitCode: 3, at: Date.now() + 5_000 }];
+      }
+      return true;
+    });
+    const service = createTerminalAutomationService(
+      dependencies({
+        getSessionState: () => ({
+          ready: true,
+          shellExited: false,
+          commandRunning: false,
+          blockMode: "prompt",
+          commandGeneration: generation,
+          commandCompletions: completions,
+          shell: "pwsh",
+          inputPending: false,
+        }),
+        write,
+      }),
+    );
+    const executed = await service.handle("terminal_execute", {
+      workspace: workspace.root,
+      terminalId: "terminal:10:101",
+      text: "node catches-ctrl-c.js",
+    });
+    const executionId = (executed.result as { executionId: string })
+      .executionId;
+    await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+    await service.handle("terminal_interrupt", {
+      workspace: workspace.root,
+      terminalId: "terminal:10:101",
+      executionId,
+    });
+
+    const waited = await service.handle("terminal_wait", {
+      workspace: workspace.root,
+      terminalId: "terminal:10:101",
+      executionId,
+      timeout: 1_000,
+    });
+    expect(waited).toMatchObject({
+      result: {
+        completed: true,
+        phase: "completed",
+        completionReason: "exited",
+        interrupted: false,
+        interruptRequested: true,
+        exitCode: 3,
+        note: expect.stringContaining("it ran on or took that long to stop"),
+      },
+    });
+    expect(
+      (waited.result as { endedAfterInterruptMs: number })
+        .endedAfterInterruptMs,
+    ).toBeGreaterThanOrEqual(4_900);
+  });
+
+  it("answers cmd's batch question after its own Ctrl+C", async () => {
+    let buffer = "PS C:\\work\\alpha> ";
+    let running = false;
+    let generation = 2;
+    let completions: Array<{
+      generation: number;
+      exitCode: number | null;
+      at?: number;
+    }> = [];
+    const write = vi.fn((_leafId: number, data: string) => {
+      if (data === "\x03") {
+        // cmd stops the batch's program, then asks.
+        setTimeout(() => {
+          buffer += "^CTerminate batch job (Y/N)? ";
+        }, 30);
+      } else if (data === "Y\r") {
+        buffer += "Y\nPS C:\\work\\alpha> ";
+        running = false;
+        generation = 3;
+        completions = [{ generation: 3, exitCode: 255, at: Date.now() }];
+      } else {
+        running = true;
+        buffer += ".\\build.cmd\nstep 1 of 2\n";
+      }
+      return true;
+    });
+    const service = createTerminalAutomationService(
+      dependencies({
+        getBuffer: () => buffer,
+        getSessionState: () => ({
+          ready: true,
+          shellExited: false,
+          commandRunning: running,
+          blockMode: running ? "running" : "prompt",
+          commandGeneration: generation,
+          commandCompletions: completions,
+          shell: "powershell",
+          inputPending: false,
+        }),
+        write,
+      }),
+    );
+    const executed = await service.handle("terminal_execute", {
+      workspace: workspace.root,
+      terminalId: "terminal:10:101",
+      text: ".\\build.cmd",
+    });
+    const executionId = (executed.result as { executionId: string })
+      .executionId;
+    await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+    await service.handle("terminal_interrupt", {
+      workspace: workspace.root,
+      terminalId: "terminal:10:101",
+      executionId,
+    });
+    await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(3));
+
+    expect(write.mock.calls.map(([, data]) => data)).toEqual([
+      ".\\build.cmd\r",
+      "\x03",
+      "Y\r",
+    ]);
+    await expect(
+      service.handle("terminal_wait", {
+        workspace: workspace.root,
+        terminalId: "terminal:10:101",
+        executionId,
+        timeout: 1_000,
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        completionReason: "interrupted",
+        answeredBatchQuestion: true,
+        exitCode: 255,
+      },
+    });
+  });
+
+  it("answers a batch question already on screen instead of sending a Ctrl+C that means no", async () => {
+    const write = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({
+        getBuffer: () => "step 1 of 2\r\n^CTerminate batch job (Y/N)? ",
+        getSessionState: () => ({
+          ready: true,
+          shellExited: false,
+          commandRunning: true,
+          blockMode: "running",
+          shell: "powershell",
+        }),
+        write,
+      }),
+    );
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(
+        service.handle("terminal_interrupt", {
+          workspace: workspace.root,
+          terminalId: "terminal:10:101",
+        }),
+      ).resolves.toMatchObject({
+        result: { interrupted: true, answeredBatchQuestion: true },
+      });
+    }
+    // The second call finds the answer still echoing, and adds nothing.
+    expect(write.mock.calls).toEqual([[101, "Y\r"]]);
   });
 
   it("does not send Ctrl+C after the targeted execution already completed", async () => {
@@ -1690,5 +1874,23 @@ describe("shared terminal input", () => {
       });
     }
     expect(write).not.toHaveBeenCalled();
+  });
+});
+
+describe("cmd's batch question", () => {
+  it("is found by its shape, in any language, only at the end of the screen", () => {
+    expect(batchJobQuestion("step 1\r\n^CTerminate batch job (Y/N)? ")).toBe(
+      "Y",
+    );
+    expect(batchJobQuestion("^CBatchvorgang abbrechen (J/N)?\n\n")).toBe("J");
+    expect(
+      batchJobQuestion("50%^CTerminer le programme de commandes (O/N) ?"),
+    ).toBe("O");
+    // A program's own question, one already answered, one the shell left.
+    expect(batchJobQuestion("Continue (y/n)?")).toBeNull();
+    expect(batchJobQuestion("^CTerminate batch job (Y/N)? Y")).toBeNull();
+    expect(
+      batchJobQuestion("^CTerminate batch job (Y/N)? Y\nPS C:\\work> "),
+    ).toBeNull();
   });
 });

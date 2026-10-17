@@ -263,7 +263,14 @@ one). When it says nothing was sent, act on it, then run the command again.
 `terminal_wait` freezes the exit code, completion reason and output of one
 `executionId`, so a later command cannot overwrite the answer you were waiting
 for. `terminal_interrupt` cancels a specific execution, including one still
-queued, or sends Ctrl+C when you omit the `executionId`.
+queued, or sends Ctrl+C when you omit the `executionId`. A program can catch
+Ctrl+C and run on, so `terminal_wait` says `interrupted` only when the command
+ended within 3 s of the Ctrl+C, and otherwise `exited` with
+`endedAfterInterruptMs`. The exit code is always the one its shell reported:
+PowerShell reports 1 for a command a Ctrl+C reached, even when the program
+itself exited 0. A Windows batch file asks "Terminate batch job (Y/N)?" after a
+Ctrl+C, where another Ctrl+C means no and the batch runs its next step;
+`terminal_interrupt` answers yes for you.
 
 `terminal_read` returns a redacted bounded increment; reuse its cursor to
 receive only newer output. Read `hasMore` for unread output, `historyTruncated`

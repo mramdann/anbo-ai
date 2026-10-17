@@ -60,7 +60,7 @@ export function buildTerminalTools(ctx: ToolContext) {
 
     terminal_wait: tool({
       description:
-        "Wait for terminal_execute: stable per-execution phase, completionReason, interrupted, exitCode and bounded redacted output. Completed results are idempotent; timeout is normal.",
+        "Wait for terminal_execute: stable per-execution phase, completionReason, interrupted, the shell's exitCode and bounded redacted output. After an interrupt, interrupted means it ended within 3 s; one that ran on reads exited with endedAfterInterruptMs. Completed results are idempotent; timeout is normal.",
       inputSchema: z.object({
         terminalId: z.string().min(1),
         executionId: z.string().min(1).max(128),
@@ -78,7 +78,7 @@ export function buildTerminalTools(ctx: ToolContext) {
 
     terminal_interrupt: tool({
       description:
-        "Cancel an executionId (queued/dispatched/running), or omit it for Ctrl+C/clearing pending input. Requires approval; preserves workspace focus.",
+        "Cancel an executionId (queued/dispatched/running), or omit it for Ctrl+C/clearing pending input. Answers a batch file's Terminate batch job question yes. Requires approval; preserves workspace focus.",
       inputSchema: z.object({
         terminalId: z.string().min(1),
         executionId: z.string().min(1).max(128).optional(),

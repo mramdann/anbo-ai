@@ -132,6 +132,8 @@ const MAX_COMMAND_COMPLETIONS = 64;
 type TerminalCommandCompletion = {
   generation: number;
   exitCode: number | null;
+  /** Date.now() when the shell's end mark was parsed. */
+  at?: number;
 };
 
 const sessions = new Map<number, Session>();
@@ -623,6 +625,7 @@ function recordCommandCompletion(
   session.commandCompletions.push({
     generation: session.commandGeneration,
     exitCode,
+    at: Date.now(),
   });
   if (session.commandCompletions.length > MAX_COMMAND_COMPLETIONS) {
     session.commandCompletions.splice(

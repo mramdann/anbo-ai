@@ -24,6 +24,16 @@ const INITIAL_PROMPT_SYNC_TIMEOUT_MS = 30_000;
 const INITIAL_PROMPT_SYNC_POLL_MS = 25;
 const INPUT_VISIBILITY_TIMEOUT_MS = 500;
 const INPUT_VISIBILITY_POLL_MS = 25;
+/** A command that ends this soon after Anbo's Ctrl+C reads as interrupted. In
+ *  Dev the commands a Ctrl+C stopped ended within half a second of it; a
+ *  program that catches Ctrl+C runs on and ends whenever it would have. */
+const INTERRUPT_STOP_MS = 3_000;
+/** How long after its Ctrl+C an interrupt looks for cmd's batch question,
+ *  which showed 52 ms after it in Dev. */
+const BATCH_QUESTION_WATCH_MS = 2_000;
+const BATCH_QUESTION_POLL_MS = 25;
+/** One answer per question: the typed letter takes a moment to echo. */
+const BATCH_ANSWER_GAP_MS = 1_000;
 
 export type SharedTerminalDescriptor = {
   terminalId: string;
@@ -93,10 +103,17 @@ type ExecutionState = {
   sawBusy: boolean;
   phase: ExecutionPhase;
   interruptRequested: boolean;
+  /** When Anbo last sent this execution's command a Ctrl+C, or answered
+   *  cmd's batch question in its place. */
+  interruptSentAt?: number;
+  answeredBatchQuestion?: boolean;
   waitCount: number;
   dispatchedAt?: number;
   runningAt?: number;
+  /** When the shell marked the command's end, or when Anbo saw it end. */
   completedAt?: number;
+  /** completedAt came from the shell's own end mark. */
+  endMarked?: boolean;
   completionReason?: CompletionReason;
   /** Why a dispatch_failed command was never sent. */
   dispatchError?: string;
@@ -124,6 +141,13 @@ function shellSupportsOsc(shell: string | null | undefined): boolean {
  *  30 s after the shell started (firstPrompt.ts). */
 function shellStarting(state: TerminalSessionState): boolean {
   return state.awaitingFirstPrompt === true && shellSupportsOsc(state.shell);
+}
+
+/** The yes letter of the question cmd asks when a Ctrl+C reaches a batch
+ *  file ("^CTerminate batch job (Y/N)?"), if the screen ends with it. Windows
+ *  words it in its own language, so the shape is matched, not the words. */
+export function batchJobQuestion(screen: string): string | null {
+  return /\^C[^\r\n]*\((\p{L})\/\p{L}\)[ \t]*\?\s*$/u.exec(screen)?.[1] ?? null;
 }
 
 function firstPromptMissing(timeoutMs: number): string {
@@ -325,21 +349,37 @@ export function createTerminalAutomationService(
     }
   };
 
+  /** `endedAt` is when the shell marked the end, when it did. */
   const finishExecution = (
     execution: ExecutionState,
     reason: CompletionReason,
     exitCode: number | null,
+    endedAt?: number,
   ) => {
     if (execution.phase === "completed" || execution.phase === "interrupted") {
       return;
     }
     execution.phase = reason === "interrupted" ? "interrupted" : "completed";
     execution.completionReason = reason;
-    execution.exitCode = reason === "interrupted" ? 130 : exitCode;
-    execution.completedAt = Date.now();
+    execution.exitCode = exitCode;
+    execution.completedAt = endedAt ?? Date.now();
+    execution.endMarked = endedAt !== undefined;
     if (reason === "closed") {
       execution.terminal = { ...execution.terminal, status: "exited" };
     }
+  };
+
+  // Ctrl+C asks a program to stop; it can catch it and run to its own end.
+  // An exit code of 130 for every interrupted command hid a run that went on
+  // and failed with 3.
+  const endReason = (
+    execution: ExecutionState,
+    endedAt?: number,
+  ): CompletionReason => {
+    const sentAt = execution.interruptSentAt;
+    if (sentAt === undefined) return "exited";
+    if (endedAt === undefined) return "interrupted";
+    return endedAt - sentAt <= INTERRUPT_STOP_MS ? "interrupted" : "exited";
   };
 
   // A dispatch failure with no reason sent a prod agent off blaming the
@@ -371,8 +411,9 @@ export function createTerminalAutomationService(
     if (completion || (state.commandGeneration ?? 0) >= targetGeneration) {
       finishExecution(
         execution,
-        execution.interruptRequested ? "interrupted" : "exited",
+        endReason(execution, completion?.at),
         completion?.exitCode ?? null,
+        completion?.at,
       );
       return true;
     }
@@ -398,13 +439,7 @@ export function createTerminalAutomationService(
         (execution.sawBusy ||
           (outputChanged && Date.now() - execution.startedAt >= 250));
     }
-    if (completed) {
-      finishExecution(
-        execution,
-        execution.interruptRequested ? "interrupted" : "exited",
-        null,
-      );
-    }
+    if (completed) finishExecution(execution, endReason(execution), null);
     return completed;
   };
 
@@ -525,6 +560,55 @@ export function createTerminalAutomationService(
     if (!deps.write(execution.terminal.leafId, `${execution.inputText}\r`)) {
       finishExecution(execution, "closed", null);
     }
+  };
+
+  const batchAnsweredAt = new Map<number, number>();
+
+  /** Answers cmd's batch question with its yes letter and Enter, as a user
+   *  would: another Ctrl+C there means no, and the batch went on to its next
+   *  step. True while the question is on screen, answered now or a moment
+   *  ago, so no Ctrl+C follows. */
+  const answerBatchQuestion = (
+    leafId: number,
+    execution?: ExecutionState,
+  ): boolean => {
+    const yes = batchJobQuestion(deps.getBuffer(leafId) ?? "");
+    if (!yes) return false;
+    const now = Date.now();
+    for (const [leaf, at] of batchAnsweredAt) {
+      if (now - at >= BATCH_ANSWER_GAP_MS) batchAnsweredAt.delete(leaf);
+    }
+    if (batchAnsweredAt.has(leafId)) return true;
+    if (!deps.write(leafId, `${yes}\r`)) return false;
+    batchAnsweredAt.set(leafId, now);
+    if (execution) execution.answeredBatchQuestion = true;
+    return true;
+  };
+
+  /** Looks for cmd's batch question for a while after a Ctrl+C, without
+   *  holding up the interrupt's answer. */
+  const watchForBatchQuestion = (
+    leafId: number,
+    execution?: ExecutionState,
+  ) => {
+    const until = Date.now() + BATCH_QUESTION_WATCH_MS;
+    const look = () => {
+      const state = deps.getSessionState(leafId);
+      if (!state || state.shellExited) return;
+      // Back at a marked prompt: the command ended without asking.
+      if (
+        shellSupportsOsc(state.shell) &&
+        !state.commandRunning &&
+        state.blockMode === "prompt"
+      ) {
+        return;
+      }
+      if (answerBatchQuestion(leafId, execution) || Date.now() >= until) {
+        return;
+      }
+      setTimeout(look, BATCH_QUESTION_POLL_MS);
+    };
+    setTimeout(look, BATCH_QUESTION_POLL_MS);
   };
 
   const hasPendingExecution = async (id: string): Promise<boolean> => {
@@ -938,6 +1022,18 @@ export function createTerminalAutomationService(
         const refreshed = target.ok
           ? await resolveTarget(params, false)
           : target;
+        const endedAfterInterruptMs =
+          completed &&
+          execution.endMarked &&
+          execution.completedAt !== undefined &&
+          execution.interruptSentAt !== undefined
+            ? execution.completedAt - execution.interruptSentAt
+            : undefined;
+        const ranOnNote =
+          execution.completionReason === "exited" &&
+          endedAfterInterruptMs !== undefined
+            ? `The command ended ${(endedAfterInterruptMs / 1000).toFixed(1)} s after the Ctrl+C: it ran on or took that long to stop. exitCode is what its shell reported.`
+            : undefined;
         return {
           result: {
             executionId,
@@ -949,6 +1045,18 @@ export function createTerminalAutomationService(
               dispatchError: execution.dispatchError,
             }),
             interrupted: execution.completionReason === "interrupted",
+            ...(execution.interruptRequested && { interruptRequested: true }),
+            ...(execution.dispatchedAt === undefined &&
+              execution.completionReason === "interrupted" && {
+                cancelledBeforeDispatch: true,
+              }),
+            ...(endedAfterInterruptMs !== undefined && {
+              endedAfterInterruptMs,
+            }),
+            ...(execution.answeredBatchQuestion && {
+              answeredBatchQuestion: true,
+            }),
+            ...(ranOnNote !== undefined && { note: ranOnNote }),
             exitCode: completed ? execution.exitCode : null,
             durationMs:
               (execution.completedAt ?? Date.now()) - execution.startedAt,
@@ -1004,7 +1112,8 @@ export function createTerminalAutomationService(
         }
         if (execution?.phase === "queued") {
           execution.interruptRequested = true;
-          finishExecution(execution, "interrupted", 130);
+          // Nothing ran, so there is no exit code.
+          finishExecution(execution, "interrupted", null);
           return {
             result: {
               ok: true,
@@ -1035,12 +1144,20 @@ export function createTerminalAutomationService(
         }
         if (execution) {
           execution.interruptRequested = true;
-          if (!deps.write(target.terminal.leafId, "\x03")) {
-            finishExecution(execution, "closed", null);
-            return automationError(
-              "terminal_unavailable",
-              "terminal stopped before the interrupt could be delivered",
-            );
+          execution.interruptSentAt = Date.now();
+          const answered = answerBatchQuestion(
+            target.terminal.leafId,
+            execution,
+          );
+          if (!answered) {
+            if (!deps.write(target.terminal.leafId, "\x03")) {
+              finishExecution(execution, "closed", null);
+              return automationError(
+                "terminal_unavailable",
+                "terminal stopped before the interrupt could be delivered",
+              );
+            }
+            watchForBatchQuestion(target.terminal.leafId, execution);
           }
           return {
             result: {
@@ -1050,6 +1167,20 @@ export function createTerminalAutomationService(
               completionReason: null,
               interruptRequested: true,
               interrupted: true,
+              ...(answered && { answeredBatchQuestion: true }),
+              clearedInput: false,
+              terminal: target.terminal,
+            },
+          };
+        }
+        // A batch file run straight in cmd waits in the shell itself, with no
+        // foreground program to find.
+        if (answerBatchQuestion(target.terminal.leafId)) {
+          return {
+            result: {
+              ok: true,
+              interrupted: true,
+              answeredBatchQuestion: true,
               clearedInput: false,
               terminal: target.terminal,
             },
@@ -1087,6 +1218,7 @@ export function createTerminalAutomationService(
             "terminal stopped before the interrupt could be delivered",
           );
         }
+        watchForBatchQuestion(target.terminal.leafId);
         return {
           result: {
             ok: true,
