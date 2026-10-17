@@ -1251,7 +1251,60 @@ mod tests {
         let install = capture + profile[capture..].find("__anbo_install_readline").unwrap();
 
         assert!(capture < install);
-        assert!(profile.contains("if ($commandSucceeded)"));
+        assert!(profile.contains("if (-not $commandSucceeded)"));
         assert!(!profile.contains("$lec = $LASTEXITCODE"));
+    }
+
+    // LASTEXITCODE keeps the last native program's code until another runs,
+    // so a cmdlet failing after `cmd /c exit 5` used to report 5.
+    #[cfg(windows)]
+    #[test]
+    fn powershell_reports_a_native_exit_code_only_when_this_command_set_it() {
+        // native code now, before the command line, line seen starting,
+        // new error record, stopped by Ctrl+C: the code reported
+        let rows = [
+            ("5", "5", true, true, false, "1"),
+            ("5", "0", true, false, false, "5"),
+            ("5", "5", true, false, false, "5"),
+            ("255", "255", true, false, true, "1"),
+            ("-1073741510", "0", true, false, true, "-1073741510"),
+            ("0", "0", true, false, true, "1"),
+            ("3", "0", true, false, true, "3"),
+            ("5", "5", false, true, false, "5"),
+            ("$null", "$null", true, true, false, "1"),
+        ];
+        let mut script = String::from(include_str!("scripts/profile.ps1"));
+        for (native, before, armed, new_error, stopped, _) in rows {
+            script.push_str(&format!(
+                "\n__anbo_exit_code {native} {before} ${armed} ${new_error} ${stopped}"
+            ));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exit-code.ps1");
+        std::fs::write(&path, script).unwrap();
+        let output = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(&path)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let reported: Vec<&str> = stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        let wanted: Vec<&str> = rows.iter().map(|row| row.5).collect();
+        assert_eq!(
+            reported,
+            wanted,
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

@@ -6,6 +6,12 @@
 if ($global:__ANBO_HOOKS_LOADED) { return }
 $global:__ANBO_HOOKS_LOADED = $true
 
+# What the command line just accepted found when it started: read, never
+# changed (see __anbo_exit_code).
+$global:__anbo_armed = $false
+$global:__anbo_exit_before = $null
+$global:__anbo_error_before = $null
+
 try {
     [Console]::InputEncoding  = [System.Text.UTF8Encoding]::new($false)
     [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -57,6 +63,9 @@ function global:__anbo_install_readline {
         try {
             if ($line -is [string] -and $line.Trim().Length -gt 0) {
                 $global:__anbo_block_seen = $true
+                $global:__anbo_exit_before = $global:LASTEXITCODE
+                $global:__anbo_error_before = if ($global:Error.Count -gt 0) { $global:Error[0] } else { $null }
+                $global:__anbo_armed = $true
                 $esc = [char]27
                 $cmd = $line -replace '[\x00-\x1F\x7F]', ' '
                 if ($cmd.Length -gt 256) { $cmd = $cmd.Substring(0, 256) }
@@ -67,20 +76,48 @@ function global:__anbo_install_readline {
     }
 }
 
+# The exit code a failed command line reports. LASTEXITCODE keeps the last
+# native program's code until another program runs, so a cmdlet failing after
+# `cmd /c exit 5` reported 5: the native code counts when it changed during
+# the command line, or when no PowerShell error or Ctrl+C explains the failure.
+function global:__anbo_exit_code {
+    param($Native, $NativeBefore, [bool]$Armed, [bool]$NewError, [bool]$Stopped)
+    $code = if ($null -eq $Native) { 0 } else { [int]$Native }
+    if (-not $Armed) {
+        # No command line was seen starting: nothing to compare with.
+        if ($code -ne 0) { return $code }
+        return 1
+    }
+    if ($code -ne 0 -and $Native -ne $NativeBefore) { return $code }
+    if ($NewError -or $Stopped) { return 1 }
+    # A native program failed again with the same code.
+    if ($code -ne 0) { return $code }
+    1
+}
+
 function global:prompt {
     # Capture $? before running any statement in this function. LASTEXITCODE
     # persists across PowerShell cmdlets, so consulting it first can report a
     # stale native success after a cmdlet or script exception.
     $commandSucceeded = $?
     $nativeExitCode = $LASTEXITCODE
+    $newestError = if ($global:Error.Count -gt 0) { $global:Error[0] } else { $null }
     __anbo_install_readline
-    $lec = if ($commandSucceeded) {
-        0
-    } elseif ($null -ne $nativeExitCode -and [int]$nativeExitCode -ne 0) {
-        [int]$nativeExitCode
-    } else {
-        1
+    $lec = 0
+    if (-not $commandSucceeded) {
+        try {
+            # A failed cmdlet adds an error record; a failed native program,
+            # or a command a Ctrl+C stopped, adds none.
+            $newError = $null -ne $newestError -and
+                -not [object]::ReferenceEquals($newestError, $global:__anbo_error_before)
+            $stopped = $global:__anbo_armed -and -not $newError -and
+                (Get-History -Count 1).ExecutionStatus -eq 'Stopped'
+            $lec = __anbo_exit_code $nativeExitCode $global:__anbo_exit_before $global:__anbo_armed $newError $stopped
+        } catch {
+            $lec = if ($null -ne $nativeExitCode -and [int]$nativeExitCode -ne 0) { [int]$nativeExitCode } else { 1 }
+        }
     }
+    $global:__anbo_armed = $false
     $esc = [char]27
 
     $oscD = "$esc]133;D;$lec$esc\"
