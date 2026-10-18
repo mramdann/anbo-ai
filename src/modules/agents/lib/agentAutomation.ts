@@ -299,12 +299,15 @@ export async function waitForAgentTuiReady(
  *
  * For these a fixed pause before the carriage return is a coin toss: Codex can
  * still be mounting its input, and Kimi folds an Enter that arrives too soon
- * into the box as a newline, leaving the message typed but never sent. Both
- * are cheap to wait for -- the echo says when the text landed, and a settled
- * screen says when it is safe to press Enter.
+ * into the box as a newline, leaving the message typed but never sent. Claude
+ * does the same while it is busy, as right after a resume when it is still
+ * loading its session: the text and an Enter 90 ms later reach it together,
+ * the Enter becomes a newline, and every later message joins the same unsent
+ * box. All are cheap to wait for -- the echo says when the text landed, and a
+ * settled screen says when it is safe to press Enter.
  */
 function needsEchoedInput(cli: string): boolean {
-  return cli === "codex" || cli === "kimi";
+  return cli === "codex" || cli === "kimi" || cli === "claude";
 }
 
 /**

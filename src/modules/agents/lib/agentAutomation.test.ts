@@ -62,6 +62,10 @@ const session = (overrides: Partial<AgentSession> = {}): AgentSession => ({
   ...overrides,
 });
 
+// A Claude composer at rest; tests that type into it append what Claude would
+// draw of the text (it waits for that echo before pressing Enter).
+const CLAUDE_READY = "Claude Code\nPress ? for shortcuts\n❯ ";
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -559,14 +563,16 @@ describe("agent messages", () => {
     vi.useFakeTimers();
     let sessions: Record<number, AgentSession> = { 101: session() };
     const writes: Array<[number, string]> = [];
+    let buffer = CLAUDE_READY;
     const service = createAgentAutomationService({
       getTabs: () => [terminalTab()] as Tab[],
       getSpaces: () => [space()],
       getSessions: () => sessions,
       getActiveTabId: () => null,
-      getBuffer: () => "ready",
+      getBuffer: () => buffer,
       write: (leafId, data) => {
         writes.push([leafId, data]);
+        if (data !== "\r") buffer += data;
         return true;
       },
       spawn: () => null,
@@ -581,7 +587,7 @@ describe("agent messages", () => {
         message: "continue",
       },
     });
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1_000);
     await expect(pending).resolves.toMatchObject({ result: { ok: true } });
     expect(writes).toEqual([
       [101, "continue"],
@@ -679,6 +685,49 @@ describe("agent messages", () => {
     service.dispose();
   });
 
+  it("waits for Claude to echo a short message before pressing Enter", async () => {
+    // A Claude still loading the session it resumed read the text and an
+    // Enter 90 ms later in one go: the Enter became a newline in its box, the
+    // question stayed typed but unsent, and later messages joined it there.
+    vi.useFakeTimers();
+    let buffer = CLAUDE_READY;
+    const writes: Array<[number, string]> = [];
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab()] as Tab[],
+      getSpaces: () => [space()],
+      getSessions: () => ({ 101: session() }),
+      getActiveTabId: () => null,
+      getBuffer: () => buffer,
+      write: (leafId, data) => {
+        writes.push([leafId, data]);
+        return true;
+      },
+      spawn: () => null,
+      subscribeSessions: () => () => {},
+    });
+
+    const pending = service.handle({
+      requestId: "request-claude",
+      method: "agent_send",
+      params: {
+        workspace: "space-a",
+        agentId: "atlas-claude:10",
+        message: "Which word did I ask you to remember?",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(writes).toEqual([[101, "Which word did I ask you to remember?"]]);
+
+    buffer += "Which word did I ask you to remember?";
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(pending).resolves.toMatchObject({ result: { ok: true } });
+    expect(writes).toEqual([
+      [101, "Which word did I ask you to remember?"],
+      [101, "\r"],
+    ]);
+    service.dispose();
+  });
+
   it("does not acknowledge or submit Codex input that was never rendered", async () => {
     vi.useFakeTimers();
     const writes: Array<[number, string]> = [];
@@ -719,6 +768,8 @@ describe("agent messages", () => {
   it("sends immediately to a working agent when readiness waiting is disabled", async () => {
     vi.useFakeTimers();
     const writes: Array<[number, string]> = [];
+    // No wait for the agent to finish, only for what it draws of the text.
+    let buffer = CLAUDE_READY;
     const service = createAgentAutomationService({
       getTabs: () => [terminalTab()] as Tab[],
       getSpaces: () => [space()],
@@ -726,9 +777,10 @@ describe("agent messages", () => {
         101: session({ status: "working", phase: "working" }),
       }),
       getActiveTabId: () => null,
-      getBuffer: () => "ready",
+      getBuffer: () => buffer,
       write: (leafId, data) => {
         writes.push([leafId, data]);
+        if (data !== "\r") buffer += data;
         return true;
       },
       spawn: () => null,
@@ -745,7 +797,7 @@ describe("agent messages", () => {
         waitForReady: false,
       },
     });
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1_000);
     await expect(pending).resolves.toMatchObject({ result: { ok: true } });
     expect(writes).toEqual([
       [101, "inspect the workspace"],
@@ -757,6 +809,7 @@ describe("agent messages", () => {
   it("types no message once the caller has stopped waiting", async () => {
     vi.useFakeTimers();
     const writes: Array<[number, string]> = [];
+    let buffer = CLAUDE_READY;
     const service = createAgentAutomationService({
       getTabs: () => [terminalTab()] as Tab[],
       getSpaces: () => [space()],
@@ -764,9 +817,10 @@ describe("agent messages", () => {
         101: session({ status: "working", phase: "working" }),
       }),
       getActiveTabId: () => null,
-      getBuffer: () => "ready",
+      getBuffer: () => buffer,
       write: (leafId, data) => {
         writes.push([leafId, data]);
+        if (data !== "\r") buffer += data;
         return true;
       },
       spawn: () => null,
@@ -789,7 +843,7 @@ describe("agent messages", () => {
     });
     expect(writes).toEqual([]);
     const inTime = send(Date.now() + 5_000);
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1_000);
     await expect(inTime).resolves.toMatchObject({ result: { ok: true } });
     expect(writes).toEqual([
       [101, "inspect the workspace"],
@@ -857,7 +911,7 @@ describe("agent messages", () => {
 
   it("accepts the next message after terminal output acknowledges a fast turn", async () => {
     vi.useFakeTimers();
-    let buffer = "Claude Code\nmanual mode on\nâ¯ ";
+    let buffer = CLAUDE_READY;
     const writes: string[] = [];
     const service = createAgentAutomationService({
       getTabs: () => [terminalTab()] as Tab[],
@@ -867,9 +921,13 @@ describe("agent messages", () => {
       getBuffer: () => buffer,
       write: (_leafId, data) => {
         writes.push(data);
-        if (data === "first") {
+        if (data !== "\r") {
+          // Claude draws the typed text at once.
+          buffer += data;
+        } else if (writes.length === 2) {
+          // The first message's fast turn: its answer and a fresh prompt.
           setTimeout(() => {
-            buffer += "\nfirst\nanswer\nâ¯ ";
+            buffer += "\nanswer\n\u276f ";
           }, 200);
         }
         return true;
@@ -887,7 +945,7 @@ describe("agent messages", () => {
         message: "first",
       },
     });
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1_000);
     await expect(first).resolves.toMatchObject({ result: { ok: true } });
 
     const second = service.handle({
@@ -899,7 +957,7 @@ describe("agent messages", () => {
         message: "second",
       },
     });
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(1_000);
     await expect(second).resolves.toMatchObject({ result: { ok: true } });
     expect(writes).toEqual(["first", "\r", "second", "\r"]);
     service.dispose();
