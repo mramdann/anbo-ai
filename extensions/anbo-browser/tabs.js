@@ -15,7 +15,7 @@ const AGENT_INPUT_MS = 2_000;
 // to the browser.
 const ADOPT_WAIT_MS = 15_000;
 
-export function createTabManager(api, attached, publishTabs, dockChanged, reload = () => {}, keepRenderers = () => {}) {
+export function createTabManager(api, attached, publishTabs, dockChanged, reload = () => {}, keepRenderers = () => {}, closedInBrowser = () => {}) {
   const dock = createDockManager(api, dockChanged);
   const pending = new Map();
   const attaching = new Map();
@@ -361,7 +361,13 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     }
   }
 
-  function removed(tabId) {
+  function removed(tabId, info) {
+    // Closed in the browser on its own, so Anbo's tab for it closes too. Not
+    // when its whole window closed, as when the browser quits: Anbo's tabs
+    // then wait for the profile to come back. Anbo lets a tab go before it
+    // closes one itself, so its own closes never come back here.
+    const selection = attached.get(tabId);
+    if (selection && info?.isWindowClosing === false) closedInBrowser(tabId, selection.selectionId);
     void dock.release(tabId).catch(() => {});
     transports.get(tabId)?.dispose();
     transports.delete(tabId);

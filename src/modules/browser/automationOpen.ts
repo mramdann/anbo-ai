@@ -39,6 +39,9 @@ export type BrowserTabsRequest = {
 export type BrowserPopupRequest = {
   sourceTabId: number;
   url: string;
+  /** Opens behind its opener: anything but the user's own plain click
+   *  (new_tab.rs). */
+  background?: boolean;
 };
 
 /** A Chrome or Edge tab an agent's pointer input needs in front. */
@@ -195,4 +198,19 @@ export function resolveBrowserPopupSpace(
     };
   }
   return { ok: true, space };
+}
+
+/** The tab a tab an opener's page opened goes after, as a browser places it:
+ *  the one that page opened last while it is still beside the opener, or
+ *  else the opener. */
+export function browserPopupAfter(
+  tabs: BrowserCloseTarget[],
+  sourceTabId: number,
+  lastOpened: number | undefined,
+): number {
+  const source = tabs.find((tab) => tab.id === sourceTabId);
+  const last = tabs.find((tab) => tab.id === lastOpened);
+  return last && source && last.spaceId === source.spaceId
+    ? last.id
+    : sourceTabId;
 }

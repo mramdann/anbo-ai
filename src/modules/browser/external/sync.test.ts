@@ -102,6 +102,9 @@ function harness(initial: Tab[] = []) {
   const warm = vi.fn((id: number) => {
     tabs = tabs.map((tab) => (tab.id === id ? { ...tab, cold: false } : tab));
   });
+  const close = vi.fn((id: number) => {
+    tabs = tabs.filter((tab) => tab.id !== id);
+  });
   const service = createExternalBrowserSync(
     {
       tabs: () => tabs,
@@ -111,6 +114,7 @@ function harness(initial: Tab[] = []) {
       warm,
       shown: (id) => id === active,
       activate,
+      close,
     },
     calls as typeof invoke,
   );
@@ -120,6 +124,7 @@ function harness(initial: Tab[] = []) {
     create,
     warm,
     activate,
+    close,
     setShown: (id: number) => {
       active = id;
     },
@@ -518,6 +523,31 @@ describe("external browser workspace synchronization", () => {
       forget: true,
       close: true,
     });
+  });
+
+  it("closes the Anbo tab whose page was closed in its browser, and no other tab", async () => {
+    const terminal: Tab = {
+      id: 7,
+      kind: "terminal",
+      spaceId: "work",
+      title: "shell",
+      paneTree: { kind: "leaf", id: 8 },
+      activeLeafId: 8,
+    };
+    const state = harness([terminal]);
+    await state.service.refresh();
+    state.service.reconcile();
+    expect(state.tabs().map((tab) => tab.id)).toEqual([7, 100]);
+    state.service.closedInBrowser(7);
+    state.service.closedInBrowser(55);
+    expect(state.close).not.toHaveBeenCalled();
+    state.service.closedInBrowser(100);
+    expect(state.close).toHaveBeenCalledExactlyOnceWith(100);
+    expect(state.tabs().map((tab) => tab.id)).toEqual([7]);
+    // A stopped service closes nothing.
+    state.service.stop();
+    state.service.closedInBrowser(7);
+    expect(state.close).toHaveBeenCalledTimes(1);
   });
 
   it("leaves the browser's tab open when its workspace takes the Anbo tab along", async () => {

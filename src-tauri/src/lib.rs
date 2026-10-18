@@ -431,7 +431,14 @@ pub fn run() {
                 .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
                 .build(),
         )
-        .plugin(tauri_plugin_opener::init())
+        // Its link script also ran in Anbo's browser tabs and broke their new-tab
+        // links; app_links keeps it for Anbo's own windows.
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
+        .plugin(modules::app_links::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|_app| {
             browser_automation::server::cleanup_stale_descriptor();

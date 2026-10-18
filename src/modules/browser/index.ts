@@ -5,6 +5,7 @@ export {
 } from "./automationActivity";
 export {
   acceptBrowserPopupRequest,
+  browserPopupAfter,
   type BrowserTabMetadata,
   resolveBrowserCloseTarget,
   resolveBrowserOpenSpace,

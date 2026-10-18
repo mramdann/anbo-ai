@@ -59,14 +59,15 @@ function harness(reload, { renderers } = {}) {
     getAllFrames: vi.fn(async ({ tabId }) => (renderers.has(tabId) ? [{ frameId: 3, parentFrameId: 0, processId: 99 }, { frameId: 0, parentFrameId: -1, processId: renderers.get(tabId) }] : null)),
   };
   const kept = [];
-  const manager = createTabManager(api, selected, () => publications.push([...selected.values()].map((tab) => ({ ...tab }))), undefined, reload, (ids) => kept.push(ids));
+  const closed = [];
+  const manager = createTabManager(api, selected, () => publications.push([...selected.values()].map((tab) => ({ ...tab }))), undefined, reload, (ids) => kept.push(ids), (tabId, selectionId) => closed.push([tabId, selectionId]));
   const dispatch = createDispatcher(api, selected, (reply) => replies.push(reply), () => active, manager);
   const run = async (method, tabId = 0, params = {}) => {
     const id = ++nextId;
     await dispatch({ type: "command", id, tabId, selectionId: selected.get(tabId)?.selectionId, method, params, expiresAt: Date.now() + 10_000 });
     return replies.find((reply) => reply.id === id);
   };
-  return { api, tabs, selected, publications, kept, manager, run, revoke: () => { active = false; } };
+  return { api, tabs, selected, publications, kept, closed, manager, run, revoke: () => { active = false; } };
 }
 
 describe("tabs selected directly from Anbo", () => {
@@ -136,6 +137,28 @@ describe("tabs selected directly from Anbo", () => {
     await state.run("anbo.releaseTab", 11);
     expect((await state.run("anbo.closeTab", 11, { close: true })).result).toEqual({ closed: false });
     expect(state.api.tabs.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("says a tab was closed in the browser on its own, not with its window and not when Anbo closed it", async () => {
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    const lease = state.selected.get(10).selectionId;
+    state.manager.removed(10, { isWindowClosing: false, windowId: 20 });
+    expect(state.closed).toEqual([[10, lease]]);
+    expect(state.selected.has(10)).toBe(false);
+    // Closed with its whole window, as when the browser quits: Anbo's tab waits for the profile.
+    await state.run("anbo.selectTab", 11, { expectedUrl: "https://other.example/" });
+    state.manager.removed(11, { isWindowClosing: true, windowId: 20 });
+    expect(state.closed).toHaveLength(1);
+    // Anbo lets a tab go before it closes it, so its own close says nothing.
+    await state.run("anbo.openTab", 0, { url: "https://example.com/", activate: false });
+    await state.run("anbo.closeTab", 12, { close: true });
+    state.manager.removed(12, { isWindowClosing: false, windowId: 20 });
+    // Nor does a tab Anbo never held, or an older caller that gives no reason.
+    state.manager.removed(99, { isWindowClosing: false, windowId: 20 });
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    state.manager.removed(10);
+    expect(state.closed).toHaveLength(1);
   });
 
   it("keeps selection identity stable across metadata changes but advances document epochs", async () => {

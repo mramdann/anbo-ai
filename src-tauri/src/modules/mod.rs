@@ -2,6 +2,7 @@ pub mod agent;
 pub mod agent_cli;
 pub mod anbo;
 pub mod app_data;
+pub mod app_links;
 pub mod authority;
 pub mod browser_automation;
 pub mod fs;

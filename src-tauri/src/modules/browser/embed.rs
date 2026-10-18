@@ -87,6 +87,8 @@ struct BrowserPopupRequest {
     #[serde(rename = "sourceTabId")]
     source_tab_id: i64,
     url: String,
+    /// Opens behind its opener (`new_tab`): not the user's own plain click.
+    background: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -623,12 +625,27 @@ async fn spawn_browser_child(
         .on_new_window(move |target, _features| {
             let root = popup_local_root.lock().ok().and_then(|root| root.clone());
             if navigation_allowed(&target, popup_app_url.as_ref(), root.as_deref()) {
-                let _ = popup_app.emit(
-                    BROWSER_POPUP_REQUEST_EVENT,
-                    BrowserPopupRequest {
-                        source_tab_id: tab_id,
-                        url: target.to_string(),
-                    },
+                let app = popup_app.clone();
+                let url = target.to_string();
+                tauri::async_runtime::spawn(async move {
+                    let background = super::new_tab::opens_behind(&app, tab_id).await;
+                    log::info!(
+                        "[browser_new_tab] tab {tab_id}: its page opened a tab, {}",
+                        if background { "behind it" } else { "in front" }
+                    );
+                    let _ = app.emit(
+                        BROWSER_POPUP_REQUEST_EVENT,
+                        BrowserPopupRequest {
+                            source_tab_id: tab_id,
+                            url,
+                            background,
+                        },
+                    );
+                });
+            } else {
+                log::info!(
+                    "[browser_new_tab] tab {tab_id}: refused a new window for a {} page",
+                    target.scheme()
                 );
             }
             NewWindowResponse::Deny
@@ -668,6 +685,8 @@ async fn spawn_browser_child(
                     crate::modules::browser_automation::ref_context::note_layout_change(
                         &webview.clone().into(),
                     );
+                    // Its clicks say whether a tab it opens shows at once.
+                    super::new_tab::prepare(webview.clone());
                     event_loading.store(false, Ordering::Release);
                     if let Ok(mut pending_url) = event_pending_url.lock() {
                         *pending_url = None;
@@ -2360,6 +2379,7 @@ pub async fn browser_embed_begin_session(
         crate::modules::browser_automation::snapshot::remove_generation(tab_id);
         crate::modules::browser_automation::activity::remove(tab_id);
         crate::modules::browser_automation::design::remove(tab_id);
+        super::new_tab::remove(tab_id);
         remove_tab_lock(tab_id);
     }
     if is_new_session {
@@ -2551,6 +2571,7 @@ async fn close_embed_locked(
         crate::modules::browser_automation::snapshot::remove_generation(tab_id);
         crate::modules::browser_automation::activity::remove(tab_id);
         crate::modules::browser_automation::design::remove(tab_id);
+        super::new_tab::remove(tab_id);
     }
     outcome.map(|()| existed)
 }

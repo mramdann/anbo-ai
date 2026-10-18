@@ -489,6 +489,9 @@ pub(super) fn restore(app: &AppHandle, connection_id: &str) {
     }
 }
 
+/// The UI closes Anbo's tab whose page was closed in its browser.
+const CLOSED_EVENT: &str = "anbo:external-browser-closed";
+
 pub(super) fn event(
     app: &AppHandle,
     connection_id: &str,
@@ -524,6 +527,11 @@ pub(super) fn event(
             if let Some(target) = registry::find_target(app, tab_id) {
                 activity::restore(&target);
             }
+        }
+        // Closed in the browser on its own (extension 0.5.7), not with its
+        // window or by Anbo.
+        "anbo.closedInBrowser" => {
+            let _ = app.emit(CLOSED_EVENT, json!({ "tabId": tab_id }));
         }
         "anbo.console" => {
             if params["level"]

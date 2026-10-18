@@ -46,6 +46,8 @@ async function connect(name) {
     }, () => reloadSoon(current), (ids) => {
       // For the native host itself, which keeps these renderers scheduled.
       post({ type: "host", method: "keepRenderers", params: { ids } }, current);
+    }, (tabId, selectionId) => {
+      if (active()) post({ type: "event", tabId, selectionId, method: "anbo.closedInBrowser", params: {} }, current);
     });
     session = current;
     const dispatch = createDispatcher(chrome, attached, (message) => post(message, current), active, current.tabs);
@@ -111,7 +113,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   }
 });
 chrome.webNavigation?.onCommitted.addListener((details) => session?.tabs.committed(details));
-chrome.tabs.onRemoved.addListener((tabId) => session?.tabs.removed(tabId));
+chrome.tabs.onRemoved.addListener((tabId, info) => session?.tabs.removed(tabId, info));
 chrome.tabs.onUpdated.addListener((tabId, change, tab) => session?.tabs.updated(tabId, change, tab));
 chrome.tabs.onCreated.addListener((tab) => {
   const current = session;

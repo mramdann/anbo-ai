@@ -31,6 +31,10 @@ pub async fn call_devtools_protocol_method(
 ) -> Result<String, String> {
     match target {
         BrowserTarget::Embedded(webview) => {
+            // An agent's input: a tab the page opens right after stays behind.
+            if method.starts_with("Input.") {
+                crate::modules::browser::new_tab::note_agent_input(webview.label());
+            }
             embedded_cdp::call_devtools_protocol_method(webview, method, params_json, timeout).await
         }
         BrowserTarget::External { target, .. } => {

@@ -37,6 +37,8 @@ type Host = {
   /** Whether a tab's panel shows now, and bringing a tab to the front. */
   shown?: (id: number) => boolean;
   activate?: (id: number) => void;
+  /** Closes a tab, as the user's close does. */
+  close?: (id: number) => void;
   /** Receives every connection list the service reads. */
   publish?: (connections: ExternalConnection[]) => void;
 };
@@ -576,6 +578,12 @@ export function createExternalBrowserSync(
     select,
     tabFor: (connectionId: string, selectionId: string) =>
       bindings.get(selectionKey(connectionId, selectionId))?.id,
+    // Its page was closed in the browser on its own (not with its window, nor
+    // by Anbo): Anbo's tab for it goes too.
+    closedInBrowser: (id: number) => {
+      const tab = host.tabs().find((tab) => tab.id === id);
+      if (!stopped && tab?.kind === "browser" && tab.external) host.close?.(id);
+    },
     stop: () => {
       stopped = true;
     },
@@ -595,10 +603,15 @@ export async function startExternalBrowserSync(host: Host) {
   let stopListening: (() => void) | undefined;
   let stopReads: (() => void) | undefined;
   let stopTurns: (() => void) | undefined;
+  let stopClosed: (() => void) | undefined;
   try {
     stopListening = await listen("anbo:external-browser-changed", () => {
       void service.refresh().catch(() => {});
     });
+    stopClosed = await listen<{ tabId: number }>(
+      "anbo:external-browser-closed",
+      ({ payload }) => service.closedInBrowser(payload.tabId),
+    );
     // An agent open's read is done: its tab may dock now.
     stopReads = await listen<{ tabId: number }>(
       "anbo:browser-dock-hold-release",
@@ -611,6 +624,7 @@ export async function startExternalBrowserSync(host: Host) {
     await service.refresh();
   } catch (cause) {
     stopListening?.();
+    stopClosed?.();
     stopReads?.();
     stopTurns?.();
     service.stop();
@@ -622,6 +636,7 @@ export async function startExternalBrowserSync(host: Host) {
   }
   return () => {
     stopListening?.();
+    stopClosed?.();
     stopReads?.();
     stopTurns?.();
     setPointerTurn(null);

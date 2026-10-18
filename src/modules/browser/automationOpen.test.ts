@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   acceptBrowserPopupRequest,
   browserOpenPlacement,
+  browserPopupAfter,
   createBrowserCloseListener,
   createBrowserOpenListener,
   createBrowserPopupListener,
@@ -119,6 +120,22 @@ describe("resolveBrowserPopupSpace", () => {
       ok: false,
       error: "popup source tab 99 is not open",
     });
+  });
+});
+
+describe("browserPopupAfter", () => {
+  const tabs = [
+    { id: 7, kind: "browser", spaceId: "a" },
+    { id: 8, kind: "browser", spaceId: "a" },
+    { id: 9, kind: "browser", spaceId: "b" },
+  ];
+
+  it("puts a tab after the one its opener opened before, or after the opener", () => {
+    expect(browserPopupAfter(tabs, 7, undefined)).toBe(7);
+    expect(browserPopupAfter(tabs, 7, 8)).toBe(8);
+    // That one closed, or moved to another workspace.
+    expect(browserPopupAfter(tabs, 7, 12)).toBe(7);
+    expect(browserPopupAfter(tabs, 7, 9)).toBe(7);
   });
 });
 

@@ -73,6 +73,7 @@ import {
   beginBrowserSession,
   browserEmbedClose,
   browserEmbedReconcile,
+  browserPopupAfter,
   clearBrowserAutomationActivity,
   faviconUrlForPage,
   filePathToBrowserUrl,
@@ -367,6 +368,8 @@ export default function App() {
         update: updateTab,
         warm: warmTab,
         activate: setActiveId,
+        // Its page was closed in the browser: closed here as the user's close.
+        close: closeTab,
       });
       if (disposed) close();
       else {
@@ -375,7 +378,7 @@ export default function App() {
       }
     }).catch(() => {});
     return () => { disposed = true; stop?.(); externalSyncRef.current = undefined; };
-  }, [newBrowserTab, updateTab, warmTab, setActiveId]);
+  }, [newBrowserTab, updateTab, warmTab, setActiveId, closeTab]);
   useEffect(() => { externalSyncRef.current?.(tabs); }, [tabs]);
 
   const activeIdRef = useRef(activeId);
@@ -427,6 +430,8 @@ export default function App() {
     key: string;
     at: number;
   } | null>(null);
+  // The tab each page of Anbo's browser opened last, so the next goes after it.
+  const browserPopupOpenedRef = useRef<Map<number, number>>(new Map());
   const [activeEditorHandle, setActiveEditorHandle] =
     useState<EditorPaneHandle | null>(null);
   const [gitHistoryHandle, setGitHistoryHandle] =
@@ -1909,9 +1914,26 @@ export default function App() {
         payload.sourceTabId,
       );
       if (!resolved.ok) return;
-      openBrowserTab(payload.url, false, resolved.space.id);
+      const opened = browserPopupOpenedRef.current;
+      const id = newBrowserTab(
+        payload.url,
+        // The user's own plain click shows it at once, as a browser does.
+        payload.background === false,
+        resolved.space.id,
+        undefined,
+        browserPopupAfter(
+          tabsRef.current,
+          payload.sourceTabId,
+          opened.get(payload.sourceTabId),
+        ),
+      );
+      for (const opener of opened.keys()) {
+        if (!tabsRef.current.some((tab) => tab.id === opener))
+          opened.delete(opener);
+      }
+      opened.set(payload.sourceTabId, id);
     });
-  }, [openBrowserTab]);
+  }, [newBrowserTab]);
 
   useEffect(() => {
     setBrowserShowRequestHandler((payload) => {
