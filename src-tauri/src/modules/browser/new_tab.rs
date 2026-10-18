@@ -13,6 +13,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 /// A click this recent opened the tab.
+#[cfg_attr(not(windows), allow(dead_code))]
 const CLICK_FRESH_MS: u64 = 1_000;
 /// A tab opened this soon after Anbo sent the page input came from an agent's
 /// click or key, as the Chrome/Edge extension counts it.
@@ -106,6 +107,7 @@ fn read_click(answer: &str) -> Option<(u64, Click)> {
 
 /// Whether the new tab opens behind its opener, from the page's last click and
 /// whether an agent's input came just before.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn behind(click: Option<(u64, Click)>, agent: bool) -> bool {
     if agent {
         return true;
