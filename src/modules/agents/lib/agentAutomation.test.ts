@@ -1838,3 +1838,35 @@ describe("restored agents that have not resumed", () => {
     service.dispose();
   });
 });
+
+describe("reading an agent whose turn just ended", () => {
+  it("waits for the screen to catch up with the status", async () => {
+    // Measured: agent_read right after agent_wait matched "waiting" returned
+    // the old "Working (3s ..." screen.
+    let screen = "Working (3s · esc to interrupt)";
+    setTimeout(() => {
+      screen = "Done: 3 files checked\nPress ? for shortcuts";
+    }, 30);
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab()],
+      getSpaces: () => [space()],
+      getSessions: () => ({
+        101: session({ status: "waiting", lastActivityAt: Date.now() }),
+      }),
+      getActiveTabId: () => null,
+      getBuffer: () => screen,
+      write: () => true,
+      spawn: () => null,
+      subscribeSessions: () => () => {},
+    });
+    const read = await service.handle({
+      requestId: "read",
+      method: "agent_read",
+      params: { workspace: "space-a", agentId: "atlas-claude:10" },
+    });
+    expect((read.result as { output: string }).output).toContain(
+      "Done: 3 files checked",
+    );
+    service.dispose();
+  });
+});

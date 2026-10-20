@@ -749,6 +749,11 @@ export class AgentOutputTracker {
 /** The longest a call holds its answer: it ends before the MCP client's own
  *  60 s request limit, as browser and terminal waits do. */
 const MAX_HELD_MS = 50_000;
+/** How long after a turn ended an agent's screen may still be catching up
+ *  with its status, and how long a read waits for it to settle. */
+const TURN_END_SETTLE_MS = 1_000;
+const SCREEN_SETTLE_POLL_MS = 50;
+const SCREEN_SETTLE_MAX_MS = 600;
 
 const sendTimeout = (params: Record<string, unknown>) =>
   typeof params.timeout === "number" && Number.isInteger(params.timeout)
@@ -1266,12 +1271,32 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       if (request.method === "agent_read") {
         const resolved = resolveTarget(params);
         if (!resolved.ok) return resolved.response;
-        const raw = deps.getBuffer(resolved.leafId);
-        if (raw === null) {
+        const firstRead = deps.getBuffer(resolved.leafId);
+        if (firstRead === null) {
           return automationError(
             "agent_unavailable",
             "agent terminal buffer is not available",
           );
+        }
+        let raw: string = firstRead;
+        // Right after a turn ends the status can be ahead of the screen: the
+        // CLI's own end signal comes while its last frame is still on its
+        // way. Measured: a read right after agent_wait matched "waiting"
+        // returned "Working (3s ...". Such a read waits for the screen to
+        // settle.
+        if (
+          resolved.agent.status === "waiting" &&
+          Date.now() - resolved.agent.lastActivityAt < TURN_END_SETTLE_MS
+        ) {
+          const until = Date.now() + SCREEN_SETTLE_MAX_MS;
+          while (Date.now() < until) {
+            await new Promise((resolveDelay) =>
+              setTimeout(resolveDelay, SCREEN_SETTLE_POLL_MS),
+            );
+            const next: string = deps.getBuffer(resolved.leafId) ?? raw;
+            if (next === raw) break;
+            raw = next;
+          }
         }
         return {
           result: {
