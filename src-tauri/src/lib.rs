@@ -8,8 +8,8 @@ extern "C" {}
 
 use modules::{
     agent, agent_cli, anbo, app_data, browser, browser_automation, fs, git, global_voice, history,
-    lsp, net, proc, project_memory, pty, secrets, shell, voice_runtime, window_fit, window_frame,
-    window_menu_key, window_open, workspace,
+    lsp, net, proc, project_memory, pty, secrets, shell, voice_runtime, webview_position,
+    window_fit, window_frame, window_menu_key, window_open, workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -397,6 +397,8 @@ pub fn run() {
         )
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Before window-state, whose restore moves a window (see webview_position).
+        .plugin(webview_position::init())
         // Before window-state, so a restored size is measured against the
         // frame the window keeps (see window_frame).
         .plugin(window_frame::init())
