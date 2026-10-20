@@ -8658,13 +8658,18 @@ async fn open_browser(
 ) -> Result<Value, (String, String)> {
     let (url, workspace) = extract_browser_open_params(params)?;
     let profile = extract_browser_open_profile(params)?;
+    // A page in Chrome or Edge is that browser's memory, not a WebView2 of
+    // Anbo's, so it clears a lower bar.
+    let workload = if profile.is_some() || crate::modules::browser_external::approved_for(workspace)
+    {
+        crate::modules::resource_guard::Workload::ExternalTab
+    } else {
+        crate::modules::resource_guard::Workload::Browser
+    };
     timings
         .measure(
             "admission",
-            crate::modules::resource_guard::preflight_patiently(
-                crate::modules::resource_guard::Workload::Browser,
-                Duration::from_secs(5),
-            ),
+            crate::modules::resource_guard::preflight_patiently(workload, Duration::from_secs(5)),
         )
         .await
         .map_err(|message| ("resource_exhausted".to_string(), message))?;

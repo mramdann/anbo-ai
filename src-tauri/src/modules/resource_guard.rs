@@ -6,11 +6,16 @@ use std::time::{Duration, Instant};
 
 const MIB: u64 = 1024 * 1024;
 const STARTUP_GRACE: Duration = Duration::from_secs(30);
+/// A Chrome or Edge renderer has its memory by the time its page loads.
+const EXTERNAL_TAB_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Workload {
     Terminal,
     Browser,
+    /// A tab an agent opens in Chrome or Edge: no process of Anbo's, and
+    /// 50-100 MB of the browser's, which discards its own tabs under pressure.
+    ExternalTab,
     Agent,
     OpenCode,
 }
@@ -20,10 +25,32 @@ impl Workload {
         match self {
             Self::Terminal => 32 * MIB,
             Self::Browser => 256 * MIB,
+            Self::ExternalTab => 128 * MIB,
             Self::Agent => 512 * MIB,
             Self::OpenCode => 1536 * MIB,
         }
     }
+
+    /// The commit a start must leave free. Anbo's own starts keep Windows'
+    /// headroom; a Chrome or Edge tab half of it, since on an 8 GB machine the
+    /// 871 MiB asked of every agent's open refused most of them for hours.
+    fn reserve(self, limit: u64) -> u64 {
+        match self {
+            Self::ExternalTab => (limit / 40).max(256 * MIB),
+            _ => headroom(limit),
+        }
+    }
+
+    fn grace(self) -> Duration {
+        match self {
+            Self::ExternalTab => EXTERNAL_TAB_GRACE,
+            _ => STARTUP_GRACE,
+        }
+    }
+}
+
+fn headroom(limit: u64) -> u64 {
+    (limit / 20).max(512 * MIB)
 }
 
 #[derive(Clone, Copy)]
@@ -37,6 +64,16 @@ struct Admissions(Vec<(Instant, u64, Option<u64>)>);
 
 impl Admissions {
     fn check(&mut self, memory: Memory, bytes: u64, now: Instant) -> Result<(), String> {
+        self.check_above(memory, headroom(memory.limit), bytes, now)
+    }
+
+    fn check_above(
+        &mut self,
+        memory: Memory,
+        reserve: u64,
+        bytes: u64,
+        now: Instant,
+    ) -> Result<(), String> {
         self.0.retain(|(until, _, _)| *until > now);
         let pending = self
             .0
@@ -44,7 +81,6 @@ impl Admissions {
             .fold(0_u64, |sum, (_, n, _)| sum.saturating_add(*n));
         // Commit (RAM + pagefile), not free RAM: Windows may have reclaimable
         // cache while allocations are already failing at the commit limit.
-        let reserve = (memory.limit / 20).max(512 * MIB);
         let needed = reserve.saturating_add(pending).saturating_add(bytes);
         if memory.available < needed {
             return Err(format!(
@@ -61,9 +97,8 @@ impl Admissions {
 
     /// Whether a refused start would fit once the pending startups hand their
     /// headroom back, by closing or by their grace running out.
-    fn fits_without_pending(&self, memory: Memory, bytes: u64) -> bool {
-        !self.0.is_empty()
-            && memory.available >= (memory.limit / 20).max(512 * MIB).saturating_add(bytes)
+    fn fits_without_pending(&self, memory: Memory, reserve: u64, bytes: u64) -> bool {
+        !self.0.is_empty() && memory.available >= reserve.saturating_add(bytes)
     }
 }
 
@@ -157,6 +192,8 @@ pub(crate) fn admit(workload: Workload) -> Result<(), String> {
 /// `patience` while the only shortfall is headroom other startups still hold.
 /// Eight agents opening tabs side by side refused the eighth on reservations
 /// the first seven returned seconds later; a real shortage is refused at once.
+/// A Chrome or Edge tab, which no child of Anbo's reserves for later, is
+/// admitted here, its headroom held while its renderer starts.
 pub(crate) async fn preflight_patiently(
     workload: Workload,
     patience: Duration,
@@ -171,9 +208,20 @@ pub(crate) async fn preflight_patiently(
             let Some(memory) = memory()? else {
                 return Ok(());
             };
-            match admissions.check(memory, workload.bytes(), Instant::now()) {
-                Ok(()) => return Ok(()),
-                Err(message) if !admissions.fits_without_pending(memory, workload.bytes()) => {
+            let now = Instant::now();
+            let reserve = workload.reserve(memory.limit);
+            match admissions.check_above(memory, reserve, workload.bytes(), now) {
+                Ok(()) => {
+                    if matches!(workload, Workload::ExternalTab) {
+                        admissions
+                            .0
+                            .push((now + workload.grace(), workload.bytes(), None));
+                    }
+                    return Ok(());
+                }
+                Err(message)
+                    if !admissions.fits_without_pending(memory, reserve, workload.bytes()) =>
+                {
                     return Err(message)
                 }
                 Err(message) => message,
@@ -220,11 +268,17 @@ mod tests {
         for workload in [
             Workload::Terminal,
             Workload::Browser,
+            Workload::ExternalTab,
             Workload::Agent,
             Workload::OpenCode,
         ] {
             assert!(guard
-                .check(recorded, workload.bytes(), Instant::now())
+                .check_above(
+                    recorded,
+                    workload.reserve(recorded.limit),
+                    workload.bytes(),
+                    Instant::now()
+                )
                 .unwrap_err()
                 .starts_with("resource_exhausted:"));
         }
@@ -303,14 +357,55 @@ mod tests {
             guard.0.push((now + STARTUP_GRACE, bytes, Some(id)));
         }
         assert!(guard.check(memory, bytes, now).is_err());
-        assert!(guard.fits_without_pending(memory, bytes));
+        assert!(guard.fits_without_pending(memory, headroom(memory.limit), bytes));
         // Short of memory with nothing pending: waiting would not help.
         let short = Memory {
             limit: 16 * 1024 * MIB,
             available: 900 * MIB,
         };
-        assert!(!guard.fits_without_pending(short, bytes));
-        assert!(!Admissions::default().fits_without_pending(memory, bytes));
+        assert!(!guard.fits_without_pending(short, headroom(short.limit), bytes));
+        assert!(!Admissions::default().fits_without_pending(memory, headroom(memory.limit), bytes));
+    }
+
+    #[test]
+    fn a_chrome_or_edge_tab_clears_a_lower_bar_than_anbos_own_starts() {
+        // Recorded on the r57 soak's 8 GB machine: "810 MiB commit available;
+        // 1127 MiB required" for an agent, 871 MiB asked for any tab.
+        let memory = Memory {
+            limit: 12_883_906_560,
+            available: 810 * MIB,
+        };
+        let now = Instant::now();
+        let mut guard = Admissions::default();
+        let tab = Workload::ExternalTab;
+        assert!(guard
+            .check_above(memory, tab.reserve(memory.limit), tab.bytes(), now)
+            .is_ok());
+        for workload in [Workload::Browser, Workload::Agent] {
+            assert!(guard
+                .check_above(
+                    memory,
+                    workload.reserve(memory.limit),
+                    workload.bytes(),
+                    now
+                )
+                .is_err());
+        }
+        // Tabs opened together share the headroom until their renderers start.
+        for _ in 0..3 {
+            guard.0.push((now + tab.grace(), tab.bytes(), None));
+        }
+        assert!(guard
+            .check_above(memory, tab.reserve(memory.limit), tab.bytes(), now)
+            .is_err());
+        assert!(guard
+            .check_above(
+                memory,
+                tab.reserve(memory.limit),
+                tab.bytes(),
+                now + tab.grace()
+            )
+            .is_ok());
     }
 
     #[test]

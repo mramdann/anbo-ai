@@ -592,6 +592,24 @@ pub fn browser_external_connections(webview: Webview) -> Result<Vec<ConnectionIn
         .collect())
 }
 
+/// Whether an agent's open for `workspace`, a root (a space id names none),
+/// goes to a Chrome or Edge profile approved for it instead of Anbo's browser.
+pub(crate) fn approved_for(workspace: &str) -> bool {
+    if workspace.len() > 4096 {
+        return false;
+    }
+    let Ok(root) = std::fs::canonicalize(workspace) else {
+        return false;
+    };
+    let root = crate::modules::fs::to_canon(&root);
+    REGISTRY.lock().is_ok_and(|registry| {
+        registry
+            .connections
+            .values()
+            .any(|connection| connection.workspace.as_deref() == Some(root.as_str()))
+    })
+}
+
 #[tauri::command]
 pub fn browser_external_approve(
     app: AppHandle,

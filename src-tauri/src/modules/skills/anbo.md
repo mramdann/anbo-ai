@@ -323,7 +323,10 @@ long message in more slowly than your timeout: the result then says
 do not send it again. `agent_spawn` starts a new one; once a CLI you spawned
 has ended, its terminal stays in `terminal_list` as yours and `terminal_close`
 closes it. Some CLIs are capped: OpenCode allows two at once, so a third
-`agent_spawn` is refused rather than risking an out-of-memory crash.
+`agent_spawn` is refused rather than risking an out-of-memory crash. Short of
+memory, Anbo refuses new terminals, agents and tabs with `resource_exhausted`
+(a Chrome or Edge tab asks the least); close what you no longer need before
+you retry, not in a loop.
 On a memory-constrained machine, test one CLI and one heavy browser tab at a
 time. Finish and exit the test CLI, verify cleanup, then start the next one.
 Treat `agent_wait` as a coordination signal; confirm the requested final output
