@@ -8376,6 +8376,31 @@ async fn read_initial_page(
     result.map_err(|_| initial_read_timeout(phase))?
 }
 
+/// What an open answers when its tab never got a browser: the reason the start
+/// failed where Anbo recorded one (memory, the tab limit), so an agent backs off
+/// instead of retrying into the same refusal after a bare timeout.
+fn unready_tab_error(tab_id: i64, start_failure: Option<String>) -> (String, String) {
+    match start_failure {
+        Some(reason) => (
+            if reason.starts_with("resource_exhausted") {
+                "resource_exhausted"
+            } else {
+                error_codes::INTERNAL
+            }
+            .to_string(),
+            format!(
+                "browser tab {tab_id} could not start, so a close was requested for it: {reason}"
+            ),
+        ),
+        None => (
+            error_codes::TIMEOUT.to_string(),
+            format!(
+                "browser tab {tab_id} did not become ready in time; a close was requested for it"
+            ),
+        ),
+    }
+}
+
 async fn open_browser(
     app: &AppHandle,
     params: &Value,
@@ -8468,6 +8493,8 @@ async fn open_browser(
     let webview_wait = std::time::Instant::now();
     while get_embed_webview(app, tab_id).is_err() {
         if tokio::time::Instant::now() >= deadline {
+            // Read before the close request below, which forgets it.
+            let start_failure = crate::modules::browser::embed::spawn_failure(tab_id);
             // The UI already created this tab. Returning without it would leave a
             // live browser the caller never learns about and can never close, and
             // a scraping run repeats that on every attempt.
@@ -8479,12 +8506,7 @@ async fn open_browser(
                     "workspace": response.workspace,
                 }),
             );
-            return Err((
-                error_codes::TIMEOUT.to_string(),
-                format!(
-                    "browser tab {tab_id} did not become ready in time; a close was requested for it"
-                ),
-            ));
+            return Err(unready_tab_error(tab_id, start_failure));
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -11146,6 +11168,25 @@ mod tests {
         .unwrap();
         assert_eq!(modifier_names(modifiers), ["Control", "Shift"]);
         assert!(extract_key_modifiers(&json!({ "modifiers": ["Hyper"] })).is_err());
+    }
+
+    #[test]
+    fn an_open_whose_start_was_refused_says_why() {
+        // Measured: four opens at once on a machine short of commit, one start
+        // refused by the resource guard, and its agent was told only that the
+        // tab "did not become ready in time".
+        let (code, message) = unready_tab_error(
+            7,
+            Some("resource_exhausted: Not enough system memory to start more work".into()),
+        );
+        assert_eq!(code, "resource_exhausted");
+        assert!(message.starts_with("browser tab 7 could not start"));
+        assert!(message.ends_with("Not enough system memory to start more work"));
+        let (code, _) = unready_tab_error(7, Some("WebView2 could not create the tab".into()));
+        assert_eq!(code, error_codes::INTERNAL);
+        let (code, message) = unready_tab_error(7, None);
+        assert_eq!(code, error_codes::TIMEOUT);
+        assert!(message.contains("did not become ready in time"));
     }
 
     #[test]

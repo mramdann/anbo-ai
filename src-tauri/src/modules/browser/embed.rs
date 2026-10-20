@@ -192,6 +192,55 @@ fn current_instance() -> &'static Mutex<Option<String>> {
     CURRENT_INSTANCE.get_or_init(|| Mutex::new(None))
 }
 
+/// Why each tab's last native browser start failed, until it starts or closes.
+/// browser_open reads it, so an agent hears the reason (memory, the tab limit)
+/// instead of a bare readiness timeout. Never held with another lock.
+static SPAWN_FAILURES: OnceLock<Mutex<HashMap<i64, String>>> = OnceLock::new();
+/// Tabs whose stray child a reconcile pass already warned about. Every change
+/// of the tab set retries every stray, so one stuck child wrote a warning each
+/// time and rotated the log away within minutes. Never held with another lock.
+static RECONCILE_WARNED: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
+
+fn spawn_failures() -> &'static Mutex<HashMap<i64, String>> {
+    SPAWN_FAILURES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn note_spawn_failure(tab_id: i64, reason: &str) {
+    if let Ok(mut failures) = spawn_failures().lock() {
+        if !failures.contains_key(&tab_id) && failures.len() >= MAX_ACTIVE_EMBEDS {
+            if let Some(oldest) = failures.keys().next().copied() {
+                failures.remove(&oldest);
+            }
+        }
+        failures.insert(tab_id, reason.to_string());
+    }
+}
+
+fn clear_spawn_failure(tab_id: i64) {
+    if let Ok(mut failures) = spawn_failures().lock() {
+        failures.remove(&tab_id);
+    }
+}
+
+/// The reason this tab's native browser last failed to start, if it has not
+/// started since.
+pub fn spawn_failure(tab_id: i64) -> Option<String> {
+    spawn_failures().lock().ok()?.get(&tab_id).cloned()
+}
+
+/// Whether this is the first failed reconcile of `tab_id` since Anbo started.
+fn first_reconcile_failure(tab_id: i64) -> bool {
+    RECONCILE_WARNED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .map(|mut warned| {
+            let first = !warned.contains(&tab_id);
+            bounded_insert(&mut warned, tab_id, MAX_CLOSED_EMBEDS);
+            first
+        })
+        .unwrap_or(true)
+}
+
 fn bounded_insert<T: Clone + Eq + Hash>(set: &mut HashSet<T>, value: T, limit: usize) {
     if !set.contains(&value) && set.len() >= limit {
         if let Some(oldest) = set.iter().next().cloned() {
@@ -358,6 +407,9 @@ pub fn clear_lifecycle_state() {
     }
     if let Ok(mut current) = current_instance().lock() {
         *current = None;
+    }
+    if let Ok(mut failures) = spawn_failures().lock() {
+        failures.clear();
     }
 }
 
@@ -1815,7 +1867,9 @@ fn prepare_active_embed(
         .lock()
         .map_err(|_| "browser lifecycle state is unavailable".to_string())?;
     if !active.contains_key(&tab_id) && active.len() >= MAX_ACTIVE_EMBEDS {
-        return Err("browser embed limit reached".to_string());
+        return Err(format!(
+            "resource_exhausted: {MAX_ACTIVE_EMBEDS} browser tabs are already open in Anbo; close some and retry"
+        ));
     }
     let mine = |entry: &&ActiveEmbed| entry.instance_id == instance_id;
     let local_root = active
@@ -1954,12 +2008,10 @@ pub async fn browser_embed_update(
         if !should_process_update(&bounds, visible) {
             None
         } else {
-            Some(prepare_active_embed(
-                tab_id,
-                &instance_id,
-                &owner_id,
-                resolved_local_root,
-            )?)
+            Some(
+                prepare_active_embed(tab_id, &instance_id, &owner_id, resolved_local_root)
+                    .inspect_err(|error| note_spawn_failure(tab_id, error))?,
+            )
         }
     };
 
@@ -2024,10 +2076,14 @@ pub async fn browser_embed_update(
         host_window,
     )
     .await;
-    if result.is_err() {
-        loading.store(false, Ordering::Release);
-        if let Ok(mut pending) = pending_url.lock() {
-            *pending = None;
+    match &result {
+        Ok(()) => clear_spawn_failure(tab_id),
+        Err(error) => {
+            note_spawn_failure(tab_id, error);
+            loading.store(false, Ordering::Release);
+            if let Ok(mut pending) = pending_url.lock() {
+                *pending = None;
+            }
         }
     }
     result
@@ -2380,6 +2436,7 @@ pub async fn browser_embed_begin_session(
         crate::modules::browser_automation::activity::remove(tab_id);
         crate::modules::browser_automation::design::remove(tab_id);
         super::new_tab::remove(tab_id);
+        clear_spawn_failure(tab_id);
         remove_tab_lock(tab_id);
     }
     if is_new_session {
@@ -2494,6 +2551,14 @@ fn child_is_absent(has_webview: bool, recorded_window: Option<isize>) -> bool {
     !has_webview && recorded_window.is_none()
 }
 
+/// A recorded tab with no webview under its label and no window handle: its
+/// start was refused or never ran, and the tab's lock keeps one from running
+/// during a close. Waiting on nothing kept such an entry forever, counted
+/// toward the embed limit until every new tab was refused.
+fn nothing_to_close(has_webview: bool, raw_window: isize) -> bool {
+    !has_webview && raw_window == 0
+}
+
 async fn close_embed_locked(
     app: &tauri::AppHandle,
     tab_id: i64,
@@ -2539,6 +2604,10 @@ async fn close_embed_locked(
         }
         #[cfg(not(windows))]
         let _ = &mut raw;
+        if nothing_to_close(webview.is_some(), raw) {
+            log::info!("browser embed {tab_id} never got a window; forgot it");
+            return Ok(());
+        }
         if let Some(webview) = webview {
             webview.close().map_err(|error| error.to_string())?;
         }
@@ -2572,6 +2641,7 @@ async fn close_embed_locked(
         crate::modules::browser_automation::activity::remove(tab_id);
         crate::modules::browser_automation::design::remove(tab_id);
         super::new_tab::remove(tab_id);
+        clear_spawn_failure(tab_id);
     }
     outcome.map(|()| existed)
 }
@@ -2624,7 +2694,10 @@ pub async fn browser_embed_reconcile(
                 log::info!("reconciled stray browser embed {tab_id}");
             }
             Ok(false) => {}
-            Err(error) => log::warn!("could not reconcile browser embed {tab_id}: {error}"),
+            Err(error) if first_reconcile_failure(tab_id) => {
+                log::warn!("could not reconcile browser embed {tab_id}: {error}")
+            }
+            Err(error) => log::debug!("could not reconcile browser embed {tab_id} again: {error}"),
         }
     }
     Ok(reaped)
@@ -2665,6 +2738,58 @@ mod tests {
         assert!(!super::child_is_absent(false, Some(0)));
         assert!(!super::child_is_absent(false, Some(123)));
         assert!(!super::child_is_absent(true, None));
+    }
+
+    #[test]
+    fn a_close_forgets_a_tab_whose_browser_never_started() {
+        // A start the resource guard refused left no webview and no handle,
+        // and every close of it failed until 256 such tabs blocked every open.
+        assert!(super::nothing_to_close(false, 0));
+        assert!(!super::nothing_to_close(true, 0));
+        assert!(!super::nothing_to_close(false, 123));
+        assert!(!super::nothing_to_close(true, 123));
+    }
+
+    static SPAWN_FAILURE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn a_failed_start_keeps_its_reason_until_the_tab_starts_or_closes() {
+        let _serial = SPAWN_FAILURE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let id = 991_350;
+        assert_eq!(super::spawn_failure(id), None);
+        super::note_spawn_failure(id, "resource_exhausted: not enough memory");
+        assert_eq!(
+            super::spawn_failure(id).as_deref(),
+            Some("resource_exhausted: not enough memory")
+        );
+        super::note_spawn_failure(id, "the browser could not start");
+        assert_eq!(
+            super::spawn_failure(id).as_deref(),
+            Some("the browser could not start")
+        );
+        super::clear_spawn_failure(id);
+        assert_eq!(super::spawn_failure(id), None);
+    }
+
+    #[test]
+    fn failed_start_reasons_stay_bounded() {
+        let _serial = SPAWN_FAILURE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let ids = 992_000..992_000 + super::MAX_ACTIVE_EMBEDS as i64 + 10;
+        for id in ids.clone() {
+            super::note_spawn_failure(id, "resource_exhausted");
+        }
+        assert!(super::spawn_failures().lock().unwrap().len() <= super::MAX_ACTIVE_EMBEDS);
+        for id in ids {
+            super::clear_spawn_failure(id);
+        }
+    }
+
+    #[test]
+    fn a_stuck_stray_is_warned_about_once() {
+        let id = 991_351;
+        assert!(super::first_reconcile_failure(id));
+        assert!(!super::first_reconcile_failure(id));
+        assert!(!super::first_reconcile_failure(id));
     }
 
     #[test]
