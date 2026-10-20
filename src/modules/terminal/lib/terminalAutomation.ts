@@ -243,6 +243,15 @@ export function clipExecutionOutput(
   };
 }
 
+/** Whether the screen ends with a pager waiting for a key: less's ":" or
+ *  "(END)", more's "-- More --". A pager ignores Ctrl+C and waits for q, which
+ *  no tool could send: a git diff in an agent's terminal held it for good. */
+export function pagerOnScreen(screen: string): boolean {
+  const lines = screen.trimEnd().split("\n");
+  const last = (lines[lines.length - 1] ?? "").trim();
+  return /^(?::|.*\(END\)|--\s?More\s?(?:\(\d+%\))?\s?--)$/.test(last);
+}
+
 function firstPromptMissing(timeoutMs: number): string {
   return `The shell did not mark its first prompt within ${timeoutMs / 1000} s, so nothing was sent: Anbo follows a command by the prompt marks of its shell integration. Run the command again; a profile that replaces the prompt can keep the mark from appearing.`;
 }
@@ -1497,6 +1506,34 @@ export function createTerminalAutomationService(
             "terminal_busy",
             `${target.terminal.terminalId} is starting, so no Ctrl+C was sent: one before the shell's first prompt can end the shell. Wait until terminal_list shows it idle.`,
           );
+        }
+        // A pager quits on q and ignores Ctrl+C.
+        if (pagerOnScreen(deps.getBuffer(target.terminal.leafId) ?? "")) {
+          if (execution) {
+            execution.interruptRequested = true;
+            execution.interruptSentAt = Date.now();
+          }
+          if (!deps.write(target.terminal.leafId, "q")) {
+            return automationError(
+              "terminal_unavailable",
+              "terminal stopped before the pager could be quit",
+            );
+          }
+          return {
+            result: {
+              ok: true,
+              ...(execution && {
+                executionId: execution.executionId,
+                phase: execution.phase,
+                completionReason: null,
+                interruptRequested: true,
+              }),
+              interrupted: true,
+              quitPager: true,
+              clearedInput: false,
+              terminal: target.terminal,
+            },
+          };
         }
         if (execution) {
           execution.interruptRequested = true;

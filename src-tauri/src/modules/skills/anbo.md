@@ -299,7 +299,8 @@ native program a Ctrl+C reached usually gives its own code, such as
 same program stopped twice in a row, reads 1. Go by `interrupted`, not the
 code. A Windows batch file asks "Terminate batch job (Y/N)?" after a
 Ctrl+C, where another Ctrl+C means no and the batch runs its next step;
-`terminal_interrupt` answers yes for you.
+`terminal_interrupt` answers yes for you. A pager such as less ignores Ctrl+C;
+`terminal_interrupt` quits it with q (`quitPager`). Run git with `--no-pager`.
 
 `terminal_read` returns a redacted bounded increment; reuse its cursor to
 receive only newer output. Read `hasMore` for unread output, `historyTruncated`

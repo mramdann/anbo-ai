@@ -6,6 +6,7 @@ import {
   clipExecutionOutput,
   collectSharedTerminals,
   continuationPrompt,
+  pagerOnScreen,
   createTerminalAutomationService,
   sanitizeTerminalInput,
   sanitizeTerminalTitle,
@@ -2670,5 +2671,59 @@ describe("terminal_wait output of a command whose start scrolled away", () => {
     const output = (waited.result as { output: string }).output;
     expect(output.startsWith("node job.js\nrow 1 of the job\n")).toBe(true);
     expect(output).toContain("row 40 of the job");
+  });
+});
+
+describe("a pager in a terminal", () => {
+  it("knows less's and more's prompts", () => {
+    expect(pagerOnScreen("diff --git a/x b/x\n+line\n:")).toBe(true);
+    expect(pagerOnScreen("+last line\n(END)")).toBe(true);
+    expect(pagerOnScreen("one\ntwo\n-- More (25%) --")).toBe(true);
+    expect(pagerOnScreen("PS C:\work\alpha> ")).toBe(false);
+    expect(pagerOnScreen("time: 12:30")).toBe(false);
+  });
+
+  it("quits a pager with q, which ignores Ctrl+C", async () => {
+    // Measured: git diff opened less in an agent's terminal; Ctrl+C did
+    // nothing and every later command read busy until the agent killed less.
+    const write = vi.fn((_data: string) => true);
+    let running = false;
+    const service = createTerminalAutomationService(
+      dependencies({
+        getBuffer: () =>
+          running ? "diff --git a/x b/x\n+line\n:" : "PS C:\work\alpha> ",
+        getSessionState: () => ({
+          ready: true,
+          shellExited: false,
+          commandRunning: running,
+          blockMode: running ? "running" : "prompt",
+          commandGeneration: 2,
+          commandCompletions: [],
+          lastExitCode: 0,
+          shell: "pwsh",
+          inputPending: false,
+        }),
+        write: (_leafId: number, data: string) => {
+          write(data);
+          if (data === "git diff\r") running = true;
+          return true;
+        },
+      }),
+    );
+    const executed = await service.handle("terminal_execute", {
+      workspace: workspaceRoot,
+      terminalId: "terminal:10:101",
+      text: "git diff",
+    });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 400));
+    await expect(
+      service.handle("terminal_interrupt", {
+        workspace: workspaceRoot,
+        terminalId: "terminal:10:101",
+        executionId: (executed.result as { executionId: string }).executionId,
+      }),
+    ).resolves.toMatchObject({ result: { ok: true, quitPager: true } });
+    expect(write).toHaveBeenLastCalledWith("q");
+    expect(write).not.toHaveBeenCalledWith("\x03");
   });
 });
