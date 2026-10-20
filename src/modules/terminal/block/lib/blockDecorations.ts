@@ -78,6 +78,7 @@ export type BlockDecorationsOptions = {
 export class BlockDecorations {
   private readonly entries: Entry[] = [];
   private live: LiveBlock | null = null;
+  private sawCommandStart = false;
   private cwd = "";
   private idSeq = 0;
   private selectedId: string | null = null;
@@ -467,15 +468,20 @@ export class BlockDecorations {
         break;
       case "C":
         this.shellState.inCommand = true;
+        this.sawCommandStart = true;
         this.mode = reduceMode(this.mode, { type: "osc133", marker: "C" });
         this.startBlock(rest);
         break;
-      case "D":
+      case "D": {
+        // As registerPromptTracker: with no block started since the prompt,
+        // this D is the prompt drawn again and ends no command.
+        const ended = this.live !== null || !this.sawCommandStart;
         this.shellState.inCommand = false;
         this.finishBlock(rest);
-        this.onCommandComplete?.(parseExitCode(rest));
+        if (ended) this.onCommandComplete?.(parseExitCode(rest));
         this.mode = reduceMode(this.mode, { type: "osc133", marker: "D" });
         break;
+      }
     }
     this.emitMode();
   }

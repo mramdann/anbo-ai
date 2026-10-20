@@ -56,10 +56,17 @@ export function registerPromptTracker(
   onCommandState?: (change: CommandStateChange) => void,
 ): PromptTracker {
   let marker: IMarker | null = null;
+  // A D with no C since the last prompt is the prompt drawn again (Ctrl+C on
+  // the input line, an empty Enter), not a command's end: counted as one, it
+  // closed the command an agent ran right after clearing its input. A shell
+  // that never writes C (PowerShell without PSReadLine) still ends one at D.
+  let seenStart = false;
+  let started = false;
   const d = term.parser.registerOscHandler(133, (data) => {
     // OSC 133 A — start of new prompt (between commands).
     if (data.startsWith("A")) {
       if (state) state.inCommand = false;
+      started = false;
       onCommandState?.({ running: false, exitCode: null, completed: false });
       marker?.dispose();
       marker = term.registerMarker(0);
@@ -70,6 +77,8 @@ export function registerPromptTracker(
     } else if (data.startsWith("C")) {
       // OSC 133 C — command pre-execution marker; still inside command.
       if (state) state.inCommand = true;
+      seenStart = true;
+      started = true;
       onCommandState?.({ running: true, exitCode: null, completed: false });
     } else if (data.startsWith("D")) {
       // OSC 133 D — command ends.
@@ -79,8 +88,9 @@ export function registerPromptTracker(
       onCommandState?.({
         running: false,
         exitCode: Number.isSafeInteger(parsed) ? parsed : null,
-        completed: true,
+        completed: started || !seenStart,
       });
+      started = false;
     }
     return true;
   });

@@ -167,6 +167,54 @@ describe("OSC 133 command-state tracking", () => {
     });
   });
 
+  it("ends no command at a prompt drawn again once the shell marks command starts", () => {
+    // Measured: Ctrl+C on an input line redrew PowerShell's prompt with
+    // D;-1073741510 after an agent's next command was dispatched, and that D
+    // closed the new command with the old exit code.
+    const { term, handlers } = makeFakeTerm();
+    const onCommandState = vi.fn();
+    registerPromptTracker(term, undefined, onCommandState);
+
+    handlers.get(133)?.("C;ping 127.0.0.1");
+    handlers.get(133)?.("D;-1073741510");
+    expect(onCommandState).toHaveBeenLastCalledWith({
+      running: false,
+      exitCode: -1073741510,
+      completed: true,
+    });
+    handlers.get(133)?.("A");
+    handlers.get(133)?.("B");
+    handlers.get(133)?.("D;-1073741510");
+    expect(onCommandState).toHaveBeenLastCalledWith({
+      running: false,
+      exitCode: -1073741510,
+      completed: false,
+    });
+    handlers.get(133)?.("A");
+    handlers.get(133)?.("C;echo selesai");
+    handlers.get(133)?.("D;0");
+    expect(onCommandState).toHaveBeenLastCalledWith({
+      running: false,
+      exitCode: 0,
+      completed: true,
+    });
+  });
+
+  it("does not let a new prompt's D end a command whose own D was lost", () => {
+    const { term, handlers } = makeFakeTerm();
+    const onCommandState = vi.fn();
+    registerPromptTracker(term, undefined, onCommandState);
+
+    handlers.get(133)?.("C;vim");
+    handlers.get(133)?.("A");
+    handlers.get(133)?.("D;0");
+    expect(onCommandState).toHaveBeenLastCalledWith({
+      running: false,
+      exitCode: 0,
+      completed: false,
+    });
+  });
+
   it("reports signed exit codes and distinguishes completion from prompt repaint", () => {
     const { term, handlers } = makeFakeTerm();
     const onCommandState = vi.fn();

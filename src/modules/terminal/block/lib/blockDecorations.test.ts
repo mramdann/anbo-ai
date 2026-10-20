@@ -124,6 +124,22 @@ describe("BlockDecorations — OSC 133 block lifecycle", () => {
     expect(deco.getBlocks()).toHaveLength(0);
   });
 
+  it("ends a command at a prompt drawn again only while the shell never marked a start", () => {
+    // Measured: Ctrl+C on an input line redrew PowerShell's prompt with a D after an
+    // agent's next command was dispatched, and that D ended it.
+    const { term, emit, setLine } = makeFakeTerm();
+    const onCommandComplete = vi.fn();
+    new BlockDecorations(term, { onCommandComplete });
+    emit("D;0");
+    expect(onCommandComplete).toHaveBeenCalledTimes(1);
+    setLine(2);
+    emit("C;ping 127.0.0.1");
+    emit("D;-1073741510");
+    expect(onCommandComplete).toHaveBeenLastCalledWith(-1073741510);
+    emit("D;-1073741510");
+    expect(onCommandComplete).toHaveBeenCalledTimes(2);
+  });
+
   it("reports hasAnyBlock for live and finished blocks", () => {
     const { term, emit, setLine } = makeFakeTerm();
     const deco = new BlockDecorations(term);
