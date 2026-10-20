@@ -252,7 +252,9 @@ pub fn tool_definitions() -> Value {
             tool["inputSchema"]["properties"]["modifiers"] = json!({"type":"array","maxItems":4,"uniqueItems":true,"items":{"type":"string","enum":["Alt","Control","Meta","Shift"]},"description":"Per call, not held across tools or mouse clicks."});
             tool["description"] = json!("Native keyboard press, down or up with optional modifiers. For forms use ref/locator and expectedValue to guard the input, plus waitFor to verify the result; waitFor replaces Enter's default observation window. Never blindly resubmit after a timeout.");
         } else if name == "browser_click" {
-            tool["inputSchema"]["properties"]["clickCount"] = json!({"type":"integer","enum":[1,2],"default":1,"description":"2 for a double-click; each press rechecks the target."});
+            // A range, not an integer enum: Gemini takes enum values only as
+            // strings and refused every request of an agent that sent this one.
+            tool["inputSchema"]["properties"]["clickCount"] = json!({"type":"integer","minimum":1,"maximum":2,"default":1,"description":"2 for a double-click; each press rechecks the target."});
             tool["description"] = json!("Click a ref after visibility, stability, enabled and hit-target checks. clickCount 2 double-clicks. A menu, date picker or dialog the click opens comes back in revealed with refs, so choosing from it needs no separate look. Optional waitFor verifies the resulting page state; a timed-out wait never repeats input.");
         } else if name == "browser_wait" {
             tool["description"] = json!("Wait for text, URL, load state, or a ref state; or pass waitFor alone for a stable url, title and visible-text combination (put timeout inside it). A load event alone does not prove SPA readiness.");
@@ -432,10 +434,9 @@ mod tests {
             assert_eq!(tool_name_to_method(alias), Some(method));
         }
         let find = |name| tools.iter().find(|tool| tool["name"] == name).unwrap();
-        assert_eq!(
-            find("browser_click")["inputSchema"]["properties"]["clickCount"]["enum"],
-            json!([1, 2])
-        );
+        let click_count = &find("browser_click")["inputSchema"]["properties"]["clickCount"];
+        assert_eq!(click_count["minimum"], json!(1));
+        assert_eq!(click_count["maximum"], json!(2));
         assert_eq!(
             find("browser_press")["inputSchema"]["properties"]["keyAction"]["enum"],
             json!(["press", "down", "up"])
@@ -495,6 +496,36 @@ mod tests {
                 tool_name_to_method(n).is_some(),
                 "no method mapping for {n}"
             );
+        }
+    }
+
+    #[test]
+    fn every_enum_lists_strings_only() {
+        // Gemini takes enum values only as strings: one integer enum, browser_click's
+        // clickCount [1, 2], made it refuse every request of a resumed Antigravity.
+        fn walk(value: &Value, path: &str) {
+            match value {
+                Value::Object(map) => {
+                    if let Some(Value::Array(values)) = map.get("enum") {
+                        assert!(
+                            values.iter().all(Value::is_string),
+                            "{path} has a non-string enum: {values:?}"
+                        );
+                    }
+                    for (key, child) in map {
+                        walk(child, &format!("{path}.{key}"));
+                    }
+                }
+                Value::Array(items) => {
+                    for (index, item) in items.iter().enumerate() {
+                        walk(item, &format!("{path}[{index}]"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for tool in tool_definitions().as_array().unwrap() {
+            walk(&tool["inputSchema"], tool["name"].as_str().unwrap());
         }
     }
 
