@@ -524,7 +524,8 @@ where
     }
     let read = async {
         while let Some(bytes) = wire::read_frame(&mut reader, wire::FROM_BROWSER_LIMIT).await? {
-            let message = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+            let message = crate::modules::browser_automation::page_json::from_slice(&bytes)
+                .map_err(|error| error.to_string())?;
             if let protocol::Incoming::Event {
                 tab_id,
                 selection_id,

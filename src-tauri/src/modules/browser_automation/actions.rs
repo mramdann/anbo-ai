@@ -12,6 +12,7 @@ use tauri::AppHandle;
 use tauri::Emitter;
 
 use super::accessible_name::ACCESSIBLE_NAME_JS;
+use super::page_json;
 use super::context_block::{Ancestors, CONTEXT_BLOCK_JS};
 use super::registry::{
     active_loading, active_local_root, active_navigation_generation, active_pending_url,
@@ -109,7 +110,7 @@ async fn seen_by_page(webview: &Webview) -> Option<Value> {
     ref_context::execute_main(webview, SEEN_BY_PAGE_JS)
         .await
         .ok()
-        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|raw| page_json::from_str::<Value>(&raw).ok())
 }
 
 /// The size the page reads, (innerWidth, innerHeight).
@@ -899,10 +900,10 @@ async fn navigation_hints_once(
             .as_deref()
             .map(str::trim)
             .filter(|raw| !raw.is_empty() && *raw != "null" && *raw != "undefined")
-            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            .and_then(|raw| page_json::from_str::<Value>(raw).ok())
             .map(|value| match value {
                 Value::String(inner) => {
-                    serde_json::from_str::<Value>(&inner).unwrap_or(Value::Null)
+                    page_json::from_str::<Value>(&inner).unwrap_or(Value::Null)
                 }
                 other => other,
             })
@@ -1698,8 +1699,8 @@ async fn handle_action_attempt(
             let response = execute_ref_script(&webview, target.as_ref(), &script)
                 .await
                 .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
-            let decoded: String = serde_json::from_str(&response).unwrap_or(response);
-            let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+            let decoded: String = page_json::from_str(&response).unwrap_or(response);
+            let parsed: Value = page_json::from_str(&decoded).unwrap_or_default();
             if parsed.get("ok").and_then(Value::as_bool) != Some(true) {
                 return Err((
                     error_codes::CDP_FAILED.to_string(),
@@ -2015,8 +2016,8 @@ async fn handle_action_attempt(
                     )
                     .await
                     .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
-                let decoded: String = serde_json::from_str(&response).unwrap_or(response);
-                serde_json::from_str(&decoded).unwrap_or_default()
+                let decoded: String = page_json::from_str(&response).unwrap_or(response);
+                page_json::from_str(&decoded).unwrap_or_default()
             } else {
                 timings
                     .measure(
@@ -2335,8 +2336,8 @@ async fn handle_action_attempt(
                         let script = deep_ref_expression(ref_id, &input_guard_body(expected_value));
                         let response = timings.measure("inputGuard", execute_ref_script(&webview, target.as_ref(), &script))
                             .await.map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
-                        let decoded: String = serde_json::from_str(&response).unwrap_or(response);
-                        let guard: Value = serde_json::from_str(&decoded).unwrap_or_default();
+                        let decoded: String = page_json::from_str(&response).unwrap_or(response);
+                        let guard: Value = page_json::from_str(&decoded).unwrap_or_default();
                         if guard.get("ok").and_then(Value::as_bool) != Some(true) {
                             let code = match guard.get("error").and_then(Value::as_str) {
                                 Some("stale_ref") => error_codes::STALE_REF,
@@ -2765,7 +2766,7 @@ async fn handle_action_attempt(
             )
             .await
             .ok()
-            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .and_then(|raw| page_json::from_str::<Value>(&raw).ok())
             .and_then(|metrics| metrics.get("cssVisualViewport").cloned());
             if width > 0 {
                 emulated_tabs()
@@ -2858,7 +2859,7 @@ async fn handle_action_attempt(
                 )
                 .await
                 .ok()
-                .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                .and_then(|raw| page_json::from_str::<Value>(&raw).ok())
                 .ok_or_else(|| {
                     (
                         error_codes::CDP_FAILED.to_string(),
@@ -2882,7 +2883,7 @@ async fn handle_action_attempt(
                 let scale = ref_context::execute_main(&webview, "devicePixelRatio")
                     .await
                     .ok()
-                    .and_then(|raw| serde_json::from_str::<f64>(&raw).ok())
+                    .and_then(|raw| page_json::from_str::<f64>(&raw).ok())
                     .filter(|scale| scale.is_finite() && *scale > 0.0)
                     .unwrap_or(1.0);
                 let captured = height.min((FULL_PAGE_MAX_DEVICE_PIXELS / scale).floor());
@@ -3215,8 +3216,8 @@ async fn handle_action_attempt(
             let res = execute_ref_script(&webview, target.as_ref(), &js)
                 .await
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
-            let unquoted: String = serde_json::from_str(&res).unwrap_or(res);
-            let parsed: Value = serde_json::from_str(&unquoted).unwrap_or_default();
+            let unquoted: String = page_json::from_str(&res).unwrap_or(res);
+            let parsed: Value = page_json::from_str(&unquoted).unwrap_or_default();
             if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
                 let css_hover = parsed.get("cssHover").and_then(Value::as_bool) == Some(true);
                 let event_verified =
@@ -3276,8 +3277,8 @@ async fn handle_action_attempt(
             let res = execute_ref_script(&webview, target.as_ref(), &js)
                 .await
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
-            let unquoted: String = serde_json::from_str(&res).unwrap_or(res);
-            let parsed: Value = serde_json::from_str(&unquoted).unwrap_or_default();
+            let unquoted: String = page_json::from_str(&res).unwrap_or(res);
+            let parsed: Value = page_json::from_str(&unquoted).unwrap_or_default();
             if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
                 Ok(json!({
                     "tabId": tab_id,
@@ -3404,8 +3405,8 @@ async fn handle_action_attempt(
                 }
                 Err(error) => return Err((error_codes::CDP_FAILED.to_string(), error)),
             };
-            let unquoted: String = serde_json::from_str(&res).unwrap_or(res);
-            let mut parsed: Value = serde_json::from_str(&unquoted).unwrap_or_default();
+            let unquoted: String = page_json::from_str(&res).unwrap_or(res);
+            let mut parsed: Value = page_json::from_str(&unquoted).unwrap_or_default();
             if parsed["error"].as_str() == Some("document_not_ready") {
                 wait_for_ready(
                     &webview,
@@ -3417,8 +3418,8 @@ async fn handle_action_attempt(
                 let res = execute_ref_script(&webview, target.as_ref(), &js)
                     .await
                     .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
-                let unquoted: String = serde_json::from_str(&res).unwrap_or(res);
-                parsed = serde_json::from_str(&unquoted).unwrap_or_default();
+                let unquoted: String = page_json::from_str(&res).unwrap_or(res);
+                parsed = page_json::from_str(&unquoted).unwrap_or_default();
             }
             if parsed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
                 let reported_ancestors = if ref_id.is_some() {
@@ -3541,8 +3542,8 @@ async fn handle_action_attempt(
             let res = execute_ref_script(&webview, target.as_ref(), &js)
                 .await
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
-            let unquoted: String = serde_json::from_str(&res).unwrap_or(res);
-            let parsed: Value = serde_json::from_str(&unquoted).unwrap_or_default();
+            let unquoted: String = page_json::from_str(&res).unwrap_or(res);
+            let parsed: Value = page_json::from_str(&unquoted).unwrap_or_default();
             if parsed.get("ok").and_then(Value::as_bool) == Some(true) {
                 Ok(json!({
                     "tabId": tab_id,
@@ -3589,7 +3590,7 @@ async fn handle_action_attempt(
                 let raw = execute_script_with_timeout(&webview, "document.title", Duration::from_millis(750))
                     .await
                     .map_err(|_| (error_codes::CDP_FAILED.to_string(), "document title unavailable; request titleSource native for non-blocking metadata".to_string()))?;
-                serde_json::from_str::<String>(&raw).map_err(|_| {
+                page_json::from_str::<String>(&raw).map_err(|_| {
                     (
                         error_codes::CDP_FAILED.to_string(),
                         "document title unavailable".to_string(),
@@ -3983,8 +3984,8 @@ async fn page_media_state(webview: &Webview) -> Option<Value> {
     let raw = execute_script_with_timeout(webview, PAGE_MEDIA_JS, Duration::from_millis(500))
         .await
         .ok()?;
-    let decoded: String = serde_json::from_str(&raw).unwrap_or(raw);
-    serde_json::from_str::<Value>(&decoded)
+    let decoded: String = page_json::from_str(&raw).unwrap_or(raw);
+    page_json::from_str::<Value>(&decoded)
         .ok()
         .filter(Value::is_object)
 }
@@ -4005,8 +4006,8 @@ async fn media_state(
     .await
     .ok()?
     .ok()?;
-    let decoded: String = serde_json::from_str(&raw).unwrap_or(raw);
-    serde_json::from_str::<Value>(&decoded)
+    let decoded: String = page_json::from_str(&raw).unwrap_or(raw);
+    page_json::from_str::<Value>(&decoded)
         .ok()
         .filter(Value::is_object)
 }
@@ -4161,8 +4162,8 @@ async fn stale_ref_hint(app: &AppHandle, tab_id: i64, ref_id: &str, message: Str
     else {
         return message;
     };
-    let decoded: String = serde_json::from_str(&raw).unwrap_or(raw);
-    let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+    let decoded: String = page_json::from_str(&raw).unwrap_or(raw);
+    let parsed: Value = page_json::from_str(&decoded).unwrap_or_default();
     if parsed["ok"] != json!(true) {
         return message;
     }
@@ -4227,8 +4228,8 @@ async fn inspect_file_input(
     let response = execute_ref_script(webview, target, &deep_ref_expression(ref_id, &body))
         .await
         .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
-    let decoded: String = serde_json::from_str(&response).unwrap_or(response);
-    let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+    let decoded: String = page_json::from_str(&response).unwrap_or(response);
+    let parsed: Value = page_json::from_str(&decoded).unwrap_or_default();
     if parsed.get("ok").and_then(Value::as_bool) == Some(true) {
         return Ok(parsed);
     }
@@ -4275,7 +4276,7 @@ async fn resolve_ref_object_id(
         Duration::from_secs(5),
     )
     .await?;
-    let payload: Value = serde_json::from_str(&response)
+    let payload: Value = page_json::from_str(&response)
         .map_err(|error| format!("invalid Runtime.evaluate response: {error}"))?;
     if let Some(details) = payload.get("exceptionDetails") {
         return Err(format!("file input lookup failed: {details}"));
@@ -4362,7 +4363,7 @@ async fn get_frame_ids(webview: &Webview) -> Result<(Vec<String>, bool), String>
     let raw =
         call_devtools_protocol_method(webview, "Page.getFrameTree", "{}", SCRIPT_POLL_TIMEOUT)
             .await?;
-    let payload: Value = serde_json::from_str(&raw)
+    let payload: Value = page_json::from_str(&raw)
         .map_err(|error| format!("invalid Page.getFrameTree response: {error}"))?;
     let frame_tree = payload
         .get("frameTree")
@@ -4424,7 +4425,7 @@ async fn dispatch_navigation_action(
                 SCRIPT_POLL_TIMEOUT,
             )
             .await?;
-            let history: Value = serde_json::from_str(&raw)
+            let history: Value = page_json::from_str(&raw)
                 .map_err(|error| format!("invalid navigation history response: {error}"))?;
             let delta = if action == "back" { -1 } else { 1 };
             let Some(entry_id) = history_entry_id(&history, delta) else {
@@ -4450,8 +4451,8 @@ async fn dispatch_navigation_action(
 }
 
 fn parse_console_entries(raw: &str, frame: &str) -> Vec<Value> {
-    let decoded = serde_json::from_str::<String>(raw).unwrap_or_else(|_| raw.to_string());
-    let Ok(Value::Array(entries)) = serde_json::from_str::<Value>(&decoded) else {
+    let decoded = page_json::from_str::<String>(raw).unwrap_or_else(|_| raw.to_string());
+    let Ok(Value::Array(entries)) = page_json::from_str::<Value>(&decoded) else {
         return Vec::new();
     };
     entries
@@ -4534,7 +4535,7 @@ async fn create_frame_execution_context(webview: &Webview, frame_id: &str) -> Re
         SCRIPT_POLL_TIMEOUT,
     )
     .await?;
-    let payload: Value = serde_json::from_str(&raw)
+    let payload: Value = page_json::from_str(&raw)
         .map_err(|error| format!("invalid Page.createIsolatedWorld response: {error}"))?;
     payload
         .get("executionContextId")
@@ -4553,12 +4554,12 @@ async fn evaluate_in_frame(
 }
 
 fn decode_frame_evaluation(raw: String) -> String {
-    serde_json::from_str::<String>(&raw).unwrap_or(raw)
+    page_json::from_str::<String>(&raw).unwrap_or(raw)
 }
 
 fn parse_snapshot_payload(raw: String) -> Result<SnapshotPayload, String> {
-    let decoded: String = serde_json::from_str(&raw).unwrap_or(raw);
-    serde_json::from_str(&decoded)
+    let decoded: String = page_json::from_str(&raw).unwrap_or(raw);
+    page_json::from_str(&decoded)
         .map_err(|error| format!("failed to parse snapshot JSON: {error}"))
 }
 
@@ -4602,8 +4603,8 @@ async fn page_scan_state(webview: &Webview) -> Option<PageScanState> {
     let raw = ref_context::execute_main(webview, PAGE_SCAN_STATE_JS)
         .await
         .ok()?;
-    let decoded: String = serde_json::from_str(&raw).unwrap_or(raw);
-    serde_json::from_str(&decoded).ok()
+    let decoded: String = page_json::from_str(&raw).unwrap_or(raw);
+    page_json::from_str(&decoded).ok()
 }
 
 fn describe_ambiguity(error: (String, String), matches: &[LocatorMatch]) -> (String, String) {
@@ -5653,8 +5654,8 @@ async fn resolve_target_locator(
 }
 
 fn parse_locator_payload(raw: String) -> Result<LocatorPayload, String> {
-    let decoded: String = serde_json::from_str(&raw).unwrap_or(raw);
-    serde_json::from_str(&decoded).map_err(|error| format!("failed to parse locator JSON: {error}"))
+    let decoded: String = page_json::from_str(&raw).unwrap_or(raw);
+    page_json::from_str(&decoded).map_err(|error| format!("failed to parse locator JSON: {error}"))
 }
 
 async fn collect_locator_matches(
@@ -6105,8 +6106,8 @@ async fn explain_blocked_point(
     let response = ref_context::execute_awaited(webview, frame_id, &script)
         .await
         .ok()?;
-    let decoded: String = serde_json::from_str(&response).unwrap_or(response);
-    let explained: Value = serde_json::from_str(&decoded).ok()?;
+    let decoded: String = page_json::from_str(&response).unwrap_or(response);
+    let explained: Value = page_json::from_str(&decoded).ok()?;
     blocked_point_detail(&explained, positioned)
 }
 
@@ -6382,8 +6383,8 @@ async fn read_drag_pair(
         "(() => {{ const source = {source}; const destination = {destination}; const scroll = {scroll}; const sourcePosition = {source_position}; const targetPosition = {target_position}; {VISIBILITY_JS} {probe} }})()"
     );
     let response = ref_context::execute_main(webview, &script).await?;
-    let decoded: String = serde_json::from_str(&response).unwrap_or(response);
-    let parsed: Value = serde_json::from_str(&decoded).map_err(|e| e.to_string())?;
+    let decoded: String = page_json::from_str(&response).unwrap_or(response);
+    let parsed: Value = page_json::from_str(&decoded).map_err(|e| e.to_string())?;
     if let Some(error) = parsed.get("error").and_then(Value::as_str) {
         return Err(error.to_string());
     }
@@ -6550,8 +6551,8 @@ async fn wait_for_actionable_attempt(
             .await
             .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
         script = &settled_script;
-        let decoded: String = serde_json::from_str(&response).unwrap_or(response);
-        let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+        let decoded: String = page_json::from_str(&response).unwrap_or(response);
+        let parsed: Value = page_json::from_str(&decoded).unwrap_or_default();
         if parsed.get("error").and_then(Value::as_str) == Some("stale_ref") {
             return Err((
                 error_codes::STALE_REF.to_string(),
@@ -6693,8 +6694,8 @@ async fn dom_click_ref(
     let response = execute_ref_script(webview, target, &script)
         .await
         .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
-    let decoded: String = serde_json::from_str(&response).unwrap_or(response);
-    let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+    let decoded: String = page_json::from_str(&response).unwrap_or(response);
+    let parsed: Value = page_json::from_str(&decoded).unwrap_or_default();
     if parsed.get("ok").and_then(Value::as_bool) == Some(true) {
         Ok(())
     } else {
@@ -6728,8 +6729,8 @@ async fn wait_for_checked_state(
         let response = execute_ref_script(webview, target, &script)
             .await
             .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
-        let decoded: String = serde_json::from_str(&response).unwrap_or(response);
-        let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+        let decoded: String = page_json::from_str(&response).unwrap_or(response);
+        let parsed: Value = page_json::from_str(&decoded).unwrap_or_default();
         if parsed.get("error").and_then(Value::as_str) == Some("stale_ref") {
             return Err((
                 error_codes::STALE_REF.to_string(),
@@ -6804,8 +6805,8 @@ async fn install_dialog_capture(
     let response = execute_dialog_script(webview, target, &script)
         .await
         .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
-    let decoded: String = serde_json::from_str(&response).unwrap_or(response);
-    let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+    let decoded: String = page_json::from_str(&response).unwrap_or(response);
+    let parsed: Value = page_json::from_str(&decoded).unwrap_or_default();
     if parsed.get("ok").and_then(Value::as_bool) == Some(true) {
         Ok(())
     } else {
@@ -6848,8 +6849,8 @@ async fn take_dialog_capture(
     let response = execute_dialog_script(webview, target, script)
         .await
         .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
-    let decoded: String = serde_json::from_str(&response).unwrap_or(response);
-    let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+    let decoded: String = page_json::from_str(&response).unwrap_or(response);
+    let parsed: Value = page_json::from_str(&decoded).unwrap_or_default();
     parsed.get("dialog").cloned().ok_or_else(|| {
         (
             error_codes::CDP_FAILED.to_string(),
@@ -6892,8 +6893,8 @@ async fn dispatch_dom_drag(
     let response = execute_ref_script(webview, target, &script)
         .await
         .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
-    let decoded: String = serde_json::from_str(&response).unwrap_or(response);
-    let parsed: Value = serde_json::from_str(&decoded).unwrap_or_default();
+    let decoded: String = page_json::from_str(&response).unwrap_or(response);
+    let parsed: Value = page_json::from_str(&decoded).unwrap_or_default();
     if parsed.get("ok").and_then(Value::as_bool) == Some(true) {
         Ok(())
     } else {
@@ -7103,9 +7104,9 @@ async fn observe_page_identity(webview: &Webview) -> Option<(String, String)> {
     let raw = execute_script_with_timeout(webview, script, Duration::from_millis(500))
         .await
         .ok()?;
-    let value: Value = serde_json::from_str(raw.trim()).ok()?;
+    let value: Value = page_json::from_str(raw.trim()).ok()?;
     let value: Value = match value {
-        Value::String(inner) => serde_json::from_str(&inner).ok()?,
+        Value::String(inner) => page_json::from_str(&inner).ok()?,
         other => other,
     };
     Some((
@@ -7375,7 +7376,7 @@ fn decode_screenshot_response(response: &str) -> Result<Vec<u8>, String> {
     if response.len() > MAX_SCREENSHOT_RESPONSE_BYTES {
         return Err("screenshot response exceeds 64 MiB".to_string());
     }
-    let payload: Value = serde_json::from_str(response)
+    let payload: Value = page_json::from_str(response)
         .map_err(|error| format!("invalid screenshot response: {error}"))?;
     if let Some(error) = payload.get("error") {
         return Err(format!("screenshot protocol error: {error}"));
@@ -7612,7 +7613,7 @@ async fn dispatch_mouse_click_profiled(
             .measure("pointerGuard", ref_context::execute_main(webview, &script))
             .await
             .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
-        let guard: Value = serde_json::from_str(&response).unwrap_or_default();
+        let guard: Value = page_json::from_str(&response).unwrap_or_default();
         if guard.get("ok").and_then(Value::as_bool) != Some(true) {
             let stale = guard.get("error").and_then(Value::as_str) == Some("stale_ref");
             let reason = if stale {
@@ -8033,7 +8034,7 @@ fn modifier_names(mask: u8) -> Vec<&'static str> {
 async fn current_url(webview: &Webview) -> Result<String, String> {
     let raw =
         execute_script_with_timeout(webview, "window.location.href", SCRIPT_POLL_TIMEOUT).await?;
-    serde_json::from_str::<String>(&raw).map_err(|error| format!("invalid URL result: {error}"))
+    page_json::from_str::<String>(&raw).map_err(|error| format!("invalid URL result: {error}"))
 }
 
 #[derive(Default)]
@@ -8238,8 +8239,8 @@ async fn initial_document(
                         .await;
                 let probe = raw
                     .ok()
-                    .and_then(|raw| serde_json::from_str::<String>(&raw).ok())
-                    .and_then(|raw| serde_json::from_str::<DocumentProbe>(&raw).ok());
+                    .and_then(|raw| page_json::from_str::<String>(&raw).ok())
+                    .and_then(|raw| page_json::from_str::<DocumentProbe>(&raw).ok());
                 if let Some(probe) = probe.filter(|probe| {
                     probe.is_committed(
                         &native_url,

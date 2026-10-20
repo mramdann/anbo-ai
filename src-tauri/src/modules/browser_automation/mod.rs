@@ -17,6 +17,7 @@ mod locator_target;
 pub mod mcp;
 pub(crate) mod network;
 mod output_path;
+pub(crate) mod page_json;
 mod page_state;
 mod peer;
 pub mod protocol;

@@ -212,7 +212,7 @@ pub async fn frame_context(webview: &Webview, frame_id: &str) -> Result<i64, Str
         CONTEXT_TIMEOUT,
     )
     .await?;
-    let payload: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+    let payload: Value = super::page_json::from_str(&raw).map_err(|error| error.to_string())?;
     payload["executionContextId"]
         .as_i64()
         .ok_or_else(|| "isolated world omitted executionContextId".into())
@@ -239,7 +239,7 @@ pub async fn main_context(webview: &Webview) -> Result<i64, String> {
     }
     let raw =
         call_devtools_protocol_method(webview, "Page.getFrameTree", "{}", CONTEXT_TIMEOUT).await?;
-    let tree: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+    let tree: Value = super::page_json::from_str(&raw).map_err(|error| error.to_string())?;
     let frame_id = tree["frameTree"]["frame"]["id"]
         .as_str()
         .ok_or("browser frame tree omitted root id")?;
@@ -285,7 +285,7 @@ async fn evaluate_context_with_promise(
         Duration::from_secs(5),
     )
     .await?;
-    let payload: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+    let payload: Value = super::page_json::from_str(&raw).map_err(|error| error.to_string())?;
     if payload.get("exceptionDetails").is_some() {
         with_prepared(tab, navigation, |entry| {
             entry.refs.remove(&context_id);

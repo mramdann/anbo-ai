@@ -310,7 +310,7 @@ fn receive(tab_id: i64, raw: &str) -> Option<&'static str> {
     if raw.len() > MAX_BINDING_BYTES {
         return None;
     }
-    let event: Value = serde_json::from_str(raw).ok()?;
+    let event: Value = super::page_json::from_str(raw).ok()?;
     if event.get("name").and_then(Value::as_str) != Some(BINDING) {
         return None;
     }
@@ -318,7 +318,7 @@ fn receive(tab_id: i64, raw: &str) -> Option<&'static str> {
     if payload.len() > MAX_BINDING_BYTES {
         return None;
     }
-    let message: Value = serde_json::from_str(payload).ok()?;
+    let message: Value = super::page_json::from_str(payload).ok()?;
     if !is_active(tab_id) {
         return None;
     }
@@ -364,7 +364,7 @@ async fn evaluate(webview: &Webview, expression: &str) -> Result<Value, String> 
         SCRIPT_TIMEOUT,
     )
     .await?;
-    let payload: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+    let payload: Value = super::page_json::from_str(&raw).map_err(|error| error.to_string())?;
     if let Some(details) = payload.get("exceptionDetails") {
         let description = details["exception"]["description"]
             .as_str()
@@ -475,7 +475,7 @@ async fn install(app: &AppHandle, webview: &Webview, tab_id: i64) -> Result<Stat
     let init = read_session(tab_id, |session| {
         let model = session
             .model_for(&url)
-            .and_then(|model| serde_json::from_str::<Value>(model).ok())
+            .and_then(|model| super::page_json::from_str::<Value>(model).ok())
             .unwrap_or(Value::Null);
         json!({"tool": session.tool, "model": model, "theme": session.theme.clone().unwrap_or(Value::Null)})
             .to_string()
@@ -935,7 +935,7 @@ fn decode_screenshot(response: &str) -> Result<Vec<u8>, String> {
     if response.len() > 64 * 1024 * 1024 {
         return Err("screenshot response exceeds 64 MiB".into());
     }
-    let payload: Value = serde_json::from_str(response)
+    let payload: Value = super::page_json::from_str(response)
         .map_err(|error| format!("invalid screenshot response: {error}"))?;
     if let Some(error) = payload.get("error") {
         return Err(format!("screenshot protocol error: {error}"));
