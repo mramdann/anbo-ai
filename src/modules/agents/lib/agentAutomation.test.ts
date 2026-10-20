@@ -1870,3 +1870,172 @@ describe("reading an agent whose turn just ended", () => {
     service.dispose();
   });
 });
+
+describe("agents agent_spawn starts", () => {
+  const handle = {
+    agentId: "codex:12",
+    cli: "codex",
+    tabId: 12,
+    leafId: 121,
+    spaceId: "space-a",
+    workspace: "C:/work/alpha",
+    activated: false,
+  };
+  const spawnedTab = () =>
+    terminalTab({
+      id: 12,
+      paneTree: { kind: "leaf", id: 121 },
+      activeLeafId: 121,
+    });
+
+  it("answers a spawn whose shell could not start instead of a pending agent forever", async () => {
+    // Measured: under memory pressure agent_spawn answered pending for codex
+    // agents whose shells the resource guard refused; they never appeared.
+    const discardSpawn = vi.fn();
+    const service = createAgentAutomationService({
+      getTabs: () => [spawnedTab()],
+      getSpaces: () => [space()],
+      getSessions: () => ({}),
+      getActiveTabId: () => null,
+      getBuffer: () => null,
+      write: () => true,
+      spawn: () => handle,
+      subscribeSessions: () => () => {},
+      getShellState: () => ({
+        spawnFailed: true,
+        spawnError: "resource_exhausted: Not enough system memory",
+      }),
+      discardSpawn,
+    });
+    await expect(
+      service.handle({
+        requestId: "spawn",
+        method: "agent_spawn",
+        params: { workspace: "space-a", agent: "codex", timeout: 2_000 },
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: "resource_exhausted",
+        message: expect.stringContaining(
+          "shell could not start: resource_exhausted",
+        ),
+      },
+    });
+    expect(discardSpawn).toHaveBeenCalledWith(12);
+    service.dispose();
+  });
+
+  it("answers a spawn whose terminal closed before its CLI started", async () => {
+    let tabs = [spawnedTab()];
+    setTimeout(() => {
+      tabs = [];
+    }, 30);
+    const service = createAgentAutomationService({
+      getTabs: () => tabs,
+      getSpaces: () => [space()],
+      getSessions: () => ({}),
+      getActiveTabId: () => null,
+      getBuffer: () => null,
+      write: () => true,
+      spawn: () => handle,
+      subscribeSessions: () => () => {},
+      getShellState: () => null,
+    });
+    await expect(
+      service.handle({
+        requestId: "spawn",
+        method: "agent_spawn",
+        params: { workspace: "space-a", agent: "codex", timeout: 2_000 },
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: "launch_failed",
+        message: expect.stringContaining("closed before its CLI started"),
+      },
+    });
+    service.dispose();
+  });
+
+  it("hands the spawned terminal to the terminal tools as the spawner's own", async () => {
+    // Measured: helper agents that exited left their tab and a live shell
+    // that no tool of the agent that spawned them could close.
+    const openedTerminals = new Set<string>();
+    const service = createAgentAutomationService({
+      getTabs: () => [spawnedTab()],
+      getSpaces: () => [space()],
+      getSessions: () => ({
+        121: session({ leafId: 121, tabId: 12, agent: "codex", name: "Codex" }),
+      }),
+      getActiveTabId: () => null,
+      getBuffer: () => null,
+      write: () => true,
+      spawn: () => handle,
+      subscribeSessions: () => () => {},
+      openedTerminals,
+    });
+    await expect(
+      service.handle({
+        requestId: "spawn",
+        method: "agent_spawn",
+        params: { workspace: "space-a", agent: "codex" },
+      }),
+    ).resolves.toMatchObject({ result: { ok: true, pending: false } });
+    expect([...openedTerminals]).toEqual(["terminal:12:121"]);
+    service.dispose();
+  });
+});
+
+
+describe("a spawned tab the UI lists only after the spawn answered", () => {
+  it("is waited for, not taken as closed", async () => {
+    // Measured in Dev: the first look found no tab yet, answered "closed
+    // before its CLI started" in 29 ms and closed the new tab.
+    const discardSpawn = vi.fn();
+    let tabs: ReturnType<typeof terminalTab>[] = [];
+    let sessions: Record<number, ReturnType<typeof session>> = {};
+    setTimeout(() => {
+      tabs = [
+        terminalTab({
+          id: 12,
+          paneTree: { kind: "leaf", id: 121 },
+          activeLeafId: 121,
+        }),
+      ];
+    }, 40);
+    setTimeout(() => {
+      sessions = {
+        121: session({ leafId: 121, tabId: 12, agent: "codex", name: "Codex" }),
+      };
+    }, 400);
+    const service = createAgentAutomationService({
+      getTabs: () => tabs,
+      getSpaces: () => [space()],
+      getSessions: () => sessions,
+      getActiveTabId: () => null,
+      getBuffer: () => null,
+      write: () => true,
+      spawn: () => ({
+        agentId: "codex:12",
+        cli: "codex",
+        tabId: 12,
+        leafId: 121,
+        spaceId: "space-a",
+        workspace: "C:/work/alpha",
+        activated: false,
+      }),
+      subscribeSessions: () => () => {},
+      getShellState: () => null,
+      discardSpawn,
+    });
+    await expect(
+      service.handle({
+        requestId: "spawn",
+        method: "agent_spawn",
+        params: { workspace: "space-a", agent: "codex", timeout: 3_000 },
+      }),
+    ).resolves.toMatchObject({ result: { ok: true, pending: false } });
+    expect(discardSpawn).not.toHaveBeenCalled();
+    service.dispose();
+  });
+});
+

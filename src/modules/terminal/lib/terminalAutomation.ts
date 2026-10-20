@@ -96,6 +96,9 @@ export type TerminalAutomationDependencies = {
   warm?: (tabId: number) => void;
   /** Starts again a shell that could not start. */
   retryStart?: (leafId: number) => boolean;
+  /** The caller's own terminals, shared with the agent tools, which add the
+   *  terminal of an agent they spawned. */
+  openedTerminals?: Set<string>;
   initialPromptSyncTimeoutMs?: number;
 };
 
@@ -571,7 +574,7 @@ export function createTerminalAutomationService(
   };
   const output = new TerminalOutputTracker();
   const executions = new Map<string, ExecutionState>();
-  const openedTerminals = new Set<string>();
+  const openedTerminals = deps.openedTerminals ?? new Set<string>();
   let executionSequence = 0;
 
   const rememberExecution = (execution: ExecutionState) => {

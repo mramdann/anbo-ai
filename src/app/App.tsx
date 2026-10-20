@@ -2107,8 +2107,14 @@ export default function App() {
             getScreen: (leafId: number) => readTerminalScreen(leafId),
             write: writeToSession,
           };
+          // A terminal agent_spawn made is the spawner's to close once its CLI
+          // has ended, as a terminal_open one is.
+          const openedTerminals = new Set<string>();
           const agentService = createAgentAutomationService({
             ...shared,
+            openedTerminals,
+            getShellState: getTerminalSessionState,
+            discardSpawn: (tabId) => closeTab(tabId),
             prepare: prepareTerminalAutomationSession,
             unpreparedReason: terminalAutomationRefusal,
             subscribeInput: subscribeTerminalInput,
@@ -2157,6 +2163,7 @@ export default function App() {
           });
           const terminalService = createTerminalAutomationService({
             ...shared,
+            openedTerminals,
             getSessionState: getTerminalSessionState,
             hasForegroundProcess: leafHasForegroundProcess,
             prepare: prepareTerminalAutomationSession,

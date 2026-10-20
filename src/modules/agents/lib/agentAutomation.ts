@@ -107,6 +107,15 @@ type ServiceDependencies = {
   warm?: (tabId: number) => void;
   /** Which restored agents are being brought back, by leaf. */
   getResumeStatus?: () => Record<number, AgentResumePhase>;
+  /** Whether a terminal's shell could not start, and why. */
+  getShellState?: (
+    leafId: number,
+  ) => { spawnFailed?: boolean; spawnError?: string | null } | null;
+  /** Closes a tab agent_spawn made whose CLI never started. */
+  discardSpawn?: (tabId: number) => void;
+  /** Terminals that are the caller's own to close, shared with the terminal
+   *  tools: an agent_spawn terminal is, once its CLI has ended. */
+  openedTerminals?: Set<string>;
 };
 
 type ResolvedWorkspace = { id: string; root: string };
@@ -963,14 +972,27 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     });
   };
 
+  /** The agent once its CLI shows, why it never will, or null on timeout.
+   *  A shell the resource guard refused, or a tab that closed first, left
+   *  agent_spawn answering pending for an agent that never appeared. */
   const waitForSpawn = (
     workspace: ResolvedWorkspace,
-    leafId: number,
+    handle: AgentSpawnHandle,
     timeoutMs: number,
-  ): Promise<AgentDescriptor | null> =>
+  ): Promise<AgentDescriptor | { failed: string } | null> =>
     new Promise((resolve) => {
       let settled = false;
+      // The UI lists a new tab only once it has drawn it, after the spawn
+      // answered; a tab is gone only after it was seen.
+      let tabSeen = false;
       let unsubscribe = () => {};
+      const finish = (value: AgentDescriptor | { failed: string } | null) => {
+        settled = true;
+        clearTimeout(timer);
+        clearInterval(watch);
+        unsubscribe();
+        resolve(value);
+      };
       const inspect = () => {
         if (settled) return;
         const agent = collectWorkspaceAgents(
@@ -978,19 +1000,28 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
           deps.getSessions(),
           workspace,
           deps.getActiveTabId(),
-        ).find((candidate) => candidate.leafId === leafId);
-        if (!agent) return;
-        settled = true;
-        clearTimeout(timer);
-        unsubscribe();
-        resolve(agent);
+        ).find((candidate) => candidate.leafId === handle.leafId);
+        if (agent) {
+          finish(agent);
+          return;
+        }
+        const shell = deps.getShellState?.(handle.leafId);
+        const tabShown = deps.getTabs().some((tab) => tab.id === handle.tabId);
+        if (shell?.spawnFailed) {
+          finish({
+            failed: `the ${handle.cli} terminal's shell could not start: ${shell.spawnError ?? "no reason given"}`,
+          });
+        } else if (tabSeen && !tabShown) {
+          finish({
+            failed: `the ${handle.cli} terminal closed before its CLI started`,
+          });
+        }
+        tabSeen ||= tabShown;
       };
       const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        unsubscribe();
-        resolve(null);
+        if (!settled) finish(null);
       }, timeoutMs);
+      const watch = setInterval(inspect, 250);
       unsubscribe = deps.subscribeSessions(inspect);
       inspect();
     });
@@ -1236,11 +1267,19 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
           typeof params.timeout === "number" && Number.isInteger(params.timeout)
             ? Math.max(100, Math.min(MAX_HELD_MS, params.timeout))
             : 15_000;
-        const agent = await waitForSpawn(
-          resolved.workspace,
-          spawned.leafId,
-          timeout,
+        deps.openedTerminals?.add(
+          `terminal:${spawned.tabId}:${spawned.leafId}`,
         );
+        const agent = await waitForSpawn(resolved.workspace, spawned, timeout);
+        if (agent && "failed" in agent) {
+          deps.discardSpawn?.(spawned.tabId);
+          return automationError(
+            agent.failed.includes("resource_exhausted")
+              ? "resource_exhausted"
+              : "launch_failed",
+            `${agent.failed}; nothing was launched${deps.discardSpawn ? " and its tab was closed" : ""}`,
+          );
+        }
         return {
           result: {
             ok: true,
