@@ -1542,21 +1542,36 @@ describe("shared terminal input", () => {
     }
   });
 
-  it("refuses a command before the terminal has a session at all", async () => {
+  it("sends nothing when a terminal never gets a session within the first-prompt wait", async () => {
     const write = vi.fn(() => true);
     const service = createTerminalAutomationService(
-      dependencies({ getSessionState: () => null, write }),
+      dependencies({
+        getSessionState: () => null,
+        write,
+        initialPromptSyncTimeoutMs: 50,
+      }),
     );
+    const executed = await service.handle("terminal_execute", {
+      workspace: workspace.root,
+      terminalId: "terminal:10:101",
+      text: "echo too early",
+    });
+    expect(executed).toMatchObject({
+      result: { executed: true, phase: "queued" },
+    });
+    const executionId = (executed.result as { executionId: string })
+      .executionId;
     await expect(
-      service.handle("terminal_execute", {
+      service.handle("terminal_wait", {
         workspace: workspace.root,
         terminalId: "terminal:10:101",
-        text: "echo too early",
+        executionId,
+        timeout: 1_000,
       }),
     ).resolves.toMatchObject({
-      error: {
-        code: "terminal_busy",
-        message: expect.stringContaining("terminal:10:101 is starting"),
+      result: {
+        completionReason: "dispatch_failed",
+        dispatchError: expect.stringContaining("did not start a shell"),
       },
     });
     expect(write).not.toHaveBeenCalled();
@@ -1960,5 +1975,162 @@ describe("cmd's batch question", () => {
     expect(
       batchJobQuestion("^CTerminate batch job (Y/N)? Y\nPS C:\\work> "),
     ).toBeNull();
+  });
+});
+
+describe("terminals that have not started", () => {
+  const promptShown = (): TerminalSessionState => ({
+    ...startingShell(),
+    awaitingFirstPrompt: false,
+    commandGeneration: 1,
+    commandCompletions: [{ generation: 1, exitCode: 0, at: 1 }],
+  });
+
+  it("lists a restored tab never shown as dormant, and an execute starts it", async () => {
+    // Measured: a terminal restored at start and never shown read "starting"
+    // for 11 hours and execute refused it at once, so an agent's wait for it
+    // never ended.
+    let state: TerminalSessionState | null = null;
+    const warm = vi.fn(() => {
+      setTimeout(() => {
+        state = startingShell();
+      }, 20);
+      setTimeout(() => {
+        state = promptShown();
+      }, 60);
+    });
+    const write = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({
+        getTabs: () => [terminal({ cold: true })],
+        getSessionState: () => state,
+        warm,
+        write,
+      }),
+    );
+    await expect(
+      service.handle("terminal_list", { workspace: workspaceRoot }),
+    ).resolves.toMatchObject({
+      result: {
+        terminals: [{ terminalId: "terminal:10:101", status: "dormant" }],
+        note: expect.stringContaining("terminal_execute starts it"),
+      },
+    });
+    await expect(
+      service.handle("terminal_execute", {
+        workspace: workspaceRoot,
+        terminalId: "terminal:10:101",
+        text: "echo hi",
+      }),
+    ).resolves.toMatchObject({ result: { executed: true, phase: "queued" } });
+    expect(warm).toHaveBeenCalledWith(10);
+    await vi.waitFor(() => {
+      expect(write).toHaveBeenCalledWith(101, "echo hi\r");
+    });
+  });
+
+  it("starts a dormant tab for a read and says to read again", async () => {
+    const warm = vi.fn();
+    const service = createTerminalAutomationService(
+      dependencies({
+        getTabs: () => [terminal({ cold: true })],
+        getSessionState: () => null,
+        getBuffer: () => null,
+        warm,
+      }),
+    );
+    await expect(
+      service.handle("terminal_read", {
+        workspace: workspaceRoot,
+        terminalId: "terminal:10:101",
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: "terminal_unavailable",
+        message: expect.stringContaining("Anbo is starting it now"),
+      },
+    });
+    expect(warm).toHaveBeenCalledWith(10);
+  });
+
+  it("runs a command sent before a just-opened terminal has a session", async () => {
+    // Measured: terminal_execute 260 ms after terminal_open answered "is
+    // starting" at once; the agent read the prompt and had to run it again.
+    let state: TerminalSessionState | null = null;
+    setTimeout(() => {
+      state = promptShown();
+    }, 50);
+    const write = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({ getSessionState: () => state, write }),
+    );
+    await expect(
+      service.handle("terminal_execute", {
+        workspace: workspaceRoot,
+        terminalId: "terminal:10:101",
+        text: "echo hi",
+      }),
+    ).resolves.toMatchObject({ result: { executed: true } });
+    await vi.waitFor(() => {
+      expect(write).toHaveBeenCalledWith(101, "echo hi\r");
+    });
+  });
+
+  it("names why a shell could not start and starts it again for an execute", async () => {
+    // Measured: a shell the resource guard refused read "exited" and execute
+    // said to wait for an idle prompt, which never came.
+    const refused: TerminalSessionState = {
+      ...startingShell(),
+      ready: false,
+      shellExited: true,
+      awaitingFirstPrompt: false,
+      spawnFailed: true,
+      spawnError: "resource_exhausted: Not enough system memory",
+    };
+    let state: TerminalSessionState = refused;
+    const retryStart = vi.fn(() => {
+      state = startingShell();
+      setTimeout(() => {
+        state = promptShown();
+      }, 30);
+      return true;
+    });
+    const write = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({ getSessionState: () => state, retryStart, write }),
+    );
+    await expect(
+      service.handle("terminal_list", { workspace: workspaceRoot }),
+    ).resolves.toMatchObject({ result: { terminals: [{ status: "failed" }] } });
+    await expect(
+      service.handle("terminal_execute", {
+        workspace: workspaceRoot,
+        terminalId: "terminal:10:101",
+        text: "echo hi",
+      }),
+    ).resolves.toMatchObject({ result: { executed: true } });
+    expect(retryStart).toHaveBeenCalledWith(101);
+    await vi.waitFor(() => {
+      expect(write).toHaveBeenCalledWith(101, "echo hi\r");
+    });
+
+    state = refused;
+    const noRetry = createTerminalAutomationService(
+      dependencies({ getSessionState: () => state, retryStart: () => false }),
+    );
+    await expect(
+      noRetry.handle("terminal_execute", {
+        workspace: workspaceRoot,
+        terminalId: "terminal:10:101",
+        text: "echo hi",
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: "terminal_unavailable",
+        message: expect.stringContaining(
+          "could not start: resource_exhausted: Not enough system memory",
+        ),
+      },
+    });
   });
 });

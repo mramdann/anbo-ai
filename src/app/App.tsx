@@ -190,6 +190,7 @@ import {
   readTerminalBuffer,
   readTerminalScreen,
   refitVisibleTerminalSlots,
+  retryShellStart,
   selectBackgroundTerminalTabs,
   setTerminalAutomationHandler,
   subscribeTerminalInput,
@@ -354,32 +355,42 @@ export default function App() {
   // (e.g. cdInNewTab) read the latest pane state instead of a stale closure.
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
-  const externalSyncRef = useRef<((currentTabs: typeof tabs) => void) | undefined>(undefined);
+  const externalSyncRef = useRef<
+    ((currentTabs: typeof tabs) => void) | undefined
+  >(undefined);
   useEffect(() => {
     if (!EXTERNAL_BROWSERS_ENABLED) return;
     let disposed = false;
     let stop: (() => void) | undefined;
-    void import("@/modules/browser/external/sync").then(async (service) => {
-      if (disposed) return;
-      const close = await service.startExternalBrowserSync({
-        tabs: () => tabsRef.current,
-        spaces: () => useSpaces.getState().spaces,
-        create: newBrowserTab,
-        update: updateTab,
-        warm: warmTab,
-        activate: setActiveId,
-        // Its page was closed in the browser: closed here as the user's close.
-        close: closeTab,
-      });
-      if (disposed) close();
-      else {
-        stop = close;
-        externalSyncRef.current = service.reconcileExternalBrowserTabs;
-      }
-    }).catch(() => {});
-    return () => { disposed = true; stop?.(); externalSyncRef.current = undefined; };
+    void import("@/modules/browser/external/sync")
+      .then(async (service) => {
+        if (disposed) return;
+        const close = await service.startExternalBrowserSync({
+          tabs: () => tabsRef.current,
+          spaces: () => useSpaces.getState().spaces,
+          create: newBrowserTab,
+          update: updateTab,
+          warm: warmTab,
+          activate: setActiveId,
+          // Its page was closed in the browser: closed here as the user's close.
+          close: closeTab,
+        });
+        if (disposed) close();
+        else {
+          stop = close;
+          externalSyncRef.current = service.reconcileExternalBrowserTabs;
+        }
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      stop?.();
+      externalSyncRef.current = undefined;
+    };
   }, [newBrowserTab, updateTab, warmTab, setActiveId, closeTab]);
-  useEffect(() => { externalSyncRef.current?.(tabs); }, [tabs]);
+  useEffect(() => {
+    externalSyncRef.current?.(tabs);
+  }, [tabs]);
 
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
@@ -1557,6 +1568,9 @@ export default function App() {
 
   const launchAgentGroupAtRef = useRef(launchAgentGroupAt);
   launchAgentGroupAtRef.current = launchAgentGroupAt;
+  // warmTab waits for boot; the automation services outlive that first render.
+  const warmTabRef = useRef(warmTab);
+  warmTabRef.current = warmTab;
 
   const sendCd = useCallback(
     (path: string) => {
@@ -1798,10 +1812,20 @@ export default function App() {
       try {
         if (EXTERNAL_BROWSERS_ENABLED && resolved.space.root) {
           const service = await import("@/modules/browser/external/sync");
-          externalTabId = await service.openExternalBrowser(payload.url, resolved.space.root, tabsRef.current, spaceId, payload.holdDock === true, payload.profile ?? undefined, payload.deadline ?? undefined);
+          externalTabId = await service.openExternalBrowser(
+            payload.url,
+            resolved.space.root,
+            tabsRef.current,
+            spaceId,
+            payload.holdDock === true,
+            payload.profile ?? undefined,
+            payload.deadline ?? undefined,
+          );
         } else if (payload.profile) {
           // Opening Anbo's browser instead would switch logins without saying so.
-          throw new Error("Chrome/Edge profiles are not available for this workspace; leave profile out to open the page in Anbo's browser.");
+          throw new Error(
+            "Chrome/Edge profiles are not available for this workspace; leave profile out to open the page in Anbo's browser.",
+          );
         }
       } catch (cause) {
         reply({ error: String(cause) });
@@ -1809,18 +1833,27 @@ export default function App() {
       }
       // The agent stopped waiting for this open and would never learn of the
       // tab. Closing it closes the page Anbo opened in the browser too.
-      if (externalTabId !== null && payload.deadline != null && Date.now() > payload.deadline) {
+      if (
+        externalTabId !== null &&
+        payload.deadline != null &&
+        Date.now() > payload.deadline
+      ) {
         closeTab(externalTabId);
-        reply({ error: "The page opened after Anbo stopped waiting for it, so its tab was closed again. Try again." });
+        reply({
+          error:
+            "The page opened after Anbo stopped waiting for it, so its tab was closed again. Try again.",
+        });
         return;
       }
-      const tabId = externalTabId ?? openBrowserTab(
-        payload.url,
-        placement === "visible-first-tab",
-        spaceId,
-      );
+      const tabId =
+        externalTabId ??
+        openBrowserTab(payload.url, placement === "visible-first-tab", spaceId);
       if (externalTabId !== null) {
-        placement = automationTabSelection.placement(spaceId, useSpaces.getState().activeId, tabsRef.current.filter((tab) => tab.id !== tabId));
+        placement = automationTabSelection.placement(
+          spaceId,
+          useSpaces.getState().activeId,
+          tabsRef.current.filter((tab) => tab.id !== tabId),
+        );
         if (placement === "visible-first-tab") setActiveId(tabId);
       }
       automationTabSelection.created(spaceId, tabId, placement);
@@ -1878,8 +1911,17 @@ export default function App() {
       const target = tabsRef.current.find((tab) => tab.id === payload.tabId);
       if (target?.kind === "browser" && target.external?.connected) {
         // Closed on purpose: the page closes in its browser too.
-        try { await invoke("browser_external_unbind", { tabId: payload.tabId, connectionId: target.external.connectionId, selectionId: target.external.selectionId, close: true }); }
-        catch (cause) { reply({ error: String(cause) }); return; }
+        try {
+          await invoke("browser_external_unbind", {
+            tabId: payload.tabId,
+            connectionId: target.external.connectionId,
+            selectionId: target.external.selectionId,
+            close: true,
+          });
+        } catch (cause) {
+          reply({ error: String(cause) });
+          return;
+        }
       }
       closeTab(payload.tabId);
       automationTabSelection.closed(payload.tabId);
@@ -2103,6 +2145,8 @@ export default function App() {
             hasForegroundProcess: leafHasForegroundProcess,
             prepare: prepareTerminalAutomationSession,
             unpreparedReason: terminalAutomationRefusal,
+            warm: (tabId) => warmTabRef.current(tabId),
+            retryStart: retryShellStart,
             open: (workspace, title) => {
               const placement = automationTabSelection.placement(
                 workspace.id,

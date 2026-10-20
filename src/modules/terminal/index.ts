@@ -26,6 +26,7 @@ export {
   readTerminalBuffer,
   readTerminalScreen,
   getTerminalSessionState,
+  retryShellStart,
   setTerminalCapacityHandler,
   subscribeTerminalInput,
   type TerminalCapacityReport,

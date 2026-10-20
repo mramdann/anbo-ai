@@ -44,7 +44,9 @@ export type SharedTerminalDescriptor = {
   workspace: string;
   cwd: string;
   active: boolean;
-  status: "idle" | "busy" | "starting" | "exited";
+  /** dormant: a restored tab whose shell starts when a tool first uses it.
+   *  failed: its shell could not start; terminal_execute starts it again. */
+  status: "idle" | "busy" | "starting" | "exited" | "dormant" | "failed";
   shell: string;
   columns?: number;
   rows?: number;
@@ -67,6 +69,10 @@ export type TerminalAutomationDependencies = {
   ) => { tabId: number; leafId: number; activated?: boolean } | null;
   close: (tabId: number, leafId: number) => boolean;
   write: (leafId: number, data: string) => boolean;
+  /** Mounts a restored tab that was never shown, so its shell starts. */
+  warm?: (tabId: number) => void;
+  /** Starts again a shell that could not start. */
+  retryStart?: (leafId: number) => boolean;
   initialPromptSyncTimeoutMs?: number;
 };
 
@@ -219,10 +225,39 @@ function isAgentLeaf(
 function baseStatus(
   state: TerminalSessionState | null,
 ): SharedTerminalDescriptor["status"] {
+  if (state?.spawnFailed) return "failed";
   if (!state?.ready) return state?.shellExited ? "exited" : "starting";
   if (state.shellExited) return "exited";
   if (shellStarting(state)) return "starting";
   return state.commandRunning || state.blockMode !== "prompt" ? "busy" : "idle";
+}
+
+/** Why a terminal takes no input now, and what happens next. */
+function unreadyMessage(
+  id: string,
+  status: SharedTerminalDescriptor["status"],
+  started: boolean,
+  spawnError?: string | null,
+): string {
+  if (status === "dormant") {
+    return started
+      ? `${id} had not started (its tab was restored and never shown); Anbo is starting it now. Try again once terminal_list shows it idle.`
+      : `${id} has not started (its tab was restored and never shown); showing its tab starts it.`;
+  }
+  if (status === "failed") {
+    const reason = spawnError ? `: ${spawnError}` : "";
+    return started
+      ? `${id}'s shell could not start${reason}. Anbo is starting it again; try again once terminal_list shows it idle.`
+      : `${id}'s shell could not start${reason}.`;
+  }
+  return `${id} is ${status}; wait for an idle shell prompt`;
+}
+
+/** What an execution says when its shell ended or never started. */
+function shellGoneReason(state: TerminalSessionState | null): string {
+  return state?.spawnFailed
+    ? `The shell could not start: ${state.spawnError ?? "no reason given"}`
+    : "The shell exited before the command was sent.";
 }
 
 export async function collectSharedTerminals(
@@ -261,7 +296,9 @@ export async function collectSharedTerminals(
             workspace: space.root,
             cwd: findLeafCwd(tab.paneTree, leafId) ?? tab.cwd ?? space.root,
             active: tab.id === activeTabId && tab.activeLeafId === leafId,
-            status: baseStatus(state),
+            // A restored tab is not mounted until shown or used: it has no
+            // session at all, and read "starting" for hours.
+            status: !state && tab.cold ? "dormant" : baseStatus(state),
             shell: state?.shell ?? "unknown",
             columns: state?.columns,
             rows: state?.rows,
@@ -459,8 +496,7 @@ export function createTerminalAutomationService(
         setTimeout(resolveDelay, INITIAL_PROMPT_SYNC_POLL_MS),
       );
       const next = deps.getSessionState(leafId);
-      if (!next || next.shellExited)
-        return "The shell exited before the command was sent.";
+      if (!next || next.shellExited) return shellGoneReason(next);
       state = next;
     }
     return state;
@@ -495,16 +531,47 @@ export function createTerminalAutomationService(
 
   const dispatchExecution = async (execution: ExecutionState) => {
     if (execution.phase !== "queued") return;
-    const queuedState = deps.getSessionState(execution.terminal.leafId);
-    if (!queuedState || queuedState.shellExited) {
-      finishExecution(execution, "closed", null);
-      return;
-    }
     // One wait for the first prompt, whether the shell is still starting or
     // only its live buffer has yet to parse the mark, as long as the session
     // looks for it.
     const timeoutMs = deps.initialPromptSyncTimeoutMs ?? FIRST_PROMPT_WAIT_MS;
     const deadline = Date.now() + timeoutMs;
+    // A terminal just opened, or a restored one started for this command, has
+    // no session until its tab mounts.
+    const tabOpen = () =>
+      deps.getTabs().some((tab) => tab.id === execution.terminal.tabId);
+    let queuedState = deps.getSessionState(execution.terminal.leafId);
+    while (
+      !queuedState &&
+      Date.now() < deadline &&
+      execution.phase === "queued" &&
+      tabOpen()
+    ) {
+      await new Promise((resolveDelay) =>
+        setTimeout(resolveDelay, INITIAL_PROMPT_SYNC_POLL_MS),
+      );
+      queuedState = deps.getSessionState(execution.terminal.leafId);
+    }
+    if (execution.phase !== "queued") return;
+    if (!queuedState && !tabOpen()) {
+      finishExecution(execution, "closed", null);
+      return;
+    }
+    if (!queuedState) {
+      failDispatch(
+        execution,
+        `The terminal did not start a shell within ${Math.round(timeoutMs / 1000)} s, so nothing was sent.`,
+      );
+      return;
+    }
+    if (queuedState.spawnFailed) {
+      failDispatch(execution, shellGoneReason(queuedState));
+      return;
+    }
+    if (queuedState.shellExited) {
+      finishExecution(execution, "closed", null);
+      return;
+    }
     const state = await awaitShellStart(
       execution.terminal.leafId,
       queuedState,
@@ -700,17 +767,37 @@ export function createTerminalAutomationService(
       };
     }
     const latestState = deps.getSessionState(target.terminal.leafId);
-    const status = baseStatus(latestState);
-    // A command for a shell still starting, even before its PTY opens, goes
-    // out at its first prompt (dispatchExecution).
-    const starting =
-      acceptStarting && status === "starting" && latestState !== null;
+    const status =
+      target.terminal.status === "dormant"
+        ? "dormant"
+        : baseStatus(latestState);
+    // What has not started is started for the caller: a restored tab is
+    // mounted, a shell that could not start tries again. Waiting alone never
+    // helped: nothing else started them.
+    let started = false;
+    if (status === "dormant" && deps.warm) {
+      deps.warm(target.terminal.tabId);
+      started = true;
+    } else if (status === "failed") {
+      started = deps.retryStart?.(target.terminal.leafId) ?? false;
+    }
+    // A command for a shell still starting, even before its session exists
+    // (a terminal just opened, or one started for this command), goes out at
+    // its first prompt (dispatchExecution).
+    const starting = acceptStarting && (status === "starting" || started);
     if (status !== "idle" && !starting) {
       return {
         ok: false as const,
         response: automationError(
-          "terminal_busy",
-          `${target.terminal.terminalId} is ${status}; wait for an idle shell prompt`,
+          status === "failed" && !started
+            ? "terminal_unavailable"
+            : "terminal_busy",
+          unreadyMessage(
+            target.terminal.terminalId,
+            status,
+            started,
+            latestState?.spawnError,
+          ),
         ),
       };
     }
@@ -880,6 +967,11 @@ export function createTerminalAutomationService(
             workspace: resolved.workspace.root,
             spaceId: resolved.workspace.id,
             terminals,
+            ...(terminals.some((terminal) => terminal.status === "dormant")
+              ? {
+                  note: "A dormant terminal was restored and has not started yet; terminal_execute starts it and runs the command once its prompt shows.",
+                }
+              : {}),
           },
         };
       }
@@ -889,6 +981,13 @@ export function createTerminalAutomationService(
         if (!target.ok) return target.response;
         const raw = deps.getBuffer(target.terminal.leafId);
         if (raw === null) {
+          if (target.terminal.status === "dormant" && deps.warm) {
+            deps.warm(target.terminal.tabId);
+            return automationError(
+              "terminal_unavailable",
+              unreadyMessage(target.terminal.terminalId, "dormant", true),
+            );
+          }
           return automationError(
             "terminal_unavailable",
             "terminal buffer is not available",

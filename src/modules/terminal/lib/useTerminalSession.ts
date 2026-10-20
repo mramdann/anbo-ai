@@ -120,6 +120,8 @@ type Session = {
   shell: string | null;
   hiddenReleaseTimer: ReturnType<typeof setTimeout> | null;
   spawnFailed: boolean;
+  /** Why the shell last failed to start, until it starts again. */
+  spawnError: string | null;
   // When the PTY opened (performance.now()), and whether the shell has ended a
   // prompt since, read from its raw output (firstPrompt.ts).
   ptyOpenedAt: number | null;
@@ -443,6 +445,9 @@ export type TerminalSessionState = {
   inputPending?: boolean;
   /** The shell has not ended its first prompt yet and still may. */
   awaitingFirstPrompt?: boolean;
+  /** The shell could not start (Enter in it, or retryShellStart, tries again). */
+  spawnFailed?: boolean;
+  spawnError?: string | null;
 };
 
 export function getTerminalSessionState(
@@ -470,7 +475,20 @@ export function getTerminalSessionState(
         session.ptyOpenedAt,
         performance.now(),
       ),
+    spawnFailed: session.spawnFailed,
+    spawnError: session.spawnError,
   };
+}
+
+/** Starts again a shell that could not start, as Enter in its terminal does.
+ *  False when the terminal's shell did not fail to start. */
+export function retryShellStart(leafId: number): boolean {
+  const session = sessions.get(leafId);
+  if (!session?.spawnFailed || session.disposed || session.ptyOpening) {
+    return false;
+  }
+  void respawnSession(leafId);
+  return true;
 }
 
 export function subscribeLeafBlockMode(
@@ -778,6 +796,7 @@ function ensureSession(
     shell: null,
     hiddenReleaseTimer: null,
     spawnFailed: false,
+    spawnError: null,
     ptyOpenedAt: null,
     promptEnded: false,
     promptEndMatched: 0,
@@ -871,6 +890,7 @@ function surfaceSpawnFailure(leafId: number, s: Session, e: unknown): void {
   const detail = String(e)
     .replace(/[\x00-\x1f\x7f]/g, " ")
     .slice(0, 300);
+  s.spawnError = detail;
   deliverPtyBytes(
     leafId,
     new TextEncoder().encode(
@@ -1177,6 +1197,7 @@ async function respawnSession(leafId: number, cwd?: string): Promise<void> {
   s.commandCompletions = [];
   s.inputPending = false;
   s.spawnFailed = false;
+  s.spawnError = null;
   s.ptyOpenedAt = null;
   s.promptEnded = false;
   s.promptEndMatched = 0;
