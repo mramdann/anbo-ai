@@ -2633,7 +2633,9 @@ describe("terminal_wait output of a command whose start scrolled away", () => {
   });
 
   it("reads along while a command runs, so steady output keeps its start", async () => {
-    const rig = scrollingShell(8);
+    // 40 rows through a 16-row screen: a follow every 250 ms has 550 ms to
+    // spare, which a loaded test run needs (8 rows left it 150 ms).
+    const rig = scrollingShell(16);
     let printed = 0;
     let timer: ReturnType<typeof setInterval> | undefined;
     const service = createTerminalAutomationService(
@@ -2679,7 +2681,7 @@ describe("a pager in a terminal", () => {
     expect(pagerOnScreen("diff --git a/x b/x\n+line\n:")).toBe(true);
     expect(pagerOnScreen("+last line\n(END)")).toBe(true);
     expect(pagerOnScreen("one\ntwo\n-- More (25%) --")).toBe(true);
-    expect(pagerOnScreen("PS C:\work\alpha> ")).toBe(false);
+    expect(pagerOnScreen("PS C:\\work\\alpha> ")).toBe(false);
     expect(pagerOnScreen("time: 12:30")).toBe(false);
   });
 
@@ -2691,7 +2693,7 @@ describe("a pager in a terminal", () => {
     const service = createTerminalAutomationService(
       dependencies({
         getBuffer: () =>
-          running ? "diff --git a/x b/x\n+line\n:" : "PS C:\work\alpha> ",
+          running ? "diff --git a/x b/x\n+line\n:" : "PS C:\\work\\alpha> ",
         getSessionState: () => ({
           ready: true,
           shellExited: false,
