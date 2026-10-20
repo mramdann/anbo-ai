@@ -2090,6 +2090,7 @@ export default function App() {
             getSessions: () => useAgentStore.getState().sessions,
             getActiveTabId: () => activeIdRef.current,
             getBuffer: (leafId: number) => readTerminalBuffer(leafId, 400),
+            getHistory: (leafId: number) => readTerminalBuffer(leafId, 10_000),
             getScreen: (leafId: number) => readTerminalScreen(leafId),
             write: writeToSession,
           };

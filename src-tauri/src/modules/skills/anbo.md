@@ -254,30 +254,42 @@ terminal on purpose. `terminal_execute` queues a command and returns an
 one and requires a purpose-specific title such as Dev Server or Tests. Only
 that terminal is yours to close, and only while it is idle: `terminal_close`
 refuses user-created terminals, agent CLI terminals, and anything holding a
-foreground process. An agent CLI started in your terminal makes it an agent
-tab, gone from `terminal_list`; once that CLI has ended, `terminal_close`
-still closes it.
+foreground process. A terminal you opened stays yours: it stays in
+`terminal_list` after an agent CLI ran in it (while that CLI runs it also
+shows in `agent_list`), and `terminal_close` closes it once the CLI ended.
 
 Every execute needs an idle prompt. Anbo revalidates that the PTY is attached,
 sitting at a prompt, and free of a foreground job immediately before writing,
 so a busy or exited terminal fails instead of running half a command.
 A new terminal reads `starting` until its shell shows its first prompt. A
-command given to `terminal_execute` then waits for that prompt.
+command given to `terminal_execute` then waits for that prompt. A terminal
+restored from the last session reads `dormant` until something uses it, and
+one whose shell could not start reads `failed` with the reason;
+`terminal_execute` starts either and runs the command once its prompt shows.
 `terminal_insert` refuses, and `terminal_interrupt` sends no Ctrl+C, since one
 that early can end the shell; try again once `terminal_list` shows it idle.
 A command that never went out ends `dispatch_failed`, and `dispatchError`
 says why, such as every live terminal buffer in use (47 by default, 16 to 48
 with the scrollback setting, shared by all workspaces; each live agent holds
 one). When it says nothing was sent, act on it, then run the command again.
-`terminal_wait` freezes the exit code, completion reason and output of one
-`executionId`, so a later command cannot overwrite the answer you were waiting
-for. `terminal_interrupt` cancels a specific execution, including one still
+A line the shell reads as unfinished, such as one with an open quote or
+bracket, ends `dispatch_failed` too: Anbo cancels it with Ctrl+C rather than
+leave the shell waiting for more, so correct it and run it again.
+`terminal_wait` keeps the exit code, completion reason and whole output of
+one `executionId`, so a later command cannot overwrite the answer you were
+waiting for. Each call cuts that output to its own `maxChars`, keeping the
+start and the latest part around a note of what was left out;
+`terminal_read` from `omittedCursor` reads that part. `durationMs` counts
+from when the command was typed, and `queuedMs` is the wait for the shell
+before that. One call waits at most 50 s; call again for a longer job. `terminal_interrupt` cancels a specific execution, including one still
 queued, or sends Ctrl+C when you omit the `executionId`. A program can catch
 Ctrl+C and run on, so `terminal_wait` says `interrupted` only when the command
 ended within 3 s of the Ctrl+C, and otherwise `exited` with
-`endedAfterInterruptMs`. The exit code is always the one its shell reported:
-PowerShell reports 1 for a command a Ctrl+C reached, even when the program
-itself exited 0. A Windows batch file asks "Terminate batch job (Y/N)?" after a
+`endedAfterInterruptMs`. The exit code is the one its shell reported: a
+native program a Ctrl+C reached usually gives its own code, such as
+-1073741510 (0xC000013A) for ping, while a stopped PowerShell command, or the
+same program stopped twice in a row, reads 1. Go by `interrupted`, not the
+code. A Windows batch file asks "Terminate batch job (Y/N)?" after a
 Ctrl+C, where another Ctrl+C means no and the batch runs its next step;
 `terminal_interrupt` answers yes for you.
 
@@ -290,7 +302,11 @@ user to review, or answer a prompt that is not a shell command.
 
 ## Other agents
 
-`agent_list` shows the agents in a workspace and whether each is idle.
+`agent_list` shows the agents in a workspace and whether each is idle. An
+agent restored from the last session in a workspace not shown yet lists as
+`dormant`, and as `resuming` while its CLI comes back; `agent_send`,
+`agent_read` and `agent_wait` resume a dormant one, so never start another in
+its place.
 `agent_send` gives one an instruction; it waits for the agent to be ready
 rather than typing over a running task. On a busy machine an agent can take a
 long message in more slowly than your timeout: the result then says

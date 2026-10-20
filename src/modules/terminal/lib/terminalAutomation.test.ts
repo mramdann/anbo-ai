@@ -3,7 +3,9 @@ import type { TerminalTab } from "@/modules/tabs";
 import { describe, expect, it, vi } from "vitest";
 import {
   batchJobQuestion,
+  clipExecutionOutput,
   collectSharedTerminals,
+  continuationPrompt,
   createTerminalAutomationService,
   sanitizeTerminalInput,
   sanitizeTerminalTitle,
@@ -374,7 +376,9 @@ describe("shared terminal input", () => {
       workspace: workspaceRoot,
       title: "Probe",
     });
-    // Other tools still see an agent tab, not a shared terminal.
+    // It stays its opener's terminal for every tool. Measured: an agent's
+    // 'git' terminal left terminal_list after a CLI ran in it, and the agent
+    // made another while the first stayed open.
     const listed = await service.handle("terminal_list", {
       workspace: workspaceRoot,
     });
@@ -382,13 +386,15 @@ describe("shared terminal input", () => {
       (listed.result as { terminals: { terminalId: string }[] }).terminals.map(
         (entry) => entry.terminalId,
       ),
-    ).toEqual(["terminal:10:101"]);
+    ).toEqual(["terminal:10:101", "terminal:20:201"]);
     await expect(
       service.handle("terminal_read", {
         workspace: workspaceRoot,
         terminalId: "terminal:20:201",
       }),
-    ).resolves.toMatchObject({ error: { code: "terminal_not_found" } });
+    ).resolves.toMatchObject({
+      result: { terminal: { terminalId: "terminal:20:201", status: "idle" } },
+    });
     await expect(
       service.handle("terminal_close", {
         workspace: workspaceRoot,
@@ -2132,5 +2138,537 @@ describe("terminals that have not started", () => {
         ),
       },
     });
+  });
+});
+
+describe("terminal_wait answers and executions that never end", () => {
+  const prompt = "PS C:\\work\\alpha> ";
+
+  /** A pwsh session: a command marks it running, `finish` ends it. */
+  function shellRig() {
+    const rig = {
+      buffer: prompt,
+      generation: 2,
+      running: false,
+      completions: [] as { generation: number; exitCode: number; at: number }[],
+      state: (): TerminalSessionState => ({
+        ready: true,
+        shellExited: false,
+        commandRunning: rig.running,
+        blockMode: rig.running ? "running" : "prompt",
+        commandGeneration: rig.generation,
+        commandCompletions: rig.completions,
+        lastExitCode: 0,
+        shell: "pwsh",
+        inputPending: false,
+      }),
+      finish(output: string, exitCode = 0) {
+        rig.buffer += `${output}\n${prompt}`;
+        rig.running = false;
+        rig.generation += 1;
+        rig.completions = [
+          ...rig.completions,
+          { generation: rig.generation, exitCode, at: Date.now() },
+        ];
+      },
+    };
+    return rig;
+  }
+
+  const target = { workspace: workspaceRoot, terminalId: "terminal:10:101" };
+  const idOf = (response: { result?: unknown }) =>
+    (response.result as { executionId: string }).executionId;
+
+  it("knows the prompt of a shell waiting for the rest of a command", () => {
+    expect(continuationPrompt(`${prompt}Write-Output 'abc\n>> `)).toBe(true);
+    expect(continuationPrompt('$ echo "a\n> ')).toBe(true);
+    expect(continuationPrompt('% echo "a\ndquote> ')).toBe(true);
+    expect(continuationPrompt(prompt)).toBe(false);
+    expect(continuationPrompt(`${prompt}echo a >`)).toBe(false);
+    expect(continuationPrompt("build done\n")).toBe(false);
+  });
+
+  it("cancels a command the shell took as unfinished, and names a held terminal's execution", async () => {
+    // Measured: a one-liner with an open quote left PowerShell at ">>"; the
+    // execution never ended and every later command read "still observing
+    // a previously executed command" while the terminal looked idle.
+    vi.useFakeTimers();
+    try {
+      const rig = shellRig();
+      const write = vi.fn((_leafId: number, data: string) => {
+        if (data === "Write-Output 'abc\r") {
+          rig.buffer += "Write-Output 'abc\n>> ";
+        }
+        if (data === "\x03") rig.buffer += `\n${prompt}`;
+        return true;
+      });
+      const service = createTerminalAutomationService(
+        dependencies({
+          getBuffer: () => rig.buffer,
+          getSessionState: rig.state,
+          write,
+        }),
+      );
+      const executionId = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "Write-Output 'abc",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      expect(write).toHaveBeenCalledWith(101, "Write-Output 'abc\r");
+      await expect(
+        service.handle("terminal_execute", { ...target, text: "echo next" }),
+      ).resolves.toMatchObject({
+        error: {
+          code: "terminal_busy",
+          message: expect.stringContaining(
+            `is still running ${executionId}, sent 0 s ago; wait for it with terminal_wait`,
+          ),
+        },
+      });
+
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 5_000,
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(waited).resolves.toMatchObject({
+        result: {
+          completed: true,
+          completionReason: "dispatch_failed",
+          dispatchError: expect.stringContaining(
+            "read the command as unfinished",
+          ),
+        },
+      });
+      expect(write).toHaveBeenCalledWith(101, "\x03");
+      await expect(
+        service.handle("terminal_execute", { ...target, text: "echo next" }),
+      ).resolves.toMatchObject({ result: { executed: true } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cuts each wait's answer from the whole output, keeping its start and its end", async () => {
+    // Measured: a second wait with maxChars 12000 gave the first wait's cut
+    // again, and a wait on a long job showed its first lines every time.
+    const rig = shellRig();
+    const lines = Array.from(
+      { length: 400 },
+      (_, index) => `line ${index + 1}`,
+    ).join("\n");
+    const service = createTerminalAutomationService(
+      dependencies({
+        getBuffer: () => rig.buffer,
+        getSessionState: rig.state,
+        write: (_leafId, data) => {
+          if (data === "node job.js\r") {
+            rig.buffer += "node job.js\n";
+            rig.running = true;
+            setTimeout(() => rig.finish(lines), 20);
+          }
+          return true;
+        },
+      }),
+    );
+    const executionId = idOf(
+      await service.handle("terminal_execute", {
+        ...target,
+        text: "node job.js",
+      }),
+    );
+    const small = await service.handle("terminal_wait", {
+      ...target,
+      executionId,
+      timeout: 2_000,
+      maxChars: 1_000,
+    });
+    const cut = small.result as {
+      output: string;
+      omittedCursor: string;
+      omittedChars: number;
+    };
+    expect(small.result).toMatchObject({
+      completed: true,
+      truncated: true,
+      hasMore: false,
+    });
+    expect(cut.output.length).toBeLessThanOrEqual(1_000);
+    expect(cut.output.startsWith("node job.js\nline 1\n")).toBe(true);
+    expect(cut.output).toContain(`${cut.omittedChars} characters left out`);
+    expect(cut.output.endsWith(`line 400\n${prompt}`)).toBe(true);
+
+    const large = await service.handle("terminal_wait", {
+      ...target,
+      executionId,
+      timeout: 100,
+      maxChars: 12_000,
+    });
+    expect(large.result).toMatchObject({
+      completed: true,
+      repeated: true,
+      truncated: false,
+    });
+    expect((large.result as { output: string }).output).toContain(
+      "\nline 200\n",
+    );
+    await expect(
+      service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 100,
+        maxChars: 1_000,
+      }),
+    ).resolves.toMatchObject({ result: { output: cut.output } });
+
+    const omitted = await service.handle("terminal_read", {
+      ...target,
+      cursor: cut.omittedCursor,
+      maxChars: 200,
+    });
+    expect(omitted).toMatchObject({ result: { reset: false } });
+    expect((omitted.result as { output: string }).output).toMatch(
+      /^line \d+\n/,
+    );
+  });
+
+  it("finds a repainted command's output by its own text", async () => {
+    // Measured: after a repaint a wait's output began with the terminal's old
+    // history and was cut before this run's result.
+    for (const [repaint, replayed, start] of [
+      [
+        `older screen\n${prompt}Get-Date\nTuesday 21 October\n${prompt}`,
+        false,
+        "Get-Date\nTuesday",
+      ],
+      [`Tuesday 21 October\n${prompt}`, true, "Tuesday"],
+    ] as const) {
+      const rig = shellRig();
+      rig.buffer = `${prompt}dir\nold output\n${prompt}`;
+      const service = createTerminalAutomationService(
+        dependencies({
+          getBuffer: () => rig.buffer,
+          getSessionState: rig.state,
+          write: (_leafId, data) => {
+            if (data === "Get-Date\r") {
+              rig.buffer += "Get-Date\n";
+              rig.running = true;
+              setTimeout(() => {
+                rig.buffer = repaint;
+                rig.running = false;
+                rig.generation += 1;
+                rig.completions = [
+                  { generation: rig.generation, exitCode: 0, at: Date.now() },
+                ];
+              }, 20);
+            }
+            return true;
+          },
+        }),
+      );
+      const executionId = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "Get-Date",
+        }),
+      );
+      const waited = await service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 2_000,
+      });
+      expect(waited.result).toMatchObject({
+        completed: true,
+        reset: true,
+        replayed,
+      });
+      expect(
+        (waited.result as { output: string }).output.startsWith(start),
+      ).toBe(true);
+    }
+  });
+
+  it("times a command from when it was typed and says how long it queued", async () => {
+    // Measured: a 90 s job read 110 s, 20 of them spent waiting for a new
+    // shell's first prompt.
+    vi.useFakeTimers();
+    try {
+      let state = startingShell();
+      const service = createTerminalAutomationService(
+        dependencies({ getSessionState: () => state }),
+      );
+      const executed = await service.handle("terminal_execute", {
+        ...target,
+        text: "echo late",
+      });
+      expect(executed.result).not.toHaveProperty("dispatched");
+      await vi.advanceTimersByTimeAsync(5_000);
+      state = {
+        ...state,
+        awaitingFirstPrompt: false,
+        commandGeneration: 1,
+        commandCompletions: [{ generation: 1, exitCode: 0 }],
+      };
+      await vi.advanceTimersByTimeAsync(1_000);
+      state = {
+        ...state,
+        commandGeneration: 2,
+        commandCompletions: [{ generation: 2, exitCode: 0, at: Date.now() }],
+      };
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId: idOf(executed),
+        timeout: 1_000,
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+      const result = (await waited).result as {
+        durationMs: number;
+        queuedMs: number;
+      };
+      expect(result.queuedMs).toBeGreaterThanOrEqual(5_000);
+      expect(result.durationMs).toBeLessThan(1_500);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not hold a command on a foreground check that never answers", async () => {
+    vi.useFakeTimers();
+    try {
+      const write = vi.fn(() => true);
+      const service = createTerminalAutomationService(
+        dependencies({
+          hasForegroundProcess: () => new Promise<boolean>(() => {}),
+          write,
+        }),
+      );
+      const executed = service.handle("terminal_execute", {
+        ...target,
+        text: "echo hi",
+      });
+      await vi.advanceTimersByTimeAsync(4_000);
+      await expect(executed).resolves.toMatchObject({
+        result: { executed: true },
+      });
+      await vi.advanceTimersByTimeAsync(7_000);
+      expect(write).toHaveBeenCalledWith(101, "echo hi\r");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sees inserted text that echoed late with a line break in it", async () => {
+    // Measured: inputVisible false while the text showed: the echo came after
+    // 500 ms on a busy machine.
+    let buffer = prompt;
+    const service = createTerminalAutomationService(
+      dependencies({
+        getBuffer: () => buffer,
+        write: (_leafId, data) => {
+          setTimeout(() => {
+            buffer = `${prompt}${data.slice(0, 10)}\n${data.slice(10)}`;
+          }, 600);
+          return true;
+        },
+      }),
+    );
+    await expect(
+      service.handle("terminal_insert", {
+        ...target,
+        text: "echo dari-insert yang panjang",
+      }),
+    ).resolves.toMatchObject({ result: { inputVisible: true } });
+  });
+
+  it("keeps the start and the latest part of output too long for one answer", () => {
+    const text = Array.from(
+      { length: 50 },
+      (_, index) => `row ${index} of a long log`,
+    ).join("\n");
+    const cut = clipExecutionOutput(text, 400);
+    expect(cut.output.length).toBeLessThanOrEqual(400);
+    expect(cut.output.startsWith("row 0 of a long log\n")).toBe(true);
+    expect(cut.output.endsWith("row 49 of a long log")).toBe(true);
+    expect(text.slice(cut.omittedFrom).startsWith("row ")).toBe(true);
+    expect(clipExecutionOutput(text, 100)).toMatchObject({
+      output: text.slice(-100),
+      omittedFrom: 0,
+    });
+    expect(clipExecutionOutput("short", 400)).toMatchObject({
+      output: "short",
+      omittedChars: 0,
+    });
+  });
+});
+
+describe("terminal_wait output of a command whose start scrolled away", () => {
+  const prompt = "PS C:\\work\\alpha> ";
+  const target = { workspace: workspaceRoot, terminalId: "terminal:10:101" };
+
+  /** A terminal whose buffer reads give only its last `window` lines. */
+  function scrollingShell(window: number) {
+    const rig = {
+      lines: [`${prompt}`] as string[],
+      generation: 2,
+      running: false,
+      completions: [] as { generation: number; exitCode: number; at: number }[],
+      buffer: () => rig.lines.slice(-window).join("\n"),
+      history: () => rig.lines.join("\n"),
+      state: (): TerminalSessionState => ({
+        ready: true,
+        shellExited: false,
+        commandRunning: rig.running,
+        blockMode: rig.running ? "running" : "prompt",
+        commandGeneration: rig.generation,
+        commandCompletions: rig.completions,
+        lastExitCode: 0,
+        shell: "pwsh",
+        inputPending: false,
+      }),
+      print(count: number, from: number) {
+        for (let index = 0; index < count; index += 1) {
+          rig.lines.push(`row ${from + index} of the job`);
+        }
+      },
+      end() {
+        rig.lines.push(prompt);
+        rig.running = false;
+        rig.generation += 1;
+        rig.completions = [
+          { generation: rig.generation, exitCode: 0, at: Date.now() },
+        ];
+      },
+    };
+    return rig;
+  }
+
+  it("finds the command in the scrollback after a burst scrolled it out of the lines read", async () => {
+    // Measured: 700 lines at once shared nothing with the 400 lines read
+    // before them, and the answer began at line 302.
+    const rig = scrollingShell(5);
+    const service = createTerminalAutomationService(
+      dependencies({
+        getBuffer: rig.buffer,
+        getHistory: rig.history,
+        getSessionState: rig.state,
+        write: (_leafId, data) => {
+          if (data === "node job.js\r") {
+            rig.lines[rig.lines.length - 1] += "node job.js";
+            rig.running = true;
+            setTimeout(() => {
+              rig.print(50, 1);
+              rig.end();
+            }, 20);
+          }
+          return true;
+        },
+      }),
+    );
+    const executed = await service.handle("terminal_execute", {
+      ...target,
+      text: "node job.js",
+    });
+    const waited = await service.handle("terminal_wait", {
+      ...target,
+      executionId: (executed.result as { executionId: string }).executionId,
+      timeout: 2_000,
+      maxChars: 400,
+    });
+    const result = waited.result as { output: string };
+    expect(waited.result).toMatchObject({
+      completed: true,
+      reset: true,
+      replayed: false,
+      truncated: true,
+    });
+    expect(waited.result).not.toHaveProperty("omittedCursor");
+    expect(result.output.startsWith("node job.js\nrow 1 of the job\n")).toBe(
+      true,
+    );
+    expect(result.output).toContain("row 50 of the job");
+  });
+
+  it("answers a second run of the same long command, waited on after it ended", async () => {
+    // Measured: the second run's last 400 lines matched the first run's, read
+    // as no change, and its wait answered with nothing.
+    const rig = scrollingShell(5);
+    const service = createTerminalAutomationService(
+      dependencies({
+        getBuffer: rig.buffer,
+        getHistory: rig.history,
+        getSessionState: rig.state,
+        write: (_leafId, data) => {
+          if (data === "node job.js\r") {
+            rig.lines[rig.lines.length - 1] += "node job.js";
+            rig.running = true;
+            rig.print(50, 1);
+            rig.end();
+          }
+          return true;
+        },
+      }),
+    );
+    for (let run = 0; run < 2; run += 1) {
+      const executed = await service.handle("terminal_execute", {
+        ...target,
+        text: "node job.js",
+      });
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 400));
+      const waited = await service.handle("terminal_wait", {
+        ...target,
+        executionId: (executed.result as { executionId: string }).executionId,
+        timeout: 2_000,
+      });
+      const output = (waited.result as { output: string }).output;
+      expect(
+        output.startsWith("node job.js\nrow 1 of the job\n"),
+        `run ${run}`,
+      ).toBe(true);
+      expect(output).toContain("row 50 of the job");
+    }
+  });
+
+  it("reads along while a command runs, so steady output keeps its start", async () => {
+    const rig = scrollingShell(8);
+    let printed = 0;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const service = createTerminalAutomationService(
+      dependencies({
+        getBuffer: rig.buffer,
+        getSessionState: rig.state,
+        write: (_leafId, data) => {
+          if (data === "node job.js\r") {
+            rig.lines[rig.lines.length - 1] += "node job.js";
+            rig.running = true;
+            timer = setInterval(() => {
+              rig.print(2, printed + 1);
+              printed += 2;
+              if (printed >= 40) {
+                clearInterval(timer);
+                rig.end();
+              }
+            }, 100);
+          }
+          return true;
+        },
+      }),
+    );
+    const executed = await service.handle("terminal_execute", {
+      ...target,
+      text: "node job.js",
+    });
+    const waited = await service.handle("terminal_wait", {
+      ...target,
+      executionId: (executed.result as { executionId: string }).executionId,
+      timeout: 5_000,
+      maxChars: 12_000,
+    });
+    expect(waited.result).toMatchObject({ completed: true, reset: false });
+    const output = (waited.result as { output: string }).output;
+    expect(output.startsWith("node job.js\nrow 1 of the job\n")).toBe(true);
+    expect(output).toContain("row 40 of the job");
   });
 });

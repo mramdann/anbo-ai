@@ -746,9 +746,13 @@ export class AgentOutputTracker {
   }
 }
 
+/** The longest a call holds its answer: it ends before the MCP client's own
+ *  60 s request limit, as browser and terminal waits do. */
+const MAX_HELD_MS = 50_000;
+
 const sendTimeout = (params: Record<string, unknown>) =>
   typeof params.timeout === "number" && Number.isInteger(params.timeout)
-    ? Math.max(100, Math.min(60_000, params.timeout))
+    ? Math.max(100, Math.min(MAX_HELD_MS, params.timeout))
     : 30_000;
 
 const typingResponse = (
@@ -1225,7 +1229,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         }
         const timeout =
           typeof params.timeout === "number" && Number.isInteger(params.timeout)
-            ? Math.max(100, Math.min(60_000, params.timeout))
+            ? Math.max(100, Math.min(MAX_HELD_MS, params.timeout))
             : 15_000;
         const agent = await waitForSpawn(
           resolved.workspace,
@@ -1344,7 +1348,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
             : null;
         const timeout =
           typeof params.timeout === "number" && Number.isInteger(params.timeout)
-            ? Math.max(100, Math.min(60_000, params.timeout))
+            ? Math.max(100, Math.min(MAX_HELD_MS, params.timeout))
             : 10_000;
         const waited = await waitFor(params, status, timeout);
         return {

@@ -15,7 +15,10 @@ const MAX_MESSAGE_BYTES: usize = 32 * 1024;
 const MAX_MESSAGE_ID_BYTES: usize = 128;
 const MAX_CURSOR_BYTES: usize = 128;
 const MAX_READ_CHARS: u64 = 12_000;
-const MAX_TIMEOUT_MS: u64 = 60_000;
+/// The longest a call holds its answer: as browser waits do (actions.rs), it
+/// ends before the MCP client's own 60 s request limit, which a wait asked for
+/// 60 s had crossed and come back as a bare "The operation timed out.".
+const MAX_HELD_MS: u64 = 50_000;
 /// Anbo listens this much past the deadline it gives the UI. The UI may start
 /// an operation just before it while it is busy for seconds (20 terminals
 /// opened at once right after a start), and its answer then still arrives.
@@ -81,31 +84,36 @@ fn optional_bounded_string(
     Ok(())
 }
 
-fn bounded_integer(
-    params: &Value,
+/// A whole-number argument brought into its range and written back for the
+/// UI. maxChars 20000 was an error that cost an agent a turn, and a number sent
+/// as a string ("8000") was taken as no value at all.
+fn clamped_integer(
+    params: &mut Value,
     key: &str,
     minimum: u64,
     maximum: u64,
 ) -> Result<Option<u64>, (String, String)> {
-    let Some(value) = params.get(key) else {
+    let Some(raw) = params.get(key) else {
         return Ok(None);
     };
-    let value = value.as_u64().ok_or_else(|| {
+    let value = match raw {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => text.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+    .filter(|value| value.is_finite() && value.fract() == 0.0)
+    .ok_or_else(|| {
         (
             error_codes::INVALID_REQUEST.to_string(),
-            format!("{key} must be a positive integer"),
+            format!("{key} must be a whole number"),
         )
     })?;
-    if !(minimum..=maximum).contains(&value) {
-        return Err((
-            error_codes::INVALID_REQUEST.to_string(),
-            format!("{key} must be between {minimum} and {maximum}"),
-        ));
-    }
+    let value = value.clamp(minimum as f64, maximum as f64) as u64;
+    params[key] = json!(value);
     Ok(Some(value))
 }
 
-fn validate_params(method: &str, params: &Value) -> Result<u64, (String, String)> {
+fn validate_params(method: &str, params: &mut Value) -> Result<u64, (String, String)> {
     if !params.is_object() {
         return Err((
             error_codes::INVALID_REQUEST.to_string(),
@@ -149,13 +157,12 @@ fn validate_params(method: &str, params: &Value) -> Result<u64, (String, String)
                     "agent contains control characters".to_string(),
                 ));
             }
-            let timeout =
-                bounded_integer(params, "timeout", 100, MAX_TIMEOUT_MS)?.unwrap_or(15_000);
+            let timeout = clamped_integer(params, "timeout", 100, MAX_HELD_MS)?.unwrap_or(15_000);
             Ok(timeout + 2_000)
         }
         "agent_read" | "terminal_read" => {
             optional_bounded_string(params, "cursor", MAX_CURSOR_BYTES)?;
-            bounded_integer(params, "maxChars", 1, MAX_READ_CHARS)?;
+            clamped_integer(params, "maxChars", 1, MAX_READ_CHARS)?;
             Ok(10_000)
         }
         "terminal_insert" | "terminal_execute" => {
@@ -170,9 +177,8 @@ fn validate_params(method: &str, params: &Value) -> Result<u64, (String, String)
         }
         "terminal_wait" => {
             required_bounded_string(params, "executionId", MAX_TERMINAL_ID_BYTES)?;
-            bounded_integer(params, "maxChars", 1, MAX_READ_CHARS)?;
-            let timeout =
-                bounded_integer(params, "timeout", 100, MAX_TIMEOUT_MS)?.unwrap_or(10_000);
+            clamped_integer(params, "maxChars", 1, MAX_READ_CHARS)?;
+            let timeout = clamped_integer(params, "timeout", 100, MAX_HELD_MS)?.unwrap_or(10_000);
             Ok(timeout + 2_000)
         }
         "terminal_interrupt" => {
@@ -193,8 +199,7 @@ fn validate_params(method: &str, params: &Value) -> Result<u64, (String, String)
             }
             optional_bounded_string(params, "sourceAgentId", MAX_AGENT_ID_BYTES)?;
             optional_bounded_string(params, "messageId", MAX_MESSAGE_ID_BYTES)?;
-            let timeout =
-                bounded_integer(params, "timeout", 100, MAX_TIMEOUT_MS)?.unwrap_or(30_000);
+            let timeout = clamped_integer(params, "timeout", 100, MAX_HELD_MS)?.unwrap_or(30_000);
             Ok(timeout + 2_000)
         }
         "agent_wait" => {
@@ -206,8 +211,7 @@ fn validate_params(method: &str, params: &Value) -> Result<u64, (String, String)
                     ));
                 }
             }
-            let timeout =
-                bounded_integer(params, "timeout", 100, MAX_TIMEOUT_MS)?.unwrap_or(10_000);
+            let timeout = clamped_integer(params, "timeout", 100, MAX_HELD_MS)?.unwrap_or(10_000);
             Ok(timeout + 2_000)
         }
         _ => Err((
@@ -222,7 +226,8 @@ pub async fn handle_agent_action(
     method: &str,
     params: Value,
 ) -> Result<Value, (String, String)> {
-    let timeout_ms = validate_params(method, &params)?;
+    let mut params = params;
+    let timeout_ms = validate_params(method, &mut params)?;
     let mut answer = Answer::expect();
     let deadline = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -283,95 +288,117 @@ pub async fn handle_agent_action(
 mod tests {
     use super::*;
 
+    fn check(method: &str, params: Value) -> Result<u64, (String, String)> {
+        let mut params = params;
+        validate_params(method, &mut params)
+    }
+
     #[test]
     fn validation_requires_explicit_workspace_and_agent() {
-        let missing_workspace = validate_params("agent_list", &json!({})).unwrap_err();
+        let missing_workspace = check("agent_list", json!({})).unwrap_err();
         assert_eq!(missing_workspace.0, error_codes::INVALID_REQUEST);
-        let missing_agent =
-            validate_params("agent_status", &json!({ "workspace": "C:/repo" })).unwrap_err();
+        let missing_agent = check("agent_status", json!({ "workspace": "C:/repo" })).unwrap_err();
         assert_eq!(missing_agent.0, error_codes::INVALID_REQUEST);
         let missing_spawn_agent =
-            validate_params("agent_spawn", &json!({ "workspace": "C:/repo" })).unwrap_err();
+            check("agent_spawn", json!({ "workspace": "C:/repo" })).unwrap_err();
         assert_eq!(missing_spawn_agent.0, error_codes::INVALID_REQUEST);
     }
 
     #[test]
     fn validation_bounds_read_send_and_wait_inputs() {
-        assert!(validate_params(
+        assert!(check(
             "agent_spawn",
-            &json!({ "workspace": "C:/repo", "agent": "Sample CLI" })
+            json!({ "workspace": "C:/repo", "agent": "Sample CLI" })
         )
         .is_ok());
-        assert!(validate_params(
+        assert!(check(
             "agent_spawn",
-            &json!({ "workspace": "C:/repo", "agent": "custom:sample-cli" })
+            json!({ "workspace": "C:/repo", "agent": "custom:sample-cli" })
         )
         .is_ok());
-        assert!(validate_params(
-            "agent_read",
-            &json!({ "workspace": "C:/repo", "agentId": "agent:one:1", "maxChars": 12_001 })
-        )
-        .is_err());
-        assert!(validate_params(
+        assert!(check(
             "agent_send",
-            &json!({ "workspace": "C:/repo", "agentId": "agent:one:1", "message": "bad\u{0007}" })
+            json!({ "workspace": "C:/repo", "agentId": "agent:one:1", "message": "bad\u{0007}" })
         )
         .is_err());
-        assert!(validate_params(
+        assert!(check(
             "agent_wait",
-            &json!({ "workspace": "C:/repo", "agentId": "agent:one:1", "status": "done" })
+            json!({ "workspace": "C:/repo", "agentId": "agent:one:1", "status": "done" })
         )
         .is_err());
         assert_eq!(
-            validate_params("terminal_list", &json!({ "workspace": "C:/repo" })),
+            check("terminal_list", json!({ "workspace": "C:/repo" })),
             Ok(10_000)
         );
         assert_eq!(
-            validate_params(
+            check(
                 "terminal_execute",
-                &json!({ "workspace": "C:/repo", "terminalId": "terminal:1:1", "text": "dir" })
+                json!({ "workspace": "C:/repo", "terminalId": "terminal:1:1", "text": "dir" })
             ),
             Ok(15_000)
         );
         assert_eq!(
-            validate_params(
+            check(
                 "terminal_open",
-                &json!({ "workspace": "C:/repo", "title": "Dev Server" })
+                json!({ "workspace": "C:/repo", "title": "Dev Server" })
             ),
             Ok(15_000)
         );
-        assert!(validate_params(
+        assert!(check(
             "terminal_open",
-            &json!({ "workspace": "C:/repo", "title": "" })
+            json!({ "workspace": "C:/repo", "title": "" })
         )
         .is_err());
-        assert!(validate_params(
-            "terminal_read",
-            &json!({ "workspace": "C:/repo", "terminalId": "terminal:1:1", "maxChars": 12_001 })
-        )
-        .is_err());
-        assert!(validate_params(
+        assert!(check(
             "terminal_execute",
-            &json!({ "workspace": "C:/repo", "terminalId": "terminal:1:1", "text": "one\ntwo" })
+            json!({ "workspace": "C:/repo", "terminalId": "terminal:1:1", "text": "one\ntwo" })
         )
         .is_err());
-        assert!(validate_params(
+        assert!(check(
             "terminal_interrupt",
-            &json!({
+            json!({
                 "workspace": "C:/repo",
                 "terminalId": "terminal:1:1",
                 "executionId": "terminal-execution:1:1:1"
             })
         )
         .is_ok());
-        assert!(validate_params(
+        assert!(check(
             "terminal_interrupt",
-            &json!({
+            json!({
                 "workspace": "C:/repo",
                 "terminalId": "terminal:1:1",
                 "executionId": "x".repeat(MAX_TERMINAL_ID_BYTES + 1)
             })
         )
         .is_err());
+    }
+
+    #[test]
+    fn numbers_out_of_range_or_written_as_strings_are_brought_into_range() {
+        // Measured: maxChars 20000 and timeout 60000 cost agents a turn (an
+        // error, and a bare client timeout); "8000" was read as no value.
+        let mut params = json!({
+            "workspace": "C:/repo",
+            "terminalId": "terminal:1:1",
+            "executionId": "terminal-execution:1:1:1",
+            "maxChars": 20_000,
+            "timeout": 60_000
+        });
+        assert_eq!(validate_params("terminal_wait", &mut params), Ok(52_000));
+        assert_eq!(params["maxChars"], json!(12_000));
+        assert_eq!(params["timeout"], json!(50_000));
+        let mut params =
+            json!({ "workspace": "C:/repo", "agentId": "agent:one:1", "maxChars": "8000" });
+        assert!(validate_params("agent_read", &mut params).is_ok());
+        assert_eq!(params["maxChars"], json!(8_000));
+        let mut params = json!({ "workspace": "C:/repo", "agentId": "agent:one:1", "maxChars": 0 });
+        assert!(validate_params("agent_read", &mut params).is_ok());
+        assert_eq!(params["maxChars"], json!(1));
+        for bad in [json!("many"), json!(12.5), json!(true)] {
+            let mut params =
+                json!({ "workspace": "C:/repo", "agentId": "agent:one:1", "maxChars": bad });
+            assert!(validate_params("agent_read", &mut params).is_err());
+        }
     }
 }

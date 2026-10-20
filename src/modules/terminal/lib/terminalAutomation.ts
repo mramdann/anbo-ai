@@ -8,7 +8,11 @@ import {
   type TerminalAutomationMethod,
 } from "@/modules/agents/lib/agentAutomationProtocol";
 import type { AgentSession } from "@/modules/agents/lib/types";
-import { OutputTracker } from "@/modules/agents/lib/outputTracker";
+import {
+  clampMaxChars,
+  keptOutput,
+  OutputTracker,
+} from "@/modules/agents/lib/outputTracker";
 import type { SpaceMeta } from "@/modules/spaces/lib/store";
 import type { Tab, TerminalTab } from "@/modules/tabs";
 import { FIRST_PROMPT_WAIT_MS } from "@/modules/terminal/lib/firstPrompt";
@@ -22,8 +26,24 @@ const MAX_EXECUTIONS = 100;
 const WAIT_POLL_MS = 75;
 const DISPATCH_DELAY_MS = 200;
 const INITIAL_PROMPT_SYNC_POLL_MS = 25;
-const INPUT_VISIBILITY_TIMEOUT_MS = 500;
+/** How long terminal_insert looks for its text on screen. On a busy machine
+ *  the echo came after 500 ms, and the tool said the text was not shown. */
+const INPUT_VISIBILITY_TIMEOUT_MS = 1_500;
 const INPUT_VISIBILITY_POLL_MS = 25;
+/** The longest a foreground-process check may take. One that never answered
+ *  held a command queued for good, and every later one read busy. */
+const FOREGROUND_CHECK_TIMEOUT_MS = 3_000;
+/** A line the shell has not started as a command this long after its Enter,
+ *  while it shows a continuation prompt, is an unfinished command. */
+const UNFINISHED_COMMAND_MS = 1_500;
+/** The longest terminal_wait holds its answer, as browser waits do: it ends
+ *  before the MCP client's own 60 s request limit. */
+const MAX_WAIT_MS = 50_000;
+/** How often a wait reads along with a running command, so a burst of
+ *  output keeps overlapping what was read before it. */
+const OUTPUT_FOLLOW_MS = 250;
+/** Below this, an answer cut short keeps only the output's latest part. */
+const SPLIT_OUTPUT_MIN_CHARS = 400;
 /** A command that ends this soon after Anbo's Ctrl+C reads as interrupted. In
  *  Dev the commands a Ctrl+C stopped ended within half a second of it; a
  *  program that catches Ctrl+C runs on and ends whenever it would have. */
@@ -58,6 +78,9 @@ export type TerminalAutomationDependencies = {
   getSessions: () => Record<number, AgentSession>;
   getActiveTabId: () => number | null;
   getBuffer: (leafId: number) => string | null;
+  /** The terminal's whole scrollback, for finding a command's start once a
+   *  burst of output scrolled it out of getBuffer's lines. */
+  getHistory?: (leafId: number) => string | null;
   getSessionState: (leafId: number) => TerminalSessionState | null;
   hasForegroundProcess: (leafId: number) => Promise<boolean>;
   prepare: (leafId: number) => boolean;
@@ -84,6 +107,18 @@ type TerminalReadSnapshot = {
   historyTruncated: boolean;
   reset: boolean;
   replayed: boolean;
+};
+
+/** Everything one execution printed so far, before an answer cuts it. */
+type ExecutionOutput = {
+  text: string;
+  cursorAt: (index: number) => string;
+  reset: boolean;
+  replayed: boolean;
+  historyTruncated: boolean;
+  /** False when the text came from the scrollback, outside what cursors
+   *  page through. */
+  pageable?: boolean;
 };
 
 type ExecutionPhase =
@@ -124,7 +159,10 @@ type ExecutionState = {
   /** Why a dispatch_failed command was never sent. */
   dispatchError?: string;
   exitCode: number | null;
-  finalRead?: TerminalReadSnapshot;
+  /** The whole output once the command ended; each wait cuts its own answer
+   *  from it. A copy cut to the first wait's maxChars gave every later wait
+   *  the same cut. */
+  finalOutput?: ExecutionOutput;
 };
 
 function bufferFingerprint(value: string): string {
@@ -154,6 +192,55 @@ function shellStarting(state: TerminalSessionState): boolean {
  *  words it in its own language, so the shape is matched, not the words. */
 export function batchJobQuestion(screen: string): string | null {
   return /\^C[^\r\n]*\((\p{L})\/\p{L}\)[ \t]*\?\s*$/u.exec(screen)?.[1] ?? null;
+}
+
+/** Whether the screen ends with the prompt a shell shows while it waits for
+ *  the rest of an unfinished command: PowerShell's ">>", bash's ">", zsh's
+ *  "quote>" and the like. */
+export function continuationPrompt(screen: string): boolean {
+  const lines = screen.trimEnd().split("\n");
+  return /^(?:>>|[a-z]*>)$/.test((lines[lines.length - 1] ?? "").trim());
+}
+
+const UNFINISHED_COMMAND =
+  "The shell read the command as unfinished (an open quote or bracket, or a line ending in a pipe or backtick) and waited for more lines, so it did not run. Anbo cancelled it with Ctrl+C; correct the command and run it again.";
+
+/** At most `maxChars` of an execution's output: all of it when it fits;
+ *  otherwise its start and its latest part around a line saying how much was
+ *  left out. A wait on a long job showed the same start every time, and a
+ *  repainted one only its end. */
+export function clipExecutionOutput(
+  text: string,
+  maxChars: number,
+): { output: string; omittedFrom: number; omittedChars: number } {
+  if (text.length <= maxChars) {
+    return { output: text, omittedFrom: text.length, omittedChars: 0 };
+  }
+  if (maxChars < SPLIT_OUTPUT_MIN_CHARS) {
+    return {
+      output: text.slice(text.length - maxChars),
+      omittedFrom: 0,
+      omittedChars: text.length - maxChars,
+    };
+  }
+  const marker = (chars: number) =>
+    `\n[... ${chars} characters left out; terminal_read with omittedCursor reads them ...]\n`;
+  const headLength = Math.floor(maxChars / 4);
+  const tailLength = maxChars - headLength - marker(text.length).length;
+  // Cut at line ends where one is near, so neither part starts mid-line.
+  const headBreak = text.lastIndexOf("\n", headLength);
+  const headEnd = headBreak > headLength / 2 ? headBreak + 1 : headLength;
+  let tailStart = text.length - tailLength;
+  const tailBreak = text.indexOf("\n", tailStart);
+  if (tailBreak !== -1 && tailBreak < tailStart + tailLength / 4) {
+    tailStart = tailBreak + 1;
+  }
+  const omittedChars = tailStart - headEnd;
+  return {
+    output: `${text.slice(0, headEnd)}${marker(omittedChars)}${text.slice(tailStart)}`,
+    omittedFrom: headEnd,
+    omittedChars,
+  };
 }
 
 function firstPromptMissing(timeoutMs: number): string {
@@ -200,6 +287,75 @@ class TerminalOutputTracker {
       historyTruncated: read.historyTruncated,
       reset: read.reset,
       replayed: read.reset && cursor !== undefined,
+    };
+  }
+
+  /** One execution's output so far: everything after its cursor. When the
+   *  cursor no longer applies (a repaint, or more output at once than the
+   *  lines read each time), the output starts where the command's own text
+   *  shows last, on screen or in the scrollback, or is all that is kept. */
+  execution(
+    id: string,
+    rawOutput: string,
+    cursor: string,
+    command: string,
+    ended: boolean,
+    history?: () => string | null,
+  ): ExecutionOutput {
+    const span = this.tracker.span(id, rawOutput, cursor);
+    if (span.dropped) {
+      return {
+        text: span.text,
+        cursorAt: span.cursorAt,
+        reset: true,
+        replayed: false,
+        historyTruncated: true,
+      };
+    }
+    // An ended command's output starts with its own echo. Without it the
+    // cursor was lost: the same 400 lines scrolling by again read as no
+    // change, and a second run of a long command answered with nothing.
+    const lost =
+      span.reset || (ended && command !== "" && !span.text.includes(command));
+    if (!lost) {
+      return {
+        text: span.text,
+        cursorAt: span.cursorAt,
+        reset: false,
+        replayed: false,
+        historyTruncated: false,
+      };
+    }
+    const onScreen =
+      span.reset && command ? span.text.lastIndexOf(command) : -1;
+    if (onScreen >= 0) {
+      return {
+        text: span.text.slice(onScreen),
+        cursorAt: (index) => span.cursorAt(onScreen + index),
+        reset: true,
+        replayed: false,
+        historyTruncated: false,
+      };
+    }
+    const deep = command ? keptOutput(history?.() ?? "") : "";
+    const inHistory = command ? deep.lastIndexOf(command) : -1;
+    if (inHistory >= 0) {
+      const end = span.cursorAt(span.text.length);
+      return {
+        text: deep.slice(inHistory),
+        cursorAt: () => end,
+        reset: true,
+        replayed: false,
+        historyTruncated: false,
+        pageable: false,
+      };
+    }
+    return {
+      text: span.text,
+      cursorAt: span.cursorAt,
+      reset: true,
+      replayed: true,
+      historyTruncated: false,
     };
   }
 
@@ -369,9 +525,41 @@ export function sanitizeTerminalTitle(
   return { ok: true, title };
 }
 
+/** `ask`, answered with `fallback` when it fails or takes longer than `ms`. */
+function answerWithin<T>(
+  ask: (leafId: number) => Promise<T>,
+  ms: number,
+  fallback: T,
+): (leafId: number) => Promise<T> {
+  return (leafId) =>
+    new Promise<T>((resolveAnswer) => {
+      const timer = setTimeout(() => resolveAnswer(fallback), ms);
+      ask(leafId).then(
+        (value) => {
+          clearTimeout(timer);
+          resolveAnswer(value);
+        },
+        () => {
+          clearTimeout(timer);
+          resolveAnswer(fallback);
+        },
+      );
+    });
+}
+
 export function createTerminalAutomationService(
-  deps: TerminalAutomationDependencies,
+  dependencies: TerminalAutomationDependencies,
 ) {
+  // A failed check already reads as no foreground process (useTerminalSession);
+  // one that never answers now does too, instead of holding the tool forever.
+  const deps: TerminalAutomationDependencies = {
+    ...dependencies,
+    hasForegroundProcess: answerWithin(
+      dependencies.hasForegroundProcess,
+      FOREGROUND_CHECK_TIMEOUT_MS,
+      false,
+    ),
+  };
   const output = new TerminalOutputTracker();
   const executions = new Map<string, ExecutionState>();
   const openedTerminals = new Set<string>();
@@ -455,6 +643,22 @@ export function createTerminalAutomationService(
       return true;
     }
     const shellBusy = state.commandRunning || state.blockMode !== "prompt";
+    // The shell took the line as the start of a longer command and waits for
+    // the rest: no command began, and nothing ever ended this execution. It
+    // read busy for good while the terminal looked idle, and text typed next
+    // would have joined the unfinished line.
+    if (
+      execution.usesOsc &&
+      execution.phase === "dispatched" &&
+      !shellBusy &&
+      execution.dispatchedAt !== undefined &&
+      Date.now() - execution.dispatchedAt >= UNFINISHED_COMMAND_MS &&
+      continuationPrompt(deps.getBuffer(leafId) ?? "")
+    ) {
+      deps.write(leafId, "\x03");
+      failDispatch(execution, UNFINISHED_COMMAND);
+      return true;
+    }
     if (shellBusy && execution.phase === "dispatched") {
       execution.phase = "running";
       execution.runningAt = Date.now();
@@ -678,22 +882,40 @@ export function createTerminalAutomationService(
     setTimeout(look, BATCH_QUESTION_POLL_MS);
   };
 
-  const hasPendingExecution = async (id: string): Promise<boolean> => {
+  const pendingExecution = async (
+    id: string,
+  ): Promise<ExecutionState | undefined> => {
     for (const execution of executions.values()) {
       if (
         execution.terminalId === id &&
         !(await refreshExecutionCompletion(execution))
       ) {
-        return true;
+        return execution;
       }
     }
-    return false;
+    return undefined;
   };
 
+  const hasPendingExecution = async (id: string): Promise<boolean> =>
+    (await pendingExecution(id)) !== undefined;
+
+  /** Which execution holds a terminal, so an agent can wait for it or stop
+   *  it instead of only hearing that the terminal is busy. */
+  const pendingMessage = (id: string, execution: ExecutionState): string => {
+    const since = Math.round(
+      (Date.now() - (execution.dispatchedAt ?? execution.startedAt)) / 1000,
+    );
+    return execution.phase === "queued"
+      ? `${id} still holds ${execution.executionId}, queued ${since} s ago for its first prompt; wait for it with terminal_wait or cancel it with terminal_interrupt`
+      : `${id} is still running ${execution.executionId}, sent ${since} s ago; wait for it with terminal_wait or stop it with terminal_interrupt`;
+  };
+
+  // A terminal an agent opened stays its own after a CLI ran in it: dropped
+  // from every tool but terminal_close, it looked closed to the agent.
   const resolve = async (
     params: Record<string, unknown>,
     verifyForeground = true,
-    opened?: ReadonlySet<string>,
+    opened: ReadonlySet<string> = openedTerminals,
   ): Promise<
     | {
         ok: true;
@@ -757,12 +979,13 @@ export function createTerminalAutomationService(
   ) => {
     const target = await resolveTarget(params, false);
     if (!target.ok) return target;
-    if (await hasPendingExecution(target.terminal.terminalId)) {
+    const pending = await pendingExecution(target.terminal.terminalId);
+    if (pending) {
       return {
         ok: false as const,
         response: automationError(
           "terminal_busy",
-          `${target.terminal.terminalId} is still observing a previously executed command`,
+          pendingMessage(target.terminal.terminalId, pending),
         ),
       };
     }
@@ -903,11 +1126,9 @@ export function createTerminalAutomationService(
             `${id} is running an agent CLI, which agent_list shows; end it before closing the terminal`,
           );
         }
-        if (await hasPendingExecution(id)) {
-          return automationError(
-            "terminal_busy",
-            `${id} is still observing a previously executed command`,
-          );
+        const pending = await pendingExecution(id);
+        if (pending) {
+          return automationError("terminal_busy", pendingMessage(id, pending));
         }
         const state = deps.getSessionState(target.terminal.leafId);
         if (state?.inputPending) {
@@ -1039,14 +1260,29 @@ export function createTerminalAutomationService(
         execution.waitCount += 1;
         const timeout =
           typeof params.timeout === "number" && Number.isInteger(params.timeout)
-            ? Math.max(100, Math.min(60_000, params.timeout))
+            ? Math.max(100, Math.min(MAX_WAIT_MS, params.timeout))
             : 10_000;
         const deadline = Date.now() + timeout;
         let completed = completedBeforeWait;
+        let followedAt = 0;
         while (Date.now() < deadline) {
           if (await refreshExecutionCompletion(execution)) {
             completed = true;
             break;
+          }
+          // Read along while it runs: 700 lines between two reads shared
+          // nothing with the lines read before, read as a repaint, and the
+          // command's start was lost.
+          if (
+            target.ok &&
+            execution.phase !== "queued" &&
+            Date.now() - followedAt >= OUTPUT_FOLLOW_MS
+          ) {
+            followedAt = Date.now();
+            output.checkpoint(
+              execution.terminalId,
+              deps.getBuffer(execution.terminal.leafId) ?? "",
+            );
           }
           const remaining = deadline - Date.now();
           if (remaining > 0) {
@@ -1056,68 +1292,71 @@ export function createTerminalAutomationService(
           }
         }
         completed ||= execution.completedAt !== undefined;
-        let raw = deps.getBuffer(execution.terminal.leafId) ?? "";
         let state = deps.getSessionState(execution.terminal.leafId);
-        let read =
-          execution.finalRead ??
+        const outputNow = (): ExecutionOutput =>
+          output.execution(
+            execution.terminalId,
+            deps.getBuffer(execution.terminal.leafId) ?? "",
+            execution.cursor,
+            execution.inputText,
+            // Only a command that was typed and ran has an echo to look for.
+            completed &&
+              execution.dispatchedAt !== undefined &&
+              execution.completionReason !== "dispatch_failed",
+            () => deps.getHistory?.(execution.terminal.leafId) ?? null,
+          );
+        let current: ExecutionOutput =
+          execution.finalOutput ??
           (target.ok
-            ? output.read(
-                execution.terminalId,
-                raw,
-                execution.cursor,
-                params.maxChars,
-              )
+            ? outputNow()
             : {
-                output: "",
-                cursor: execution.cursor,
-                truncated: false,
-                hasMore: false,
-                historyTruncated: false,
+                text: "",
+                cursorAt: () => execution.cursor,
                 reset: false,
                 replayed: false,
+                historyTruncated: false,
               });
         if (
-          !execution.finalRead &&
+          !execution.finalOutput &&
           target.ok &&
           completed &&
           execution.dispatchedAt !== undefined &&
           execution.completionReason !== "closed" &&
           execution.completionReason !== "dispatch_failed" &&
-          (read.reset ||
-            !read.output.trim() ||
+          (current.reset ||
+            !current.text.trim() ||
             !state?.ready ||
             (!state.shellExited &&
               (state.commandRunning || state.blockMode !== "prompt")))
         ) {
-          let previousLength = read.output.length;
+          let previousLength = current.text.length;
           let stableIdlePolls = 0;
           for (let attempt = 0; attempt < 12; attempt += 1) {
             await new Promise((resolveDelay) => setTimeout(resolveDelay, 75));
-            raw = deps.getBuffer(execution.terminal.leafId) ?? "";
-            const candidate = output.read(
-              execution.terminalId,
-              raw,
-              execution.cursor,
-              params.maxChars,
-            );
-            if (candidate.output.length > read.output.length) read = candidate;
+            const candidate = outputNow();
+            if (candidate.text.length > current.text.length)
+              current = candidate;
             state = deps.getSessionState(execution.terminal.leafId);
             const shellIdle =
               !!state?.ready &&
               (state.shellExited ||
                 (!state.commandRunning && state.blockMode === "prompt"));
             stableIdlePolls =
-              shellIdle && read.output.length === previousLength
+              shellIdle && current.text.length === previousLength
                 ? stableIdlePolls + 1
                 : 0;
-            previousLength = read.output.length;
+            previousLength = current.text.length;
             if (stableIdlePolls >= 2) break;
           }
         }
         if (completed) {
-          execution.finalRead ??= { ...read };
-          read = execution.finalRead;
+          execution.finalOutput ??= current;
+          current = execution.finalOutput;
         }
+        const clipped = clipExecutionOutput(
+          current.text,
+          clampMaxChars(params.maxChars),
+        );
         const refreshed = target.ok
           ? await resolveTarget(params, false)
           : target;
@@ -1157,11 +1396,29 @@ export function createTerminalAutomationService(
             }),
             ...(ranOnNote !== undefined && { note: ranOnNote }),
             exitCode: completed ? execution.exitCode : null,
+            // From when the command was typed: the wait for a starting shell
+            // before it is queuedMs, which had made a 90 s job read 110 s.
             durationMs:
-              (execution.completedAt ?? Date.now()) - execution.startedAt,
+              (execution.completedAt ?? Date.now()) -
+              (execution.dispatchedAt ?? execution.startedAt),
+            ...(execution.dispatchedAt !== undefined && {
+              queuedMs: execution.dispatchedAt - execution.startedAt,
+            }),
             repeated: repeatedWait,
             terminal: refreshed.ok ? refreshed.terminal : execution.terminal,
-            ...read,
+            output: clipped.output,
+            cursor: current.cursorAt(current.text.length),
+            truncated: clipped.omittedChars > 0,
+            hasMore: false,
+            historyTruncated: current.historyTruncated,
+            reset: current.reset,
+            replayed: current.replayed,
+            ...(clipped.omittedChars > 0 && {
+              omittedChars: clipped.omittedChars,
+              ...(current.pageable !== false && {
+                omittedCursor: current.cursorAt(clipped.omittedFrom),
+              }),
+            }),
           },
         };
       }
@@ -1352,9 +1609,10 @@ export function createTerminalAutomationService(
         while (Date.now() < deadline) {
           const current = deps.getBuffer(target.terminal.leafId) ?? "";
           const changed = bufferFingerprint(current) !== initialFingerprint;
-          const visibleTail = current.slice(
-            Math.max(0, current.length - input.text.length - 512),
-          );
+          // A wrapped line can reach the buffer with a line break in it.
+          const visibleTail = current
+            .slice(Math.max(0, current.length - input.text.length - 512))
+            .replace(/\r?\n/g, "");
           if (changed && visibleTail.includes(input.text)) {
             inputVisible = true;
             break;
@@ -1413,7 +1671,6 @@ export function createTerminalAutomationService(
           executed: true,
           executionId,
           phase: execution.phase,
-          dispatched: false,
           next: "Call terminal_wait with this executionId to receive completion, exitCode, and bounded output.",
         },
       };

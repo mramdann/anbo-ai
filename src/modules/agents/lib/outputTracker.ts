@@ -25,6 +25,29 @@ export type OutputRead = {
   reset: boolean;
 };
 
+export type OutputSpan = {
+  text: string;
+  /** The cursor at an index of `text`, for reading on from there. */
+  cursorAt: (index: number) => string;
+  /** The cursor did not apply: `text` is all the kept output. */
+  reset: boolean;
+  /** The output at the cursor was dropped from the kept history: `text`
+   *  is newer than the cursor, and what came first is gone. */
+  dropped: boolean;
+};
+
+/** Output as the tracker keeps it: redacted, and at most its history size. */
+export function keptOutput(rawOutput: string): string {
+  return redactSensitive(rawOutput).slice(-OUTPUT_HISTORY_CHARS);
+}
+
+/** A read's size: whole numbers kept within 1 to the most one read returns. */
+export function clampMaxChars(requested: unknown): number {
+  return typeof requested === "number" && Number.isInteger(requested)
+    ? Math.max(1, Math.min(MAX_OUTPUT_CHARS, requested))
+    : DEFAULT_OUTPUT_CHARS;
+}
+
 /**
  * The longest prefix of `current` that `previous` ends with. The KMP failure
  * function over both keeps this linear: a scrolled 64 KB screen overlaps the
@@ -66,7 +89,7 @@ export class OutputTracker {
     id: string,
     rawOutput: string,
   ): { state: OutputState; repainted: boolean } {
-    const current = redactSensitive(rawOutput).slice(-OUTPUT_HISTORY_CHARS);
+    const current = keptOutput(rawOutput);
     let state = this.states.get(id);
     let repainted = false;
     if (!state) {
@@ -121,11 +144,7 @@ export class OutputTracker {
     cursor: unknown,
     requestedMaxChars: unknown,
   ): OutputRead {
-    const maxChars =
-      typeof requestedMaxChars === "number" &&
-      Number.isInteger(requestedMaxChars)
-        ? Math.max(1, Math.min(MAX_OUTPUT_CHARS, requestedMaxChars))
-        : DEFAULT_OUTPUT_CHARS;
+    const maxChars = clampMaxChars(requestedMaxChars);
     const { state, repainted } = this.update(id, rawOutput);
     const parsed = this.parseCursor(cursor);
     const cursorInvalid =
@@ -147,6 +166,32 @@ export class OutputTracker {
       hasMore: nextOffset < state.total,
       historyTruncated: start > state.base,
       reset,
+    };
+  }
+
+  /** Everything kept from `cursor` to the end, with cursors into it, for an
+   *  answer cut its own way (terminal_wait keeps a command's start and end).
+   *  After a repaint, or for a cursor that no longer applies, it is all the
+   *  kept output, flagged reset. */
+  span(id: string, rawOutput: string, cursor: unknown): OutputSpan {
+    const { state, repainted } = this.update(id, rawOutput);
+    const parsed = this.parseCursor(cursor);
+    const reset =
+      repainted ||
+      !parsed ||
+      parsed.generation !== state.generation ||
+      parsed.offset < state.base ||
+      parsed.offset > state.total;
+    const start = parsed && !reset ? parsed.offset : state.base;
+    const { generation } = state;
+    return {
+      text: state.stream.slice(start - state.base),
+      cursorAt: (index) => this.cursorAt(generation, start + index),
+      reset,
+      dropped:
+        !repainted &&
+        parsed?.generation === state.generation &&
+        parsed.offset < state.base,
     };
   }
 
