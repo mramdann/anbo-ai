@@ -15,6 +15,7 @@ pub mod global_voice;
 pub mod history;
 pub mod lsp;
 pub mod net;
+pub mod panic_log;
 pub mod path_env;
 pub mod proc;
 pub mod project_memory;

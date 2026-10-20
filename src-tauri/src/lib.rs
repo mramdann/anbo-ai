@@ -441,6 +441,11 @@ pub fn run() {
         .plugin(modules::app_links::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|_app| {
+            // First, so any panic from here on also lands in Anbo's own log
+            // folder, with its place and backtrace, before Anbo goes down.
+            if let Ok(log_dir) = _app.path().app_log_dir() {
+                modules::panic_log::install(log_dir);
+            }
             browser_automation::server::cleanup_stale_descriptor();
             // Before the first tab exists, so the only host it can find is one a
             // previous run left behind.
