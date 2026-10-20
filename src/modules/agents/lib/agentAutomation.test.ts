@@ -1985,6 +1985,50 @@ describe("agents agent_spawn starts", () => {
   });
 });
 
+describe("a question the agent puts up while a message goes in", () => {
+  it("does not press Enter on it", async () => {
+    // Measured: Codex drew its folder trust prompt 2 s after it started and
+    // took a message sent at once; Enter on Claude 2.1.303's trust prompt
+    // picks "No, exit".
+    let typed = "";
+    const writes: string[] = [];
+    const dialog = [
+      "Quick safety check: Is this a project you created or one you trust?",
+      "❯ 1. No, exit",
+      "  2. Yes, I trust this folder",
+      "Enter to confirm · Esc to cancel",
+    ].join("\n");
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab()],
+      getSpaces: () => [space()],
+      getSessions: () => ({ 101: session() }),
+      getActiveTabId: () => null,
+      getBuffer: () => `${CLAUDE_READY}${typed}`,
+      getScreen: () => (typed ? dialog : CLAUDE_READY),
+      write: (_leafId, data) => {
+        writes.push(data);
+        if (data !== "\r") typed += data;
+        return true;
+      },
+      spawn: () => null,
+      subscribeSessions: () => () => {},
+    });
+    const sent = await service.handle({
+      requestId: "send",
+      method: "agent_send",
+      params: {
+        workspace: "space-a",
+        agentId: "atlas-claude:10",
+        message: "continue the task",
+      },
+    });
+    expect(sent).toMatchObject({
+      error: { message: expect.stringContaining("did not press Enter") },
+    });
+    expect(writes).not.toContain("\r");
+    service.dispose();
+  });
+});
 
 describe("a spawned tab the UI lists only after the spawn answered", () => {
   it("is waited for, not taken as closed", async () => {
@@ -2039,3 +2083,44 @@ describe("a spawned tab the UI lists only after the spawn answered", () => {
   });
 });
 
+describe("a send to an agent that shows a question of its own", () => {
+  it("says so instead of a bare timeout", async () => {
+    const service = createAgentAutomationService({
+      getTabs: () => [terminalTab()],
+      getSpaces: () => [space()],
+      getSessions: () => ({ 101: session() }),
+      getActiveTabId: () => null,
+      getBuffer: () => null,
+      getScreen: () =>
+        [
+          " Claude Code'll be able to read, edit, and execute files here.",
+          "",
+          " ❯ No, exit",
+          "   Yes, I trust this folder",
+          "",
+          " Enter to confirm · Esc to cancel",
+        ].join("\n"),
+      write: () => true,
+      spawn: () => null,
+      subscribeSessions: () => () => {},
+    });
+    await expect(
+      service.handle({
+        requestId: "send",
+        method: "agent_send",
+        params: {
+          workspace: "space-a",
+          agentId: "atlas-claude:10",
+          message: "continue the task",
+          timeout: 300,
+        },
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: "agent_not_ready",
+        message: expect.stringContaining("question of its own"),
+      },
+    });
+    service.dispose();
+  });
+});

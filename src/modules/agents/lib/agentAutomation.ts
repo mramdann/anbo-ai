@@ -482,6 +482,7 @@ type InputStop =
   | "write failed"
   | "typed over"
   | "stopped"
+  | "dialog"
   | "failed";
 
 type InputOutcome = { ok: true } | { ok: false; reason: InputStop };
@@ -497,6 +498,9 @@ type AgentInputIo = {
   write: (leafId: number, data: string) => boolean;
   getBuffer: (leafId: number) => string | null;
   subscribeInput?: ServiceDependencies["subscribeInput"];
+  /** False while the agent shows a question of its own (a folder trust or
+   *  approval prompt), where Enter answers it instead of sending. */
+  canSubmit?: () => boolean;
 };
 
 function startVerifiedTyping(
@@ -614,6 +618,7 @@ function startVerifiedTyping(
     await delay(submitDelayMs);
     const stopping = interruption();
     if (stopping) return stop(stopping);
+    if (io.canSubmit && !io.canSubmit()) return stop("dialog");
     return write("\r") ? { ok: true } : { ok: false, reason: "write failed" };
   };
   const finished = run()
@@ -665,6 +670,9 @@ async function deliverAgentMessage(
       return { state: "cancelled", reason: "write failed" };
     }
     await delay(submitDelayMs);
+    if (io.canSubmit && !io.canSubmit()) {
+      return { state: "cancelled", reason: "dialog" };
+    }
     return io.write(leafId, "\r")
       ? { state: "submitted" }
       : { state: "cancelled", reason: "write failed" };
@@ -704,6 +712,8 @@ function inputStopMessage(name: string, reason: InputStop): string {
       return `${name} input stopped: someone typed in its terminal, so Anbo typed no more of the message and pressed neither Ctrl+C nor Enter`;
     case "stopped":
       return `${name} input stopped: Anbo's agent service closed`;
+    case "dialog":
+      return `${name} put up a question of its own (a folder trust or approval prompt) while the message went in, so Anbo did not press Enter, which would have answered it. Read the agent, answer it or ask the user to, then send again`;
     case "failed":
       return `${name} input cancelled`;
   }
@@ -1136,9 +1146,16 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         current.leafId,
       ))
     ) {
+      // Measured: Claude 2.1.303's folder trust prompt, which Enter answers
+      // with "No, exit", held a message that read as a plain timeout.
+      const asking =
+        readAgentScreen(normalizedCli, readPreparedScreen(current.leafId))
+          .state === "attention";
       return automationError(
         "agent_not_ready",
-        `${current.agent.name} did not reach a stable input prompt before timeout`,
+        asking
+          ? `${current.agent.name} is showing a question of its own, such as a folder trust or approval prompt, so nothing was typed. Read it with agent_read and answer it, or ask the user to, then send again`
+          : `${current.agent.name} did not reach a stable input prompt before timeout`,
       );
     }
     // The caller stopped waiting: typing the message now would deliver one it
@@ -1157,6 +1174,11 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         write: deps.write,
         getBuffer: readPreparedBuffer,
         subscribeInput: deps.subscribeInput,
+        // A trust prompt drawn 2 s after Codex started took a message sent
+        // at once, and Enter on Claude 2.1.303's trust prompt picks "No, exit".
+        canSubmit: () =>
+          readAgentScreen(normalizedCli, readPreparedScreen(current.leafId))
+            .state !== "attention",
       },
       current.leafId,
       message.message,
