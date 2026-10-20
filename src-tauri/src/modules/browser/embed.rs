@@ -804,7 +804,7 @@ async fn spawn_browser_child(
         // tab; the next one starts a browser of its own.
         #[cfg(windows)]
         if joined_profile {
-            forget_profile_environment();
+            forget_profile_environment(app);
         }
         error.to_string()
     })?;
@@ -895,11 +895,16 @@ fn profile_environment(data_dir: &Path) -> Option<ICoreWebView2Environment> {
 }
 
 /// Lets go of the kept environment, so the next webview starts a browser of
-/// its own.
+/// its own. It is a UI-thread COM object, so the release that may be its last
+/// runs on the main thread, not on the worker that gave up on it.
 #[cfg(windows)]
-fn forget_profile_environment() {
-    if let Ok(mut slot) = PROFILE_ENVIRONMENT.lock() {
-        *slot = None;
+fn forget_profile_environment(app: &tauri::AppHandle) {
+    let kept = PROFILE_ENVIRONMENT
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take());
+    if let Some(kept) = kept {
+        let _ = app.run_on_main_thread(move || drop(kept));
     }
 }
 
@@ -965,11 +970,14 @@ fn keep_host_warm(window: &tauri::Window) {
         else {
             return;
         };
+        // Moved into the builder rather than cloned: a copy kept here would be
+        // released on this worker thread.
         let shared_environment = profile_environment(&profile);
+        let joined_profile = shared_environment.is_some();
         let builder = WebviewBuilder::new(WARM_HOST_LABEL, WebviewUrl::External(blank))
             .focused(false)
             .data_directory(profile.clone());
-        let builder = match shared_environment.clone() {
+        let builder = match shared_environment {
             Some(environment) => builder.with_environment(environment),
             None => builder,
         };
@@ -985,8 +993,8 @@ fn keep_host_warm(window: &tauri::Window) {
                 remember_profile_environment(&webview, profile);
             }
             Err(error) => {
-                if shared_environment.is_some() {
-                    forget_profile_environment();
+                if joined_profile {
+                    forget_profile_environment(&app);
                 }
                 log::warn!("could not keep the browser host warm: {error}");
                 return;
