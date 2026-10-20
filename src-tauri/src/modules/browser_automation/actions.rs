@@ -600,6 +600,7 @@ fn build_navigation_hints_js(
     format!(
         r#"(() => {{
     {REF_REGISTRY_JS}
+    {ACCESSIBLE_NAME_JS}
     refRegistry.begin({generation});
     const refPrefix = {ref_prefix};
     const queryWords = {query_words};
@@ -678,7 +679,10 @@ fn build_navigation_hints_js(
             : tag === 'INPUT' ? String(el.type || 'text').toLowerCase()
             : tag === 'SELECT' ? 'combobox' : tag === 'TEXTAREA' ? 'textbox' : '');
         if (!role || role === 'presentation' || role === 'none') continue;
-        const name = clean(el.getAttribute('aria-label') || el.textContent || el.getAttribute('value') || el.placeholder).slice(0, 60);
+        // Named as find names them: a checkbox in its label was "ya" (its
+        // value) here and "Saya setuju ..." in find, and a select read as all
+        // of its options run together.
+        const name = clean(accessibleName(el) || el.placeholder).slice(0, 60);
         if (!name) continue;
         const rect = el.getBoundingClientRect();
         if (!(rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight)) continue;

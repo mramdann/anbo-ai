@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use super::accessible_name::ACCESSIBLE_NAME_JS;
 use super::context_block::{Ancestors, CONTEXT_BLOCK_JS};
+use super::readable_text::READABLE_TEXT_JS;
 use super::ref_context::REF_REGISTRY_JS;
 use super::visibility::VISIBILITY_JS;
 
@@ -515,10 +516,12 @@ impl PageScanState {
 pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>) -> String {
     let limit = query.limit.clamp(1, MAX_LOCATOR_MATCHES);
     let ancestors = query.ancestors.value();
+    // A block reads as get_text reads it, once per price: its innerText took
+    // both a screen-reader copy and the aria-hidden drawn one (Amazon).
     let context_block = if query.ancestors == Ancestors::Levels(0) {
-        ""
+        String::new()
     } else {
-        CONTEXT_BLOCK_JS
+        format!("{CONTEXT_BLOCK_JS}\n{READABLE_TEXT_JS}")
     };
     let cache = include_str!("locatorCache.js");
     format!(
@@ -617,7 +620,11 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                 return '';
             }};
             // A search field is a textbox to most callers; let either name reach it.
-            const roleMatches = role => compare(role) || (role === 'searchbox' && compare('textbox'));
+            // A role is a word, not a phrase to search in: "button" took the
+            // spinbutton next to a product's button, and "tab" a tablist.
+            // A broader role takes the narrower ones ARIA derives from it.
+            const roleFamily = {{ textbox: ['searchbox'], menuitem: ['menuitemcheckbox', 'menuitemradio'], cell: ['gridcell'] }};
+            const roleMatches = role => role === expectedValue || (roleFamily[expectedValue] || []).includes(role);
             // ...but a modern search box is usually a combobox (autocomplete) or a
             // plain textbox, not role=searchbox -- Google Maps, MDN and Bing all use
             // combobox. Let a searchbox lookup reach any editable text entry so the
@@ -823,7 +830,7 @@ pub fn build_find_js(generation: u64, ref_prefix: &str, query: &LocatorQuery<'_>
                             if (seen) into[into.length - 1].blockRef = seen;
                             else {{
                                 blockRefs.set(block, ref);
-                                into[into.length - 1].block = normalize(readText(block)).slice(0, blockLimit);
+                                into[into.length - 1].block = normalize(readableText(block).text || readText(block)).slice(0, blockLimit);
                             }}
                         }}
             }};
@@ -1141,7 +1148,12 @@ mod tests {
         assert!(script.contains("const isTextEntry = el =>"));
         // A search field answers to textbox as well, and the structural roles
         // agents ask for by habit exist: both were measured as css fallbacks.
-        assert!(script.contains("role === 'searchbox' && compare('textbox')"));
+        // A role is compared whole: "button" never takes a spinbutton.
+        assert!(script.contains("textbox: ['searchbox']"));
+        assert!(script.contains(
+            "const roleMatches = role => role === expectedValue || (roleFamily[expectedValue] || []).includes(role);"
+        ));
+        assert!(!script.contains("const roleMatches = role => compare(role)"));
         assert!(script.contains("if (/^h[1-6]$/.test(tag)) return 'heading';"));
         assert!(script.contains("if (type === 'search') return 'searchbox';"));
         // A near miss keeps a few of the names it saw, so the caller is told

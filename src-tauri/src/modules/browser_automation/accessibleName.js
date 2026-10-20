@@ -1,6 +1,18 @@
 const nameNormalize = value => String(value || '').slice(0, 4096).replace(/\s+/g, ' ').trim();
 const NAME_BREAK = '\u0000';
-const nameContent = (root, includeHidden = false) => {
+// A form control inside a label speaks by its value, not its contents
+// (accname 2E), and the control the label names is left out: a select wrapped
+// in its label was named "Pengiriman PilihReguler (Rp 10.000)Ekspres ..." and
+// a label lookup for "Pengiriman" missed it. Null for anything else.
+const embeddedControlText = node => {
+    const tag = node.tagName;
+    if (tag === 'SELECT') return Array.from(node.selectedOptions || []).map(option => option.textContent).join(' ');
+    if (tag === 'TEXTAREA') return String(node.value || '');
+    if (tag !== 'INPUT') return null;
+    const type = String(node.type || 'text').toLowerCase();
+    return ['checkbox', 'radio', 'file', 'hidden', 'image', 'color', 'range'].includes(type) ? '' : String(node.value || '');
+};
+const nameContent = (root, includeHidden = false, named = null) => {
     let remaining = 256;
     let length = 0;
     const parts = [];
@@ -24,6 +36,16 @@ const nameContent = (root, includeHidden = false) => {
                 // separates words. Joining every text node with a space turned
                 // a ticker's "99.032" into "99.0 32".
                 block = !/^(inline|contents)/.test(String(style.display || ''));
+            }
+            if (node !== root) {
+                if (node === named) return;
+                const embedded = embeddedControlText(node);
+                if (embedded !== null) {
+                    const text = nameNormalize(embedded).slice(0, 4096 - length);
+                    if (text) parts.push(' ', text, ' ');
+                    length += text.length;
+                    return;
+                }
             }
             const alternative = node !== root && (node.getAttribute('aria-label') || node.getAttribute('alt'));
             if (alternative) {
@@ -49,10 +71,10 @@ const labelName = el => {
     const root = el.getRootNode ? el.getRootNode() : document;
     const ids = nameNormalize(el.getAttribute('aria-labelledby')).split(/\s+/).filter(Boolean).slice(0, 32);
     const referenced = ids.map(id => root.getElementById ? root.getElementById(id) : null).filter(Boolean);
-    if (referenced.length) return nameNormalize(referenced.map(node => nameContent(node, true)).join(' '));
+    if (referenced.length) return nameNormalize(referenced.map(node => nameContent(node, true, el)).join(' '));
     const aria = nameNormalize(el.getAttribute('aria-label'));
     if (aria) return aria;
-    return el.labels ? nameNormalize(Array.from(el.labels).slice(0, 32).map(node => nameContent(node, true)).join(' ')) : '';
+    return el.labels ? nameNormalize(Array.from(el.labels).slice(0, 32).map(node => nameContent(node, true, el)).join(' ')) : '';
 };
 const accessibleName = el => {
     if (!el || !el.getAttribute) return '';

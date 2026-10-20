@@ -563,7 +563,16 @@ fn format_item(item: &SnapshotElement) -> Option<String> {
     }
     let mut extra = String::new();
     if let Some(value) = &item.value {
-        if !value.is_empty() && role.starts_with("input") {
+        // A textarea's text is its value too, and agents read the snapshot to
+        // check what a form holds: get_property found it, the snapshot did not
+        // show it. One line per element, so its line breaks are written out.
+        let textarea = item.tag.as_deref() == Some("textarea");
+        if !value.is_empty() && (role.starts_with("input") || textarea) {
+            let value = if textarea {
+                value.replace('\n', "\\n")
+            } else {
+                value.clone()
+            };
             extra.push_str(&format!(" [value=\"{value}\"]"));
         }
     }
