@@ -5,6 +5,8 @@ import type {
 } from "@/modules/agents/lib/types";
 import type { SpaceMeta } from "@/modules/spaces/lib/store";
 import type { Tab, TerminalTab } from "@/modules/tabs";
+import { labelFor } from "@/modules/tabs/lib/tabLabel";
+import type { AgentResumePhase } from "../store/agentResumeStatus";
 import {
   type AgentAutomationRequest,
   type AgentAutomationResponse,
@@ -16,7 +18,9 @@ import {
 import { agentIdFor } from "./agentIdentity";
 import { readAgentScreen } from "./agentScreenClassifier";
 import { codexTurnEvidence } from "./codexTurnEvidence";
+import { displayAgentInstance } from "./format";
 import { OutputTracker } from "./outputTracker";
+import { collectAgentResumeLeaves } from "./resume";
 
 export type {
   AgentAutomationMethod,
@@ -48,8 +52,10 @@ export type AgentDescriptor = {
   agentId: string;
   name: string;
   cli: string;
-  status: AgentStatus;
-  phase: AgentPhase;
+  /** dormant: restored and not resumed yet (its workspace was not shown);
+   *  resuming: its CLI is starting again on its session. */
+  status: AgentStatus | "dormant" | "resuming";
+  phase: AgentPhase | "dormant" | "resuming";
   tabId: number;
   leafId: number;
   spaceId: string;
@@ -97,6 +103,10 @@ type ServiceDependencies = {
       previous: Record<number, AgentSession>,
     ) => void,
   ) => () => void;
+  /** Mounts a restored tab that was never shown, so its agent resumes. */
+  warm?: (tabId: number) => void;
+  /** Which restored agents are being brought back, by leaf. */
+  getResumeStatus?: () => Record<number, AgentResumePhase>;
 };
 
 type ResolvedWorkspace = { id: string; root: string };
@@ -185,6 +195,7 @@ export function collectWorkspaceAgents(
   sessions: Record<number, AgentSession>,
   space: ResolvedWorkspace,
   activeTabId: number | null,
+  resumeStatus: Record<number, AgentResumePhase> = {},
 ): AgentDescriptor[] {
   const tabsById = new Map(
     tabs
@@ -194,7 +205,7 @@ export function collectWorkspaceAgents(
       )
       .map((tab) => [tab.id, tab]),
   );
-  return Object.values(sessions)
+  const live = Object.values(sessions)
     .flatMap((session) => {
       const tab = tabsById.get(session.tabId);
       if (!tab || !tabHasLeaf(tab, session.leafId)) return [];
@@ -222,6 +233,41 @@ export function collectWorkspaceAgents(
       ];
     })
     .sort((left, right) => left.startedAt - right.startedAt);
+  // A restored agent tab of a workspace not shown yet stays cold, and its CLI
+  // resumes only when the tab mounts. Unlisted, it looked gone, and an
+  // orchestrator that replaces missing agents started a second one beside it.
+  const restored = [...tabsById.values()].flatMap((tab) =>
+    collectAgentResumeLeaves(tab.paneTree)
+      .filter(
+        ({ id, resume }) =>
+          resume.resumeOnStart &&
+          (tab.cold || resumeStatus[id] === "resuming") &&
+          !Object.values(sessions).some(
+            (session) => session.tabId === tab.id && session.leafId === id,
+          ),
+      )
+      .map(({ id: leafId, resume }): AgentDescriptor => {
+        const status = tab.cold ? "dormant" : "resuming";
+        // Named as its session will be once it starts, so the id stays put.
+        const sessionName = displayAgentInstance(resume.agent, labelFor(tab));
+        return {
+          agentId: agentIdFor(sessionName, resume.agent, tab.id),
+          name: tab.agent?.name ?? sessionName,
+          cli: resume.agent,
+          status,
+          phase: status,
+          tabId: tab.id,
+          leafId,
+          spaceId: space.id,
+          workspace: space.root,
+          sessionId: resume.sessionId,
+          active: tab.id === activeTabId,
+          startedAt: 0,
+          lastActivityAt: 0,
+        };
+      }),
+  );
+  return [...live, ...restored];
 }
 
 export function sanitizeAgentMessage(
@@ -760,12 +806,14 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
       deps.getSessions(),
       resolved.workspace,
       deps.getActiveTabId(),
+      deps.getResumeStatus?.(),
     );
     return { ok: true, workspace: resolved.workspace, agents };
   };
 
   const resolveTarget = (
     params: Record<string, unknown>,
+    { wake = true }: { wake?: boolean } = {},
   ):
     | {
         ok: true;
@@ -813,6 +861,19 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         ),
       };
     }
+    // A restored agent resumes when a tool acts on it; until its CLI is back
+    // there is nothing to read or type into.
+    if (wake && (agent.status === "dormant" || agent.status === "resuming")) {
+      const resuming = agent.status === "dormant" && deps.warm !== undefined;
+      if (resuming) deps.warm?.(agent.tabId);
+      return {
+        ok: false,
+        response: automationError(
+          "agent_unavailable",
+          `${agent.agentId} ${resuming ? "was restored and had not resumed yet; Anbo is resuming it now" : agent.status === "resuming" ? "is resuming its session" : "was restored and has not resumed yet; showing its tab resumes it"}. Try again once agent_list shows it working or waiting.`,
+        ),
+      };
+    }
     return {
       ok: true,
       workspace: resolved.workspace,
@@ -829,10 +890,13 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     | { matched: true; agent: AgentDescriptor }
     | { matched: false; closed: boolean; agent: AgentDescriptor | null }
   > => {
-    const initial = resolveTarget(params);
+    // Waiting on a restored agent resumes it, and the wait lasts through its
+    // resume rather than reading it as gone.
+    const initial = resolveTarget(params, { wake: false });
     if (!initial.ok) {
       return { matched: false, closed: true, agent: null };
     }
+    if (initial.agent.status === "dormant") deps.warm?.(initial.agent.tabId);
     const matchesDesired = (agent: AgentDescriptor) =>
       desired === "finished"
         ? agent.phase === "finished"
@@ -842,8 +906,14 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
     if (matchesDesired(initial.agent)) {
       return { matched: true, agent: initial.agent };
     }
+    const restoring = (agent: AgentDescriptor) =>
+      agent.status === "dormant" || agent.status === "resuming";
     const initialStatus = initial.agent.status;
     const initialPhase = initial.agent.phase;
+    const changed = (agent: AgentDescriptor) =>
+      restoring(initial.agent)
+        ? !restoring(agent)
+        : agent.status !== initialStatus || agent.phase !== initialPhase;
     return new Promise((resolve) => {
       let settled = false;
       let unsubscribe = () => {};
@@ -859,22 +929,20 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         resolve(value);
       };
       const inspect = () => {
-        const current = resolveTarget(params);
+        const current = resolveTarget(params, { wake: false });
         if (!current.ok) {
           finish({ matched: false, closed: true, agent: null });
           return;
         }
         if (
           matchesDesired(current.agent) ||
-          (!desired &&
-            (current.agent.status !== initialStatus ||
-              current.agent.phase !== initialPhase))
+          (!desired && changed(current.agent))
         ) {
           finish({ matched: true, agent: current.agent });
         }
       };
       const timer = setTimeout(() => {
-        const current = resolveTarget(params);
+        const current = resolveTarget(params, { wake: false });
         finish({
           matched: false,
           closed: !current.ok,
@@ -1185,7 +1253,8 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         };
       }
       if (request.method === "agent_status") {
-        const resolved = resolveTarget(params);
+        // Only looks: a dormant agent stays dormant.
+        const resolved = resolveTarget(params, { wake: false });
         return !resolved.ok
           ? resolved.response
           : { result: { agent: resolved.agent } };
@@ -1265,7 +1334,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         }
       }
       if (request.method === "agent_wait") {
-        const target = resolveTarget(params);
+        const target = resolveTarget(params, { wake: false });
         if (!target.ok) return target.response;
         const status =
           params.status === "working" ||

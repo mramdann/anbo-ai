@@ -2098,6 +2098,8 @@ export default function App() {
             prepare: prepareTerminalAutomationSession,
             unpreparedReason: terminalAutomationRefusal,
             subscribeInput: subscribeTerminalInput,
+            warm: (tabId) => warmTabRef.current(tabId),
+            getResumeStatus: () => useAgentResumeStatus.getState().status,
             spawn: async (workspace, agent) => {
               const space = useSpaces
                 .getState()

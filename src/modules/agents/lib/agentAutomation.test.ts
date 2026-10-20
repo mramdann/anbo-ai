@@ -1670,3 +1670,171 @@ describe("agent spawning", () => {
     service.dispose();
   });
 });
+
+describe("restored agents that have not resumed", () => {
+  const restoredTab = (cold: boolean) =>
+    terminalTab({
+      cold,
+      agent: {
+        launcherId: "claude",
+        icon: "claude",
+        label: "Claude",
+        name: "Atlas",
+      },
+      paneTree: {
+        kind: "leaf",
+        id: 101,
+        agentResume: {
+          agent: "claude",
+          command: "claude",
+          sessionId: "00000000-0000-4000-8000-000000000001",
+          resumeOnStart: true,
+        },
+      },
+    });
+
+  it("lists a restored agent of a workspace not shown yet under the id it resumes with", () => {
+    // Measured: after a restart agent_list found no agent in two hidden
+    // workspaces, and the orchestrator started a second agent in each.
+    const agents = collectWorkspaceAgents(
+      [restoredTab(true)],
+      {},
+      { id: "space-a", root: "C:/work/alpha" },
+      null,
+    );
+    expect(agents).toEqual([
+      expect.objectContaining({
+        agentId: "atlas-claude:10",
+        name: "Atlas",
+        cli: "claude",
+        status: "dormant",
+        sessionId: "00000000-0000-4000-8000-000000000001",
+      }),
+    ]);
+    expect(
+      collectWorkspaceAgents(
+        [restoredTab(false)],
+        {},
+        { id: "space-a", root: "C:/work/alpha" },
+        null,
+        { 101: "resuming" },
+      ),
+    ).toEqual([expect.objectContaining({ status: "resuming" })]);
+    // Once its CLI is back the live session speaks for it; after it exits, or
+    // when its resume was refused, it is not listed.
+    expect(
+      collectWorkspaceAgents(
+        [restoredTab(false)],
+        { 101: session() },
+        { id: "space-a", root: "C:/work/alpha" },
+        null,
+        { 101: "resuming" },
+      ),
+    ).toEqual([expect.objectContaining({ status: "waiting" })]);
+    const notResuming: Record<number, "failed">[] = [{}, { 101: "failed" }];
+    for (const resumeStatus of notResuming) {
+      expect(
+        collectWorkspaceAgents(
+          [restoredTab(false)],
+          {},
+          { id: "space-a", root: "C:/work/alpha" },
+          null,
+          resumeStatus,
+        ),
+      ).toEqual([]);
+    }
+  });
+
+  it("waits on a dormant agent through its resume", async () => {
+    let tabs = [restoredTab(true)];
+    let sessions: Record<number, AgentSession> = {};
+    const listeners = new Set<() => void>();
+    const warm = vi.fn(() => {
+      setTimeout(() => {
+        tabs = [restoredTab(false)];
+      }, 10);
+      setTimeout(() => {
+        sessions = { 101: session({ status: "waiting", phase: "attention" }) };
+        for (const listener of listeners) listener();
+      }, 40);
+    });
+    const service = createAgentAutomationService({
+      getTabs: () => tabs,
+      getSpaces: () => [space()],
+      getSessions: () => sessions,
+      getActiveTabId: () => null,
+      getBuffer: () => null,
+      write: () => true,
+      spawn: () => null,
+      subscribeSessions: (listener) => {
+        const wrapped = () => listener(sessions, {});
+        listeners.add(wrapped);
+        return () => listeners.delete(wrapped);
+      },
+      warm,
+      getResumeStatus: () => ({ 101: "resuming" }),
+    });
+    await expect(
+      service.handle({
+        requestId: "wait",
+        method: "agent_wait",
+        params: {
+          workspace: "space-a",
+          agentId: "atlas-claude:10",
+          timeout: 2_000,
+        },
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        matched: true,
+        closed: false,
+        agent: { agentId: "atlas-claude:10", status: "waiting" },
+      },
+    });
+    expect(warm).toHaveBeenCalledWith(10);
+    service.dispose();
+  });
+
+  it("resumes a dormant agent a tool acts on, and only reports it to agent_status", async () => {
+    const warm = vi.fn();
+    const write = vi.fn(() => true);
+    const service = createAgentAutomationService({
+      getTabs: () => [restoredTab(true)],
+      getSpaces: () => [space()],
+      getSessions: () => ({}),
+      getActiveTabId: () => null,
+      getBuffer: () => null,
+      write,
+      spawn: () => null,
+      subscribeSessions: () => () => {},
+      warm,
+    });
+    await expect(
+      service.handle({
+        requestId: "status",
+        method: "agent_status",
+        params: { workspace: "space-a", agentId: "atlas-claude:10" },
+      }),
+    ).resolves.toMatchObject({ result: { agent: { status: "dormant" } } });
+    expect(warm).not.toHaveBeenCalled();
+    await expect(
+      service.handle({
+        requestId: "send",
+        method: "agent_send",
+        params: {
+          workspace: "space-a",
+          agentId: "atlas-claude:10",
+          message: "continue",
+        },
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: "agent_unavailable",
+        message: expect.stringContaining("Anbo is resuming it now"),
+      },
+    });
+    expect(warm).toHaveBeenCalledWith(10);
+    expect(write).not.toHaveBeenCalled();
+    service.dispose();
+  });
+});
