@@ -96,7 +96,8 @@ pub struct Reveal {
 }
 
 pub fn parse_reveal(response: &str) -> Option<Reveal> {
-    let decoded: String = super::page_json::from_str(response).unwrap_or_else(|_| response.to_string());
+    let decoded: String =
+        super::page_json::from_str(response).unwrap_or_else(|_| response.to_string());
     let parsed: Value = super::page_json::from_str(&decoded).ok()?;
     if parsed.get("ok").and_then(Value::as_bool) != Some(true) {
         return None;
