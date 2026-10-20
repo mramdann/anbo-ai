@@ -1652,6 +1652,7 @@ async fn handle_action_attempt(
             // visible the wait ends after a couple of frames, so an ordinary
             // click keeps paying almost nothing for it.
             let budget = reveal_budget(&params, DEFAULT_REVEAL_MS);
+            let clicked_at = epoch_millis();
             if hidden_page {
                 let (webview, mut result) = {
                     let _lock = timings.measure("queue", tab_lock.lock()).await;
@@ -1669,6 +1670,7 @@ async fn handle_action_attempt(
                     .await?;
                     (webview, result)
                 };
+                note_page_errors(&mut result, page_errors_since(&webview, clicked_at).await);
                 if let Some(expectation) = expectation {
                     result["postcondition"] = wait_for_page_state(&webview, tab_id, &expectation)
                         .await
@@ -1745,6 +1747,12 @@ async fn handle_action_attempt(
             }
             // The page needs the dock only for the input itself.
             drop(pointer_turn.take());
+            note_page_errors(
+                &mut result,
+                timings
+                    .measure("pageErrors", page_errors_since(&webview, clicked_at))
+                    .await,
+            );
             if let Some(expectation) = expectation {
                 result["postcondition"] = timings.measure("postcondition", wait_for_page_state(&webview, tab_id, &expectation)).await
                     .map_err(|(code, message)| (code, format!("click was dispatched, but {message}; inspect the page before retrying the click")))?;
@@ -4632,6 +4640,41 @@ fn parse_console_entries(raw: &str, frame: &str) -> Vec<Value> {
             }))
         })
         .collect()
+}
+
+fn epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Uncaught errors the page threw since `since` (epoch ms), from its console.
+/// demoqa's result dialog stayed open after every click on Close, each one
+/// answered ok: its own handler threw "findDOMNode is not a function".
+async fn page_errors_since(webview: &Webview, since: u64) -> Vec<String> {
+    let (logs, _, _) = collect_console_logs(webview).await;
+    logs.iter()
+        .filter(|entry| entry["level"] == "error")
+        .filter(|entry| entry["ts"].as_u64().is_some_and(|ts| ts + 50 >= since))
+        .filter_map(|entry| entry["msg"].as_str())
+        .filter(|message| message.starts_with("Uncaught") || message.contains("nhandled"))
+        .take(3)
+        .map(|message| message.chars().take(300).collect())
+        .collect()
+}
+
+/// Says in an answer that the page threw while handling the input.
+fn note_page_errors(result: &mut Value, errors: Vec<String>) {
+    if errors.is_empty() {
+        return;
+    }
+    let note = "the page threw an error while handling this input: it went in, but the page may not have done what it asks; read the page before retrying";
+    result["note"] = match result["note"].as_str() {
+        Some(previous) => json!(format!("{previous}; {note}")),
+        None => json!(note),
+    };
+    result["pageErrors"] = json!(errors);
 }
 
 async fn collect_console_logs(webview: &Webview) -> (Vec<Value>, usize, usize) {
@@ -9547,6 +9590,24 @@ mod tests {
             .starts_with("locator visible found no css '#missing' in 900ms: "));
         assert!(hidden.1.contains("not rendered"));
         assert!(hidden.1.ends_with("no input dispatched"));
+    }
+
+    #[test]
+    fn an_answer_says_when_the_page_threw_while_handling_the_input() {
+        let mut quiet = json!({ "ok": true });
+        note_page_errors(&mut quiet, Vec::new());
+        assert_eq!(quiet, json!({ "ok": true }));
+        let mut thrown = json!({ "ok": true, "note": "the page is hidden" });
+        note_page_errors(
+            &mut thrown,
+            vec!["Uncaught TypeError: Lr.findDOMNode is not a function".to_string()],
+        );
+        assert_eq!(
+            thrown["pageErrors"],
+            json!(["Uncaught TypeError: Lr.findDOMNode is not a function"])
+        );
+        let note = thrown["note"].as_str().unwrap();
+        assert!(note.starts_with("the page is hidden; the page threw an error"));
     }
 
     #[test]
