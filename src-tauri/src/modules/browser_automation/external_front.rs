@@ -2,7 +2,9 @@
 //! another tab of its window, where every tab an agent opens starts, or in a
 //! minimized window. Before such input Anbo brings the tab to the front of its
 //! panel, as a click on it would, the dock shows the page, and the action waits
-//! for it. Anbo never switches tabs in the user's own browser window.
+//! for it. Anbo never switches tabs in the user's own browser window. A page
+//! that cannot be shown now, as one in a workspace Anbo is not showing, takes
+//! keys and its own DOM events instead (`actions/hidden_input.rs`).
 //!
 //! Reads and waits leave the tab where it is, and its browser runs a hidden
 //! page slowly, so a lookup or wait that runs out of time there says so.
@@ -279,11 +281,20 @@ fn noted(message: String, visibility: &Value) -> String {
     }
 }
 
+const REFUSAL: &str = "the tab is hidden in its browser";
+
 fn refusal(why: &str) -> (String, String) {
     (
         error_codes::INPUT_NOT_READY.to_string(),
-        format!("the tab is hidden in its browser, which delivers no pointer input to a hidden page, and {why} No input was sent."),
+        format!("{REFUSAL}, which delivers no pointer input to a hidden page, and {why} No input was sent."),
     )
+}
+
+/// Whether bring_to_front refused because the page cannot be shown now, as
+/// against other agents holding the turn: such a page still takes keys and
+/// its own DOM events (actions/hidden_input.rs).
+pub fn cannot_show((code, message): &(String, String)) -> bool {
+    code == error_codes::INPUT_NOT_READY && message.starts_with(REFUSAL)
 }
 
 fn not_in_front(standing: Standing) -> Option<&'static str> {
@@ -430,6 +441,24 @@ mod tests {
         assert_eq!(code, error_codes::INPUT_NOT_READY);
         assert!(message.contains("workspace Anbo is not showing"));
         assert!(message.ends_with("No input was sent."));
+        // Every page that cannot be shown takes keys and its own events
+        // instead; a busy turn is waited out, not worked around.
+        for why in [
+            not_shown(Some("workspace")),
+            not_shown(Some("in-use")),
+            not_in_front(Standing::Behind).unwrap(),
+        ] {
+            assert!(cannot_show(&refusal(why)), "{why}");
+        }
+        assert!(cannot_show(&refusal(&not_docked(None, SHOW_PATIENCE))));
+        assert!(!cannot_show(&(
+            error_codes::INPUT_NOT_READY.to_string(),
+            "other agents' clicks on Chrome/Edge tabs kept Anbo's browser panel busy".to_string()
+        )));
+        assert!(!cannot_show(&(
+            error_codes::TIMEOUT.to_string(),
+            message.clone()
+        )));
         assert!(refusal(not_shown(Some("in-use")))
             .1
             .contains("layout button"));

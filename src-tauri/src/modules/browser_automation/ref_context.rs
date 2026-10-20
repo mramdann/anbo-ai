@@ -83,6 +83,10 @@ pub async fn ensure_focus(webview: &Webview) -> Result<(), String> {
     )
     .await?;
     note_focus_emulated(tab);
+    // A key right after the emulation turns on is dropped, as one right after
+    // a new document is: the first click Anbo sent as Enter to a hidden Chrome
+    // page did nothing, every later one worked. The next key waits.
+    record_layout_change(tab, Instant::now());
     if active_navigation_generation(tab) == Some(navigation) {
         with_prepared(tab, navigation, |entry| entry.focus = true);
     }

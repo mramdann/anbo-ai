@@ -51,6 +51,8 @@ use crate::modules::browser_automation::snapshot::{
 use crate::modules::browser_automation::timings::ActionTimings;
 use crate::modules::browser_automation::ui_answer::{self, Answer};
 use crate::modules::browser_automation::visibility::VISIBILITY_JS;
+
+mod hidden_input;
 const VALUE_ACTION_JS: &str = include_str!("valueAction.js");
 const REF_REPLACEMENT_JS: &str = include_str!("refReplacement.js");
 const BLOCKED_POINT_JS: &str = include_str!("blockedPoint.js");
@@ -952,9 +954,8 @@ async fn handle_action_inner(
     timings: &mut ActionTimings,
     caller: &super::caller::Caller,
 ) -> Result<Value, (String, String)> {
-    let again = params
-        .get("tabId")
-        .and_then(Value::as_i64)
+    let again = extract_tab_id(&params)
+        .ok()
         .filter(|_| super::external_front::needs_shown_page(method))
         .filter(|&tab_id| crate::modules::browser_external::get_target(tab_id).is_some())
         .map(|_| params.clone());
@@ -1032,11 +1033,28 @@ async fn handle_action_attempt(
     // page in, and the page's layout changes as it comes. A Chrome or Edge tab
     // keeps the dock's turn until its input is done.
     let mut pointer_turn = None;
+    // A page that cannot be shown now, as one in a workspace Anbo is not
+    // showing, still takes keys and its own DOM events instead of a refusal.
+    let mut hidden_page = false;
     if super::external_front::needs_shown_page(method) {
-        if let Some(tab_id) = params.get("tabId").and_then(Value::as_i64) {
-            pointer_turn = timings
+        if let Ok(tab_id) = extract_tab_id(&params) {
+            match timings
                 .measure("front", super::external_front::bring_to_front(app, tab_id))
-                .await?;
+                .await
+            {
+                Ok(turn) => pointer_turn = turn,
+                Err(error)
+                    if hidden_input::stands_in(method)
+                        && super::external_front::cannot_show(&error) =>
+                {
+                    log::info!(
+                        "[browser_automation] {method} on tab {tab_id} without showing it: {}",
+                        error.1
+                    );
+                    hidden_page = true;
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
     if params.get("locator").is_some() {
@@ -1602,6 +1620,30 @@ async fn handle_action_attempt(
             // visible the wait ends after a couple of frames, so an ordinary
             // click keeps paying almost nothing for it.
             let budget = reveal_budget(&params, DEFAULT_REVEAL_MS);
+            if hidden_page {
+                let (webview, mut result) = {
+                    let _lock = timings.measure("queue", tab_lock.lock()).await;
+                    let webview = get_embed_webview(app, tab_id)
+                        .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
+                    ensure_current_ref(&ref_id, get_current_generation(tab_id))?;
+                    let target = get_ref_frame_target(tab_id, &ref_id);
+                    let result = hidden_input::click(
+                        &webview,
+                        target.as_ref(),
+                        tab_id,
+                        &ref_id,
+                        click_count,
+                    )
+                    .await?;
+                    (webview, result)
+                };
+                if let Some(expectation) = expectation {
+                    result["postcondition"] = wait_for_page_state(&webview, tab_id, &expectation)
+                        .await
+                        .map_err(|(code, message)| (code, format!("click was dispatched, but {message}; inspect the page before retrying the click")))?;
+                }
+                return Ok(result);
+            }
             let (webview, dispatch, revealed, media) = {
                 let _lock = timings.measure("queue", tab_lock.lock()).await;
                 let webview = get_embed_webview(app, tab_id)
@@ -1615,8 +1657,9 @@ async fn handle_action_attempt(
                 let (dispatch, popup_url) =
                     click_ref_profiled(&webview, tab_id, &ref_id, click_count, timings).await?;
                 // Chrome and Edge open a new-tab link themselves, and from
-                // extension 0.5.7 the bridge brings that tab into Anbo; only
-                // the embedded browser leaves it to Anbo.
+                // extension 0.5.7 the bridge brings that tab into Anbo (from
+                // 0.5.8 also one opened by a key on a page its browser does
+                // not show); only the embedded browser leaves it to Anbo.
                 if let Some(url) = popup_url.filter(|_| webview.embedded().is_ok()) {
                     let _ = app.emit(
                         BROWSER_POPUP_REQUEST_EVENT,
@@ -1687,6 +1730,9 @@ async fn handle_action_attempt(
             let generation = get_current_generation(tab_id);
             ensure_current_ref(&ref_id, generation)?;
             let target = get_ref_frame_target(tab_id, &ref_id);
+            if hidden_page {
+                return hidden_input::focus(&webview, target.as_ref(), tab_id, &ref_id).await;
+            }
             wait_for_actionable_ref(
                 &webview,
                 target.as_ref(),
@@ -1732,6 +1778,10 @@ async fn handle_action_attempt(
             let generation = get_current_generation(tab_id);
             ensure_current_ref(&ref_id, generation)?;
             let target = get_ref_frame_target(tab_id, &ref_id);
+            if hidden_page {
+                return hidden_input::check(&webview, target.as_ref(), tab_id, &ref_id, requested)
+                    .await;
+            }
             let actionable = timings
                 .measure(
                     "actionability",
@@ -1815,6 +1865,18 @@ async fn handle_action_attempt(
                     error_codes::INVALID_REQUEST.to_string(),
                     "drag source and target must be in the same document or frame".to_string(),
                 ));
+            }
+            if hidden_page {
+                return hidden_input::drag(
+                    &webview,
+                    source_target.as_ref(),
+                    tab_id,
+                    &source_ref,
+                    &target_ref,
+                    source_position,
+                    target_position,
+                )
+                .await;
             }
             let source = wait_for_actionable_ref(
                 &webview,
@@ -2333,10 +2395,11 @@ async fn handle_action_attempt(
                         .await;
                 }
                 let dispatched = async {
-                    timings.measure("keySettle", ref_context::settle_before_keys(&webview)).await;
                     // Focus emulation can run page focus handlers. Prepare it before
-                    // checking the target, immediately ahead of native key dispatch.
+                    // checking the target, immediately ahead of native key dispatch,
+                    // and let the keys wait out its turning on.
                     timings.measure("focusEmulation", ref_context::ensure_focus(&webview)).await.map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+                    timings.measure("keySettle", ref_context::settle_before_keys(&webview)).await;
                     if let Some(ref_id) = input_ref.as_deref() {
                         let generation = get_current_generation(tab_id);
                         ensure_current_ref(ref_id, generation)?;
@@ -3160,6 +3223,10 @@ async fn handle_action_attempt(
             let cur_gen = get_current_generation(tab_id);
             ensure_current_ref(&ref_id, cur_gen)?;
             let target = get_ref_frame_target(tab_id, &ref_id);
+            if hidden_page {
+                return hidden_input::hover(&webview, target.as_ref(), tab_id, &ref_id, position)
+                    .await;
+            }
             let actionable = wait_for_actionable_ref(
                 &webview,
                 target.as_ref(),
@@ -7862,8 +7929,8 @@ async fn dispatch_key_action(
     action: &str,
     modifiers: u8,
 ) -> Result<(), String> {
-    ref_context::settle_before_keys(webview).await;
     ref_context::ensure_focus(webview).await?;
+    ref_context::settle_before_keys(webview).await;
     if matches!(action, "press" | "down") {
         let down = key_event_params("keyDown", key, modifiers).to_string();
         call_devtools_protocol_method(

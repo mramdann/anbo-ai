@@ -207,7 +207,13 @@ profile. Where several are approved, `browser_open` needs `profile`, one of the
 names (or ids) its error lists; Anbo never opens the page under another login.
 A Chrome or Edge action that times out keeps its tab, but may still finish in
 the page: read the page before repeating it. Clicks on Chrome and Edge tabs
-take turns, so with other agents at work one can wait for theirs first.
+take turns, so with other agents at work one can wait for theirs first. A
+Chrome or Edge page that cannot be shown, as one in a workspace Anbo is not
+showing, takes no pointer input, so a click, check, focus, hover or drag there
+answers `pageHidden: true`: a native control was activated with the keyboard
+(`dispatch: "keyboard"`), anything else got the page's own events
+(`"dom-events"`), which CSS hover does not follow. Check the result before
+relying on it.
 `browser_close` on a Chrome or Edge tab closes it in that browser too, and one
 the user closes there closes in Anbo. A tab a page there opens (a `target=_blank` link, `window.open`) becomes an Anbo tab of
 its own, in the background when your click opened it: find it in
