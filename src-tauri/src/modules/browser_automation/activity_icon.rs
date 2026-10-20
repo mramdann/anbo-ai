@@ -67,9 +67,37 @@ pub(super) fn for_brand(brand: &str) -> Option<Icon> {
     })
 }
 
+/// Every icon source the activity overlay draws in a page.
+static SOURCES: LazyLock<std::collections::HashSet<String>> = LazyLock::new(|| {
+    ASSETS
+        .keys()
+        .map(String::as_str)
+        .chain(["anbo"])
+        .filter_map(for_brand)
+        .map(|icon| icon.source)
+        .collect()
+});
+
+/// Whether a page's request is the overlay's own agent icon, which the page's
+/// network list showed as an image the app never loads.
+pub(crate) fn is_overlay_icon(url: &str) -> bool {
+    url.starts_with("data:image/") && SOURCES.contains(url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn knows_its_own_icons_and_nothing_else() {
+        let claude = for_brand("claude").unwrap().source;
+        assert!(is_overlay_icon(&claude));
+        assert!(is_overlay_icon(&for_brand("anbo").unwrap().source));
+        assert!(!is_overlay_icon(
+            "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="
+        ));
+        assert!(!is_overlay_icon("https://example.com/logo.svg"));
+    }
 
     #[test]
     fn all_registered_brands_use_bounded_embedded_assets() {

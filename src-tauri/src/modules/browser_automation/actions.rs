@@ -3795,7 +3795,12 @@ async fn handle_action_attempt(
                 .map(|value| value.clamp(40, 4_000) as usize);
             let since = params.get("since").and_then(as_count);
 
-            let (logs, included_frames, skipped_frames) = collect_console_logs(&webview).await;
+            let (mut logs, included_frames, skipped_frames) = collect_console_logs(&webview).await;
+            // The browser writes a failed request to the console itself
+            // ("Failed to load resource"), where the page's own log never
+            // sees it; an agent looking for it there found nothing.
+            logs.extend(super::network::failed_requests(tab_id));
+            logs.sort_by_key(|entry| entry.get("ts").and_then(as_count).unwrap_or(0));
             let total = logs.len();
             let mut clipped = 0usize;
             let logs: Vec<Value> = logs
@@ -3814,16 +3819,15 @@ async fn handle_action_attempt(
                     since.is_none_or(|from| entry.get("ts").and_then(as_count).unwrap_or(0) >= from)
                 })
                 .map(|mut entry| {
+                    // Entries carry their words in msg: clipping looked for a
+                    // text field none has, so maxCharsPerMessage cut nothing.
                     if let (Some(max), Some(text)) = (
                         per_message,
-                        entry
-                            .get("text")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
+                        entry.get("msg").and_then(Value::as_str).map(str::to_string),
                     ) {
                         if text.chars().count() > max {
                             let short: String = text.chars().take(max).collect();
-                            entry["text"] = json!(short);
+                            entry["msg"] = json!(short);
                             entry["textTruncated"] = json!(true);
                             clipped += 1;
                         }

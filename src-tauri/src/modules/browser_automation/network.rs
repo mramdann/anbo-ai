@@ -244,6 +244,9 @@ impl Tracker {
                     self.unlisted += 1;
                     return;
                 };
+                if super::activity::is_overlay_icon(&request.url) {
+                    return;
+                }
                 if let (Some(previous), Some(redirect)) = (latest, event.redirect) {
                     previous.status = Some(redirect.status);
                     previous.ms = elapsed(previous);
@@ -303,7 +306,7 @@ impl Tracker {
             .filter(|record| {
                 filter
                     .as_deref()
-                    .is_none_or(|filter| record.url.to_lowercase().contains(filter))
+                    .is_none_or(|filter| url_matches(&record.url, filter))
             })
             .collect();
         let shown = &matching[matching.len().saturating_sub(limit)..];
@@ -323,6 +326,36 @@ impl Tracker {
             listed["note"] = "Anbo connected to this Chrome or Edge tab after its page loaded, so that load's requests are not listed; browser_reload lists them".into();
         }
         listed
+    }
+
+    fn failures(&self, wall: std::time::SystemTime, now: Instant) -> Vec<serde_json::Value> {
+        self.records
+            .iter()
+            .filter_map(|record| {
+                let text = match (record.error.as_deref(), record.status) {
+                    (Some("canceled"), _) => return None,
+                    (Some(error), _) => format!("Failed to load resource: {error}"),
+                    (None, Some(status)) if status >= 400 => format!(
+                        "Failed to load resource: the server responded with a status of {status}"
+                    ),
+                    _ => return None,
+                };
+                let at = wall
+                    .checked_sub(now.saturating_duration_since(record.started))
+                    .unwrap_or(wall);
+                let ts = at
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_millis() as u64)
+                    .unwrap_or(0);
+                Some(serde_json::json!({
+                    "level": "error",
+                    "source": "network",
+                    "msg": text,
+                    "url": record.url,
+                    "ts": ts,
+                }))
+            })
+            .collect()
     }
 
     fn idle(&self, now: Instant) -> Result<bool, String> {
@@ -355,6 +388,55 @@ pub fn is_idle(tab_id: i64) -> Result<bool, String> {
     {
         let _ = tab_id;
         Err("native network observation is only supported on Windows".into())
+    }
+}
+
+/// A filter holds a URL substring, or with `*` a pattern over the URL without
+/// its query: ".js" as a substring also took "data.json", "*.js" does not.
+fn url_matches(url: &str, filter: &str) -> bool {
+    let url = url.to_lowercase();
+    if !filter.contains('*') {
+        return url.contains(filter);
+    }
+    let address = url.split(['?', '#']).next().unwrap_or("");
+    let parts: Vec<&str> = filter.split('*').collect();
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if address.len() < first.len() + last.len()
+        || !address.starts_with(first)
+        || !address.ends_with(last)
+    {
+        return false;
+    }
+    let mut rest = &address[first.len()..address.len() - last.len()];
+    for part in &parts[1..parts.len() - 1] {
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => return false,
+        }
+    }
+    true
+}
+
+/// The page's failed requests as its browser's console shows them ("Failed to
+/// load resource"), for browser_console_logs: the page's own console, which
+/// Anbo reads, never gets those lines.
+pub fn failed_requests(tab_id: i64) -> Vec<serde_json::Value> {
+    #[cfg(windows)]
+    {
+        let Some(state) = crate::modules::browser::embed::active_network(tab_id).or_else(|| {
+            crate::modules::browser_external::get_target(tab_id).map(|target| target.network)
+        }) else {
+            return Vec::new();
+        };
+        let Ok(tracker) = state.0.lock() else {
+            return Vec::new();
+        };
+        tracker.failures(std::time::SystemTime::now(), Instant::now())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = tab_id;
+        Vec::new()
     }
 }
 
@@ -679,6 +761,73 @@ mod tests {
             .is_none());
         let own = NetworkState::default();
         assert!(own.0.lock().unwrap().listed(None, 50).get("note").is_none());
+    }
+
+    #[test]
+    fn a_filter_is_a_substring_or_a_star_pattern_over_the_url_without_its_query() {
+        // Measured: ".js" as a substring also listed "data-tidak-ada.json".
+        assert!(url_matches("https://x.test/app.js?v=2", ".js"));
+        assert!(url_matches("https://x.test/data-tidak-ada.json", ".js"));
+        assert!(url_matches("https://x.test/app.js?v=2", "*.js"));
+        assert!(!url_matches("https://x.test/data-tidak-ada.json", "*.js"));
+        assert!(url_matches("https://x.test/api/items/7", "*/api/*"));
+        assert!(!url_matches("https://x.test/apix", "*/api/*"));
+        assert!(url_matches("HTTPS://X.TEST/A.CSS", "*.css"));
+        assert!(!url_matches("https://x.test/é", "*éé"));
+    }
+
+    #[test]
+    fn failed_requests_read_as_the_browser_console_writes_them() {
+        let state = NetworkState::default();
+        let event = |kind, json: &str| state.0.lock().unwrap().record(kind, json, Instant::now());
+        event(
+            NetworkEvent::Started,
+            r#"{"requestId":"1","request":{"url":"https://x.test/missing.png","method":"GET"},"type":"Image"}"#,
+        );
+        event(
+            NetworkEvent::Response,
+            r#"{"requestId":"1","response":{"status":404}}"#,
+        );
+        event(
+            NetworkEvent::Started,
+            r#"{"requestId":"2","request":{"url":"https://down.test/","method":"GET"},"type":"Fetch"}"#,
+        );
+        event(
+            NetworkEvent::Failed,
+            r#"{"requestId":"2","errorText":"net::ERR_NAME_NOT_RESOLVED"}"#,
+        );
+        event(
+            NetworkEvent::Started,
+            r#"{"requestId":"3","request":{"url":"https://x.test/ok","method":"GET"},"type":"Fetch"}"#,
+        );
+        event(
+            NetworkEvent::Response,
+            r#"{"requestId":"3","response":{"status":200}}"#,
+        );
+        event(
+            NetworkEvent::Started,
+            r#"{"requestId":"4","request":{"url":"https://x.test/gone","method":"GET"},"type":"Fetch"}"#,
+        );
+        event(NetworkEvent::Failed, r#"{"requestId":"4","canceled":true}"#);
+        let failures = state
+            .0
+            .lock()
+            .unwrap()
+            .failures(std::time::SystemTime::now(), Instant::now());
+        let texts: Vec<&str> = failures
+            .iter()
+            .map(|f| f["msg"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "Failed to load resource: the server responded with a status of 404",
+                "Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+            ]
+        );
+        assert_eq!(failures[0]["level"], "error");
+        assert_eq!(failures[0]["url"], "https://x.test/missing.png");
+        assert!(failures[0]["ts"].as_u64().unwrap() > 0);
     }
 
     #[test]

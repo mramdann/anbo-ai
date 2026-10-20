@@ -11,6 +11,8 @@ use tauri::{AppHandle, Emitter};
 
 #[path = "activity_icon.rs"]
 mod icon;
+/// The overlay draws its agent icon from a data: URL that the page records.
+pub(crate) use icon::is_overlay_icon;
 
 #[path = "activity_members.rs"]
 mod members;
