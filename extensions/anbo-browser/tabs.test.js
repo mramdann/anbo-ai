@@ -651,6 +651,20 @@ describe("tabs a page Anbo drives opens", () => {
     expect(state.selected.get(14).openedFrom.agent).toBe(true);
   });
 
+  it("connects a tab an agent's key opened from a page behind the user's tab, and gives the user's tab back", async () => {
+    // Measured in Chrome 155: Enter on a target=_blank link of a tab Anbo
+    // held behind the user's tab opened the new tab in front, named the
+    // user's tab as its opener, and left it in the browser.
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    const lease = state.selected.get(10).selectionId;
+    await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter" });
+    state.manager.created(openedTab(state, 13, { openerTabId: 11 }));
+    await vi.waitFor(() => expect(state.selected.has(13)).toBe(true));
+    expect(state.selected.get(13)).toMatchObject({ openedFrom: { selectionId: lease, background: true, agent: true } });
+    expect(state.api.tabs.update).toHaveBeenCalledWith(11, { active: true });
+  });
+
   it("leaves to the browser a tab the user opens there from a tab Anbo holds but does not show", async () => {
     const state = harness();
     await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });

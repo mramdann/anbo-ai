@@ -5,7 +5,7 @@ import { createDockManager } from "./dock.js";
 // The version this code is, kept equal to manifest.json. After an update the
 // browser reads the new manifest but can keep running the old scripts until the
 // extension reloads, so the manifest alone would hide that a reload is due.
-export const EXTENSION_VERSION = "0.5.7";
+export const EXTENSION_VERSION = "0.5.8";
 
 const MAX_TABS = 128;
 // A new tab opened this soon after Anbo sent input to the tab it opened from
@@ -326,18 +326,41 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
   // not show, opens a tab of the browser's. So do a tab that does not start
   // out for a web page (a new tab page, an empty window a script fills) and a
   // popup window (a sign-in, which talks to its opener).
+  const driven = (tabId) => Date.now() - (inputAt.get(tabId) ?? Number.NEGATIVE_INFINITY) < AGENT_INPUT_MS;
+
+  // The tab Anbo holds that an agent's input reached last, within the moment
+  // a page takes to open a tab.
+  function lastDriven() {
+    let found = null;
+    let at = Number.NEGATIVE_INFINITY;
+    for (const [tabId, selection] of attached) {
+      const input = inputAt.get(tabId) ?? Number.NEGATIVE_INFINITY;
+      if (driven(tabId) && input > at) [found, at] = [selection, input];
+    }
+    return found;
+  }
+
   function created(tab, fromDock = false) {
-    const opener = attached.get(tab.openerTabId);
+    let opener = attached.get(tab.openerTabId);
+    // The browser names the tab in front of its window as a new tab's opener.
+    // An agent's key on a page Anbo holds behind the user's tab, as in a
+    // workspace Anbo is not showing, opened it from there: the new tab was
+    // left in the browser, and in front of the user's own.
+    const behind = !fromDock && !(opener && driven(opener.id)) ? lastDriven() : null;
+    if (behind) opener = behind;
     const first = tab.pendingUrl || tab.url;
     if (disposed || !opener || tab.incognito || !Number.isSafeInteger(tab.id) || attached.has(tab.id) || pending.has(tab.id)) return;
     if ((first && !/^https?:/i.test(first)) || attached.size + pending.size >= MAX_TABS) return;
-    const agent = Date.now() - (inputAt.get(opener.id) ?? Number.NEGATIVE_INFINITY) < AGENT_INPUT_MS;
+    const agent = driven(opener.id);
     if (!fromDock && !agent) return;
-    const openedFrom = { selectionId: opener.selectionId, background: tab.active !== true, agent };
-    void track(adopt(tab, openedFrom)).catch(() => {});
+    const openedFrom = { selectionId: opener.selectionId, background: tab.active !== true || behind !== null, agent };
+    const front = behind && tab.active === true && Number.isSafeInteger(tab.openerTabId) ? tab.openerTabId : null;
+    void track(adopt(tab, openedFrom, front)).catch(() => {});
   }
 
-  async function adopt(tab, openedFrom) {
+  async function adopt(tab, openedFrom, front = null) {
+    // The user's tab gets the front of their window back.
+    if (front !== null) await api.tabs.update(front, { active: true }).catch(() => {});
     const window = await api.windows.get(tab.windowId);
     if (window.type !== "normal" || window.incognito) return;
     const check = () => { if (disposed) throw new Error("Browser connection revoked"); };
