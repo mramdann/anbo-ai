@@ -12,8 +12,8 @@ use tauri::AppHandle;
 use tauri::Emitter;
 
 use super::accessible_name::ACCESSIBLE_NAME_JS;
-use super::page_json;
 use super::context_block::{Ancestors, CONTEXT_BLOCK_JS};
+use super::page_json;
 use super::registry::{
     active_loading, active_local_root, active_navigation_generation, active_pending_url,
     set_active_loading, set_active_pending_url,
@@ -369,7 +369,10 @@ pub async fn handle_action_as(
         (Err((code, message)), Some(tab), Some(ref_id)) if code == error_codes::STALE_REF => {
             Err((code, stale_ref_hint(app, tab, ref_id, message).await))
         }
-        (Err((code, message)), Some(tab), _) if code == error_codes::TIMEOUT && waits_on_page => {
+        (Err((code, message)), Some(tab), _)
+            if (code == error_codes::TIMEOUT || code == error_codes::NOT_FOUND)
+                && waits_on_page =>
+        {
             Err((
                 code,
                 super::external_front::with_hidden_page_note(tab, message).await,
@@ -902,9 +905,7 @@ async fn navigation_hints_once(
             .filter(|raw| !raw.is_empty() && *raw != "null" && *raw != "undefined")
             .and_then(|raw| page_json::from_str::<Value>(raw).ok())
             .map(|value| match value {
-                Value::String(inner) => {
-                    page_json::from_str::<Value>(&inner).unwrap_or(Value::Null)
-                }
+                Value::String(inner) => page_json::from_str::<Value>(&inner).unwrap_or(Value::Null),
                 other => other,
             })
             .filter(Value::is_object);
@@ -925,11 +926,16 @@ async fn navigation_hints_once(
 /// truncated toward zero. `Value::as_u64` alone is None for `400.5`, and every
 /// caller then fell back to its own default without saying so. Measured on
 /// browser_find: timeout 400 took 413 ms, timeout 400.5 took 5,008 ms.
+/// A non-negative whole count, also when a model wrote the number as a string
+/// ("5000"), as weaker ones do for every number of a call.
 fn as_count(value: &Value) -> Option<u64> {
     if let Some(count) = value.as_u64() {
         return Some(count);
     }
-    let float = value.as_f64()?;
+    let float = match value {
+        Value::String(text) => text.trim().parse::<f64>().ok()?,
+        _ => value.as_f64()?,
+    };
     (float.is_finite() && float >= 0.0).then(|| float.trunc() as u64)
 }
 
@@ -1143,7 +1149,10 @@ async fn handle_action_attempt(
                         // A find on a new Chrome or Edge tab runs before the
                         // dock shows it.
                         let message = match tab_id.as_i64() {
-                            Some(id) if code == error_codes::TIMEOUT => {
+                            Some(id)
+                                if code == error_codes::TIMEOUT
+                                    || code == error_codes::NOT_FOUND =>
+                            {
                                 super::external_front::with_hidden_page_note(id, message).await
                             }
                             _ => message,
@@ -1558,12 +1567,11 @@ async fn handle_action_attempt(
                     let elapsed = timeout_ms.saturating_sub(
                         deadline.saturating_duration_since(completed).as_millis() as u64,
                     );
-                    return Err(find_timeout(
+                    return Err(find_settled(
                         &locator,
                         elapsed,
                         empty_scans,
-                        None,
-                        Some(&result),
+                        &result,
                         quiet_waits,
                     ));
                 }
@@ -4559,8 +4567,7 @@ fn decode_frame_evaluation(raw: String) -> String {
 
 fn parse_snapshot_payload(raw: String) -> Result<SnapshotPayload, String> {
     let decoded: String = page_json::from_str(&raw).unwrap_or(raw);
-    page_json::from_str(&decoded)
-        .map_err(|error| format!("failed to parse snapshot JSON: {error}"))
+    page_json::from_str(&decoded).map_err(|error| format!("failed to parse snapshot JSON: {error}"))
 }
 
 #[derive(Debug)]
@@ -4963,6 +4970,49 @@ fn find_timeout_held(
         format!(
             "timed out finding {} '{}' after {timeout_ms}ms: {diagnostics}",
             locator.by, locator.value,
+        ),
+    )
+}
+
+/// A miss that settled before its deadline: the page was read through and the
+/// element is not there, or is there only unrendered. It answered [timeout]
+/// "after 812ms" of a 2000 ms timeout, which read as a lookup that ran out of
+/// time rather than a verdict.
+fn find_settled(
+    locator: &LocatorRequest,
+    elapsed_ms: u64,
+    empty_scans: usize,
+    scan: &CollectedLocatorMatches,
+    quiet_waits: usize,
+) -> (String, String) {
+    let diagnostics =
+        locator_timeout_diagnostics_held(locator, empty_scans, None, Some(scan), quiet_waits, None);
+    (
+        error_codes::NOT_FOUND.to_string(),
+        format!(
+            "found no {} '{}' in {elapsed_ms}ms: {diagnostics}",
+            locator.by, locator.value,
+        ),
+    )
+}
+
+/// As find_settled, for the locator of an action or read.
+fn target_locator_settled(
+    locator: &LocatorRequest,
+    state: Option<&str>,
+    elapsed_ms: u64,
+    completed_scans: usize,
+    scan: &CollectedLocatorMatches,
+) -> (String, String) {
+    let diagnostics =
+        locator_timeout_diagnostics_held(locator, completed_scans, None, Some(scan), 0, None);
+    (
+        error_codes::NOT_FOUND.into(),
+        format!(
+            "locator {} found no {} '{}' in {elapsed_ms}ms: {diagnostics}; no input dispatched",
+            state.unwrap_or("lookup"),
+            locator.by,
+            locator.value,
         ),
     )
 }
@@ -5632,13 +5682,12 @@ async fn resolve_target_locator(
         {
             let elapsed = timeout_ms
                 .saturating_sub(deadline.saturating_duration_since(completed).as_millis() as u64);
-            return Err(target_locator_timeout(
+            return Err(target_locator_settled(
                 &locator,
                 state,
                 elapsed,
                 completed_scans,
-                None,
-                Some(&result),
+                &result,
             ));
         }
         last_scan = Some(result);
@@ -8723,7 +8772,10 @@ fn extract_tab_id(params: &Value) -> Result<i64, (String, String)> {
     params
         .get("tabId")
         .or_else(|| params.get("tab"))
-        .and_then(|v| v.as_i64())
+        .and_then(|v| match v {
+            Value::String(text) => text.trim().parse::<i64>().ok(),
+            _ => v.as_i64(),
+        })
         .ok_or_else(|| {
             (
                 error_codes::INVALID_REQUEST.to_string(),
@@ -9310,6 +9362,47 @@ mod tests {
         assert!(quiet.1.contains("cached scans expire"));
         assert!(!quiet.1.contains("could not have found anything new"));
         assert!(!absent.1.contains("cached scans expire"));
+    }
+
+    #[test]
+    fn a_miss_settled_before_its_deadline_is_not_found_not_a_timeout() {
+        // Measured: a search that proved absence in 791-897 ms of a 2000 ms
+        // timeout answered [timeout], which read as one that ran out of time.
+        let locator = extract_locator(&json!({"by":"css", "value":"#missing"})).unwrap();
+        let scan = |hidden: usize| CollectedLocatorMatches {
+            matches: vec![],
+            scanned: 900,
+            truncated: false,
+            node_limit_reached: false,
+            included_frames: 1,
+            skipped_frames: 0,
+            hidden,
+            name_misses: vec![],
+            candidates: vec![],
+            nearest: None,
+        };
+        let absent = find_settled(&locator, 812, 3, &scan(0), 0);
+        assert_eq!(absent.0, error_codes::NOT_FOUND);
+        assert!(absent.1.starts_with("found no css '#missing' in 812ms: "));
+        assert!(absent.1.contains("confirmed absence"));
+        let hidden = target_locator_settled(&locator, Some("visible"), 900, 2, &scan(2));
+        assert_eq!(hidden.0, error_codes::NOT_FOUND);
+        assert!(hidden
+            .1
+            .starts_with("locator visible found no css '#missing' in 900ms: "));
+        assert!(hidden.1.contains("not rendered"));
+        assert!(hidden.1.ends_with("no input dispatched"));
+    }
+
+    #[test]
+    fn counts_and_tab_ids_written_as_strings_are_numbers() {
+        // Weaker models write every number of a call as a string.
+        assert_eq!(as_count(&json!("5000")), Some(5_000));
+        assert_eq!(as_count(&json!(" 2.9 ")), Some(2));
+        assert_eq!(as_count(&json!("-1")), None);
+        assert_eq!(as_count(&json!("many")), None);
+        assert_eq!(extract_tab_id(&json!({"tabId": "123"})).unwrap(), 123);
+        assert!(extract_tab_id(&json!({"tabId": "tab 1"})).is_err());
     }
 
     #[test]

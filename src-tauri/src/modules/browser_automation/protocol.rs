@@ -86,6 +86,9 @@ pub mod error_codes {
     pub const NAVIGATION_FAILED: &str = "navigation_failed";
     pub const CDP_FAILED: &str = "cdp_failed";
     pub const TIMEOUT: &str = "timeout";
+    /// A lookup that read the whole page before its deadline and found the
+    /// element absent, or present only unrendered: a verdict, not a timeout.
+    pub const NOT_FOUND: &str = "not_found";
     pub const RESPONSE_TOO_LARGE: &str = "response_too_large";
     pub const INTERNAL: &str = "internal";
 }

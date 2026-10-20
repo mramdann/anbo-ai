@@ -103,7 +103,9 @@ recognizable list items, rows and cards whose identity changed; large or
 unrecognized containers keep only node identity protection. Re-find controls
 after replacing a list and verify the current item before acting. A capped scan
 or skipped frame does not prove absence: inspect `nodeLimitReached`,
-`skippedFrames` and the timeout's coverage diagnostics. A miss that ran to its
+`skippedFrames` and the timeout's coverage diagnostics. A lookup that read the
+whole page and found the element absent, or only not rendered, ends early with
+`not_found`; `timeout` means the deadline came first. A miss that ran to its
 whole timeout says why it did not end early: a timeout you set (waited out in
 full), a tab still loading, or a page that kept changing its structure. On a
 Chrome or Edge tab that is not shown, a find or wait that runs out of time says
