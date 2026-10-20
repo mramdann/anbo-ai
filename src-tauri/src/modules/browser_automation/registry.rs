@@ -93,8 +93,19 @@ pub fn active_navigation_generation(tab_id: i64) -> Option<u64> {
 }
 
 pub fn active_local_root(tab_id: i64) -> Option<std::path::PathBuf> {
-    embed::active_local_root(tab_id)
-        .or_else(|| Some(browser_external::get_target(tab_id)?.workspace.into()))
+    embed::active_local_root(tab_id).or_else(|| {
+        Some(canonical_root(
+            &browser_external::get_target(tab_id)?.workspace,
+        ))
+    })
+}
+
+/// A Chrome/Edge tab's workspace in the canonical form an embedded tab keeps.
+/// Callers compare it with a canonicalized request: the raw `D:/...` never
+/// matched `\\?\D:\...`, so every upload or download on such a tab was refused
+/// as another workspace's, and the tab_in_use guard never saw its holder.
+fn canonical_root(workspace: &str) -> std::path::PathBuf {
+    std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.into())
 }
 
 pub fn active_loading(tab_id: i64) -> Option<bool> {
@@ -163,6 +174,21 @@ pub async fn apply_viewport(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chrome_tabs_workspace_compares_like_a_canonicalized_request() {
+        // Measured: browser_upload on Chrome/Edge tabs answered "tab N belongs to
+        // a different workspace" for the tab's own workspace, slash or backslash.
+        let dir = std::env::temp_dir().join(format!("anbo-root-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let requested = std::fs::canonicalize(&dir).unwrap();
+        let forward = dir.to_string_lossy().replace('\\', "/");
+        assert_eq!(canonical_root(&forward), requested);
+        assert_eq!(canonical_root(&dir.to_string_lossy()), requested);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let gone = dir.to_string_lossy().into_owned();
+        assert_eq!(canonical_root(&gone), std::path::PathBuf::from(&gone));
+    }
 
     #[test]
     fn closing_a_tab_keeps_the_same_lock_for_existing_owners_and_waiters() {
