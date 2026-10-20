@@ -76,9 +76,17 @@ pub fn get_embed_webview(app: &AppHandle, tab_id: i64) -> Result<BrowserTarget, 
         return Err(format!("tab {tab_id} not found or closed"));
     }
     let label = embed_label(tab_id);
-    let webview = app
-        .get_webview(&label)
-        .ok_or_else(|| format!("webview window for tab {tab_id} ({label}) is unavailable"))?;
+    // A tab a page opened in the background is in Anbo before its page has
+    // started, which can wait for memory: "webview window ... unavailable"
+    // for 10 to 75 s said neither why nor whether a retry would help.
+    let webview = app.get_webview(&label).ok_or_else(|| match embed::spawn_failure(tab_id) {
+        Some(reason) => format!(
+            "tab {tab_id}'s page could not start: {reason}. Anbo starts it again when memory allows; retry, or close tabs you no longer need"
+        ),
+        None => format!(
+            "tab {tab_id}'s page has not started yet (a tab opened in the background starts when Anbo has room for it); retry in a moment"
+        ),
+    })?;
     super::activity::stage("running");
     Ok(webview.into())
 }

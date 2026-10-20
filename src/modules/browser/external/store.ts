@@ -1,5 +1,6 @@
 import { IS_WINDOWS } from "@/lib/platform";
 import {
+  type ExternalBrowser,
   type ExternalConnection,
   sameWorkspace,
 } from "@/modules/browser/external/model";
@@ -11,6 +12,27 @@ import { create } from "zustand";
 export const EXTERNAL_BROWSERS_ENABLED = IS_WINDOWS && isTauri();
 
 export type BrowserProfile = ExternalConnection["profile"];
+
+/** Whether a Chrome or Edge tab has lost its page while its profile is
+ *  connected for the tab's workspace: closed or replaced in the browser, or
+ *  not chosen again since Anbo restarted. Its pane said the profile was not
+ *  connected, and no agent could find the tab to close it. */
+export function externalPageGone(
+  tab: { kind?: string; external?: ExternalBrowser },
+  workspaceRoot: string | null,
+): boolean {
+  const external = tab.external;
+  if (!external || external.connected || !workspaceRoot) return false;
+  return useExternalBrowsers
+    .getState()
+    .connections.some(
+      (connection) =>
+        connection.profile.profileId === external.profileId &&
+        connection.profile.browser === external.browser &&
+        connection.workspace !== null &&
+        sameWorkspace(connection.workspace, workspaceRoot),
+    );
+}
 
 type ExternalBrowsersState = {
   connections: ExternalConnection[];

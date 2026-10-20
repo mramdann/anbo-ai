@@ -91,7 +91,10 @@ import {
   setBrowserShowRequestHandler,
   setBrowserTabsRequestHandler,
 } from "@/modules/browser/automationOpenBridge";
-import { EXTERNAL_BROWSERS_ENABLED } from "@/modules/browser/external/store";
+import {
+  EXTERNAL_BROWSERS_ENABLED,
+  externalPageGone,
+} from "@/modules/browser/external/store";
 import { saveBrowserHistory } from "@/modules/browser/history";
 import { watchMcpPort } from "@/modules/browser/mcpPortNotice";
 import {
@@ -2054,6 +2057,9 @@ export default function App() {
             automationMethod,
             loading: tab.loading === true,
             pendingUrl: null,
+            ...(externalPageGone(tab, space?.root ?? null) && {
+              pageGone: true,
+            }),
           },
         ];
       });

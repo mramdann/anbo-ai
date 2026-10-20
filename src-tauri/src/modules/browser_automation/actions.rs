@@ -205,6 +205,8 @@ struct BrowserTabMetadata {
     loading: bool,
     #[serde(default)]
     pending_url: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    page_gone: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -1213,14 +1215,16 @@ async fn handle_action_attempt(
             // In the order the tab strip shows them: the embed registry's own
             // order put a tab a page opened before its opener, or the newest
             // of three right after it, which read as Anbo placing them so.
+            // A Chrome or Edge tab that lost its page has nothing in the
+            // registry, and unlisted no agent could close it.
             let mut ordered: Vec<i64> = metadata
                 .as_ref()
                 .map(|response| {
                     response
                         .tabs
                         .iter()
+                        .filter(|tab| tab.page_gone || active_ids.contains(&tab.tab_id))
                         .map(|tab| tab.tab_id)
-                        .filter(|tab_id| active_ids.contains(tab_id))
                         .collect()
                 })
                 .unwrap_or_default();
@@ -1235,7 +1239,7 @@ async fn handle_action_attempt(
                     response
                         .tabs
                         .into_iter()
-                        .filter(|tab| active_ids.contains(&tab.tab_id))
+                        .filter(|tab| tab.page_gone || active_ids.contains(&tab.tab_id))
                         .map(|tab| (tab.tab_id, tab))
                         .collect::<HashMap<_, _>>()
                 })
@@ -1247,8 +1251,12 @@ async fn handle_action_attempt(
                         tab.loading = loading;
                     }
                     tab.pending_url = active_pending_url(tab_id);
+                    let gone = tab.page_gone;
                     let mut item = serde_json::to_value(tab).unwrap_or_default();
                     item["titleSource"] = json!("ui");
+                    if gone {
+                        item["note"] = json!("not connected to its page (closed or replaced in the browser, or not chosen again since Anbo restarted); browser_close closes this tab");
+                    }
                     result.push(item);
                     continue;
                 }

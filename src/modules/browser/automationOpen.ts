@@ -83,13 +83,21 @@ export type BrowserTabMetadata = {
   automationMethod: string | null;
   loading: boolean;
   pendingUrl: string | null;
+  /** A Chrome or Edge tab not connected to its page while its profile is
+   *  connected: closed or replaced there, or not chosen since a restart. */
+  pageGone?: boolean;
 };
 
-export const createBrowserOpenListener = createRequestListener<BrowserOpenRequest>;
-export const createBrowserCloseListener = createRequestListener<BrowserCloseRequest>;
-export const createBrowserTabsListener = createRequestListener<BrowserTabsRequest>;
-export const createBrowserPopupListener = createRequestListener<BrowserPopupRequest>;
-export const createBrowserShowListener = createRequestListener<BrowserShowRequest>;
+export const createBrowserOpenListener =
+  createRequestListener<BrowserOpenRequest>;
+export const createBrowserCloseListener =
+  createRequestListener<BrowserCloseRequest>;
+export const createBrowserTabsListener =
+  createRequestListener<BrowserTabsRequest>;
+export const createBrowserPopupListener =
+  createRequestListener<BrowserPopupRequest>;
+export const createBrowserShowListener =
+  createRequestListener<BrowserShowRequest>;
 
 export { automationTabPlacement as browserOpenPlacement } from "@/modules/tabs/lib/automationTabPlacement";
 

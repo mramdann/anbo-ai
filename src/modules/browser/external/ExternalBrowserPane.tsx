@@ -17,6 +17,7 @@ import { readDesignTheme } from "@/modules/browser/design/designTheme";
 import { useBrowserDock } from "@/modules/browser/external/docking";
 import {
   browserName,
+  externalPageGone,
   useExternalBrowsers,
 } from "@/modules/browser/external/store";
 import { browserDesignSet } from "@/modules/browser/native";
@@ -57,6 +58,9 @@ export default forwardRef<
   { tab: BrowserTab; visible: boolean; workspaceRoot: string | null }
 >(function ExternalBrowserPane({ tab, visible, workspaceRoot }, ref) {
   const external = tab.external;
+  // Read again whenever the profiles' connections change.
+  useExternalBrowsers((state) => state.connections);
+  const pageGone = externalPageGone(tab, workspaceRoot);
   const dock = useBrowserDock(tab, visible);
   const address = useRef<BrowserAddressBarHandle>(null);
   const [error, setError] = useState<string | null>(null);
@@ -257,6 +261,7 @@ export default forwardRef<
             browser={browser}
             name={external?.name ?? ""}
             error={external?.error ?? null}
+            pageGone={pageGone}
           />
         ) : dock.hold === "moved" ? (
           <>
@@ -299,12 +304,31 @@ function Disconnected({
   browser,
   name,
   error,
+  pageGone,
 }: {
   browser: string;
   name: string;
   error: string | null;
+  pageGone: boolean;
 }) {
   const openMenu = useExternalBrowsers((state) => state.setMenuOpen);
+  // The profile is connected, this tab's page is not: closed or replaced in
+  // the browser, or left unchosen since Anbo restarted. Blaming the
+  // connection sent the user to reconnect a profile that was fine.
+  if (pageGone) {
+    return (
+      <div className="grid max-w-sm justify-items-center gap-2">
+        <p className="text-sm font-medium text-foreground">
+          {browser}
+          {name ? ` · ${name}` : ""} is connected, but not to this page
+        </p>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          The page was closed or replaced there, or Anbo restarted. Choose it
+          again from the {browser} extension, or close this tab.
+        </p>
+      </div>
+    );
+  }
   return (
     <div className="grid max-w-sm justify-items-center gap-2">
       <p className="text-sm font-medium text-foreground">
