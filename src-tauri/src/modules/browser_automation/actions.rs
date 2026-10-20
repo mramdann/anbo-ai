@@ -1197,6 +1197,16 @@ async fn handle_action_attempt(
                     let _ = app.emit(BROWSER_DOCK_HOLD_RELEASE_EVENT, json!({"tabId":id}));
                 }
             }
+            // A tab closed while it opened, by another call, the user or the
+            // page itself, leaves an id that only fails the next call: 13 of
+            // 15 such opens answered ok, their read error easy to miss.
+            if result["closed"] != json!(true) {
+                if let Some(id) = result["tabId"].as_i64() {
+                    if !get_active_tabs().contains(&id) {
+                        return Err(closed_while_opening(id));
+                    }
+                }
+            }
             Ok(result)
         }
         "close" => close_browser(app, &params).await,
@@ -8624,6 +8634,15 @@ async fn read_initial_page(
     result.map_err(|_| initial_read_timeout(phase))?
 }
 
+fn closed_while_opening(tab_id: i64) -> (String, String) {
+    (
+        error_codes::TAB_NOT_FOUND.to_string(),
+        format!(
+            "browser tab {tab_id} was closed while it opened, in Anbo or in its browser; open the page again if you still need it"
+        ),
+    )
+}
+
 /// What an open answers when its tab never got a browser: the reason the start
 /// failed where Anbo recorded one (memory, the tab limit), so an agent backs off
 /// instead of retrying into the same refusal after a bare timeout.
@@ -8744,7 +8763,16 @@ async fn open_browser(
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let webview_wait = std::time::Instant::now();
+    let mut registered = false;
     while get_embed_webview(app, tab_id).is_err() {
+        // A tab closed before its browser started never gets one: the open
+        // waited out its 10 s and answered a timeout. Its embed entry is made
+        // as its page starts and dropped as it closes.
+        let active = crate::modules::browser::embed::is_embed_tab_active(tab_id);
+        if registered && !active {
+            return Err(closed_while_opening(tab_id));
+        }
+        registered |= active;
         if tokio::time::Instant::now() >= deadline {
             // Read before the close request below, which forgets it.
             let start_failure = crate::modules::browser::embed::spawn_failure(tab_id);
