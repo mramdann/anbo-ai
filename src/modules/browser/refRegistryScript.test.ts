@@ -9,6 +9,8 @@ const script = readFileSync(
   ),
   "utf8",
 );
+// The window of scans a ref outlives, as the shipped registry sets it.
+const KEEP = Number(/const KEEP = (\d+);/.exec(script)?.[1]);
 
 function fixture() {
   const document = { baseURI: "https://fixture.test/results" };
@@ -97,22 +99,25 @@ describe("shipped isolated ref registry", () => {
     expect(target.getAttribute("data-anbo-ref")).toBe("g2-e1");
     expect(() => f.run("refRegistry.begin(1)")).toThrow("stale_scan");
   });
-  it("keeps a ref through the next eight scans and drops it after", () => {
+  it("keeps a ref through the next KEEP scans and drops it after", () => {
+    expect(KEEP).toBe(32);
     const f = fixture();
     const a = f.node();
-    const others = Array.from({ length: 9 }, () => f.node());
+    const others = Array.from({ length: KEEP + 1 }, () => f.node());
     f.run("refRegistry.begin(1);refRegistry.remember('g1-e1', a)", {
       a,
       others,
     });
-    for (let scan = 2; scan <= 9; scan++) {
+    for (let scan = 2; scan <= KEEP + 1; scan++) {
       f.run(
         `refRegistry.begin(${scan});refRegistry.remember('g${scan}-e1', others[${scan - 2}])`,
       );
       expect(f.run("return refRegistry.resolve('g1-e1')")).toBe(a);
     }
-    // The ninth scan after it is one too many: the ref and its label go.
-    f.run("refRegistry.begin(10);refRegistry.remember('g10-e1', others[8])");
+    // One scan past the window is one too many: the ref and its label go.
+    f.run(
+      `refRegistry.begin(${KEEP + 2});refRegistry.remember('g${KEEP + 2}-e1', others[${KEEP}])`,
+    );
     expect(f.run("return refRegistry.resolve('g1-e1')")).toBeNull();
     expect(f.run("return refRegistry.reason('g1-e1')")).toBe(
       "generation_changed",
@@ -120,8 +125,9 @@ describe("shipped isolated ref registry", () => {
     expect(a.getAttribute("data-anbo-ref")).toBeNull();
     expect(f.run("return refRegistry.resolve('g2-e1')")).toBe(others[0]);
     // A ref from a scan that has not happened is never valid.
-    expect(f.run("return refRegistry.resolve('g11-e1')")).toBeNull();
-    expect(f.run("return refRegistry.reason('g11-e1')")).toBe(
+    const future = `g${KEEP + 3}-e1`;
+    expect(f.run(`return refRegistry.resolve('${future}')`)).toBeNull();
+    expect(f.run(`return refRegistry.reason('${future}')`)).toBe(
       "generation_changed",
     );
   });
@@ -141,14 +147,15 @@ describe("shipped isolated ref registry", () => {
     f.run("refRegistry.begin(1);refRegistry.remember('g1-e1', a)", { a });
     // Re-found under a newer ref: the node now wears that label.
     f.run("refRegistry.begin(5);refRegistry.remember('g5-e1', a)");
-    for (let scan = 6; scan <= 10; scan++) {
+    const last = KEEP + 2;
+    for (let scan = 6; scan <= last; scan++) {
       f.run(
         `refRegistry.begin(${scan});refRegistry.remember('g${scan}-e1', a)`,
       );
     }
-    // g1 fell out of the window, but the label belongs to g10 and stays.
+    // g1 fell out of the window, but the label belongs to the last scan.
     expect(f.run("return refRegistry.resolve('g1-e1')")).toBeNull();
-    expect(a.getAttribute("data-anbo-ref")).toBe("g10-e1");
+    expect(a.getAttribute("data-anbo-ref")).toBe(`g${last}-e1`);
     expect(f.run("return refRegistry.resolve('g5-e1')")).toBe(a);
   });
   it("caps retained weak references at the snapshot limit", () => {
@@ -560,7 +567,7 @@ describe("shipped isolated ref registry", () => {
     f.run("refRegistry.begin(2)");
     f.run("refRegistry.remember('g2-e1', f.node())", { f });
     expect(f.run("return refRegistry.reason('g1-e1')")).toBe("node_detached");
-    for (let scan = 3; scan <= 10; scan++) {
+    for (let scan = 3; scan <= KEEP + 2; scan++) {
       f.run(
         `refRegistry.begin(${scan});refRegistry.remember('g${scan}-e1', f.node())`,
       );

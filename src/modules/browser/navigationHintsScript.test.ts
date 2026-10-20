@@ -17,6 +17,7 @@ const template = rust
   .replace(/\}\}/g, "}");
 const script = template
   .replace("{REF_REGISTRY_JS}", read("refRegistry.js"))
+  .replace("{ACCESSIBLE_NAME_JS}", read("accessibleName.js"))
   .replace(/\{generation\}/g, "7")
   .replace("{ref_prefix}", '"g7-e"');
 const withQuery = (words: string[], require: boolean) =>
@@ -36,6 +37,8 @@ function fixture() {
   const link = {
     tagName: "A",
     localName: "a",
+    nodeType: 1,
+    childNodes: [{ nodeType: 3, textContent: "Result" }],
     baseURI: "https://fixture.test/",
     ownerDocument: document,
     isConnected: true,
@@ -57,6 +60,8 @@ function fixture() {
     link,
     URL,
     innerHeight: 800,
+    // Names are read as a reader sees them; the fixture draws everything.
+    getComputedStyle: () => ({ display: "inline", visibility: "visible" }),
   });
   return { document, link, context };
 }
