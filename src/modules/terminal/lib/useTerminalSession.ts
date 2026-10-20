@@ -920,6 +920,12 @@ async function openPtyForSession(
   ) {
     void pty.resize(s.cols, s.rows);
   }
+  // A leaf no pane has fitted yet keeps the size its PTY opened at, so a
+  // hidden bind parses its output at that width (rendererPool bindSlot).
+  if (s.cols <= 0 || s.rows <= 0) {
+    s.cols = startCols;
+    s.rows = startRows;
+  }
   return pty;
 }
 

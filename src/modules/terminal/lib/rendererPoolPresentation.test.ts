@@ -150,4 +150,42 @@ describe("terminal window restore", () => {
       sourceBetween("function rewireSlot", "function setupResizeObserver"),
     ).toContain("shouldRepairWebglFrame");
   });
+
+  it("fits only shown terminals, and a hidden one parses at its PTY's size", () => {
+    // Measured in the 24 h soak: a hidden workspace's terminal bound for an agent
+    // took its hidden host's box (the shown workspace's dock), so its PTY went to
+    // 81x24, 81x50 or 102x24, output lost 6 characters at column 81 and every
+    // TUI redrew its whole history when the workspace was shown again.
+    const bind = sourceBetween("function bindSlot", "function scheduleUnhide");
+    expect(bind).toContain(
+      "if (adapter?.isLeafVisible(p.leafId) && canFitTerminal(p.container)) {",
+    );
+    expect(bind).not.toContain(
+      "if (canFitTerminal(p.container)) slot.fitAddon.fit();",
+    );
+    const retained = bind.slice(bind.indexOf("// The ring holds"));
+    expect(retained.indexOf("slot.term.resize(p.cols, p.rows)")).toBeLessThan(
+      retained.indexOf("p.drainRing((bytes) => writeSlot(slot, bytes))"),
+    );
+    const rewire = sourceBetween(
+      "function rewireSlot",
+      "function setupResizeObserver",
+    );
+    expect(rewire).toContain("if (adapter?.isLeafVisible(p.leafId)) {");
+    expect(rewire).toContain("slot.term.resize(p.cols, p.rows)");
+    expect(
+      sourceBetween("function setupResizeObserver", "type SerializeOutput"),
+    ).toContain("!adapter?.isLeafVisible(p.leafId)");
+    expect(
+      sourceBetween("function refitSlot", "export function applyLetterSpacing"),
+    ).toContain("!adapter?.isLeafVisible(slot.currentLeafId)");
+    expect(
+      sourceBetween("function scheduleRevealRepair", "function repaintSlot"),
+    ).toContain("adapter?.isLeafVisible(leafId)");
+    const open = sessionSource.slice(
+      sessionSource.indexOf("async function openPtyForSession"),
+      sessionSource.indexOf("function applyBlockMode"),
+    );
+    expect(open).toContain("s.cols = startCols;");
+  });
 });

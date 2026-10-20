@@ -766,11 +766,26 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
       writeSlot(slot, "\x1b[?25h");
     } catch {}
   } else {
+    // The ring holds what the PTY wrote for its own width: parse it there.
+    if (
+      p.cols > 0 &&
+      p.rows > 0 &&
+      (slot.term.cols !== p.cols || slot.term.rows !== p.rows)
+    ) {
+      slot.term.resize(p.cols, p.rows);
+    }
     p.drainRing((bytes) => writeSlot(slot, bytes));
   }
 
   setupResizeObserver(slot, p);
-  if (canFitTerminal(p.container)) slot.fitAddon.fit();
+  // A leaf that is not shown has no box of its own: its hidden host takes the
+  // shown workspace's dock size, so fitting there resized the PTY (and the grid
+  // parsing it) to another workspace's pane on every bind. ConPTY then drew at
+  // one width while xterm wrapped at another, and every TUI redrew. It keeps
+  // its PTY's size until it shows; the reveal paths fit it to its pane then.
+  if (adapter?.isLeafVisible(p.leafId) && canFitTerminal(p.container)) {
+    slot.fitAddon.fit();
+  }
   slot.lastCols = slot.term.cols;
   slot.lastRows = slot.term.rows;
   slot.lastW = p.container.clientWidth;
@@ -841,7 +856,11 @@ function scheduleRevealRepair(slot: Slot, leafId: number): void {
     slot.revealRepairRaf = null;
     if (slot.currentLeafId !== leafId || slot.parked) return;
     const container = slot.host.parentElement;
-    if (container && canFitTerminal(container)) {
+    if (
+      container &&
+      adapter?.isLeafVisible(leafId) &&
+      canFitTerminal(container)
+    ) {
       slot.fitAddon.fit();
       slot.lastW = container.clientWidth;
       slot.lastH = container.clientHeight;
@@ -911,7 +930,17 @@ function rewireSlot(slot: Slot, p: AcquireParams): void {
     p.container.appendChild(slot.host);
   }
   setupResizeObserver(slot, p);
-  if (canFitTerminal(p.container)) slot.fitAddon.fit();
+  // As in bindSlot: only a shown leaf is fitted to its container; a hidden
+  // one's grid follows its PTY instead of the PTY following the grid.
+  if (adapter?.isLeafVisible(p.leafId)) {
+    if (canFitTerminal(p.container)) slot.fitAddon.fit();
+  } else if (
+    p.cols > 0 &&
+    p.rows > 0 &&
+    (slot.term.cols !== p.cols || slot.term.rows !== p.rows)
+  ) {
+    slot.term.resize(p.cols, p.rows);
+  }
   const width = p.container.clientWidth;
   const height = p.container.clientHeight;
   slot.lastW = width;
@@ -954,10 +983,13 @@ function setupResizeObserver(slot: Slot, p: AcquireParams): void {
     if (slot.fitTimer) clearTimeout(slot.fitTimer);
     slot.fitTimer = setTimeout(() => {
       slot.fitTimer = null;
+      // A hidden host follows the shown workspace's layout (a sidebar
+      // toggled there resized every hidden terminal's PTY).
       if (
         slot.currentLeafId !== p.leafId ||
         slot.parked ||
-        !canFitTerminal(container)
+        !canFitTerminal(container) ||
+        !adapter?.isLeafVisible(p.leafId)
       )
         return;
       const w = container.clientWidth;
@@ -1290,6 +1322,7 @@ function refitSlot(slot: Slot): void {
   if (
     slot.parked ||
     slot.currentLeafId === null ||
+    !adapter?.isLeafVisible(slot.currentLeafId) ||
     !slot.host.parentElement ||
     !canFitTerminal(slot.host.parentElement)
   ) {
