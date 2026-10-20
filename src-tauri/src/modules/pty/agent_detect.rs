@@ -96,6 +96,140 @@ impl Transition {
     }
 }
 
+/// Words that run the command after them in the same terminal.
+const LAUNCHERS: &[&str] = &[
+    "&", ".", "bunx", "call", "cmd", "command", "doas", "env", "exec", "nohup", "npx", "pnpx",
+    "sudo", "time", "uvx", "wsl",
+];
+/// Package managers that run a package through one of these sub-commands.
+const PACKAGE_RUNNERS: &[(&str, &[&str])] = &[
+    ("bun", &["x"]),
+    ("npm", &["exec", "x"]),
+    ("pnpm", &["dlx", "exec"]),
+    ("yarn", &["dlx", "exec"]),
+];
+
+/// The words of each statement of a command line. Quotes group a word and
+/// are dropped; `;`, `|`, `&&`, `||` and line breaks end a statement.
+fn statements(cmd: &str) -> Vec<Vec<String>> {
+    let mut statements = Vec::new();
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    let mut chars = cmd.chars().peekable();
+    let end_word = |words: &mut Vec<String>, word: &mut String, in_word: &mut bool| {
+        if std::mem::take(in_word) {
+            words.push(std::mem::take(word));
+        }
+    };
+    while let Some(c) = chars.next() {
+        if let Some(open) = quote {
+            if c == open {
+                quote = None;
+            } else {
+                word.push(c);
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quote = Some(c);
+                in_word = true;
+            }
+            ';' | '|' | '\n' | '&' if c != '&' || chars.peek() == Some(&'&') => {
+                if matches!(c, '|' | '&') && chars.peek() == Some(&c) {
+                    chars.next();
+                }
+                end_word(&mut words, &mut word, &mut in_word);
+                if !words.is_empty() {
+                    statements.push(std::mem::take(&mut words));
+                }
+            }
+            c if c.is_whitespace() => end_word(&mut words, &mut word, &mut in_word),
+            _ => {
+                word.push(c);
+                in_word = true;
+            }
+        }
+    }
+    end_word(&mut words, &mut word, &mut in_word);
+    if !words.is_empty() {
+        statements.push(words);
+    }
+    statements
+}
+
+/// The program a statement runs, past launchers such as `npx`, `& ` or
+/// `cmd /c` and `NAME=value` prefixes. None for a PowerShell expression or
+/// assignment (`$env:NAME = ...`).
+fn command_word(words: &[String]) -> Option<&str> {
+    let mut index = 0;
+    let skip_options = |index: &mut usize| {
+        while words
+            .get(*index)
+            .is_some_and(|word| word.starts_with('-') || (word.len() == 2 && word.starts_with('/')))
+        {
+            *index += 1;
+        }
+    };
+    while let Some(word) = words.get(index) {
+        if word.starts_with('$') {
+            return None;
+        }
+        if word
+            .split_once('=')
+            .is_some_and(|(name, _)| is_variable_name(name))
+        {
+            index += 1;
+            continue;
+        }
+        let name = program_name(word);
+        if LAUNCHERS.contains(&name.as_str()) {
+            index += 1;
+            skip_options(&mut index);
+            continue;
+        }
+        if let Some((_, modes)) = PACKAGE_RUNNERS.iter().find(|(runner, _)| *runner == name) {
+            if words
+                .get(index + 1)
+                .is_some_and(|mode| modes.contains(&mode.as_str()))
+            {
+                index += 2;
+                skip_options(&mut index);
+                continue;
+            }
+        }
+        return Some(word.as_str());
+    }
+    None
+}
+
+fn is_variable_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+/// A program word as its command name: the file name, lower case, without a
+/// Windows extension (`C:\Tools\Claude.exe` is `claude`).
+fn program_name(word: &str) -> String {
+    let base = word.rsplit(['/', '\\']).next().unwrap_or(word);
+    let base = base
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    for extension in [".exe", ".cmd", ".bat", ".ps1", ".com"] {
+        if let Some(stem) = base.strip_suffix(extension) {
+            return stem.to_string();
+        }
+    }
+    base
+}
+
 pub struct AgentDetector {
     agents: Vec<String>,
     state: State,
@@ -221,26 +355,29 @@ impl AgentDetector {
         }
     }
 
+    /// The agent a command line starts: the program of one of its statements.
+    /// A name anywhere else on the line is an argument; `Get-Process codex`
+    /// had made a shell an agent tab, which left the terminal tools' list.
     fn match_agent(&self, cmd: &[u8]) -> Option<String> {
         let cmd = std::str::from_utf8(cmd).ok()?;
-        for token in cmd.split_whitespace() {
-            if token.starts_with('-') {
-                continue;
-            }
-            let base = token.rsplit(['/', '\\']).next().unwrap_or(token);
-            if let Some(agent) = self.agents.iter().find(|a| {
-                let executable = if a.as_str() == "antigravity" {
-                    "agy"
-                } else {
-                    a.as_str()
-                };
-                base.strip_prefix(executable)
-                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
-            }) {
-                return Some(agent.clone());
-            }
-        }
-        None
+        statements(cmd)
+            .iter()
+            .filter_map(|words| command_word(words))
+            .find_map(|program| {
+                let name = program_name(program);
+                self.agents
+                    .iter()
+                    .find(|a| {
+                        let executable = if a.as_str() == "antigravity" {
+                            "agy"
+                        } else {
+                            a.as_str()
+                        };
+                        name.strip_prefix(executable)
+                            .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+                    })
+                    .cloned()
+            })
     }
 
     fn resume_session_id(agent: &str, cmd: &[u8]) -> Option<String> {
@@ -416,6 +553,63 @@ mod tests {
         assert!(run(&mut d, &osc("133;C;vim src/main.rs")).is_empty());
         assert!(run(&mut d, &osc("133;C;cat claude.txt")).is_empty());
         assert!(run(&mut d, &osc("133;C;claudexyz")).is_empty());
+    }
+
+    #[test]
+    fn an_agent_name_given_to_another_program_is_an_argument() {
+        // Measured: an agent looking for a leftover process with
+        // `Get-Process codex` turned its 'git' terminal into a Codex tab, and
+        // the terminal left terminal_list for good.
+        for command in [
+            "Get-Process codex",
+            "Stop-Process -Name codex -Force",
+            "where.exe claude",
+            "echo pi",
+            "git log --author claude",
+            "Write-Output 'kimi'; Get-Date",
+            "$env:AGENT = 'codex'",
+            "npm install -g @openai/codex",
+        ] {
+            let mut d = AgentDetector::new();
+            assert!(
+                run(&mut d, &osc(&format!("133;C;{command}"))).is_empty(),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn arms_on_the_program_of_any_statement_past_launchers() {
+        let uuid = "01a02fbc-ed2d-72b3-9111-0e1395a678bb";
+        for (command, agent) in [
+            (
+                "$env:OPENCODE_CONFIG='C:\\w\\a;b.json'; opencode",
+                "opencode",
+            ),
+            ("OPENCODE_CONFIG=/w/anbo-mcp.json opencode", "opencode"),
+            ("cd app && codex --yolo", "codex"),
+            ("cmd /c claude", "claude"),
+            ("npx -y @anthropic-ai/claude-code", "claude"),
+            ("pnpm dlx @openai/codex", "codex"),
+            ("C:\\Tools\\Kimi.EXE --auto", "kimi"),
+        ] {
+            let mut d = AgentDetector::new();
+            assert_eq!(
+                run(&mut d, &osc(&format!("133;C;{command}"))),
+                vec![started(agent)],
+                "{command}"
+            );
+        }
+        let mut d = AgentDetector::new();
+        assert_eq!(
+            run(
+                &mut d,
+                &osc(&format!(
+                    "133;C;& 'C:\\Program Files\\Claude\\claude.exe' --resume {uuid}"
+                ))
+            ),
+            vec![started_session("claude", uuid)]
+        );
     }
 
     #[test]
