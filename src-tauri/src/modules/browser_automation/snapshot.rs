@@ -279,6 +279,21 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                        rect.top <= window.innerHeight && rect.left <= window.innerWidth;
             }}
 
+            // Where a text node itself is drawn, for a host block that is
+            // only partly in view.
+            function textInViewport(node) {{
+                try {{
+                    const range = document.createRange();
+                    range.selectNodeContents(node);
+                    const rect = range.getBoundingClientRect();
+                    if (!rect.width && !rect.height) return true;
+                    return rect.bottom >= 0 && rect.right >= 0 &&
+                           rect.top <= window.innerHeight && rect.left <= window.innerWidth;
+                }} catch (_) {{
+                    return true;
+                }}
+            }}
+
             function processShadow(el, depth, ariaHidden) {{
                 if (!el || !el.shadowRoot) return;
                 for (let i = 0; i < el.shadowRoot.childNodes.length; i++) {{
@@ -356,6 +371,12 @@ fn build_snapshot_js_with_prefix(generation_id: u64, ref_prefix: &str) -> String
                     // column of lone digits that are neither the number nor
                     // separate values. Skip it.
                     if (ariaHidden) return;
+                    // The white space between a form's blocks emitted the
+                    // form's own inline text (its button) before the fields
+                    // the walk had not reached yet, and a block reaching into
+                    // the view emitted a label scrolled out of it. A run is
+                    // emitted where its first drawn words are, in view.
+                    if (!/\S/.test(node.textContent || '') || !textInViewport(node)) return;
                     // Emit the whole inline run at once, not one item per text
                     // node. A ticker that redraws a changing digit as its own
                     // span was reported as "99.02" and "8" on two lines, which

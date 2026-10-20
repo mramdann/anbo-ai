@@ -2578,12 +2578,64 @@ async fn handle_action_attempt(
             let webview = get_embed_webview(app, tab_id)
                 .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
 
-            let js = format!("window.scrollBy({x}, {y}); JSON.stringify({{ ok: true }});");
-            execute_script(&webview, &js)
+            // The answer is where the page went, not where it was asked to:
+            // y 600 read as done on a page that fits its view and stayed at 0.
+            // A page that scrolls a container of its own instead of the window
+            // has that container scrolled.
+            let js = format!(
+                r#"(() => {{
+                const want = {{ x: {x}, y: {y} }};
+                const position = (el) => el ? {{ x: el.scrollLeft, y: el.scrollTop }} : {{ x: scrollX, y: scrollY }};
+                const move = (el) => {{
+                    const before = position(el);
+                    (el || window).scrollBy({{ left: want.x, top: want.y, behavior: 'instant' }});
+                    const after = position(el);
+                    return {{ dx: after.x - before.x, dy: after.y - before.y, after }};
+                }};
+                let moved = move(null);
+                let target = 'window';
+                if (!moved.dx && !moved.dy && (want.x || want.y) && document.body) {{
+                    const candidates = [];
+                    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+                    for (let node = walker.nextNode(), seen = 0; node && seen < 5000; node = walker.nextNode(), seen++) {{
+                        const style = getComputedStyle(node);
+                        const scrollsY = want.y && /(auto|scroll|overlay)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 1;
+                        const scrollsX = want.x && /(auto|scroll|overlay)/.test(style.overflowX) && node.scrollWidth > node.clientWidth + 1;
+                        if (!scrollsY && !scrollsX) continue;
+                        const rect = node.getBoundingClientRect();
+                        const area = Math.max(0, Math.min(rect.right, innerWidth) - Math.max(rect.left, 0))
+                            * Math.max(0, Math.min(rect.bottom, innerHeight) - Math.max(rect.top, 0));
+                        if (area > 0) candidates.push({{ node, area }});
+                    }}
+                    candidates.sort((a, b) => b.area - a.area);
+                    for (const {{ node }} of candidates.slice(0, 3)) {{
+                        const attempt = move(node);
+                        if (attempt.dx || attempt.dy) {{ moved = attempt; target = 'container'; break; }}
+                    }}
+                }}
+                return JSON.stringify({{ dx: moved.dx, dy: moved.dy, x: moved.after.x, y: moved.after.y, target: moved.dx || moved.dy ? target : 'none' }});
+            }})()"#
+            );
+            let response = execute_script(&webview, &js)
                 .await
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
-
-            Ok(json!({ "tabId": tab_id, "x": x, "y": y, "ok": true }))
+            let decoded: String = page_json::from_str(&response).unwrap_or(response);
+            let moved: Value = page_json::from_str(&decoded).unwrap_or_default();
+            let mut result = json!({
+                "tabId": tab_id,
+                "ok": true,
+                "x": moved["dx"].as_f64().unwrap_or(0.0),
+                "y": moved["dy"].as_f64().unwrap_or(0.0),
+                "requested": { "x": x, "y": y },
+                "scrollX": moved["x"].as_f64().unwrap_or(0.0),
+                "scrollY": moved["y"].as_f64().unwrap_or(0.0),
+                "scrolled": moved["target"].as_str().unwrap_or("none"),
+            });
+            if result["scrolled"] == "none" && (x != 0.0 || y != 0.0) {
+                result["note"] =
+                    json!("nothing moved: the page fits its view, or is already at that end");
+            }
+            Ok(result)
         }
 
         "wait" => {
