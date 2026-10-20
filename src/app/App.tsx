@@ -1974,6 +1974,13 @@ export default function App() {
           opened.delete(opener);
       }
       opened.set(payload.sourceTabId, id);
+      // A tab an agent's click opened is the agent's (browser_tabs yours).
+      if (payload.background !== false) {
+        void invoke("browser_note_opened_from", {
+          sourceTabId: payload.sourceTabId,
+          tabId: id,
+        }).catch(() => {});
+      }
     });
   }, [newBrowserTab]);
 

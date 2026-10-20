@@ -1210,6 +1210,26 @@ async fn handle_action_attempt(
                 .as_ref()
                 .and_then(|response| response.active_space_id.clone());
             let other_tabs = metadata.as_ref().map_or(0, |response| response.other_tabs);
+            // In the order the tab strip shows them: the embed registry's own
+            // order put a tab a page opened before its opener, or the newest
+            // of three right after it, which read as Anbo placing them so.
+            let mut ordered: Vec<i64> = metadata
+                .as_ref()
+                .map(|response| {
+                    response
+                        .tabs
+                        .iter()
+                        .map(|tab| tab.tab_id)
+                        .filter(|tab_id| active_ids.contains(tab_id))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for tab_id in &tab_ids {
+                if !ordered.contains(tab_id) {
+                    ordered.push(*tab_id);
+                }
+            }
+            let tab_ids = ordered;
             let mut by_id = metadata
                 .map(|response| {
                     response

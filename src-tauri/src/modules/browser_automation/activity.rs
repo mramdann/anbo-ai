@@ -368,6 +368,23 @@ pub fn note_opened(tab_id: i64, caller: &Caller) {
     openers.insert(tab_id, caller.clone());
 }
 
+/// How recently an agent must have driven a page for a tab that page opens
+/// to be the agent's: a click and the tab it opens are moments apart.
+const OPENED_FROM_WINDOW: Duration = Duration::from_secs(10);
+
+/// A tab a page opened belongs to whoever drove that page just before. Tabs
+/// an agent's own clicks opened read yours:false, and an agent counting what
+/// it had left open missed them.
+pub fn note_opened_from(source_tab: i64, tab_id: i64) {
+    let driver = TABS.lock().ok().and_then(|guard| {
+        let (event, at) = guard.as_ref()?.get(&source_tab)?.last.as_ref()?;
+        (at.elapsed() < OPENED_FROM_WINDOW).then(|| event.actor.clone())
+    });
+    if let Some(caller) = driver {
+        note_opened(tab_id, &caller);
+    }
+}
+
 /// Whether this caller opened the tab or drove it, in a session that is live
 /// or over. browser_tabs marks these, so an agent can tell it left no tab of
 /// its own open: before, the only count it got was of terminal and editor tabs.

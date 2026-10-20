@@ -64,6 +64,22 @@ pub async fn ui_reply(
     Ok(ui_answer::deliver(&request_id, response.to_string()))
 }
 
+/// The UI made a tab for a page another tab opened (a target=_blank link,
+/// window.open, or a Chrome/Edge tab the bridge brought in): an agent that
+/// drove the opener a moment before owns it.
+#[tauri::command]
+pub fn browser_note_opened_from(
+    webview: tauri::Webview,
+    source_tab_id: i64,
+    tab_id: i64,
+) -> Result<(), String> {
+    if webview.label() != "main" {
+        return Err("main webview required".into());
+    }
+    activity::note_opened_from(source_tab_id, tab_id);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn browser_automation_start(app: AppHandle) -> Result<(), String> {
     server::start_server(app)
