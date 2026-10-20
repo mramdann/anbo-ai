@@ -27,7 +27,7 @@ Five browser patterns:
    Use observed names in the page's language, never guessed CSS or translations.
    `exact:true` requests a full name match. Ambiguous errors carry candidate refs;
    choose the intended one without another find, never blindly the first.
-   Refs survive eight scans while their node and identity survive, not navigation
+   Refs survive 32 scans while their node and identity survive, not navigation
    or replacement. On `stale_ref`, rediscover, or use the ref it names for the one
    element that replaced it; no similar target is clicked silently.
 3. **Act and observe.** Type/click return menu or autocomplete items in `revealed`;

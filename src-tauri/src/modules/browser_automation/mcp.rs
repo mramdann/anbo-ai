@@ -78,7 +78,7 @@ fn tab_id_prop() -> Value {
     json!({ "type": "integer", "description": "Browser tab ID." })
 }
 fn ref_prop() -> Value {
-    json!({ "type": "string", "description": "Live tab ref (last 8 scans); rediscover on stale_ref." })
+    json!({ "type": "string", "description": "Live tab ref (last 32 scans); rediscover on stale_ref." })
 }
 
 fn ancestors_prop() -> Value {

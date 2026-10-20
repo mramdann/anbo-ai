@@ -4,7 +4,7 @@ const refRegistry = (() => {
     // Refs from the last KEEP scans stay usable while their node lives: a
     // caller that found A, then found B, can still drag A onto B. Rust keeps
     // the same window (REF_GENERATIONS_KEPT) and refuses older refs up front.
-    const KEEP = 8;
+    const KEEP = 32;
     let generation = 0;
     // The generation a scan asked for but has not earned yet. A scan that ends
     // up registering nothing has replaced nothing, so the refs the caller is

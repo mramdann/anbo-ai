@@ -21,10 +21,12 @@ pub struct RefFrameTarget {
 }
 
 /// How many scans back a ref stays usable. A find or snapshot moves the
-/// generation on, but the refs of the last eight scans still resolve while
-/// their node is on the page, so find A, find B, drag A onto B works. The
-/// page registry keeps the same window (`KEEP` in refRegistry.js).
-pub const REF_GENERATIONS_KEPT: u64 = 8;
+/// generation on, but the refs of the last 32 scans still resolve while their
+/// node is on the page, so find A, find B, drag A onto B works. Eight ran out
+/// inside a form: each field's fill, a click's reveal and a landing's hints
+/// register refs too, and a find's refs were stale 20 scans later. The page
+/// registry keeps the same window (`KEEP` in refRegistry.js).
+pub const REF_GENERATIONS_KEPT: u64 = 32;
 
 fn generations() -> &'static Mutex<Option<HashMap<i64, u64>>> {
     &SNAPSHOT_GENERATIONS
@@ -919,25 +921,23 @@ mod tests {
             get_ref_frame_target(tab_id, "g1-f1-e1"),
             Some(target("child-a"))
         );
-        // Eight scans later the ref is still inside the window.
-        record_ref_frame_targets(
-            tab_id,
-            HashMap::from([("g9-f1-e1".to_string(), target("child-b"))]),
-        );
+        // A window of scans later the ref is still inside it.
+        let last = format!("g{}-f1-e1", 1 + REF_GENERATIONS_KEPT);
+        record_ref_frame_targets(tab_id, HashMap::from([(last.clone(), target("child-b"))]));
         assert_eq!(
             get_ref_frame_target(tab_id, "g1-f1-e1"),
             Some(target("child-a"))
         );
-        // The ninth pushes it out; the newer one stays.
+        // The next pushes it out; the newer one stays.
         record_ref_frame_targets(
             tab_id,
-            HashMap::from([("g10-f1-e1".to_string(), target("child-c"))]),
+            HashMap::from([(
+                format!("g{}-f1-e1", 2 + REF_GENERATIONS_KEPT),
+                target("child-c"),
+            )]),
         );
         assert!(get_ref_frame_target(tab_id, "g1-f1-e1").is_none());
-        assert_eq!(
-            get_ref_frame_target(tab_id, "g9-f1-e1"),
-            Some(target("child-b"))
-        );
+        assert_eq!(get_ref_frame_target(tab_id, &last), Some(target("child-b")));
         remove_generation(tab_id);
     }
 
