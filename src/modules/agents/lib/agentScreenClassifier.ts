@@ -281,6 +281,12 @@ const AGY_AUTOCOMPLETE = /tab Complete/;
 const AGY_PROMPT = /^\s*>(?:\s|$)/;
 const AGY_TASKS = /(\d+) task\(s\)/;
 const AGY_SUBAGENTS = /\d+ subagent\(s\)/;
+// A turn that ends on a timer the agent set starts again when it fires
+// ("● Scheduled 1 timer (15s: Retry agent_spawn codex after 15s)"), so the
+// agent is not finished: read so, it flipped to finished every 15 s and an
+// orchestrator took it as done while it went on.
+const AGY_ACTIVITY = /^\s*●\s+\S/;
+const AGY_TIMER = /^\s*●\s+Scheduled (\d+) timers?\b/;
 
 function readAntigravity(rows: Rows): AgentScreenReading {
   const footer = last(rows, 2);
@@ -309,7 +315,14 @@ function readAntigravity(rows: Rows): AgentScreenReading {
   ) {
     return reading("working", background);
   }
-  if (idleAt >= 0) return idle(background);
+  if (idleAt >= 0) {
+    const activityAt = lastIndex(rows, AGY_ACTIVITY, 0);
+    const timer = activityAt >= 0 ? AGY_TIMER.exec(rows[activityAt]) : null;
+    if (timer) {
+      return reading("working", background ?? plural(timer[1], "timer"));
+    }
+    return idle(background);
+  }
   // While something is typed the footer is replaced; the ruled prompt stays.
   const prompt = lastIndex(rows, AGY_PROMPT, rows.length - 6);
   if (

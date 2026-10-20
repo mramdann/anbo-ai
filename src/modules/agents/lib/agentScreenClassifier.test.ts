@@ -581,3 +581,30 @@ describe("kimi turns", () => {
     expect(classifyAgentScreen("kimi", approval)).toBe("attention");
   });
 });
+
+describe("Antigravity waiting on a timer it set", () => {
+  it("is working until the timer brings it back, and finished after", () => {
+    // Measured: "Scheduled 1 timer (15s: Retry agent_spawn codex after 15s)"
+    // ended the turn, the status flipped to finished every 15 s, and an
+    // orchestrator took the agent as done while it went on.
+    const waiting = withTranscript("agyIdle", /^─{20,}$/, [
+      "● Called 1 MCP tool (anbomcp-dev/agent_spawn)",
+      "● Scheduled 1 timer (15s: Retry agent_spawn codex after 15s)",
+      "",
+      "  Menunggu timer...",
+      "",
+    ]);
+    expect(readAgentScreen("antigravity", waiting)).toMatchObject({
+      state: "working",
+      background: "1 timer",
+    });
+    const resumed = withTranscript("agyIdle", /^─{20,}$/, [
+      "● Scheduled 1 timer (15s: Retry agent_spawn codex after 15s)",
+      "● Called 1 MCP tool (anbomcp-dev/agent_spawn)",
+      "",
+      "  Codex sudah jalan.",
+      "",
+    ]);
+    expect(classifyAgentScreen("antigravity", resumed)).toBe("ready");
+  });
+});
