@@ -607,4 +607,28 @@ describe("Antigravity waiting on a timer it set", () => {
     ]);
     expect(classifyAgentScreen("antigravity", resumed)).toBe("ready");
   });
+
+  it("is finished once a fired timer led to a thought and an answer", () => {
+    // Measured in round 60: the last ● row was the timer that waited for a
+    // subagent; it fired, the agent thought and answered with no more
+    // tools, and the timer alone held it at working for 75 minutes.
+    const answered = withTranscript("agyIdle", /^─{20,}$/, [
+      "● Messaged 1 subagent",
+      "● Scheduled 1 timer (10s: Checking final response from s...) (ctrl+o to expand) ",
+      "  Subagent is checking console logs and preparing final report...",
+      "",
+      "▸ Thought for 5s",
+      "  QC-RESULT M01-1: OK adding, removing items and verifying the total count",
+      "      • Tab browser tetap dibiarkan terbuka.",
+      "",
+    ]);
+    expect(classifyAgentScreen("antigravity", answered)).toBe("ready");
+    const thoughtFirst = withTranscript("agyIdle", /^─{20,}$/, [
+      "● Scheduled 1 timer (5s: Check terminal status after 5s)",
+      "○ Thought for 2.1s (The terminal is idle now, so the command ended...)",
+      "  Perintah selesai dengan exit code 0.",
+      "",
+    ]);
+    expect(classifyAgentScreen("antigravity", thoughtFirst)).toBe("ready");
+  });
 });

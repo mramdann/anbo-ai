@@ -284,9 +284,11 @@ const AGY_SUBAGENTS = /\d+ subagent\(s\)/;
 // A turn that ends on a timer the agent set starts again when it fires
 // ("● Scheduled 1 timer (15s: Retry agent_spawn codex after 15s)"), so the
 // agent is not finished: read so, it flipped to finished every 15 s and an
-// orchestrator took it as done while it went on.
-const AGY_ACTIVITY = /^\s*●\s+\S/;
-const AGY_TIMER = /^\s*●\s+Scheduled (\d+) timers?\b/;
+// orchestrator took it as done while it went on. A timer that fired is
+// followed by the next step, a thought ("▸ Thought for 5s") when the agent
+// only answers: the timer alone held a finished agent at working for 75 min.
+const AGY_STEP = /^ ?(?:[●○▸⚠]\s+\S|…\s+\d+\s+more actions)/;
+const AGY_TIMER = /^ ?●\s+Scheduled (\d+) timers?\b/;
 
 function readAntigravity(rows: Rows): AgentScreenReading {
   const footer = last(rows, 2);
@@ -316,8 +318,8 @@ function readAntigravity(rows: Rows): AgentScreenReading {
     return reading("working", background);
   }
   if (idleAt >= 0) {
-    const activityAt = lastIndex(rows, AGY_ACTIVITY, 0);
-    const timer = activityAt >= 0 ? AGY_TIMER.exec(rows[activityAt]) : null;
+    const stepAt = lastIndex(rows, AGY_STEP, 0);
+    const timer = stepAt >= 0 ? AGY_TIMER.exec(rows[stepAt]) : null;
     if (timer) {
       return reading("working", background ?? plural(timer[1], "timer"));
     }
