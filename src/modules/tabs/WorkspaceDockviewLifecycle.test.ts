@@ -9,7 +9,7 @@ const source = readFileSync(path.join(here, "WorkspaceDockview.tsx"), "utf8");
 describe("WorkspaceDockview visual handoff", () => {
   it("restores a workspace layout before the browser chrome can paint", () => {
     expect(source).toMatch(
-      /useLayoutEffect\(\(\) => \{\s*if \(!api\) return;\s*const sameDockview = loadedApiRef\.current === api;\s*if \(sameDockview && loadedSpaceRef\.current === props\.spaceId\) return;[\s\S]*?api\.fromJSON/,
+      /useLayoutEffect\(\(\) => \{\s*if \(!api\) return;\s*const sameDockview = loadedApiRef\.current === api;\s*if \(sameDockview && loadedSpaceRef\.current === props\.spaceId\) return;[\s\S]*?restoreDockviewLayout\(api, /,
     );
   });
 

@@ -79,6 +79,7 @@ import {
   registerBrowserTabShow,
 } from "./lib/browserTabShow";
 import { BROWSER_PANEL_ATTRIBUTE } from "./lib/dockContentArea";
+import { restoreDockviewLayout } from "./lib/dockviewRestore";
 import { labelFor } from "./lib/tabLabel";
 import { countClippedTabs, formatClippedTabCount } from "./lib/tabOverflow";
 import type { EditorTab, Tab } from "./lib/useTabs";
@@ -1543,7 +1544,7 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
       let restored = false;
       if (saved) {
         try {
-          api.fromJSON(saved, { reuseExistingPanels: true });
+          restoreDockviewLayout(api, saved);
           restored = true;
         } catch {
           // Structurally corrupt layouts are replaced by a known-good grid.
@@ -1551,7 +1552,7 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
       }
       if (!restored) {
         try {
-          api.fromJSON(fallback, { reuseExistingPanels: true });
+          restoreDockviewLayout(api, fallback);
         } catch {
           // Keep the workspace mounted even if Dockview rejects its fallback.
         }
