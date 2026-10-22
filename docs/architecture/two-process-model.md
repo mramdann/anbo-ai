@@ -33,10 +33,11 @@ Long-lived interactive terminal sessions.
 - `pty_write` - send input bytes (text or control sequences)
 - `pty_resize` - resize the PTY
 - `pty_close` / `pty_close_all` - destroy one or all sessions
-- `pty_has_foreground_process` / `pty_has_foreground_job` - detect whether a command is running
+- `pty_has_foreground_process` / `pty_has_foreground_job` / `pty_foreground_processes` - detect and name what runs in the shell (on Windows only processes in the session's job count)
+- `pty_attach` / `pty_output_status` - give a session's output a new channel, and compare each stream with what the UI received
 - `pty_shell_name` / `pty_list_shells` - shell detection and enumeration
 
-Output streams from `pty_open` via a Tauri `Channel<PtyEvent>`.
+Output streams from `pty_open` through one Tauri channel per session, in offset-tagged messages that a new channel can resend (`docs/architecture/pty-shell-integration.md`).
 
 ### File system (`src-tauri/src/modules/fs/`)
 

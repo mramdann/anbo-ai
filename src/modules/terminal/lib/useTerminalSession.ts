@@ -31,7 +31,7 @@ import {
   registerOsc52ClipboardHandler,
   registerPromptTracker,
 } from "./osc-handlers";
-import { openPty, type PtySession } from "./pty-bridge";
+import { openPty, ptyOutputStalledSince, type PtySession } from "./pty-bridge";
 import { joinTerminalBufferRows } from "./terminalBuffer";
 import "../block/block.css";
 import { ensureAgentActivityListener, isAgentActivePty } from "./agentActivity";
@@ -127,6 +127,8 @@ type Session = {
   ptyOpenedAt: number | null;
   promptEnded: boolean;
   promptEndMatched: number;
+  /** The last input the PTY refused, and when. */
+  writeError: { at: number; message: string } | null;
 };
 
 const MAX_COMMAND_COMPLETIONS = 64;
@@ -321,12 +323,23 @@ function queuePendingInput(s: Session, data: string): void {
   s.pendingInput += data;
 }
 
+// A refused write is kept, so a command typed into it is not left waiting for
+// a start that never comes.
+function sendToPty(leafId: number, s: Session, data: string): void {
+  const pty = s.pty;
+  if (!pty) return;
+  void pty.write(data).catch((cause: unknown) => {
+    s.writeError = { at: Date.now(), message: String(cause) };
+    console.warn("[anbo] terminal input was not delivered", leafId, cause);
+  });
+}
+
 export function writeToSession(leafId: number, data: string): boolean {
   const s = sessions.get(leafId);
   if (!s || s.shellExited) return false;
   if (s.pty) {
     notifyTerminalInput(leafId, data);
-    void s.pty.write(data);
+    sendToPty(leafId, s, data);
     return true;
   }
   notifyTerminalInput(leafId, data);
@@ -397,12 +410,13 @@ export function submitToLeaf(leafId: number, text: string): void {
     ? `\x1b[200~${text}\x1b[201~\r`
     : `${text}\r`;
   notifyTerminalInput(leafId, data);
-  if (s.pty) void s.pty.write(data);
+  if (s.pty) sendToPty(leafId, s, data);
   else queuePendingInput(s, data);
 }
 
 export function interruptLeaf(leafId: number): void {
-  sessions.get(leafId)?.pty?.write("\x03");
+  const s = sessions.get(leafId);
+  if (s) sendToPty(leafId, s, "\x03");
 }
 
 export function leafCwd(leafId: number): string | null {
@@ -448,6 +462,11 @@ export type TerminalSessionState = {
   /** The shell could not start (Enter in it, or retryShellStart, tries again). */
   spawnFailed?: boolean;
   spawnError?: string | null;
+  /** The last input the PTY refused, and when. */
+  writeError?: { at: number; message: string } | null;
+  /** Since when the UI has stood behind the shell's output, while it does:
+   *  it is asking for the rest again. */
+  outputStalledSince?: number | null;
 };
 
 export function getTerminalSessionState(
@@ -477,6 +496,10 @@ export function getTerminalSessionState(
       ),
     spawnFailed: session.spawnFailed,
     spawnError: session.spawnError,
+    writeError: session.writeError,
+    outputStalledSince: session.pty
+      ? ptyOutputStalledSince(session.pty.id)
+      : null,
   };
 }
 
@@ -701,7 +724,7 @@ configureRendererPool({
           return;
         }
         notifyTerminalInput(leafId, data);
-        if (s.pty) void s.pty.write(data);
+        if (s.pty) sendToPty(leafId, s, data);
         else queuePendingInput(s, data);
       },
       resizePty: (cols, rows) => {
@@ -800,6 +823,7 @@ function ensureSession(
     ptyOpenedAt: null,
     promptEnded: false,
     promptEndMatched: 0,
+    writeError: null,
   };
   sessions.set(leafId, session);
 
@@ -872,7 +896,7 @@ function adoptPty(leafId: number, s: Session, pty: PtySession): void {
   // automation also waits for the first prompt (awaitingFirstPrompt).
   markSessionReady(leafId);
   if (s.pendingInput) {
-    void pty.write(s.pendingInput);
+    sendToPty(leafId, s, s.pendingInput);
     s.pendingInput = "";
   }
   if (s.cols > 0 && s.rows > 0) pty.resize(s.cols, s.rows);
@@ -1201,6 +1225,7 @@ async function respawnSession(leafId: number, cwd?: string): Promise<void> {
   s.ptyOpenedAt = null;
   s.promptEnded = false;
   s.promptEndMatched = 0;
+  s.writeError = null;
   cancelHiddenRelease(s);
 
   const slot = getSlotForLeaf(leafId);
@@ -1240,6 +1265,23 @@ export async function leafHasForegroundProcess(
       e,
     );
     return false;
+  }
+}
+
+/** The programs a leaf's shell runs, by PID and name. */
+export async function leafForegroundProcesses(
+  leafId: number,
+): Promise<{ pid: number; name: string }[]> {
+  const s = sessions.get(leafId);
+  if (!s?.pty || s.shellExited) return [];
+  try {
+    return await invoke<{ pid: number; name: string }[]>(
+      "pty_foreground_processes",
+      { id: s.pty.id },
+    );
+  } catch (e) {
+    console.warn("[anbo] pty_foreground_processes failed for leaf", leafId, e);
+    return [];
   }
 }
 
@@ -1411,7 +1453,7 @@ export function useTerminalSession({
       const s = sessions.get(leafId);
       if (!s || s.shellExited) return;
       notifyTerminalInput(leafId, data);
-      if (s.pty) void s.pty.write(data);
+      if (s.pty) sendToPty(leafId, s, data);
       else queuePendingInput(s, data);
     },
     [leafId],

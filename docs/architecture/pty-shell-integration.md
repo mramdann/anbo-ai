@@ -15,17 +15,23 @@ pub struct PtyState {
 
 IDs start at 1 and monotonically increase; they are never reused so the frontend can treat `0` as unset.
 
-`pty_open` (`mod.rs:44`) spawns a session on a blocking thread, inserts it into the map, and returns the id. Output streams through a `Channel<Response>`; exit codes stream through a separate `Channel<i32>`. `pty_write` (`mod.rs:100`) accepts raw bytes with an `x-pty-id` header to avoid JSON serialization on every keystroke.
+`pty_open` spawns a session on a blocking thread, inserts it into the map, and returns the id. Output and, last, the exit code stream through one `Channel<Response>` per session (see below). `pty_write` accepts raw bytes with an `x-pty-id` header to avoid JSON serialization on every keystroke; it also reads the JSON byte array that postMessage IPC sends, because one failed custom-protocol request moves a page's IPC to postMessage for good.
 
 ## Reader / flusher / waiter threads
 
 `session::spawn` (`session.rs:102`) starts three threads per session:
 
-1. **Reader** - reads bytes from the PTY master, runs the DA filter and agent detector, and pushes filtered bytes into a pending buffer.
-2. **Flusher** - coalesces output and sends it to the frontend over the data channel.
-3. **Waiter** - waits for the child process to exit, flushes the tail, and emits the exit code.
+1. **Reader** - reads bytes from the PTY master, runs the DA filter and agent detector, and appends filtered bytes to the session's output log (`output.rs`).
+2. **Flusher** - coalesces output (4 ms after the first byte, at most one message per 16 ms while output keeps coming) and sends what the channel has not been handed yet.
+3. **Waiter** - waits for the child process to exit, lets the reader drain, adds the exit code to the stream, and drops the session once the exit code went out (or after 60 s).
 
-The pending buffer is capped at 4 MiB; on overflow it is discarded and replaced with an SGR-reset notice so xterm state is not corrupted by a sliced CSI sequence.
+## Output stream
+
+Every output byte has a stream offset. A data message is a kind byte `0`, the offset of its first byte (u64, little endian), then the bytes; the exit message is `1` and the exit code (i32). `ptyStream.ts` parses them, keeps only the part of a message it has not seen, and writes a reset plus a notice where bytes went missing.
+
+The log keeps up to 4 MiB the channel has not been handed; past that the oldest output goes and the UI marks the gap. Output already handed over stays 10 s (at most 1 MiB) for a resend.
+
+A failed send does not end the flusher. A Tauri channel takes each message's index before `webview.eval`, and its JS side delivers strictly in order, so one failed or lost message parks every later one for good. A send from a background thread fails when the UI thread's posted-message queue holds `USERPostMessageLimit` (10000 on Windows). The flusher therefore marks the stream broken and waits. Every 2 s the UI compares each stream with `pty_output_status`. When a stream is broken, or stays behind what Rust handed its channel for a whole check, the UI attaches a new channel with `pty_attach(id, onData, received)`. Rust then sends again from `received`, and the old channel's callback is dropped. While a stream stands behind, `getTerminalSessionState` reports `outputStalledSince`, and `terminal_wait` answers `outputStalled`.
 
 ## Shell bootstrapping
 
