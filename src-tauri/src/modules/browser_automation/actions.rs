@@ -20,8 +20,7 @@ use super::registry::{
 };
 use crate::modules::browser::embed::BROWSER_POPUP_REQUEST_EVENT;
 use crate::modules::browser_automation::cdp::{
-    call_devtools_protocol_method, capture_screenshot, execute_script, execute_script_with_timeout,
-    read_url,
+    call_devtools_protocol_method, execute_script, execute_script_with_timeout, read_url,
 };
 use crate::modules::browser_automation::download;
 use crate::modules::browser_automation::locator::{
@@ -3133,10 +3132,31 @@ async fn handle_action_attempt(
             } else {
                 encoding
             };
+            // A Chrome or Edge page its browser does not show may still draw
+            // behind the dock's page; one in a window Anbo covers never does,
+            // so it gets a short try and a plain answer (round 60).
+            let shown = super::external_front::capture_shown(&webview).await;
             let _design_layer = super::design::hide_for_capture(&webview).await;
-            let response = capture_screenshot(&webview, encoding)
-                .await
-                .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
+            let response = super::cdp::capture_screenshot_within(
+                &webview,
+                encoding,
+                if shown {
+                    SHOWN_CAPTURE_TIMEOUT
+                } else {
+                    UNSHOWN_CAPTURE_TIMEOUT
+                },
+            )
+            .await
+            .map_err(|e| {
+                if unshown_capture_failure(shown, &e) {
+                    (
+                        error_codes::INPUT_NOT_READY.to_string(),
+                        super::external_front::NOT_SHOWN_FOR_CAPTURE.to_string(),
+                    )
+                } else {
+                    (error_codes::CDP_FAILED.to_string(), e)
+                }
+            })?;
             let bytes = decode_screenshot_response(&response)
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
             let capture = super::artifacts::Capture {
@@ -3991,6 +4011,19 @@ fn resolve_requested_workspace(params: &Value) -> Result<PathBuf, (String, Strin
         ));
     }
     Ok(canonical)
+}
+
+/// How long a capture of a page its browser draws, or of any Anbo page, may
+/// take.
+const SHOWN_CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a Chrome or Edge page its browser does not show gets to draw a
+/// frame for a capture. One behind the dock's page answered in 0.3 s.
+const UNSHOWN_CAPTURE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// A capture of a page its browser did not show that ran out of time, or
+/// found the last such capture still waiting for a frame.
+fn unshown_capture_failure(shown: bool, error: &str) -> bool {
+    !shown && (error.contains("timed out") || error.contains("still pending"))
 }
 
 /// Methods that act on one tab, and so stay inside the caller's workspace.
@@ -11863,6 +11896,18 @@ mod workspace_scope_tests {
         // is told how to say where it works.
         assert_eq!(tab_scope(&theirs, None, &[], true), TabScope::Allowed);
         assert_eq!(tab_scope(&theirs, None, &[], false), TabScope::Undeclared);
+    }
+
+    #[test]
+    fn an_unshown_page_s_capture_timeout_gets_a_plain_answer() {
+        // Round 60: a capture of an Edge tab Anbo had not docked waited 10 s,
+        // then every retry was refused as still pending.
+        let timed_out = "Screenshot timed out without focusing the browser. Tab control remains connected; show the browser tab before trying another capture.";
+        let pending = "A previous screenshot is still pending. Tab control remains connected; show the browser tab before trying another capture.";
+        assert!(unshown_capture_failure(false, timed_out));
+        assert!(unshown_capture_failure(false, pending));
+        assert!(!unshown_capture_failure(true, timed_out));
+        assert!(!unshown_capture_failure(false, "browser tab 7 not found"));
     }
 
     #[test]

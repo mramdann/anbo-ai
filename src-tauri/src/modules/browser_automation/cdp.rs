@@ -75,21 +75,46 @@ pub async fn execute_script_with_timeout(
     }
 }
 
+/// How long a capture may take in Anbo's own browser and in Chrome or Edge.
+const FULL_CAPTURE_BUDGET: Duration = Duration::from_secs(10);
+
 pub async fn capture_screenshot(
     target: &BrowserTarget,
     encoding: ScreenshotEncoding,
+) -> Result<String, String> {
+    capture_screenshot_within(target, encoding, FULL_CAPTURE_BUDGET).await
+}
+
+/// A capture whose Chrome or Edge page gets `timeout` to draw a frame.
+pub async fn capture_screenshot_within(
+    target: &BrowserTarget,
+    encoding: ScreenshotEncoding,
+    timeout: Duration,
 ) -> Result<String, String> {
     match target {
         BrowserTarget::Embedded(webview) => {
             embedded_cdp::capture_screenshot(webview, encoding).await
         }
-        BrowserTarget::External { .. } => {
+        BrowserTarget::External {
+            target: external, ..
+        } => {
             let _visual = super::activity::prepare_capture(target).await?;
+            let viewport = encoding.clip.is_none();
+            let params = encoding.protocol_params();
+            // A viewport capture holds no later command up when it ends late,
+            // so the extension may give up on it sooner; a full-page one keeps
+            // the whole budget.
+            if viewport && timeout < FULL_CAPTURE_BUDGET {
+                return Ok(external
+                    .call_within("Page.captureScreenshot", params, timeout)
+                    .await?
+                    .to_string());
+            }
             call_devtools_protocol_method(
                 target,
                 "Page.captureScreenshot",
-                &encoding.protocol_params().to_string(),
-                Duration::from_secs(10),
+                &params.to_string(),
+                FULL_CAPTURE_BUDGET,
             )
             .await
         }

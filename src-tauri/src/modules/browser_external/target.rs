@@ -218,6 +218,15 @@ impl ExternalTarget {
         method: &str,
         params: Value,
     ) -> Result<(RequestGuard, oneshot::Receiver<Result<Value, String>>), String> {
+        self.queue_for(method, params, REQUEST_TIMEOUT)
+    }
+
+    fn queue_for(
+        &self,
+        method: &str,
+        params: Value,
+        budget: Duration,
+    ) -> Result<(RequestGuard, oneshot::Receiver<Result<Value, String>>), String> {
         let mut registry = REGISTRY
             .lock()
             .map_err(|_| "browser registry unavailable")?;
@@ -236,7 +245,7 @@ impl ExternalTarget {
             self.browser_tab_id,
             method,
             params,
-            REQUEST_TIMEOUT,
+            budget,
         )?;
         Ok((
             RequestGuard {
@@ -245,6 +254,28 @@ impl ExternalTarget {
             },
             receiver,
         ))
+    }
+
+    /// A command the extension gives up on after `budget` instead of the
+    /// whole budget, for one that holds no later command up when it ends late
+    /// (a viewport capture): a page its browser does not show draws no frame,
+    /// and its capture waited 10 s for one (round 60).
+    pub async fn call_within(
+        &self,
+        method: &str,
+        params: Value,
+        budget: Duration,
+    ) -> Result<Value, String> {
+        let (_guard, receiver) = self.queue_for(method, params, budget)?;
+        tokio::time::timeout(budget + REPLY_GRACE, receiver)
+            .await
+            .map_err(|_| {
+                format!(
+                    "browser action timed out after {:.1} s",
+                    budget.as_secs_f32()
+                )
+            })?
+            .map_err(|_| "browser disconnected".to_string())?
     }
 
     pub async fn call(

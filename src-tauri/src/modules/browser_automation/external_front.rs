@@ -182,6 +182,30 @@ fn docked_live(tab_id: i64) -> bool {
     dock::docked(tab_id).is_some_and(|(live, _)| live)
 }
 
+/// Why a capture of a Chrome or Edge page its browser does not show is
+/// refused.
+pub const NOT_SHOWN_FOR_CAPTURE: &str = "this Chrome/Edge tab is not shown in its browser, so its page draws nothing to capture; nothing was captured. Anbo's browser panel shows a Chrome/Edge page only while it is the panel's tab in a shown workspace, and a capture, like any read, leaves the tab where it is. Read the page with browser_snapshot or browser_get_text, or capture again once the tab is shown";
+
+/// Whether a capture of a Chrome or Edge page should answer at once: its
+/// browser draws the page, or has it in front of a window that is not
+/// minimized. A page behind another tab of its window can still be captured
+/// while that window draws (one behind the dock's page), but not in a window
+/// that Anbo covers (a tab Anbo has not docked, as one opened in a workspace
+/// that was then hidden): that capture waited 10 s for a frame, and every
+/// retry was refused as still pending (round 60).
+pub async fn capture_shown(target: &BrowserTarget) -> bool {
+    if !matches!(target, BrowserTarget::External { .. }) {
+        return true;
+    }
+    let drawn = tokio::time::timeout(
+        Duration::from_millis(600),
+        super::ref_context::execute_awaited(target, None, DRAWN_JS),
+    )
+    .await
+    .is_ok_and(|state| state.is_ok_and(|state| state == "\"drawn\""));
+    drawn || in_front(target).await
+}
+
 async fn page_shown(target: &BrowserTarget) -> bool {
     let drawn = tokio::time::timeout(
         Duration::from_millis(600),
