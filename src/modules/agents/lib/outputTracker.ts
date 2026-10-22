@@ -112,7 +112,7 @@ function lineOverlap(previous: string, current: string): number | null {
  * `current` does not continue it: a clear, a repaint, or a view that shares
  * only a line or two with it.
  */
-export function continuationOf(
+function continuationOf(
   previous: string,
   current: string,
 ): { from: number; separate: boolean } | null {
