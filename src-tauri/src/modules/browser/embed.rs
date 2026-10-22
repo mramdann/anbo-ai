@@ -2456,6 +2456,7 @@ pub async fn browser_embed_begin_session(
             .lock()
             .map_err(|_| "browser owner state is unavailable".to_string())?
             .clear();
+        crate::modules::browser_external::forget_bindings(&app);
     }
     Ok(())
 }

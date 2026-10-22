@@ -370,6 +370,13 @@ impl Registry {
         }
     }
 
+    /// Drops every binding, leaving their tab ids for `cleanup_retired`.
+    fn forget_bindings(&mut self) {
+        let ids: Vec<i64> = self.bindings.keys().copied().collect();
+        self.bindings.clear();
+        self.retired.extend(ids);
+    }
+
     fn remove(&mut self, id: &str) {
         self.bindings.retain(|tab_id, target| {
             let live = target.connection_id != id;
@@ -804,6 +811,20 @@ pub async fn browser_external_release_tab(
 ) -> Result<Value, String> {
     ensure_main(&webview)?;
     request(&connection_id, tab_id, "anbo.releaseTab", json!({})).await
+}
+
+/// Lets go of every Chrome and Edge tab binding when a new UI instance
+/// starts. The new page numbers its tabs anew, so the last page's bindings
+/// name ids that now belong to other tabs: after a reload in the round 60
+/// soak, a close of qc-2's tab 93 went to qc-1's Chrome tab bound as 93 and
+/// timed out, and the restored tabs could not bind their pages again
+/// ("already bound to another Anbo tab"). The browsers keep their tabs and
+/// selections; the new page binds them again under its own ids.
+pub fn forget_bindings(app: &AppHandle) {
+    if let Ok(mut registry) = REGISTRY.lock() {
+        registry.forget_bindings();
+    }
+    target::cleanup_retired(app);
 }
 
 pub fn stop() {

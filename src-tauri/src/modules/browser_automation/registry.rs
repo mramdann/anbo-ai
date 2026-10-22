@@ -100,12 +100,12 @@ pub fn active_navigation_generation(tab_id: i64) -> Option<u64> {
     })
 }
 
+/// The workspace of the tab a call on `tab_id` reaches: a Chrome or Edge
+/// tab first, as `find_target` looks there first.
 pub fn active_local_root(tab_id: i64) -> Option<std::path::PathBuf> {
-    embed::active_local_root(tab_id).or_else(|| {
-        Some(canonical_root(
-            &browser_external::get_target(tab_id)?.workspace,
-        ))
-    })
+    browser_external::get_target(tab_id)
+        .map(|target| canonical_root(&target.workspace))
+        .or_else(|| embed::active_local_root(tab_id))
 }
 
 /// A Chrome/Edge tab's workspace in the canonical form an embedded tab keeps.

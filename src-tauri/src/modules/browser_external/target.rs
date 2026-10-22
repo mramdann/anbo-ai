@@ -664,6 +664,23 @@ mod tests {
     }
 
     #[test]
+    fn a_new_ui_binds_the_same_browser_tab_under_its_own_id() {
+        // Round 60: after a page reload the UI's tab 93 was another tab, and
+        // the restored tab could not bind its page again.
+        let (mut registry, _receiver) = fixture();
+        registry.bind(binding()).unwrap();
+        let renumbered = || BindingRequest {
+            tab_id: 7,
+            ..binding()
+        };
+        assert!(registry.bind(renumbered()).is_err());
+        registry.forget_bindings();
+        assert!(registry.bindings.is_empty());
+        assert_eq!(registry.retired, vec![42]);
+        assert!(registry.bind(renumbered()).unwrap().1);
+    }
+
+    #[test]
     fn revoked_or_reselected_tabs_never_reuse_a_live_binding() {
         let (mut registry, _receiver) = fixture();
         let (old, _) = registry.bind(binding()).unwrap();

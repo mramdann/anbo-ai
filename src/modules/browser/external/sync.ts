@@ -14,6 +14,7 @@ import {
   setPointerTurn,
 } from "@/modules/browser/external/pointerTurn";
 import { useExternalBrowsers } from "@/modules/browser/external/store";
+import { beginBrowserSession } from "@/modules/browser/native";
 import { takeTabClosed } from "@/modules/tabs/lib/closedTabs";
 import type { BrowserTab, Tab, TabPatch } from "@/modules/tabs/lib/useTabs";
 import { invoke } from "@tauri-apps/api/core";
@@ -601,6 +602,10 @@ export function createExternalBrowserSync(
 let current: ReturnType<typeof createExternalBrowserSync> | undefined;
 
 export async function startExternalBrowserSync(host: Host) {
+  // This page's browser session first: starting it lets go of the bindings
+  // the last page left, which name its tab ids and refused this page's binds
+  // after a reload (round 60).
+  await beginBrowserSession().catch(() => {});
   const service = createExternalBrowserSync({
     shown: externalPaneShown,
     ...host,
