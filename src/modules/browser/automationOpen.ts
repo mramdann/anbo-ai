@@ -86,6 +86,8 @@ export type BrowserTabMetadata = {
   /** A Chrome or Edge tab not connected to its page while its profile is
    *  connected: closed or replaced there, or not chosen since a restart. */
   pageGone?: boolean;
+  /** Restored from the last session and not loaded yet. */
+  cold?: boolean;
 };
 
 export const createBrowserOpenListener =

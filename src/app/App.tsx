@@ -2061,6 +2061,9 @@ export default function App() {
             ...(externalPageGone(tab, space?.root ?? null) && {
               pageGone: true,
             }),
+            // Restored and not loaded yet: listed, so an agent can see and
+            // close it (round 60: such tabs came into the list one per close).
+            ...(tab.cold === true && { cold: true }),
           },
         ];
       });

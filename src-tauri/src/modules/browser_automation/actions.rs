@@ -205,6 +205,9 @@ struct BrowserTabMetadata {
     pending_url: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     page_gone: bool,
+    /// Restored from the last session and not loaded yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    cold: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -1267,7 +1270,7 @@ async fn handle_action_attempt(
                     response
                         .tabs
                         .iter()
-                        .filter(|tab| tab.page_gone || active_ids.contains(&tab.tab_id))
+                        .filter(|tab| tab.page_gone || tab.cold || active_ids.contains(&tab.tab_id))
                         .map(|tab| tab.tab_id)
                         .collect()
                 })
@@ -1283,7 +1286,7 @@ async fn handle_action_attempt(
                     response
                         .tabs
                         .into_iter()
-                        .filter(|tab| tab.page_gone || active_ids.contains(&tab.tab_id))
+                        .filter(|tab| tab.page_gone || tab.cold || active_ids.contains(&tab.tab_id))
                         .map(|tab| (tab.tab_id, tab))
                         .collect::<HashMap<_, _>>()
                 })
@@ -1296,8 +1299,12 @@ async fn handle_action_attempt(
                     }
                     tab.pending_url = active_pending_url(tab_id);
                     let gone = tab.page_gone;
+                    let cold = tab.cold && !active_ids.contains(&tab.tab_id);
                     let mut item = serde_json::to_value(tab).unwrap_or_default();
                     item["titleSource"] = json!("ui");
+                    if cold && !gone {
+                        item["note"] = json!("restored from the last session and not loaded yet; Anbo loads its page when the user shows it, and browser_close closes it");
+                    }
                     if gone {
                         item["note"] = json!("not connected to its page (closed or replaced in the browser, or not chosen again since Anbo restarted); browser_close closes this tab");
                     }
@@ -11918,6 +11925,27 @@ mod workspace_scope_tests {
         assert!(unshown_capture_failure(false, pending));
         assert!(!unshown_capture_failure(true, timed_out));
         assert!(!unshown_capture_failure(false, "browser tab 7 not found"));
+    }
+
+    #[test]
+    fn a_restored_tab_not_loaded_yet_is_listed_as_cold() {
+        // Round 60: restored tabs nobody had shown were missing from
+        // browser_tabs, and came into it one per close of another tab.
+        let tab = |cold: Option<bool>| {
+            let mut value = json!({"tabId": 9, "title": "t", "url": "http://127.0.0.1/", "spaceId": "s", "workspace": null, "active": false, "spaceActive": false, "automationTarget": false, "automationActive": false, "automationMethod": null, "loading": false});
+            if let Some(cold) = cold {
+                value["cold"] = json!(cold);
+            }
+            serde_json::from_value::<BrowserTabMetadata>(value).unwrap()
+        };
+        assert!(!tab(None).cold);
+        assert!(tab(Some(true)).cold);
+        let listed = serde_json::to_value(tab(Some(true))).unwrap();
+        assert_eq!(listed["cold"], json!(true));
+        assert!(serde_json::to_value(tab(None))
+            .unwrap()
+            .get("cold")
+            .is_none());
     }
 
     #[test]
