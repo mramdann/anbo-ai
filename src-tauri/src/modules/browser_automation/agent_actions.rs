@@ -185,7 +185,15 @@ fn validate_params(method: &str, params: &mut Value) -> Result<u64, (String, Str
             optional_bounded_string(params, "executionId", MAX_TERMINAL_ID_BYTES)?;
             Ok(10_000)
         }
-        "terminal_close" => Ok(10_000),
+        "terminal_close" => {
+            if params.get("force").is_some_and(|force| !force.is_boolean()) {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    "force must be true or false".to_string(),
+                ));
+            }
+            Ok(10_000)
+        }
         "agent_send" => {
             let message = required_bounded_string(params, "message", MAX_MESSAGE_BYTES)?;
             if message
@@ -370,6 +378,16 @@ mod tests {
                 "terminalId": "terminal:1:1",
                 "executionId": "x".repeat(MAX_TERMINAL_ID_BYTES + 1)
             })
+        )
+        .is_err());
+        assert!(check(
+            "terminal_close",
+            json!({ "workspace": "C:/repo", "terminalId": "terminal:1:1", "force": true })
+        )
+        .is_ok());
+        assert!(check(
+            "terminal_close",
+            json!({ "workspace": "C:/repo", "terminalId": "terminal:1:1", "force": "yes" })
         )
         .is_err());
     }

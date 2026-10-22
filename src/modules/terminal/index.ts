@@ -18,6 +18,7 @@ export {
   clearFocusedTerminal,
   disposeSession,
   disposeSessionsOutside,
+  leafForegroundProcesses,
   leafHasForegroundProcess,
   leafIdForPty,
   navigateFocusedBlocks,

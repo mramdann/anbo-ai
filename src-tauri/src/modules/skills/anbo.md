@@ -260,9 +260,11 @@ terminal on purpose. `terminal_execute` queues a command and returns an
 
 `terminal_list` shows the shared terminals in a workspace. `terminal_open` adds
 one and requires a purpose-specific title such as Dev Server or Tests. Only
-that terminal is yours to close, and only while it is idle: `terminal_close`
-refuses user-created terminals, agent CLI terminals, and anything holding a
-foreground process. A terminal you opened stays yours: it stays in
+that terminal is yours to close: `terminal_close` refuses user-created
+terminals and agent CLI terminals, and refuses yours while it is busy (unsent
+input, a command still running, or a program in it, which the answer names)
+unless you pass `force: true`, which ends its shell and everything running in
+it. A terminal you opened stays yours: it stays in
 `terminal_list` after an agent CLI ran in it (while that CLI runs it also
 shows in `agent_list`), and `terminal_close` closes it once the CLI ended.
 
@@ -297,7 +299,12 @@ ended within 3 s of the Ctrl+C, and otherwise `exited` with
 native program a Ctrl+C reached usually gives its own code, such as
 -1073741510 (0xC000013A) for ping, while a stopped PowerShell command, or the
 same program stopped twice in a row, reads 1. Go by `interrupted`, not the
-code. A Windows batch file asks "Terminate batch job (Y/N)?" after a
+code. When none of the command's programs is left and its shell marks no end
+within 5 s of the Ctrl+C, the execution ends interrupted with
+`endUnconfirmed: true` and no exit code, and the terminal is yours again;
+`terminal_read` shows what happened. `outputStalled: true` on a wait means
+Anbo is fetching that terminal's latest output again: wait again. A Windows
+batch file asks "Terminate batch job (Y/N)?" after a
 Ctrl+C, where another Ctrl+C means no and the batch runs its next step;
 `terminal_interrupt` answers yes for you. A pager such as less ignores Ctrl+C;
 `terminal_interrupt` quits it with q (`quitPager`). Run git with `--no-pager`.

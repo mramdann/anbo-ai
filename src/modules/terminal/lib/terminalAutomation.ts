@@ -48,12 +48,24 @@ const SPLIT_OUTPUT_MIN_CHARS = 400;
  *  Dev the commands a Ctrl+C stopped ended within half a second of it; a
  *  program that catches Ctrl+C runs on and ends whenever it would have. */
 const INTERRUPT_STOP_MS = 3_000;
+/** How long after its Ctrl+C an execution may go without its shell marking
+ *  the end, once none of its programs is left, before Anbo ends it unconfirmed.
+ *  A terminal whose output stopped reaching Anbo held its execution, and so
+ *  the terminal, for good. */
+const INTERRUPT_UNCONFIRMED_MS = 5_000;
+/** How often an interrupted execution waiting for that looks for programs. */
+const FOREGROUND_RECHECK_MS = 1_000;
 /** How long after its Ctrl+C an interrupt looks for cmd's batch question,
  *  which showed 52 ms after it in Dev. */
 const BATCH_QUESTION_WATCH_MS = 2_000;
 const BATCH_QUESTION_POLL_MS = 25;
 /** One answer per question: the typed letter takes a moment to echo. */
 const BATCH_ANSWER_GAP_MS = 1_000;
+/** How long a terminal this service opened may take to enter the tab list.
+ *  A terminal_execute in the same script as its terminal_open found no
+ *  terminal one time in three in Dev. */
+const OPENED_TERMINAL_SETTLE_MS = 1_000;
+const OPENED_TERMINAL_POLL_MS = 25;
 
 export type SharedTerminalDescriptor = {
   terminalId: string;
@@ -72,6 +84,9 @@ export type SharedTerminalDescriptor = {
   rows?: number;
 };
 
+/** A program running in a terminal's shell. */
+export type ShellProcess = { pid: number; name: string };
+
 export type TerminalAutomationDependencies = {
   getTabs: () => Tab[];
   getSpaces: () => SpaceMeta[];
@@ -83,6 +98,8 @@ export type TerminalAutomationDependencies = {
   getHistory?: (leafId: number) => string | null;
   getSessionState: (leafId: number) => TerminalSessionState | null;
   hasForegroundProcess: (leafId: number) => Promise<boolean>;
+  /** The programs the shell runs, to name what holds a busy terminal. */
+  foregroundProcesses?: (leafId: number) => Promise<ShellProcess[]>;
   prepare: (leafId: number) => boolean;
   /** Why prepare refused a leaf, for the agent whose command it holds back. */
   unpreparedReason: (leafId: number) => string;
@@ -150,6 +167,9 @@ type ExecutionState = {
   /** When Anbo last sent this execution's command a Ctrl+C, or answered
    *  cmd's batch question in its place. */
   interruptSentAt?: number;
+  /** Ended after a Ctrl+C without its shell marking the end. */
+  endUnconfirmed?: boolean;
+  foregroundCheckedAt?: number;
   answeredBatchQuestion?: boolean;
   waitCount: number;
   dispatchedAt?: number;
@@ -571,11 +591,29 @@ export function createTerminalAutomationService(
       FOREGROUND_CHECK_TIMEOUT_MS,
       false,
     ),
+    foregroundProcesses: dependencies.foregroundProcesses
+      ? answerWithin(
+          dependencies.foregroundProcesses,
+          FOREGROUND_CHECK_TIMEOUT_MS,
+          [],
+        )
+      : undefined,
   };
   const output = new TerminalOutputTracker();
   const executions = new Map<string, ExecutionState>();
   const openedTerminals = deps.openedTerminals ?? new Set<string>();
   let executionSequence = 0;
+
+  /** What a busy terminal runs, for the agent told it is busy. */
+  const runningIn = async (leafId: number): Promise<string> => {
+    const programs = (await deps.foregroundProcesses?.(leafId)) ?? [];
+    if (programs.length === 0) return "";
+    const named = programs
+      .slice(0, 3)
+      .map((program) => `${program.name} (pid ${program.pid})`)
+      .join(", ");
+    return `; it runs ${named}${programs.length > 3 ? " and more" : ""}`;
+  };
 
   const rememberExecution = (execution: ExecutionState) => {
     executions.set(execution.executionId, execution);
@@ -641,6 +679,19 @@ export function createTerminalAutomationService(
       finishExecution(execution, "closed", null);
       return true;
     }
+    // The PTY refused the command's input: nothing reached the shell.
+    if (
+      execution.phase === "dispatched" &&
+      execution.dispatchedAt !== undefined &&
+      state.writeError &&
+      state.writeError.at >= execution.dispatchedAt
+    ) {
+      failDispatch(
+        execution,
+        `The terminal did not take the command: ${state.writeError.message}`,
+      );
+      return true;
+    }
     const targetGeneration = execution.baselineGeneration + 1;
     const completion = state.commandCompletions?.find(
       (candidate) => candidate.generation === targetGeneration,
@@ -653,6 +704,18 @@ export function createTerminalAutomationService(
         completion?.at,
       );
       return true;
+    }
+    if (
+      execution.interruptSentAt !== undefined &&
+      Date.now() - execution.interruptSentAt >= INTERRUPT_UNCONFIRMED_MS &&
+      Date.now() - (execution.foregroundCheckedAt ?? 0) >= FOREGROUND_RECHECK_MS
+    ) {
+      execution.foregroundCheckedAt = Date.now();
+      if (!(await deps.hasForegroundProcess(leafId))) {
+        execution.endUnconfirmed = true;
+        finishExecution(execution, "interrupted", null);
+        return true;
+      }
     }
     const shellBusy = state.commandRunning || state.blockMode !== "prompt";
     // The shell took the line as the start of a longer command and waits for
@@ -969,9 +1032,20 @@ export function createTerminalAutomationService(
         response: automationError("invalid_request", "terminalId is required"),
       };
     }
-    const terminal = resolved.terminals.find(
+    let terminal = resolved.terminals.find(
       (candidate) => candidate.terminalId === id,
     );
+    const settleUntil = Date.now() + OPENED_TERMINAL_SETTLE_MS;
+    while (!terminal && openedTerminals.has(id) && Date.now() < settleUntil) {
+      await new Promise((resolveDelay) =>
+        setTimeout(resolveDelay, OPENED_TERMINAL_POLL_MS),
+      );
+      const again = await resolve(params, verifyForeground, opened);
+      if (!again.ok) return again;
+      terminal = again.terminals.find(
+        (candidate) => candidate.terminalId === id,
+      );
+    }
     if (!terminal) {
       output.remove(id);
       return {
@@ -1046,18 +1120,21 @@ export function createTerminalAutomationService(
       };
     }
     if (starting) return target;
-    if (
+    const shellBusy =
       !latestState?.ready ||
       latestState.shellExited ||
       latestState.commandRunning ||
-      latestState.blockMode !== "prompt" ||
+      latestState.blockMode !== "prompt";
+    if (
+      shellBusy ||
       (await deps.hasForegroundProcess(target.terminal.leafId))
     ) {
+      const running = shellBusy ? "" : await runningIn(target.terminal.leafId);
       return {
         ok: false as const,
         response: automationError(
           "terminal_busy",
-          `${target.terminal.terminalId} is no longer idle`,
+          `${target.terminal.terminalId} is no longer idle${running}`,
         ),
       };
     }
@@ -1120,6 +1197,11 @@ export function createTerminalAutomationService(
         const target = await resolveTarget(params, false, openedTerminals);
         if (!target.ok) return target.response;
         const id = target.terminal.terminalId;
+        // Ends the shell and whatever runs in it: a terminal whose execution
+        // never saw its end refused to close for good.
+        const force = params.force === true;
+        const forceHint =
+          "; force: true closes it anyway, ending its shell and everything running in it";
         if (!openedTerminals.has(id)) {
           return automationError(
             "terminal_not_owned",
@@ -1139,27 +1221,32 @@ export function createTerminalAutomationService(
           );
         }
         const pending = await pendingExecution(id);
-        if (pending) {
-          return automationError("terminal_busy", pendingMessage(id, pending));
+        if (pending && !force) {
+          return automationError(
+            "terminal_busy",
+            `${pendingMessage(id, pending)}${forceHint}`,
+          );
         }
         const state = deps.getSessionState(target.terminal.leafId);
-        if (state?.inputPending) {
+        if (state?.inputPending && !force) {
           return automationError(
             "terminal_input_pending",
-            `${id} contains unsubmitted input; submit or clear it before closing`,
+            `${id} contains unsubmitted input; submit or clear it before closing${forceHint}`,
           );
         }
         if (
-          !state ||
-          (!state.shellExited &&
-            (!state.ready ||
-              state.commandRunning ||
-              state.blockMode !== "prompt" ||
-              (await deps.hasForegroundProcess(target.terminal.leafId))))
+          !force &&
+          (!state ||
+            (!state.shellExited &&
+              (!state.ready ||
+                state.commandRunning ||
+                state.blockMode !== "prompt" ||
+                (await deps.hasForegroundProcess(target.terminal.leafId)))))
         ) {
+          const running = await runningIn(target.terminal.leafId);
           return automationError(
             "terminal_busy",
-            `${id} is starting or running a foreground process`,
+            `${id} is starting or running a foreground process${running}${forceHint}`,
           );
         }
         if (!deps.close(target.terminal.tabId, target.terminal.leafId)) {
@@ -1177,6 +1264,7 @@ export function createTerminalAutomationService(
           result: {
             ok: true,
             closed: true,
+            ...(force && { forced: true }),
             terminalId: id,
             tabId: target.terminal.tabId,
             leafId: target.terminal.leafId,
@@ -1384,6 +1472,16 @@ export function createTerminalAutomationService(
           endedAfterInterruptMs !== undefined
             ? `The command ended ${(endedAfterInterruptMs / 1000).toFixed(1)} s after the Ctrl+C: it ran on or took that long to stop. exitCode is what its shell reported.`
             : undefined;
+        const unconfirmedNote = execution.endUnconfirmed
+          ? "Anbo sent Ctrl+C and none of the command's programs is left, but its shell never marked the end, so the exit code is unknown. terminal_read shows the screen."
+          : undefined;
+        // The UI stands behind the shell's output and is asking for the rest.
+        const outputStalled =
+          !completed && (state?.outputStalledSince ?? null) !== null;
+        const stalledNote = outputStalled
+          ? "Anbo has not received this terminal's latest output yet and is asking for it again; wait again."
+          : undefined;
+        const note = ranOnNote ?? unconfirmedNote ?? stalledNote;
         return {
           result: {
             executionId,
@@ -1406,7 +1504,9 @@ export function createTerminalAutomationService(
             ...(execution.answeredBatchQuestion && {
               answeredBatchQuestion: true,
             }),
-            ...(ranOnNote !== undefined && { note: ranOnNote }),
+            ...(execution.endUnconfirmed && { endUnconfirmed: true }),
+            ...(outputStalled && { outputStalled: true }),
+            ...(note !== undefined && { note }),
             exitCode: completed ? execution.exitCode : null,
             // From when the command was typed: the wait for a starting shell
             // before it is queuedMs, which had made a 90 s job read 110 s.

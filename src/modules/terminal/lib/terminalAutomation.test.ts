@@ -2729,3 +2729,327 @@ describe("a pager in a terminal", () => {
     expect(write).not.toHaveBeenCalledWith("\x03");
   });
 });
+
+describe("terminals whose output stopped reaching Anbo", () => {
+  // Measured (round 61): one lost output message left the terminal blind
+  // while its shell had run the command. The execution read "dispatched" for
+  // an hour, terminal_interrupt changed nothing, and terminal_close refused.
+  const prompt = "PS C:\\work\\alpha> ";
+  const target = { workspace: workspaceRoot, terminalId: "terminal:10:101" };
+  const idOf = (response: { result?: unknown }) =>
+    (response.result as { executionId: string }).executionId;
+  const idleShell = (
+    overrides: Partial<TerminalSessionState> = {},
+  ): TerminalSessionState => ({
+    ready: true,
+    shellExited: false,
+    commandRunning: false,
+    blockMode: "prompt",
+    commandGeneration: 2,
+    commandCompletions: [],
+    lastExitCode: 0,
+    shell: "pwsh",
+    inputPending: false,
+    ...overrides,
+  });
+
+  it("ends an interrupted execution its shell never marked, once none of its programs is left", async () => {
+    vi.useFakeTimers();
+    try {
+      const write = vi.fn(() => true);
+      const service = createTerminalAutomationService(
+        dependencies({
+          getBuffer: () => prompt,
+          getSessionState: () => idleShell(),
+          write,
+        }),
+      );
+      const executionId = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "echo lost",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      expect(write).toHaveBeenCalledWith(101, "echo lost\r");
+      await expect(
+        service.handle("terminal_interrupt", { ...target, executionId }),
+      ).resolves.toMatchObject({
+        result: { interrupted: true, phase: "dispatched" },
+      });
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 10_000,
+      });
+      await vi.advanceTimersByTimeAsync(7_000);
+      await expect(waited).resolves.toMatchObject({
+        result: {
+          completed: true,
+          completionReason: "interrupted",
+          interrupted: true,
+          endUnconfirmed: true,
+          exitCode: null,
+          note: expect.stringContaining("never marked the end"),
+        },
+      });
+      await expect(
+        service.handle("terminal_execute", { ...target, text: "echo next" }),
+      ).resolves.toMatchObject({ result: { executed: true } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps waiting for an interrupted execution while one of its programs runs", async () => {
+    vi.useFakeTimers();
+    try {
+      let running = false;
+      const service = createTerminalAutomationService(
+        dependencies({
+          getBuffer: () => prompt,
+          getSessionState: () => idleShell(),
+          hasForegroundProcess: async () => running,
+          write: () => true,
+        }),
+      );
+      const executionId = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "node serve.js",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      running = true;
+      await service.handle("terminal_interrupt", { ...target, executionId });
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 8_000,
+      });
+      await vi.advanceTimersByTimeAsync(9_000);
+      await expect(waited).resolves.toMatchObject({
+        result: { completed: false, timedOut: true },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails a command whose input the PTY refused", async () => {
+    vi.useFakeTimers();
+    try {
+      let writeError: TerminalSessionState["writeError"] = null;
+      const service = createTerminalAutomationService(
+        dependencies({
+          getBuffer: () => prompt,
+          getSessionState: () => idleShell({ writeError }),
+          write: () => {
+            writeError = {
+              at: Date.now(),
+              message: "pty_write: expected bytes",
+            };
+            return true;
+          },
+        }),
+      );
+      const executionId = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "echo hi",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 1_000,
+      });
+      await vi.advanceTimersByTimeAsync(1_500);
+      await expect(waited).resolves.toMatchObject({
+        result: {
+          completed: true,
+          completionReason: "dispatch_failed",
+          dispatchError: expect.stringContaining(
+            "did not take the command: pty_write: expected bytes",
+          ),
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says when the terminal's latest output has not arrived yet", async () => {
+    vi.useFakeTimers();
+    try {
+      const service = createTerminalAutomationService(
+        dependencies({
+          getBuffer: () => prompt,
+          getSessionState: () =>
+            idleShell({ outputStalledSince: Date.now() - 3_000 }),
+          write: () => true,
+        }),
+      );
+      const executionId = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "echo hi",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 500,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(waited).resolves.toMatchObject({
+        result: {
+          completed: false,
+          outputStalled: true,
+          note: expect.stringContaining("asking for it again"),
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("names the program holding an opened terminal and closes it when forced", async () => {
+    const openedTab = terminal({
+      id: 20,
+      title: "Dev Server",
+      paneTree: { kind: "leaf", id: 201, cwd: workspaceRoot },
+      activeLeafId: 201,
+    });
+    const close = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({
+        getTabs: () => [terminal(), openedTab],
+        open: () => ({ tabId: 20, leafId: 201 }),
+        close,
+        hasForegroundProcess: async (leafId) => leafId === 201,
+        foregroundProcesses: async () => [{ pid: 4242, name: "node.exe" }],
+      }),
+    );
+    await service.handle("terminal_open", {
+      workspace: workspaceRoot,
+      title: "Dev Server",
+    });
+    const opened = { workspace: workspaceRoot, terminalId: "terminal:20:201" };
+    await expect(
+      service.handle("terminal_execute", { ...opened, text: "echo hi" }),
+    ).resolves.toMatchObject({
+      error: {
+        code: "terminal_busy",
+        message: expect.stringContaining("it runs node.exe (pid 4242)"),
+      },
+    });
+    await expect(
+      service.handle("terminal_close", opened),
+    ).resolves.toMatchObject({
+      error: {
+        code: "terminal_busy",
+        message: expect.stringMatching(/node\.exe \(pid 4242\).*force: true/),
+      },
+    });
+    expect(close).not.toHaveBeenCalled();
+    await expect(
+      service.handle("terminal_close", { ...opened, force: true }),
+    ).resolves.toMatchObject({ result: { closed: true, forced: true } });
+    expect(close).toHaveBeenCalledWith(20, 201);
+  });
+
+  it("closes a terminal held by an execution only when forced", async () => {
+    vi.useFakeTimers();
+    try {
+      const openedTab = terminal({
+        id: 20,
+        title: "Notes",
+        paneTree: { kind: "leaf", id: 201, cwd: workspaceRoot },
+        activeLeafId: 201,
+      });
+      const close = vi.fn(() => true);
+      const service = createTerminalAutomationService(
+        dependencies({
+          getTabs: () => [terminal(), openedTab],
+          getBuffer: () => prompt,
+          getSessionState: () => idleShell(),
+          open: () => ({ tabId: 20, leafId: 201 }),
+          close,
+        }),
+      );
+      await service.handle("terminal_open", {
+        workspace: workspaceRoot,
+        title: "Notes",
+      });
+      const opened = {
+        workspace: workspaceRoot,
+        terminalId: "terminal:20:201",
+      };
+      await service.handle("terminal_execute", {
+        ...opened,
+        text: "echo lost",
+      });
+      await vi.advanceTimersByTimeAsync(300);
+      await expect(
+        service.handle("terminal_close", opened),
+      ).resolves.toMatchObject({
+        error: {
+          code: "terminal_busy",
+          message: expect.stringContaining("force: true closes it anyway"),
+        },
+      });
+      await expect(
+        service.handle("terminal_close", { ...opened, force: true }),
+      ).resolves.toMatchObject({ result: { closed: true, forced: true } });
+      expect(close).toHaveBeenCalledWith(20, 201);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("a terminal just opened", () => {
+  it("is found while its tab enters the tab list", async () => {
+    // Measured (round 61): terminal_execute in the same script as its
+    // terminal_open answered terminal_not_found one time in three.
+    vi.useFakeTimers();
+    try {
+      let listed = false;
+      const openedTab = terminal({
+        id: 20,
+        title: "Tests",
+        paneTree: { kind: "leaf", id: 201, cwd: workspaceRoot },
+        activeLeafId: 201,
+      });
+      const service = createTerminalAutomationService(
+        dependencies({
+          getTabs: () => (listed ? [terminal(), openedTab] : [terminal()]),
+          open: () => {
+            setTimeout(() => {
+              listed = true;
+            }, 60);
+            return { tabId: 20, leafId: 201 };
+          },
+        }),
+      );
+      await service.handle("terminal_open", {
+        workspace: workspaceRoot,
+        title: "Tests",
+      });
+      const executed = service.handle("terminal_execute", {
+        workspace: workspaceRoot,
+        terminalId: "terminal:20:201",
+        text: "echo hi",
+      });
+      await vi.advanceTimersByTimeAsync(150);
+      await expect(executed).resolves.toMatchObject({
+        result: { executed: true },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
