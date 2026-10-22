@@ -5206,9 +5206,12 @@ fn hidden_only_miss(scan: &CollectedLocatorMatches) -> bool {
 /// suggestion lists reveal within a few hundred milliseconds of the action that opens them.
 /// The old half-timeout window (up to 3 s) never paid off in the Sept 22 heavy run: all ten
 /// hidden-only misses there were auto-hidden player controls and responsive-layout buttons
-/// that stayed hidden, so each spent about 3 s before the same error.
+/// that stayed hidden, so each spent about 3 s before the same error. Never more than half
+/// the timeout, so a short one still gets the verdict: under its own 1000 ms timeout an agent
+/// got [timeout] where a longer one gets [not_found], because the 750 ms of waiting began only
+/// after a slow first scan (round 60).
 fn hidden_only_settle(timeout_ms: u64) -> Duration {
-    Duration::from_millis((timeout_ms / 5).clamp(750, 1_500))
+    Duration::from_millis((timeout_ms / 5).clamp(750, 1_500).min(timeout_ms / 2))
 }
 
 /// When a lookup that keeps missing may stop before its timeout, shared by
@@ -10601,7 +10604,9 @@ mod tests {
 
     #[test]
     fn hidden_only_settle_is_a_fifth_of_the_timeout_within_bounds() {
-        assert_eq!(hidden_only_settle(100), Duration::from_millis(750));
+        assert_eq!(hidden_only_settle(100), Duration::from_millis(50));
+        assert_eq!(hidden_only_settle(1_000), Duration::from_millis(500));
+        assert_eq!(hidden_only_settle(1_500), Duration::from_millis(750));
         assert_eq!(hidden_only_settle(3_000), Duration::from_millis(750));
         assert_eq!(hidden_only_settle(5_000), Duration::from_millis(1_000));
         assert_eq!(hidden_only_settle(10_000), Duration::from_millis(1_500));
