@@ -83,7 +83,7 @@ let failure;
 let before;
 try {
   await initialize();
-  before = await ok("browser_tabs", {});
+  before = await ok("browser_tabs", { workspace });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const { tabId } = await ok("browser_open", { workspace, url: origin });
@@ -149,7 +149,7 @@ finally {
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));
 }
-const after = await call("browser_tabs", {});
+const after = await call("browser_tabs", { workspace });
 if (session) await fetch(endpoint, {method: "DELETE", headers: {"Mcp-Session-Id": session}, signal: AbortSignal.timeout(5000)}).catch(() => {});
 const report = { timestamp: new Date().toISOString(), endpoint: String(endpoint), workspace, before, after: after.result, failure, unclosedTabs: [...owned], checks, calls };
 const path = resolve(output);

@@ -333,6 +333,37 @@ pub async fn handle_action_as(
             ));
         }
     }
+    let named_root = named_workspace(&params);
+    if let Some((id, root)) = tab_id
+        .filter(|_| scoped_to_workspace(method) && !actor.is_internal())
+        .and_then(|id| Some((id, active_local_root(id)?)))
+    {
+        let declared = super::activity::declared_workspaces(&actor);
+        let yours = super::activity::is_yours(id, &actor);
+        match tab_scope(&root, named_root.as_deref(), &declared, yours) {
+            TabScope::Allowed => {
+                if let Some(named) = &named_root {
+                    super::activity::declare_workspace(&actor, named.clone());
+                }
+            }
+            TabScope::OtherWorkspace => {
+                return Err((
+                    error_codes::OTHER_WORKSPACE.to_string(),
+                    format!(
+                        "tab {id} belongs to another workspace; nothing was done. Use a tab of your own workspace: browser_tabs with your workspace lists them, and browser_open opens one there."
+                    ),
+                ));
+            }
+            TabScope::Undeclared => {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    format!(
+                        "tab {id}: Anbo does not know your workspace yet, and a tab can only be used from its own workspace; nothing was done. Call browser_tabs with your workspace (its root or space id), or open your page with browser_open, and use the tab ids it gives."
+                    ),
+                ));
+            }
+        }
+    }
     let before_navigation = tab_id.and_then(active_navigation_generation);
     // A single-page app moves to a new URL without a native navigation:
     // YouTube and Maps after a search, YouTube after a result click. Their
@@ -395,13 +426,18 @@ pub async fn handle_action_as(
         {
             super::activity::note_opened(tab_id, &actor);
         }
-        if let Some(root) = result
+        let opened_root = result
             .as_ref()
             .ok()
             .and_then(|value| value.get("tabId").and_then(Value::as_i64))
-            .and_then(active_local_root)
-        {
-            super::activity::note_workspace(&actor, root);
+            .and_then(active_local_root);
+        if let Some(root) = &opened_root {
+            super::activity::note_workspace(&actor, root.clone());
+        }
+        // A tab closed within its own open has no root left; the workspace
+        // the open named still says where the caller works.
+        if let Some(root) = opened_root.or(named_root.filter(|_| result.is_ok())) {
+            super::activity::declare_workspace(&actor, root);
         }
     } else if let Some(root) = tab_id
         .filter(|_| result.is_ok())
@@ -1290,6 +1326,38 @@ async fn handle_action_attempt(
                         "loading": active_loading(tab_id),
                         "pendingUrl": active_pending_url(tab_id),
                     }));
+                }
+            }
+            // Only the caller's workspace: browser_tabs listed every
+            // workspace's tabs, and an agent then read and drove another
+            // workspace's Chrome pages, logged-in profiles included (round 60).
+            let mut active_tab_id = active_tab_id;
+            if !caller.is_internal() {
+                let scope = tabs_scope(&params, caller)?;
+                let mut listed_roots: Vec<PathBuf> = Vec::new();
+                result.retain(|item| {
+                    let root = item["tabId"]
+                        .as_i64()
+                        .and_then(active_local_root)
+                        .or_else(|| {
+                            item["workspace"]
+                                .as_str()
+                                .and_then(|path| fs::canonicalize(path).ok())
+                        });
+                    let keep = scope.holds(root.as_deref(), item["spaceId"].as_str());
+                    if let Some(root) = root.filter(|root| keep && !listed_roots.contains(root)) {
+                        listed_roots.push(root);
+                    }
+                    keep
+                });
+                for root in scope.named_root.into_iter().chain(listed_roots) {
+                    super::activity::declare_workspace(caller, root);
+                }
+                if !result
+                    .iter()
+                    .any(|item| item["tabId"].as_i64() == active_tab_id)
+                {
+                    active_tab_id = None;
                 }
             }
             let mut yours = 0;
@@ -3923,6 +3991,108 @@ fn resolve_requested_workspace(params: &Value) -> Result<PathBuf, (String, Strin
         ));
     }
     Ok(canonical)
+}
+
+/// Methods that act on one tab, and so stay inside the caller's workspace.
+fn scoped_to_workspace(method: &str) -> bool {
+    !matches!(
+        method,
+        "open"
+            | "list_tabs"
+            | "tabs"
+            | "start_session"
+            | "end_session"
+            | "download_status"
+            | "download_wait"
+    ) && !method.starts_with("agent_")
+        && !method.starts_with("terminal_")
+        && !method.starts_with("skills_")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TabScope {
+    Allowed,
+    OtherWorkspace,
+    Undeclared,
+}
+
+/// Whether a caller may act on a tab of `tab_root`. A workspace the call names
+/// must be the tab's; without one the tab must be the caller's own or in a
+/// workspace it declared. Agents share one browser and one tab id counter, and
+/// in the round 60 soak an agent read and drove other workspaces' Chrome and
+/// Edge tabs, logged-in profiles included.
+fn tab_scope(tab_root: &Path, named: Option<&Path>, declared: &[PathBuf], yours: bool) -> TabScope {
+    match named {
+        Some(named) if named == tab_root => TabScope::Allowed,
+        Some(_) => TabScope::OtherWorkspace,
+        None if yours || declared.iter().any(|root| root == tab_root) => TabScope::Allowed,
+        None if declared.is_empty() => TabScope::Undeclared,
+        None => TabScope::OtherWorkspace,
+    }
+}
+
+/// The folder a call names as its workspace, canonical. A space id names no
+/// folder.
+fn named_workspace(params: &Value) -> Option<PathBuf> {
+    let workspace = params.get("workspace")?.as_str()?.trim();
+    if workspace.is_empty() || workspace.len() > MAX_WORKSPACE_BYTES {
+        return None;
+    }
+    fs::canonicalize(workspace)
+        .ok()
+        .filter(|path| path.is_dir())
+}
+
+/// The tabs browser_tabs lists: those of the workspace the call names (a
+/// folder or a space id), or else of the workspaces the caller declared.
+struct TabsScope {
+    named_root: Option<PathBuf>,
+    named_space: Option<String>,
+    declared: Vec<PathBuf>,
+}
+
+impl TabsScope {
+    fn holds(&self, tab_root: Option<&Path>, space_id: Option<&str>) -> bool {
+        let in_root = |root: &PathBuf| tab_root == Some(root.as_path());
+        self.named_root.as_ref().is_some_and(in_root)
+            || self.declared.iter().any(in_root)
+            || self
+                .named_space
+                .as_deref()
+                .is_some_and(|space| space_id == Some(space))
+    }
+}
+
+fn tabs_scope(
+    params: &Value,
+    caller: &super::caller::Caller,
+) -> Result<TabsScope, (String, String)> {
+    let named = params
+        .get("workspace")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(named) = named {
+        ensure_bounded(named, MAX_WORKSPACE_BYTES, "workspace")?;
+        let named_root = named_workspace(params);
+        return Ok(TabsScope {
+            named_space: named_root.is_none().then(|| named.to_string()),
+            named_root,
+            declared: Vec::new(),
+        });
+    }
+    let declared = super::activity::declared_workspaces(caller);
+    if declared.is_empty() {
+        return Err((
+            error_codes::INVALID_REQUEST.to_string(),
+            "browser_tabs lists the tabs of your workspace: pass workspace, your workspace root or space id".to_string(),
+        ));
+    }
+    Ok(TabsScope {
+        named_root: None,
+        named_space: None,
+        declared,
+    })
 }
 
 fn resolve_tab_workspace(tab_id: i64, params: &Value) -> Result<PathBuf, (String, String)> {
@@ -11661,5 +11831,105 @@ mod tests {
         )
         .1
         .contains("nearest css match"));
+    }
+}
+
+#[cfg(test)]
+mod workspace_scope_tests {
+    use super::*;
+    use crate::modules::browser_automation::caller::Caller;
+
+    #[test]
+    fn a_tab_call_stays_inside_the_callers_workspace() {
+        // Round 60: a read from qc-2 on tab 93 returned qc-1's Chrome page,
+        // and one from qc-4 a page in qc-2's Edge profile.
+        let (mine, theirs) = (PathBuf::from("D:/work/a"), PathBuf::from("D:/work/b"));
+        let declared = vec![mine.clone()];
+        assert_eq!(tab_scope(&mine, None, &declared, false), TabScope::Allowed);
+        assert_eq!(
+            tab_scope(&theirs, None, &declared, false),
+            TabScope::OtherWorkspace
+        );
+        // The workspace a call names must be the tab's, whatever was declared.
+        assert_eq!(
+            tab_scope(&theirs, Some(&theirs), &declared, false),
+            TabScope::Allowed
+        );
+        assert_eq!(
+            tab_scope(&mine, Some(&theirs), &declared, true),
+            TabScope::OtherWorkspace
+        );
+        // A tab the caller opened is its own; a caller that declared nothing
+        // is told how to say where it works.
+        assert_eq!(tab_scope(&theirs, None, &[], true), TabScope::Allowed);
+        assert_eq!(tab_scope(&theirs, None, &[], false), TabScope::Undeclared);
+    }
+
+    #[test]
+    fn only_calls_on_one_tab_are_scoped() {
+        for method in [
+            "click",
+            "snapshot",
+            "get_text",
+            "navigate",
+            "close",
+            "screenshot",
+            "upload_files",
+        ] {
+            assert!(scoped_to_workspace(method), "{method}");
+        }
+        for method in [
+            "open",
+            "list_tabs",
+            "download_status",
+            "terminal_read",
+            "agent_send",
+            "skills_list",
+            "end_session",
+        ] {
+            assert!(!scoped_to_workspace(method), "{method}");
+        }
+    }
+
+    #[test]
+    fn browser_tabs_lists_the_named_workspace_or_the_declared_ones() {
+        let (mine, theirs) = (PathBuf::from("D:/work/a"), PathBuf::from("D:/work/b"));
+        let named = TabsScope {
+            named_root: Some(mine.clone()),
+            named_space: None,
+            declared: Vec::new(),
+        };
+        assert!(named.holds(Some(&mine), Some("space-a")));
+        assert!(!named.holds(Some(&theirs), Some("space-b")));
+        assert!(!named.holds(None, None));
+        let space = TabsScope {
+            named_root: None,
+            named_space: Some("space-b".into()),
+            declared: Vec::new(),
+        };
+        assert!(space.holds(Some(&theirs), Some("space-b")));
+        assert!(!space.holds(Some(&mine), Some("space-a")));
+        let declared = TabsScope {
+            named_root: None,
+            named_space: None,
+            declared: vec![mine.clone(), theirs.clone()],
+        };
+        assert!(declared.holds(Some(&mine), None));
+        assert!(declared.holds(Some(&theirs), None));
+    }
+
+    #[test]
+    fn browser_tabs_asks_a_caller_that_declared_nothing_for_its_workspace() {
+        let caller =
+            Caller::from_client_info(&json!({"name":"claude-code"})).with_pty(Some(990_017));
+        let Err((code, message)) = tabs_scope(&json!({}), &caller) else {
+            panic!("listed tabs for an unknown workspace");
+        };
+        assert_eq!(code, error_codes::INVALID_REQUEST);
+        assert!(message.contains("pass workspace"));
+        // A space id names no folder and is matched as a space.
+        let scope = tabs_scope(&json!({"workspace": "sp-qc-1"}), &caller).unwrap();
+        assert_eq!(scope.named_space.as_deref(), Some("sp-qc-1"));
+        assert!(scope.named_root.is_none());
     }
 }

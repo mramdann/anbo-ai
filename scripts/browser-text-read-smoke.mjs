@@ -36,7 +36,7 @@ async function close(tabId){if(!owned.has(tabId))throw Error('Unowned tab');if(!
 try {
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));origin='http://127.0.0.1:'+server.address().port;
   await rpc('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'text-read-correctness',version:'1'}});
-  await ok('skills_read',{workspace,name:'anbo'});initialTabs=await ok('browser_tabs');
+  await ok('skills_read',{workspace,name:'anbo'});initialTabs=await ok('browser_tabs', { workspace });
   const tabId=(await ok('browser_open',{workspace,url:origin+'/ready'})).tabId;owned.add(tabId);
   await ok('browser_wait',{tabId,condition:'load',loadState:'complete',timeout:8000});
   const find=async selector=>(await ok('browser_find',{tabId,by:'css',value:selector,limit:1})).matches[0].ref;
@@ -62,7 +62,7 @@ try {
 }catch(error){check('suite completed',false,String(error));}
 finally {
   for(const tabId of [...owned])try{await close(tabId);}catch(error){check('cleanup',false,String(error));}
-  try{const after=await ok('browser_tabs');check('original tabs retained',JSON.stringify(initialTabs.tabs.map(t=>t.tabId).sort())===JSON.stringify(after.tabs.map(t=>t.tabId).sort()));}catch(error){check('tab verification',false,String(error));}
+  try{const after=await ok('browser_tabs', { workspace });check('original tabs retained',JSON.stringify(initialTabs.tabs.map(t=>t.tabId).sort())===JSON.stringify(after.tabs.map(t=>t.tabId).sort()));}catch(error){check('tab verification',false,String(error));}
   if(session)await fetch(endpoint,{method:'DELETE',headers:{'Mcp-Session-Id':session},signal:AbortSignal.timeout(5000)}).catch(()=>{});
   agent.destroy();for(const timer of timers)clearTimeout(timer);
   await new Promise(resolve=>{server.close(resolve);server.closeAllConnections();});

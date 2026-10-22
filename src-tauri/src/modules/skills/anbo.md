@@ -8,7 +8,9 @@ sections: on-demand
 
 Anbo provides a real browser, terminals and other agents through MCP. Use your
 own workspace root or assigned space id wherever `workspace` is required,
-never whichever workspace the user is viewing. Other browser calls use `tabId`.
+never whichever workspace the user is viewing. Other browser calls use `tabId`;
+a tab works only from its own workspace: `browser_tabs {workspace}` lists yours,
+and a call on another workspace's tab is refused.
 
 Five browser patterns:
 

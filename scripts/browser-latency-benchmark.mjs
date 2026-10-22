@@ -85,7 +85,7 @@ try {
     await rpc('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'anbo-latency-benchmark',version:'1'}});
     await call('skills_read',{workspace,name:'anbo'});
     catalog=(await rpc('tools/list',{})).tools;
-    initialTabs=await call('browser_tabs');
+    initialTabs=await call('browser_tabs', { workspace });
     tabId=(await call('browser_open',{workspace,url:origin+'/benchmark'})).tabId;owned.add(tabId);
     await call('browser_wait',{tabId,condition:'load',loadState:'complete',timeout:8000});
   }
@@ -154,7 +154,7 @@ try {
 finally {
   await browser?.close();
   for(const tabId of [...owned])try{await close(tabId);}catch(cause){check('cleanup',false,String(cause));}
-  if(useAnbo)try{finalTabs=await call('browser_tabs');check('original tabs retained',JSON.stringify(initialTabs?.tabs?.map(t=>t.tabId).sort())===JSON.stringify(finalTabs.tabs.map(t=>t.tabId).sort()),{initial:initialTabs?.tabs?.map(t=>t.tabId),final:finalTabs.tabs.map(t=>t.tabId)});}catch(cause){check('tab verification',false,String(cause));}
+  if(useAnbo)try{finalTabs=await call('browser_tabs', { workspace });check('original tabs retained',JSON.stringify(initialTabs?.tabs?.map(t=>t.tabId).sort())===JSON.stringify(finalTabs.tabs.map(t=>t.tabId).sort()),{initial:initialTabs?.tabs?.map(t=>t.tabId),final:finalTabs.tabs.map(t=>t.tabId)});}catch(cause){check('tab verification',false,String(cause));}
   if(session)await fetch(endpoint,{method:'DELETE',headers:{'Mcp-Session-Id':session},signal:AbortSignal.timeout(5000)}).catch(()=>{});
   mcpAgent?.destroy();
   await new Promise(resolve=>{server.close(resolve);server.closeAllConnections();});

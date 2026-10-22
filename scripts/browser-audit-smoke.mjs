@@ -84,7 +84,7 @@ const server = http.createServer((request, response) => {
   response.end(html);
 });
 async function closeOwned(tabId) {
-  const tabs = await ok('browser_tabs', {});
+  const tabs = await ok('browser_tabs', { workspace });
   const tab = tabs.tabs.find(item => item.tabId === tabId);
   if (tab && ![tab.url, tab.pendingUrl].some(url => url?.startsWith(`${origin}/`))) throw Error(`Refusing to close changed tab ${tabId}`);
   if (tab) {
@@ -96,7 +96,7 @@ async function closeOwned(tabId) {
 }
 try {
   await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'anbo-browser-audit-verifier', version: '1' } });
-  before = await ok('browser_tabs', {});
+  before = await ok('browser_tabs', { workspace });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); origin = `http://127.0.0.1:${server.address().port}`;
   const { tabId } = await ok('browser_open', { workspace, url: `${origin}/fixture` }); owned.add(tabId);
   await ok('browser_wait', { tabId, condition: 'text', text: 'COORDINATOR_AUDIT_READY', timeout: 5000 });
@@ -183,7 +183,7 @@ try {
 finally {
   for (const tabId of [...owned]) { try { await closeOwned(tabId); } catch (error) { check('cleanup', false, String(error)); } }
   if (before) {
-    const after = await ok('browser_tabs', {});
+    const after = await ok('browser_tabs', { workspace });
     check('original tabs and focus preserved', before.activeSpaceId === after.activeSpaceId && before.activeTabId === after.activeTabId && before.tabs.every(tab => after.tabs.some(item => item.tabId === tab.tabId)));
   }
   check('owned tabs closed', owned.size === 0);

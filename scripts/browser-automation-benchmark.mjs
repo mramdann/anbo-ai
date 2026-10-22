@@ -127,7 +127,7 @@ function percentile(values, fraction) {
 
 const primary = http.createServer(serve);
 const child = http.createServer(serve);
-const before = await ok("browser_tabs", {});
+const before = await ok("browser_tabs", { workspace });
 let failure;
 try {
   childOrigin = await listen(child);
@@ -227,7 +227,7 @@ try {
   primary.closeAllConnections();
   child.closeAllConnections();
   await Promise.all([primary, child].map(server => new Promise(resolve => server.close(resolve))));
-  const after = await call("browser_tabs", {});
+  const after = await call("browser_tabs", { workspace });
   const originalIds = before.tabs.map(tab => tab.tabId);
   check("pre-existing browser tabs preserved", originalIds.every(id => after.result?.tabs.some(tab => tab.tabId === id)));
   check("owned test tabs closed", openedTabs.size === 0, { remaining: [...openedTabs] });

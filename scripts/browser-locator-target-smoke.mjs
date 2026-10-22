@@ -42,7 +42,7 @@ const server=http.createServer((q,r)=>{r.setHeader('Content-Type','text/html; ch
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));origin=`http://127.0.0.1:${server.address().port}`;
 try{
  await rpc('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'anbo-locator-target-qa',version:'1'}});
- await ok('skills_read',{workspace,name:'anbo'});before=await ok('browser_tabs');
+ await ok('skills_read',{workspace,name:'anbo'});before=await ok('browser_tabs', { workspace });
  const tools=(await rpc('tools/list',{})).tools;
  const clickSchema=tools.find(t=>t.name==='browser_click').inputSchema;
  check('schema exposes named targets without root combinators',clickSchema.properties.ref&&clickSchema.properties.locator&&!clickSchema.anyOf&&!clickSchema.not&&!clickSchema.required.includes('ref'));
@@ -101,7 +101,7 @@ try{
 }catch(error){checks.push({name:'suite completion',passed:false,detail:String(error)});console.error(error);process.exitCode=1}
 finally{
  for(const tabId of [...owned])try{await close(tabId)}catch(error){console.error(error);process.exitCode=1}
- const after=await call('browser_tabs');
+ const after=await call('browser_tabs', { workspace });
  checks.push({name:'owned tabs closed',passed:owned.size===0});
  const deleted=session&&await fetch(endpoint,{method:'DELETE',headers:{'Mcp-Session-Id':session}});
  checks.push({name:'session closed',passed:!!deleted?.ok});

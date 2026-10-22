@@ -50,7 +50,7 @@ async function close(tabId) {
 }
 try {
   await initialize();
-  before = await call("browser_tabs", {});
+  before = await call("browser_tabs", { workspace });
   for (const kind of ["ancestor", "shadow", "slot"]) {
     let tabId;
     const invoke = (name, args = {}) => call(name, { tabId, ...args });
@@ -90,7 +90,7 @@ try {
 } finally {
   for (const tabId of [...owned]) try { await close(tabId); } catch (cause) { check("cleanup", false, { error: String(cause) }); }
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
-  try { after = await call("browser_tabs", {}); } catch (cause) { check("final metadata", false, { error: String(cause) }); }
+  try { after = await call("browser_tabs", { workspace }); } catch (cause) { check("final metadata", false, { error: String(cause) }); }
   check("original tabs and focus preserved", before && after && before.activeSpaceId === after.activeSpaceId && before.activeTabId === after.activeTabId && before.tabs.every(tab => after.tabs.some(item => item.tabId === tab.tabId)));
   check("owned tabs closed", owned.size === 0);
   await writeFile(output, JSON.stringify({ endpoint: String(endpoint), workspace, checks, calls, before, after, unclosedTabs: [...owned] }, null, 2), { flag: "wx" });

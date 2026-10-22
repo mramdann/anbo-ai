@@ -83,25 +83,25 @@ const stats = values => { const sorted=values.toSorted((a,b)=>a-b);return {n:sor
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));origin=`http://127.0.0.1:${server.address().port}`;
 try {
   await rpc('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'anbo-hover-regression',version:'1'}});
-  await ok('skills_read',{workspace,name:'anbo'});before=await ok('browser_tabs');
+  await ok('skills_read',{workspace,name:'anbo'});before=await ok('browser_tabs', { workspace });
   const definitions=await rpc('tools/list',{}), schema=definitions.tools.find(t=>t.name==='browser_hover').inputSchema;
   check('MCP advertises optional fractional hover positions',schema.properties.position?.properties.x.exclusiveMaximum===1&&!schema.required.includes('position'));
   if(process.argv.includes('--first-tab')) {
     await scenario('first browser selection',async()=>{
       const first=await openBare('first');
-      const afterFirst=await ok('browser_tabs');
+      const afterFirst=await ok('browser_tabs', { workspace });
       check('empty active workspace displays its first browser',afterFirst.activeTabId===first&&afterFirst.tabs.find(t=>t.tabId===first)?.active);
       const peer=await openBare('peer');
-      const afterPeer=await ok('browser_tabs');
+      const afterPeer=await ok('browser_tabs', { workspace });
       check('later open preserves the first selected tab',afterPeer.activeTabId===first&&afterPeer.tabs.find(t=>t.tabId===peer)?.active===false);
       await close(peer);
-      check('closing background peer preserves the first tab',(await ok('browser_tabs')).activeTabId===first);
+      check('closing background peer preserves the first tab',(await ok('browser_tabs', { workspace })).activeTabId===first);
     });
     await scenario('concurrent first opens',async()=>{
       const results=await Promise.all([openBare('race-a'),openBare('race-b')]);
       const opens=calls.filter(r=>r.name==='browser_open'&&results.includes(r.result?.tabId));
       const firsts=opens.filter(r=>r.result.placement==='visible-first-tab');
-      const afterRace=await ok('browser_tabs');
+      const afterRace=await ok('browser_tabs', { workspace });
       check('concurrent opens reserve exactly one first selection',firsts.length===1&&afterRace.activeTabId===firsts[0]?.result.tabId&&opens.filter(r=>r.result.placement==='visible-background-tab').length===1,{opens,afterRace});
     });
   }
@@ -147,7 +147,7 @@ try {
   });
 } finally {
   for(const tabId of [...owned])try{await close(tabId)}catch(cause){check('cleanup '+tabId,false,String(cause))}
-  try{after=await ok('browser_tabs')}catch{}
+  try{after=await ok('browser_tabs', { workspace })}catch{}
   check('original tabs and UI selection retained',before&&after&&before.activeSpaceId===after.activeSpaceId&&before.activeTabId===after.activeTabId&&before.tabs.length===after.tabs.length&&before.tabs.every(t=>after.tabs.some(a=>a.tabId===t.tabId)));
   check('owned tabs closed',owned.size===0);
   if(session){const r=await fetch(endpoint,{method:'DELETE',headers:{'Mcp-Session-Id':session},signal:AbortSignal.timeout(5000)});check('MCP session closed',r.ok)}

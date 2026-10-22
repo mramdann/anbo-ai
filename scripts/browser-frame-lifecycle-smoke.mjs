@@ -19,7 +19,7 @@ const beforeHash=await hash();
 try{
   await new Promise(r=>child.listen(0,'127.0.0.1',r));childOrigin='http://127.0.0.1:'+child.address().port;
   await new Promise(r=>root.listen(0,'127.0.0.1',r));origin='http://127.0.0.1:'+root.address().port;
-  await rpc('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'codex-frame-lifecycle',version:'1'}});initial=await call('browser_tabs');
+  await rpc('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'codex-frame-lifecycle',version:'1'}});initial=await call('browser_tabs', { workspace });
   for(let cycle=0;cycle<20;cycle++){
     let tabId;
     try{
@@ -52,7 +52,7 @@ try{
 }catch(error){check('suite completed',false,String(error));}
 finally{
   for(const tabId of owned)try{await close(tabId);}catch(error){check('cleanup',false,String(error));}
-  try{const final=await call('browser_tabs');check('original tabs retained',JSON.stringify(initial?.tabs.map(t=>t.tabId).sort())===JSON.stringify(final.tabs.map(t=>t.tabId).sort()));}catch(error){check('tabs',false,String(error));}
+  try{const final=await call('browser_tabs', { workspace });check('original tabs retained',JSON.stringify(initial?.tabs.map(t=>t.tabId).sort())===JSON.stringify(final.tabs.map(t=>t.tabId).sort()));}catch(error){check('tabs',false,String(error));}
   if(session)await fetch(endpoint,{method:'DELETE',headers:{'Mcp-Session-Id':session},signal:AbortSignal.timeout(5000)}).catch(()=>{});
   for(const server of [root,child])await new Promise(r=>{server.close(r);server.closeAllConnections();});
 }

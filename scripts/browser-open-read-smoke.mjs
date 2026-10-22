@@ -56,7 +56,7 @@ const server = http.createServer((req, res) => {
 const binaryHash = await hash();
 try {
   await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'codex-open-read', version: '1' } });
-  before = await ok('browser_tabs', {});
+  before = await ok('browser_tabs', { workspace });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); origin = `http://127.0.0.1:${server.address().port}`;
   async function trial(kind, mode, index, url, expected, find) {
     const id = `${kind}-${mode}-${index}`;
@@ -78,9 +78,9 @@ try {
   check('legitimate empty destination succeeds', empty.readOk && empty.closed && empty.read?.url === origin + '/empty' && empty.read?.totalItems === 0, empty);
   const missing = await ok('browser_open', { workspace, url: origin + '/missing', find: { by: 'role', value: 'button', name: 'absent', timeout: 150 }, closeTab: true });
   if (!missing.closed) owned.add(missing.tabId);
-  check('unsuccessful read retains only its new tab', missing.readOk === false && missing.closed === false && (await ok('browser_tabs', {})).tabs.some(tab => tab.tabId === missing.tabId), missing);
+  check('unsuccessful read retains only its new tab', missing.readOk === false && missing.closed === false && (await ok('browser_tabs', { workspace })).tabs.some(tab => tab.tabId === missing.tabId), missing);
   const invalid = await call('browser_open', { workspace, url: origin, closeTab: true });
-  check('closeTab without read rejected before creation', invalid.error && (await ok('browser_tabs', {})).tabs.length === before.tabs.length + owned.size);
+  check('closeTab without read rejected before creation', invalid.error && (await ok('browser_tabs', { workspace })).tabs.length === before.tabs.length + owned.size);
   const slow = await ok('browser_open', { workspace, url: origin + '/never', find: { by: 'role', value: 'heading', timeout: 150 }, closeTab: true });
   if (!slow.closed) owned.add(slow.tabId);
   check('uncommitted destination has bounded explicit read failure', slow.readOk === false && slow.closed === false, slow);
@@ -108,7 +108,7 @@ try {
 } catch (error) { failure = String(error); }
 finally {
   for (const tabId of [...owned]) { const closed = await call('browser_close', { tabId, workspace, endSession: true }).catch(() => null); if (closed && !closed.error) owned.delete(tabId); }
-  const after = await ok('browser_tabs', {}).catch(() => null);
+  const after = await ok('browser_tabs', { workspace }).catch(() => null);
   check('original tabs retained', !!before && !!after && JSON.stringify(before.tabs.map(t => t.tabId).sort()) === JSON.stringify(after.tabs.map(t => t.tabId).sort()));
   if (session) await fetch(endpoint, { method: 'DELETE', headers: { 'Mcp-Session-Id': session }, signal: AbortSignal.timeout(5000) }).catch(() => {});
   for (const timer of timers) clearTimeout(timer);

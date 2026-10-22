@@ -78,7 +78,7 @@ try {
   const definitions = await rpc("tools/list", {});
   const schema = definitions.tools.find(tool => tool.name === "browser_screenshot").inputSchema;
   check("task context and image label discoverable through MCP", schema.properties.context && schema.properties.label);
-  initial = await ok("browser_tabs");
+  initial = await ok("browser_tabs", { workspace });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   origin = `http://127.0.0.1:${server.address().port}`;
   ({ tabId } = await ok("browser_open", { workspace, url: `${origin}/private-path-marker?key=query-marker#fragment-marker` }));
@@ -135,7 +135,7 @@ try {
     } catch (error) { checks.push({ name: "owned tab cleanup", passed: false, detail: String(error) }); }
   }
   try {
-    const final = await ok("browser_tabs");
+    const final = await ok("browser_tabs", { workspace });
     check("original tabs retained and no terminal or agent spawned", initial?.tabs.every(tab => final.tabs.some(other => other.tabId === tab.tabId)) && initial?.otherTabsInSpace === final.otherTabsInSpace && owned.size === 0);
     assert.deepEqual(legacy(), legacyBefore);
     check("all old root-level artifacts retain exact SHA-256", true, { files: Object.keys(legacyBefore).length });

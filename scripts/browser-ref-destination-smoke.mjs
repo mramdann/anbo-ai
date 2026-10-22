@@ -94,7 +94,7 @@ async function close(tabId) {
 function stats(samples) { const sorted = [...samples].sort((a, b) => a - b); return { n: sorted.length, p50: sorted[Math.ceil(sorted.length * .5) - 1], p95: sorted[Math.ceil(sorted.length * .95) - 1] }; }
 try {
   await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'anbo-ref-destination-smoke', version: '1' } });
-  await ok('skills_read', { workspace, name: 'anbo' }); before = await ok('browser_tabs', {});
+  await ok('skills_read', { workspace, name: 'anbo' }); before = await ok('browser_tabs', { workspace });
   await Promise.all([new Promise(r => server.listen(0, '127.0.0.1', r)), new Promise(r => frameServer.listen(0, '127.0.0.1', r))]);
   origin = 'http://127.0.0.1:' + server.address().port; frameOrigin = 'http://127.0.0.1:' + frameServer.address().port;
   const cases = [
@@ -228,7 +228,7 @@ try {
 } catch (cause) { check('suite completed', false, String(cause)); }
 finally {
   for (const tabId of [...owned]) try { await close(tabId); } catch (cause) { check('cleanup', false, { tabId, error: String(cause) }); }
-  const after = await call('browser_tabs', {});
+  const after = await call('browser_tabs', { workspace });
   check('original tabs retained', !after.error && before?.tabs.every(t => after.result.tabs.some(a => a.tabId === t.tabId)));
   check('owned tabs closed', owned.size === 0);
   if (session) try { const r = await fetch(endpoint, { method: 'DELETE', headers: { 'Mcp-Session-Id': session }, signal: AbortSignal.timeout(5000) }); check('session closed', r.ok); } catch (cause) { check('session closed', false, String(cause)); }

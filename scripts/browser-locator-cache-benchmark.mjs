@@ -89,7 +89,7 @@ async function close(tabId) {
 }
 try {
   await rpc('initialize', {protocolVersion:'2025-06-18', capabilities:{}, clientInfo:{name:'anbo-locator-cache-benchmark', version:'1'}});
-  initial = await ok('browser_tabs');
+  initial = await ok('browser_tabs', { workspace });
   await Promise.all([new Promise(r => server.listen(0, '127.0.0.1', r)), new Promise(r => frames.listen(0, '127.0.0.1', r))]);
   origin = 'http://127.0.0.1:' + server.address().port;
   crossOrigin = 'http://127.0.0.1:' + frames.address().port;
@@ -152,7 +152,7 @@ try {
     try { await close(tabId); } catch (error) { check('cleanup', false, String(error)); }
   }
   try {
-    const final = await ok('browser_tabs');
+    const final = await ok('browser_tabs', { workspace });
     check('original browser tabs retained', initial?.tabs.every(t => final.tabs.some(a => a.tabId === t.tabId)));
     check('owned tabs closed', owned.size === 0);
   } catch (error) { check('final inspection', false, String(error)); }

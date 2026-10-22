@@ -49,7 +49,7 @@ try {
   for(const client of clients){
     await rpc(client,'initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'anbo-locator-benchmark',version:'1'}});
     await ok(client,'skills_read',{workspace:client.workspace,name:'anbo'});
-    client.before=await ok(client,'browser_tabs',{});
+    client.before=await ok(client,'browser_tabs',{workspace:client.workspace});
   }
   for(const nodes of [1000,15000,49000,55000]) {
     for(const client of clients){
@@ -83,7 +83,7 @@ try {
 finally{
   for(const client of clients){
     for(const tabId of [...client.owned])try{await close(client,tabId);}catch(cause){check('cleanup '+client.label,false,String(cause));}
-    const after=await call(client,'browser_tabs',{});
+    const after=await call(client,'browser_tabs',{workspace:client.workspace});
     check(client.label+' original tabs retained',!after.error&&client.before?.tabs.every(t=>after.result.tabs.some(a=>a.tabId===t.tabId)));
     check(client.label+' owned tabs closed',client.owned.size===0);
     if(client.session)try{const response=await fetch(client.endpoint,{method:'DELETE',headers:{'Mcp-Session-Id':client.session},signal:AbortSignal.timeout(5000)});check(client.label+' session closed',response.ok);}catch(cause){check(client.label+' session closed',false,String(cause));}

@@ -79,6 +79,8 @@ pub mod error_codes {
     pub const UNSUPPORTED_PLATFORM: &str = "unsupported_platform";
     pub const TAB_NOT_FOUND: &str = "tab_not_found";
     pub const TAB_IN_USE: &str = "tab_in_use";
+    /// A tab call on a tab of another workspace than the caller's.
+    pub const OTHER_WORKSPACE: &str = "other_workspace";
     pub const STALE_REF: &str = "stale_ref";
     pub const AMBIGUOUS_TARGET: &str = "ambiguous_target";
     pub const INPUT_MISMATCH: &str = "input_mismatch";

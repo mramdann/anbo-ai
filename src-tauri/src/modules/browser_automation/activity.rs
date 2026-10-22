@@ -313,6 +313,54 @@ pub fn touch_workspace(caller: &Caller, root: &Path) {
     }
 }
 
+/// Workspaces each caller said it works in: by opening a tab there, listing
+/// its tabs, or naming it on a tab call. Tab calls stay inside them. Kept as
+/// long as an MCP session lives, so an agent that thinks for an hour between
+/// two calls still reaches the tabs of its workspace.
+static DECLARED: Mutex<Vec<(Caller, PathBuf, Instant)>> = Mutex::new(Vec::new());
+const DECLARED_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const MAX_DECLARED: usize = 512;
+
+/// Remember that `caller` works in `root`.
+pub fn declare_workspace(caller: &Caller, root: PathBuf) {
+    let Ok(mut declared) = DECLARED.lock() else {
+        return;
+    };
+    declared.retain(|(_, _, at)| at.elapsed() < DECLARED_TTL);
+    if let Some(entry) = declared
+        .iter_mut()
+        .find(|(owner, path, _)| owner == caller && *path == root)
+    {
+        entry.2 = Instant::now();
+        return;
+    }
+    if declared.len() >= MAX_DECLARED {
+        // The entry touched longest ago makes room.
+        if let Some(stalest) = declared
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, (_, _, at))| *at)
+            .map(|(index, _)| index)
+        {
+            declared.remove(stalest);
+        }
+    }
+    declared.push((caller.clone(), root, Instant::now()));
+}
+
+/// The workspaces `caller` has declared, most recent first.
+pub fn declared_workspaces(caller: &Caller) -> Vec<PathBuf> {
+    let Ok(declared) = DECLARED.lock() else {
+        return Vec::new();
+    };
+    let mut mine: Vec<_> = declared
+        .iter()
+        .filter(|(owner, _, at)| owner == caller && at.elapsed() < DECLARED_TTL)
+        .collect();
+    mine.sort_by_key(|(_, _, at)| std::cmp::Reverse(*at));
+    mine.into_iter().map(|(_, path, _)| path.clone()).collect()
+}
+
 /// The agent a tab must be left to: an agent working in the tab's workspace,
 /// whose session is still live, holds it, and this caller has only ever opened
 /// tabs in other workspaces. Agents in different workspaces share one browser
@@ -2239,5 +2287,32 @@ mod tests {
         assert!(!accepts(&event(1, "idle", 5), &event(1, "idle", 6)));
         // Once ended, not even a park revives the tab.
         assert!(!accepts(&event(1, "ended", 5), &event(1, "idle", 6)));
+    }
+}
+
+#[cfg(test)]
+mod declared_tests {
+    use super::*;
+
+    #[test]
+    fn a_declared_workspace_is_kept_per_caller() {
+        let claude = |pty| {
+            Caller::from_client_info(&serde_json::json!({"name":"claude"})).with_pty(Some(pty))
+        };
+        let (me, other) = (claude(9_101), claude(9_102));
+        let (mine, theirs) = (
+            PathBuf::from("D:/work/declared-a"),
+            PathBuf::from("D:/work/declared-b"),
+        );
+        assert!(declared_workspaces(&me).is_empty());
+        declare_workspace(&me, mine.clone());
+        declare_workspace(&other, theirs.clone());
+        declare_workspace(&me, theirs.clone());
+        // Declaring a workspace again refreshes it rather than adding it twice.
+        declare_workspace(&me, theirs.clone());
+        let declared = declared_workspaces(&me);
+        assert_eq!(declared.len(), 2);
+        assert!(declared.contains(&mine) && declared.contains(&theirs));
+        assert_eq!(declared_workspaces(&other), vec![theirs]);
     }
 }

@@ -45,7 +45,7 @@ let environment;
 try {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); origin = 'http://127.0.0.1:' + server.address().port;
   await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'codex-autocomplete-benchmark', version: '1' } });
-  await call('skills_read', { workspace, name: 'anbo' }); initialTabs = await call('browser_tabs');
+  await call('skills_read', { workspace, name: 'anbo' }); initialTabs = await call('browser_tabs', { workspace });
   tabId = (await call('browser_open', { workspace, url: origin + '/?mode=plain' })).tabId;
   for (const mode of ['plain', 'declared-sync', 'undeclared-sync', 'declared-late-node', 'delayed-350', 'native-delayed-250', 'empty', 'append', 'preexisting']) {
     for (let iteration = 0; iteration < (smoke ? 1 : 5); iteration++) {
@@ -80,7 +80,7 @@ finally {
     if (!page.url.startsWith(origin + '/')) throw Error('Owned fixture changed origin');
     await call('browser_close', { tabId, workspace, endSession: true });
   } catch (error) { check('cleanup', false, String(error)); }
-  if (initialTabs) try { const final = await call('browser_tabs'); check('original tabs retained', JSON.stringify(initialTabs.tabs.map(t => t.tabId).sort()) === JSON.stringify(final.tabs.map(t => t.tabId).sort())); } catch (error) { check('tabs', false, String(error)); }
+  if (initialTabs) try { const final = await call('browser_tabs', { workspace }); check('original tabs retained', JSON.stringify(initialTabs.tabs.map(t => t.tabId).sort()) === JSON.stringify(final.tabs.map(t => t.tabId).sort())); } catch (error) { check('tabs', false, String(error)); }
   if (session) await fetch(endpoint, { method: 'DELETE', headers: { 'Mcp-Session-Id': session }, signal: AbortSignal.timeout(5000) }).catch(() => {});
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
 }

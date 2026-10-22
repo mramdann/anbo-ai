@@ -94,12 +94,12 @@ async function test(mode){
 try{
   await new Promise(r=>server.listen(0,'127.0.0.1',r));origin='http://127.0.0.1:'+server.address().port;
   await rpc('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'codex-check-noop-smoke',version:'1'}});
-  await ok('skills_read',{workspace,name:'anbo'});initialTabs=await ok('browser_tabs');
+  await ok('skills_read',{workspace,name:'anbo'});initialTabs=await ok('browser_tabs', { workspace });
   for(const mode of ['true','false','radio','shadow','frame','disabled','covered','hidden','wrong','radio-uncheck','stale','drift'])await test(mode);
 }catch(e){check('suite completed',false,String(e));}
 finally{
   for(const id of [...owned])try{await close(id);}catch(e){check('cleanup',false,String(e));}
-  if(initialTabs)try{const after=await ok('browser_tabs');check('original tabs retained',JSON.stringify(initialTabs.tabs.map(t=>t.tabId).sort())===JSON.stringify(after.tabs.map(t=>t.tabId).sort()));}catch(e){check('tabs',false,String(e));}
+  if(initialTabs)try{const after=await ok('browser_tabs', { workspace });check('original tabs retained',JSON.stringify(initialTabs.tabs.map(t=>t.tabId).sort())===JSON.stringify(after.tabs.map(t=>t.tabId).sort()));}catch(e){check('tabs',false,String(e));}
   if(session)await fetch(endpoint,{method:'DELETE',headers:{'Mcp-Session-Id':session},signal:AbortSignal.timeout(5000)}).catch(()=>{});
   server.closeAllConnections();await new Promise(r=>server.close(r));
 }

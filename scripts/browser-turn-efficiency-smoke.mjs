@@ -48,7 +48,7 @@ const hash = async () => createHash('sha256').update(await readFile(binary)).dig
 const binaryHash = await hash();
 try {
   await rpc('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'codex-turn-efficiency',version:'1'}});
-  before = await ok('browser_tabs',{});
+  before = await ok('browser_tabs',{workspace});
   await new Promise(resolve => server.listen(0,'127.0.0.1',resolve)); origin = `http://127.0.0.1:${server.address().port}`;
   const {tabId} = await ok('browser_open',{workspace,url:origin}); owned.add(tabId);
   const find = args => ok('browser_find',{tabId,...args});
@@ -98,9 +98,9 @@ try {
     const noTarget = await call('browser_get_text',{tabId,ancestors:'row'});
     check('semantic row without target is rejected',noTarget.error);
     const bad = await call('browser_open',{workspace,url:origin,closeTab:true});
-    check('close-on-open requires a read and creates no tab',bad.error && (await ok('browser_tabs',{})).tabs.length === before.tabs.length+owned.size);
+    check('close-on-open requires a read and creates no tab',bad.error && (await ok('browser_tabs',{workspace})).tabs.length === before.tabs.length+owned.size);
     const failed = await ok('browser_open',{workspace,url:origin,find:{by:'role',value:'button',name:'does not exist',timeout:150},closeTab:true});owned.add(failed.tabId);
-    check('failed initial read retains its new tab and recovery handle',failed.readOk === false && failed.closed === false && (await ok('browser_tabs',{})).tabs.some(t=>t.tabId===failed.tabId),failed);
+    check('failed initial read retains its new tab and recovery handle',failed.readOk === false && failed.closed === false && (await ok('browser_tabs',{workspace})).tabs.some(t=>t.tabId===failed.tabId),failed);
     await ok('browser_close',{workspace,tabId:failed.tabId});owned.delete(failed.tabId);
     const snapshot = await ok('browser_open',{workspace,url:origin,snapshot:true,closeTab:true});
     if(!snapshot.closed)owned.add(snapshot.tabId);
@@ -126,7 +126,7 @@ try {
 } catch(error) { failure=String(error); }
 finally {
   for (const tabId of owned) { const closed=await call('browser_close',{tabId,workspace,endSession:true}).catch(()=>null); if(closed&&!closed.error)owned.delete(tabId); }
-  const after=await ok('browser_tabs',{}).catch(()=>null);
+  const after=await ok('browser_tabs',{workspace}).catch(()=>null);
   check('original tabs retained',JSON.stringify(before?.tabs?.map(t=>t.tabId).sort())===JSON.stringify(after?.tabs?.map(t=>t.tabId).sort()));
   if(session)await fetch(endpoint,{method:'DELETE',headers:{'Mcp-Session-Id':session},signal:AbortSignal.timeout(5000)}).catch(()=>{});
   server.closeAllConnections();await new Promise(resolve=>server.close(resolve));

@@ -161,12 +161,12 @@ async function runLane(lane) {
         const reach = await call('browser_get_text', { tabId: otherTab, maxLength: 20 }, { refusal: other.workspace !== workspace });
         const gone = /tab_not_found|not found|closed/i.test(reach.error ?? '');
         if (!gone) {
-          const refused = /tab_in_use/.test(reach.error ?? '');
+          const refused = /tab_in_use|other_workspace/.test(reach.error ?? '');
           check(lane, other.workspace === workspace ? 'a lane may read a tab in its own workspace' : 'a lane is refused another workspace\x27s live tab',
             other.workspace === workspace ? !reach.error : refused, reach.error ?? 'read');
         }
       }
-      const tabs = await call('browser_tabs', {});
+      const tabs = await call('browser_tabs', { workspace });
       const listed = tabs.result?.tabs?.find?.(t => t.tabId === tabId || t.id === tabId);
       check(lane, 'the tab list names this tab with its workspace', !tabs.error && listed && listed.workspace, tabs.error ?? listed);
     } finally {

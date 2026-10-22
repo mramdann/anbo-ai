@@ -55,13 +55,13 @@ function serve(req, res) {
 }
 const server = http.createServer(serve), frameServer = http.createServer(serve);
 async function close(tabId) {
-  const tab = (await ok('browser_tabs', {})).tabs.find(item => item.tabId === tabId);
+  const tab = (await ok('browser_tabs', { workspace })).tabs.find(item => item.tabId === tabId);
   if (tab && ![tab.url, tab.pendingUrl].some(url => url?.startsWith(origin + '/'))) throw Error('Owned tab changed origin; refusing cleanup');
   if (tab) await ok('browser_close', { workspace, tabId }); owned.delete(tabId);
 }
 try {
   await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'anbo-network-smoke', version: '1' } });
-  before = await ok('browser_tabs', {});
+  before = await ok('browser_tabs', { workspace });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   await new Promise(resolve => frameServer.listen(0, '127.0.0.1', resolve));
   origin = `http://127.0.0.1:${server.address().port}`; frameOrigin = `http://127.0.0.1:${frameServer.address().port}`;
@@ -92,7 +92,7 @@ try {
 finally {
   for (const tabId of [...owned]) { try { await close(tabId); } catch (error) { check('cleanup', false, String(error)); } }
   if (before) {
-    const after = await ok('browser_tabs', {});
+    const after = await ok('browser_tabs', { workspace });
     check('original tabs and focus preserved', before.activeTabId === after.activeTabId && before.activeSpaceId === after.activeSpaceId && JSON.stringify(before.tabs.map(t=>t.tabId)) === JSON.stringify(after.tabs.map(t=>t.tabId)));
   }
   if (session) await fetch(endpoint, { method: 'DELETE', headers: { 'Mcp-Session-Id': session } });

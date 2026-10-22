@@ -73,13 +73,13 @@ async function close(tabId) {
 }
 async function uiUrl(tabId, expected) {
   let tab; const deadline = Date.now() + 2500;
-  do { tab = (await ok('browser_tabs', {})).tabs.find(t => t.tabId === tabId); if (tab?.url === expected) return true; await delay(100); } while (Date.now() < deadline);
+  do { tab = (await ok('browser_tabs', { workspace })).tabs.find(t => t.tabId === tabId); if (tab?.url === expected) return true; await delay(100); } while (Date.now() < deadline);
   return false;
 }
 const stats = samples => { const s = [...samples].sort((a,b) => a-b); return { n:s.length,p50:s[Math.ceil(s.length*.5)-1],p95:s[Math.ceil(s.length*.95)-1] }; };
 try {
   await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'anbo-pointer-smoke', version: '1' } });
-  await ok('skills_read', { workspace, name: 'anbo' }); before = await ok('browser_tabs', {});
+  await ok('skills_read', { workspace, name: 'anbo' }); before = await ok('browser_tabs', { workspace });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); origin = 'http://127.0.0.1:' + server.address().port;
   for (const mode of ['visible','nested']) await scenario(mode, async () => {
     const tabId = await open(mode);
@@ -135,7 +135,7 @@ try {
   });
 } finally {
   for (const tabId of [...owned]) { try { await close(tabId); } catch (cause) { check('cleanup ' + tabId, false, String(cause)); } }
-  try { after = await ok('browser_tabs', {}); } catch {}
+  try { after = await ok('browser_tabs', { workspace }); } catch {}
   check('original tabs and active space retained', before && after && before.activeSpaceId === after.activeSpaceId && before.activeTabId === after.activeTabId && before.tabs.every(t => after.tabs.some(a => a.tabId === t.tabId)));
   check('owned tabs closed', owned.size === 0);
   if(session) { const r = await fetch(endpoint, { method:'DELETE',headers:{'Mcp-Session-Id':session},signal:AbortSignal.timeout(5000) }); check('MCP session closed', r.ok); }

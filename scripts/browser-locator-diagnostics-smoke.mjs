@@ -74,7 +74,7 @@ const binaryHash = createHash('sha256').update(await readFile(binary)).digest('h
 const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 try {
   await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'anbo-locator-diagnostics-qa', version: '1' } });
-  initialTabs = await ok('browser_tabs');
+  initialTabs = await ok('browser_tabs', { workspace });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); origin = 'http://127.0.0.1:' + server.address().port;
   const tabId = await open('/main');
   const initial = await state(tabId);
@@ -127,7 +127,7 @@ try {
 finally {
   for (const tabId of [...owned]) try { await close(tabId); } catch (error) { checks.push({ name: 'cleanup', passed: false, detail: String(error) }); }
   try {
-    finalTabs = await ok('browser_tabs');
+    finalTabs = await ok('browser_tabs', { workspace });
     const ids = response => response.tabs.map(tab => tab.tabId);
     checks.push({ name: 'original tabs retained', passed: Array.isArray(initialTabs?.tabs) && Array.isArray(finalTabs?.tabs) && ids(initialTabs).every(id => Number.isInteger(id) && ids(finalTabs).includes(id)) });
     checks.push({ name: 'owned tabs closed', passed: owned.size === 0 });

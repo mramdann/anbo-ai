@@ -25,7 +25,7 @@ const check=(name,passed,detail)=>{checks.push({name,passed:!!passed,detail});co
 async function rejects(name,pattern,fn){try{await fn();check(name,false,'unexpected success');}catch(error){check(name,pattern.test(String(error)),String(error));}}
 async function close(tabId){if(!owned.has(tabId))throw Error('Unowned tab');const info=await call('browser_page_info',{tabId});if(!info.url.startsWith(origin+'/'))throw Error('Fixture left origin');await call('browser_close',{workspace,tabId,endSession:true});owned.delete(tabId);}
 try{
-  await rpc('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'anbo-consolidation-smoke',version:'1'}});await call('skills_read',{workspace,name:'anbo'});before=await call('browser_tabs');
+  await rpc('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'anbo-consolidation-smoke',version:'1'}});await call('skills_read',{workspace,name:'anbo'});before=await call('browser_tabs', { workspace });
   const tools=(await rpc('tools/list',{})).tools;
   check('34 browser / 50 total tools; redundant names not advertised',tools.length===50&&tools.filter(t=>t.name.startsWith('browser_')).length===34&&['browser_double_click','browser_key','browser_get_url'].every(name=>tools.every(t=>t.name!==name)));
   await new Promise(r=>server.listen(0,'127.0.0.1',r));origin='http://127.0.0.1:'+server.address().port;
@@ -72,7 +72,7 @@ try{
 }catch(error){check('suite completed',false,String(error));}
 finally{
   for(const tabId of [...owned])try{await close(tabId);}catch(error){check('cleanup',false,String(error));}
-  try{const after=await call('browser_tabs');check('original tabs retained',JSON.stringify(before?.tabs.map(t=>t.tabId).sort())===JSON.stringify(after.tabs.map(t=>t.tabId).sort()));}catch(error){check('tab verification',false,String(error));}
+  try{const after=await call('browser_tabs', { workspace });check('original tabs retained',JSON.stringify(before?.tabs.map(t=>t.tabId).sort())===JSON.stringify(after.tabs.map(t=>t.tabId).sort()));}catch(error){check('tab verification',false,String(error));}
   if(session)await fetch(endpoint,{method:'DELETE',headers:{'Mcp-Session-Id':session},signal:AbortSignal.timeout(5000)}).catch(()=>{});
   server.closeAllConnections();await new Promise(r=>server.close(r));await writeFile(output,JSON.stringify({timestamp:new Date().toISOString(),endpoint:String(endpoint),checks,calls},null,2),{flag:'wx'});
 }

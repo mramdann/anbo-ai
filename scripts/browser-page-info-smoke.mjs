@@ -54,7 +54,7 @@ const server = http.createServer((request, response) => {
   response.end(`<!doctype html><title>${title.replaceAll('&', '&amp;')}</title><body>COORDINATOR_PAGE_READY</body>`);
 });
 async function closeOwned(tabId) {
-  const tabs = await ok('browser_tabs', {});
+  const tabs = await ok('browser_tabs', { workspace });
   const tab = tabs.tabs.find(item => item.tabId === tabId);
   if (tab && ![tab.url, tab.pendingUrl].some(url => url?.startsWith(`${origin}/`))) {
     throw Error(`Refusing to close changed tab ${tabId}`);
@@ -64,7 +64,7 @@ async function closeOwned(tabId) {
 }
 try {
   await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'anbo-browser-audit-verifier', version: '1' } });
-  before = await ok('browser_tabs', {});
+  before = await ok('browser_tabs', { workspace });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   origin = `http://127.0.0.1:${server.address().port}`;
   for (let round = 1; round <= 3; round++) {
@@ -84,7 +84,7 @@ try {
       check(`committed URL remains readable ${round}`, !source.error && source.value.url === url && source.wallMs < 1500, source);
       const pending = await call('browser_page_info', { tabId });
       check(`page info while response headers held ${round}`, !pending.error && pending.value.title === title && pending.value.url === url && pending.wallMs < 1500, pending);
-      const tabs = await ok('browser_tabs', {});
+      const tabs = await ok('browser_tabs', { workspace });
       check(`page info does not stop navigation ${round}`, tabs.tabs.some(tab => tab.tabId === tabId && tab.loading && tab.pendingUrl === pendingUrl));
       await ok('browser_stop', { tabId });
       const stopped = await call('browser_page_info', { tabId });
@@ -97,7 +97,7 @@ try {
 } finally {
   for (const tabId of [...owned]) { try { await closeOwned(tabId); } catch (error) { check('cleanup', false, String(error)); } }
   if (before) {
-    const after = await ok('browser_tabs', {});
+    const after = await ok('browser_tabs', { workspace });
     check('original tabs and focus preserved', before.activeSpaceId === after.activeSpaceId && before.activeTabId === after.activeTabId && before.tabs.every(tab => after.tabs.some(item => item.tabId === tab.tabId)));
   }
   check('owned tabs closed', owned.size === 0);

@@ -70,7 +70,7 @@ async function close(tabId) {
 }
 try {
   await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "anbo-direct-locator-smoke", version: "1" } });
-  initial = await ok("browser_tabs");
+  initial = await ok("browser_tabs", { workspace });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   origin = `http://127.0.0.1:${server.address().port}`;
   const { tabId } = await ok("browser_open", { workspace, url: origin });
@@ -109,7 +109,7 @@ try {
 } finally {
   for (const tabId of [...owned]) try { await close(tabId); } catch (error) { check("cleanup", false, String(error)); }
   try {
-    const final = await ok("browser_tabs");
+    const final = await ok("browser_tabs", { workspace });
     check("original tabs retained", initial?.tabs.every(t => final.tabs.some(a => a.tabId === t.tabId)));
     check("owned tabs closed", owned.size === 0);
   } catch (error) { check("inspection", false, String(error)); }

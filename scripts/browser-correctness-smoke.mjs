@@ -60,7 +60,7 @@ async function close(tabId) {
 try {
   await rpc('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'anbo-correctness-smoke',version:'1'}});
   await ok('skills_list',{workspace});await ok('skills_read',{workspace,name:'anbo'});
-  before=await ok('browser_tabs',{});
+  before=await ok('browser_tabs',{workspace});
   await Promise.all([new Promise(r=>server.listen(0,'127.0.0.1',r)),new Promise(r=>frameServer.listen(0,'127.0.0.1',r))]);
   origin='http://127.0.0.1:'+server.address().port;frameOrigin='http://127.0.0.1:'+frameServer.address().port;
   await scenario('composed text',async()=>{
@@ -106,13 +106,13 @@ try {
     let popups=[];
     const deadline=Date.now()+3000;
     while(!popups.length&&Date.now()<deadline){
-      const tabs=await ok('browser_tabs',{});
+      const tabs=await ok('browser_tabs',{workspace});
       popups=tabs.tabs.filter(t=>[t.url,t.pendingUrl].includes(origin+'/owned-popup'));
       if(!popups.length)await delay(100);
     }
     for(const popup of popups)owned.add(popup.tabId);
     check('popup creates exactly one owned tab',popups.length===1,{result,popups});
-    const source=(await ok('browser_tabs',{})).tabs.find(t=>t.tabId===tabId);
+    const source=(await ok('browser_tabs',{workspace})).tabs.find(t=>t.tabId===tabId);
     check('popup keeps originating workspace',popups.length===1&&popups[0].spaceId===source?.spaceId);
     for(const popup of popups){await ok('browser_wait',{tabId:popup.tabId,condition:'load',loadState:'complete',timeout:3000});await close(popup.tabId);}
     await close(tabId);
@@ -145,7 +145,7 @@ try {
 }catch(cause){check('suite completed',false,{error:String(cause)});}
 finally {
   for(const tabId of [...owned])try{await close(tabId);}catch(cause){check('cleanup',false,{tabId,error:String(cause)});}
-  const after=await call('browser_tabs',{});check('original tabs retained',!after.error&&before?.tabs.every(t=>after.result.tabs.some(a=>a.tabId===t.tabId)));
+  const after=await call('browser_tabs',{workspace});check('original tabs retained',!after.error&&before?.tabs.every(t=>after.result.tabs.some(a=>a.tabId===t.tabId)));
   check('owned tabs closed',owned.size===0);
   if(session){try{const r=await fetch(endpoint,{method:'DELETE',headers:{'Mcp-Session-Id':session},signal:AbortSignal.timeout(5000)});check('session closed',r.ok);}catch(cause){check('session closed',false,String(cause));}}
   server.closeAllConnections();frameServer.closeAllConnections();await Promise.all([new Promise(r=>server.close(r)),new Promise(r=>frameServer.close(r))]);

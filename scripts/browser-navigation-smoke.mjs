@@ -64,7 +64,7 @@ const server = http.createServer((request, response) => {
   else send(response);
 });
 async function closeOwned(tabId) {
-  const tabs = await ok("browser_tabs", {});
+  const tabs = await ok("browser_tabs", { workspace });
   const tab = tabs.tabs.find(item => item.tabId === tabId);
   if (tab && ![tab.url, tab.pendingUrl].some(url => url?.startsWith(`${origin}/`))) {
     throw Error(`Refusing to close a changed tab: ${tabId}`);
@@ -73,7 +73,7 @@ async function closeOwned(tabId) {
 }
 try {
   await initialize();
-  before = await ok("browser_tabs", {});
+  before = await ok("browser_tabs", { workspace });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   origin = `http://127.0.0.1:${server.address().port}`;
   for (let round = 1; round <= 3; round++) {
@@ -87,7 +87,7 @@ try {
       const read = await call("browser_page_info", { tabId });
       check(`URL readable before response headers ${round}`, !read.error && read.wallMs < 1500, { sample: read });
       check(`get_url exposes pending navigation ${round}`, read.result?.loading === true && read.result?.pendingUrl === `${origin}/held/${round}`, { sample: read });
-      const loading = await ok("browser_tabs", {});
+      const loading = await ok("browser_tabs", { workspace });
       check(`pending target retained ${round}`, loading.tabs.some(tab => tab.tabId === tabId && tab.loading && tab.pendingUrl === `${origin}/held/${round}`));
       for (const response of [...held]) send(response);
       await ok("browser_wait", { tabId, condition: "load", loadState: "complete", timeout: 5000 });
@@ -128,7 +128,7 @@ try {
   for (const tabId of [...owned]) {
     try { await closeOwned(tabId); } catch {}
   }
-  try { after = await ok("browser_tabs", {}); } catch {}
+  try { after = await ok("browser_tabs", { workspace }); } catch {}
   if (session) await fetch(endpoint, {method: "DELETE", headers: {"Mcp-Session-Id": session}, signal: AbortSignal.timeout(5000)}).catch(() => {});
   check("original tabs and focus preserved", before && after && before.activeSpaceId === after.activeSpaceId && before.activeTabId === after.activeTabId && before.tabs.every(tab => after.tabs.some(item => item.tabId === tab.tabId)));
   check("owned tabs closed", owned.size === 0);

@@ -152,7 +152,7 @@ pub fn tool_definitions() -> Value {
         { "name": "skills_read", "description": "Read a skill and follow it. A skill read on demand returns its essentials plus a section index; pass section to read one section in full. Names come from skills_list.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "name": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Skill name from skills_list." }, "section": { "type": "string", "minLength": 1, "maxLength": 120, "description": "A section title from the skill's index, matched case-insensitively." } }, "required": ["workspace", "name"] } },
         { "name": "browser_open", "description": "Open a page in the user's real browser: a visible tab in this app, not a private fetch. Pass your own workspace root or space id. To read the page in this same call, add find:{by,value} or snapshot:true; both wait for it to load, so no separate wait or snapshot. With find, closeTab:true makes a one-off lookup one call. The reply carries the tabId and your controlId.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." }, "profile": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Chrome/Edge profile name or id, when several are approved here." } }, "required": ["url", "workspace"] } },
         { "name": "browser_close", "description": "Close a native browser tab in an explicitly selected Anbo workspace. Pass endSession: true when this is the last tab of your task, so closing it and ending your session is one call instead of two.", "annotations": { "destructiveHint": true, "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." }, "endSession": { "type": "boolean", "default": false, "description": "Also end your control session after the tab closes; the reply then carries sessionEnded: true." } }, "required": ["tabId", "workspace"] } },
-        { "name": "browser_tabs", "description": "List open browser tabs with foreground, workspace, space, loading, pendingUrl and automation metadata; while loading, url is the last committed URL. yours marks tabs you opened or drove (yourTabs counts them); otherTabsInSpace counts the shown space's terminal and editor tabs.", "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "browser_tabs", "description": "List the open browser tabs of your workspace with foreground, space, loading, pendingUrl and automation metadata; while loading, url is the last committed URL. Other workspaces' tabs are neither listed nor usable. yours marks tabs you opened or drove (yourTabs counts them); otherTabsInSpace counts the shown space's terminal and editor tabs.", "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
         { "name": "browser_navigate", "description": "Navigate a browser tab to an http(s) URL. Returns at once unless waitFor names the page to wait for; browser_stop interrupts the load.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "url": { "type": "string" }, "waitFor": { "type": "object", "description": "As browser_press waitFor." } }, "required": ["tabId", "url"] } },
         { "name": "browser_emulate", "description": "Emulate a device viewport on a browser tab so the page lays out as it would on that device. Pass width 0 to clear the emulation. Sets the device pixel ratio and, for mobile, touch support. The emulation survives navigation until cleared.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "width": { "type": "integer", "minimum": 0, "maximum": 10000, "description": "CSS pixels wide. 0 clears the emulation." }, "height": { "type": "integer", "minimum": 0, "maximum": 10000 }, "scale": { "type": "number", "minimum": 0.1, "maximum": 4, "default": 1, "description": "Device pixel ratio." }, "mobile": { "type": "boolean", "default": false, "description": "Report a mobile device and enable touch." }, "fit": { "type": "number", "minimum": 0.05, "maximum": 1, "default": 1, "description": "Shrink the painted result so a viewport wider than the pane is shown whole instead of cropped." } }, "required": ["tabId", "width", "height"] } },
         { "name": "browser_reload", "description": "Start reloading a browser tab and return immediately. Use browser_wait or browser_tabs to observe completion.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone() }, "required": ["tabId"] } },
@@ -453,6 +453,19 @@ mod tests {
     }
 
     #[test]
+    fn browser_tabs_takes_the_callers_workspace() {
+        let definitions = tool_definitions();
+        let tabs = definitions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "browser_tabs")
+            .unwrap();
+        assert_eq!(tabs["inputSchema"]["required"], json!(["workspace"]));
+        assert!(tabs["inputSchema"]["properties"]["workspace"].is_object());
+    }
+
+    #[test]
     fn workflow_tools_are_not_advertised_or_routed() {
         let definitions = tool_definitions();
         let tools = definitions.as_array().unwrap();
@@ -718,7 +731,10 @@ mod tests {
         // after a y of 600 read as done on a page that stayed at 0.
         // 42.1k the same day: console_logs lists failed requests too, and the
         // network filter takes a * pattern, after ".js" also took ".json".
-        assert!(size <= 42_100, "browser tool schemas are {size} characters");
+        // 42.4k since Oct 23 2026: browser_tabs takes the caller's workspace
+        // and lists only its tabs, after agents read and drove other
+        // workspaces' Chrome and Edge tabs in the round 60 soak.
+        assert!(size <= 42_400, "browser tool schemas are {size} characters");
     }
 
     #[test]

@@ -84,7 +84,7 @@ async function closeOwned(tabId) {
 }
 try {
   await initialize();
-  before = await ok("browser_tabs", {});
+  before = await ok("browser_tabs", { workspace });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   origin = `http://127.0.0.1:${server.address().port}`;
   for (let round = 1; round <= repeats; round++) {
@@ -127,7 +127,7 @@ finally {
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));
 }
-const after = await call("browser_tabs", {});
+const after = await call("browser_tabs", { workspace });
 check("original-tabs", 0, !after.error && before?.tabs.every(tab => after.result.tabs.some(item => item.tabId === tab.tabId)));
 check("owned-tabs-closed", 0, owned.size === 0);
 const path = resolve(output);
