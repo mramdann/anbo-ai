@@ -18,7 +18,6 @@ use super::registry::{
     active_loading, active_local_root, active_navigation_generation, active_pending_url,
     set_active_loading, set_active_pending_url,
 };
-use crate::modules::browser::embed::BROWSER_POPUP_REQUEST_EVENT;
 use crate::modules::browser_automation::cdp::{
     call_devtools_protocol_method, execute_script, execute_script_with_timeout, read_url,
 };
@@ -1765,18 +1764,12 @@ async fn handle_action_attempt(
                     .measure("ready", wait_for_ready(&webview, 3000))
                     .await;
                 let target = get_ref_frame_target(tab_id, &ref_id);
-                let (dispatch, popup_url) =
+                // A new-tab link the click follows opens its tab through the
+                // browser: Chrome and Edge themselves, Anbo's own browser
+                // through on_new_window. Opening it here as well gave one
+                // click two tabs once that came over a second later (round 60).
+                let dispatch =
                     click_ref_profiled(&webview, tab_id, &ref_id, click_count, timings).await?;
-                // Chrome and Edge open a new-tab link themselves, and from
-                // extension 0.5.7 the bridge brings that tab into Anbo (from
-                // 0.5.8 also one opened by a key on a page its browser does
-                // not show); only the embedded browser leaves it to Anbo.
-                if let Some(url) = popup_url.filter(|_| webview.embedded().is_ok()) {
-                    let _ = app.emit(
-                        BROWSER_POPUP_REQUEST_EVENT,
-                        json!({ "sourceTabId": tab_id, "url": url }),
-                    );
-                }
                 let revealed = timings
                     .measure(
                         "reveal",
@@ -6478,7 +6471,6 @@ struct ActionableElement {
     input_type: String,
     checked: Option<bool>,
     draggable: bool,
-    popup_url: Option<String>,
     value_result: Option<Value>,
     /// Only an external tab reports these. The browser delivers no input to a
     /// hidden page, and a page shown in a window nobody sees draws no frames,
@@ -6768,8 +6760,6 @@ fn actionable_probe_script(ref_id: &str, scroll: &str, position: Option<(f64, f6
                 if (node === el) {{ active = true; break; }}
                 node = node.shadowRoot ? node.shadowRoot.activeElement : null;
             }}
-            const link = el.closest ? el.closest('a[href]') : null;
-            const popupUrl = link && String(link.target || '').toLowerCase() === '_blank' ? String(link.href || '') : null;
             return JSON.stringify({{
                 ok: true,
                 visible,
@@ -6778,7 +6768,6 @@ fn actionable_probe_script(ref_id: &str, scroll: &str, position: Option<(f64, f6
                 receives,
                 unanswered,
                 active,
-                popupUrl,
                 ...point,
                 tag: el.tagName.toLowerCase(),
                 inputType: el instanceof HTMLInputElement ? String(el.type || '').toLowerCase() : '',
@@ -7099,14 +7088,6 @@ async fn wait_for_actionable_attempt(
                     .to_string(),
                 checked: parsed.get("checked").and_then(Value::as_bool),
                 draggable: parsed.get("draggable").and_then(Value::as_bool) == Some(true),
-                popup_url: parsed["popupUrl"]
-                    .as_str()
-                    .filter(|url| {
-                        url::Url::parse(url)
-                            .ok()
-                            .is_some_and(|url| matches!(url.scheme(), "http" | "https"))
-                    })
-                    .map(str::to_owned),
             });
         }
         let reason = actionability_failure_reason(&parsed, requirement);
@@ -7396,9 +7377,7 @@ async fn click_ref(
     tab_id: i64,
     ref_id: &str,
 ) -> Result<&'static str, (String, String)> {
-    click_ref_profiled(webview, tab_id, ref_id, 1, &mut ActionTimings::default())
-        .await
-        .map(|(dispatch, _)| dispatch)
+    click_ref_profiled(webview, tab_id, ref_id, 1, &mut ActionTimings::default()).await
 }
 
 async fn click_ref_profiled(
@@ -7407,7 +7386,7 @@ async fn click_ref_profiled(
     ref_id: &str,
     count: u8,
     timings: &mut ActionTimings,
-) -> Result<(&'static str, Option<String>), (String, String)> {
+) -> Result<&'static str, (String, String)> {
     let current_generation = get_current_generation(tab_id);
     ensure_current_ref(ref_id, current_generation)?;
     let target = get_ref_frame_target(tab_id, ref_id);
@@ -7430,10 +7409,10 @@ async fn click_ref_profiled(
                 dom_click_ref(webview, target.as_ref(), ref_id, count),
             )
             .await?;
-        return Ok(("dom-frame", actionable.popup_url));
+        return Ok("dom-frame");
     }
     dispatch_mouse_click_profiled(webview, &actionable, ref_id, count, timings).await?;
-    Ok(("devtools", actionable.popup_url))
+    Ok("devtools")
 }
 
 /// browser_wait's own timeout next to waitFor fills in waitFor's when it has
