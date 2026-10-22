@@ -63,7 +63,7 @@ const HIDDEN_PAGE_NOTE: &str = "this Chrome/Edge tab is not shown, so its browse
 pub fn needs_shown_page(method: &str) -> bool {
     matches!(
         method,
-        "click" | "double_click" | "check" | "drag" | "hover" | "focus"
+        "click" | "double_click" | "check" | "drag" | "hover" | "focus" | "dialog"
     )
 }
 
@@ -351,7 +351,16 @@ mod tests {
 
     #[test]
     fn only_pointer_input_waits_for_a_shown_page() {
-        for method in ["click", "double_click", "check", "drag", "hover", "focus"] {
+        // A dialog click is a click too (round 60: refused on hidden Chrome tabs).
+        for method in [
+            "click",
+            "double_click",
+            "check",
+            "drag",
+            "hover",
+            "focus",
+            "dialog",
+        ] {
             assert!(needs_shown_page(method), "{method}");
         }
         for method in [

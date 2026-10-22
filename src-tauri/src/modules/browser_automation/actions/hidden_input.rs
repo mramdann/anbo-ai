@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 pub(super) fn stands_in(method: &str) -> bool {
     matches!(
         method,
-        "click" | "double_click" | "check" | "focus" | "hover" | "drag"
+        "click" | "double_click" | "check" | "focus" | "hover" | "drag" | "dialog"
     )
 }
 

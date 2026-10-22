@@ -2860,29 +2860,50 @@ async fn handle_action_attempt(
             let generation = get_current_generation(tab_id);
             ensure_current_ref(&ref_id, generation)?;
             let target = get_ref_frame_target(tab_id, &ref_id);
-            let actionable = wait_for_actionable_ref(
-                &webview,
-                target.as_ref(),
-                &ref_id,
-                ActionabilityRequirement::Click,
-            )
-            .await?;
+            // A page that cannot be shown now (its workspace is not) takes the
+            // click as keys or its own events, and the capture answers the
+            // dialog either way: in the round 60 soak every dialog click on
+            // such a Chrome tab was refused as hidden.
+            let actionable = if hidden_page {
+                None
+            } else {
+                Some(
+                    wait_for_actionable_ref(
+                        &webview,
+                        target.as_ref(),
+                        &ref_id,
+                        ActionabilityRequirement::Click,
+                    )
+                    .await?,
+                )
+            };
             install_dialog_capture(&webview, target.as_ref(), action == "accept", prompt_text)
                 .await?;
-            let trigger_result = if target.as_ref().is_some_and(|target| !target.is_main) {
-                dom_click_ref(&webview, target.as_ref(), &ref_id, 1)
+            let mut hidden_note = Value::Null;
+            let trigger_result = match &actionable {
+                None => hidden_input::click(&webview, target.as_ref(), tab_id, &ref_id, 1)
                     .await
-                    .map(|_| "dom-frame")
-            } else {
-                dispatch_mouse_click(&webview, &actionable, &ref_id, 1)
+                    .map(|answer| {
+                        hidden_note = answer["note"].clone();
+                        answer["dispatch"]
+                            .as_str()
+                            .unwrap_or("dom-events")
+                            .to_string()
+                    }),
+                Some(_) if target.as_ref().is_some_and(|target| !target.is_main) => {
+                    dom_click_ref(&webview, target.as_ref(), &ref_id, 1)
+                        .await
+                        .map(|_| "dom-frame".to_string())
+                }
+                Some(actionable) => dispatch_mouse_click(&webview, actionable, &ref_id, 1)
                     .await
-                    .map(|_| "devtools")
+                    .map(|_| "devtools".to_string()),
             };
             let dialog_result = take_dialog_capture(&webview, target.as_ref()).await;
             let dispatch = trigger_result?;
             let dialog = dialog_result?;
             let opened = dialog.get("kind").and_then(Value::as_str).is_some();
-            Ok(json!({
+            let mut result = json!({
                 "tabId": tab_id,
                 "ref": ref_id,
                 "action": action,
@@ -2894,7 +2915,12 @@ async fn handle_action_attempt(
                 "message": dialog.get("message").cloned().unwrap_or(Value::Null),
                 "defaultText": dialog.get("defaultText").cloned().unwrap_or(Value::Null),
                 "promptTextSet": opened && action == "accept" && !prompt_text.is_empty()
-            }))
+            });
+            if !hidden_note.is_null() {
+                result["pageHidden"] = json!(true);
+                result["note"] = hidden_note;
+            }
+            Ok(result)
         }
 
         "skills_list" | "skills_read" => {
