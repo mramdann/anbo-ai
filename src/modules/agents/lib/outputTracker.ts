@@ -5,6 +5,11 @@ const MAX_OUTPUT_CHARS = 12_000;
 const DEFAULT_OUTPUT_CHARS = 4_000;
 /** Redacted output kept per source between reads. */
 const OUTPUT_HISTORY_CHARS = 64_000;
+/** How many of the last snapshot's lines a new one must start with to count
+ *  as the old one scrolled on. A prompt line alone matched the prompt that
+ *  started an older window, and a read replayed 400 rows of old output as new
+ *  (round 60). */
+const MIN_CONTINUED_LINES = 3;
 
 type OutputState = {
   generation: number;
@@ -49,13 +54,14 @@ export function clampMaxChars(requested: unknown): number {
 }
 
 /**
- * The longest prefix of `current` that `previous` ends with. The KMP failure
- * function over both keeps this linear: a scrolled 64 KB screen overlaps the
- * last one by almost all of it, which a plain loop would test line by line.
+ * Every length of a prefix of `current` that `previous` ends with, longest
+ * first. The KMP failure function over both keeps this linear: a scrolled
+ * 64 KB screen overlaps the last one by almost all of it, which a plain loop
+ * would test line by line.
  */
-function suffixPrefixOverlap(previous: string, current: string): number {
+function suffixPrefixOverlaps(previous: string, current: string): number[] {
   const limit = Math.min(previous.length, current.length);
-  if (limit === 0) return 0;
+  if (limit === 0) return [];
   const prefix = current.slice(0, limit);
   const suffix = previous.slice(-limit);
   const combined = `${prefix}\u0000${suffix}`;
@@ -68,7 +74,60 @@ function suffixPrefixOverlap(previous: string, current: string): number {
     if (combined[index] === combined[candidate]) candidate += 1;
     table[index] = candidate;
   }
-  return Math.min(table[table.length - 1], limit);
+  const overlaps: number[] = [];
+  for (let length = Math.min(table[table.length - 1], limit); length > 0; ) {
+    overlaps.push(length);
+    length = table[length - 1];
+  }
+  return overlaps;
+}
+
+function lineCount(text: string): number {
+  if (!text) return 0;
+  let breaks = 0;
+  for (let index = text.indexOf("\n"); index >= 0; ) {
+    breaks += 1;
+    index = text.indexOf("\n", index + 1);
+  }
+  return text.endsWith("\n") ? breaks : breaks + 1;
+}
+
+/** The longest overlap that starts a line of `previous` and keeps enough of
+ *  its lines, or null. */
+function lineOverlap(previous: string, current: string): number | null {
+  const needed = Math.min(MIN_CONTINUED_LINES, lineCount(previous));
+  for (const overlap of suffixPrefixOverlaps(previous, current)) {
+    const start = previous.length - overlap;
+    if (start > 0 && previous[start - 1] !== "\n") continue;
+    // Shorter overlaps keep fewer lines still.
+    return lineCount(previous.slice(start)) >= needed ? overlap : null;
+  }
+  return null;
+}
+
+/**
+ * Where `current` goes on from `previous`: the index of its first new
+ * character, and whether a line break comes first because `previous`'s last
+ * line was rewritten in place (a progress line, an edited prompt). Null when
+ * `current` does not continue it: a clear, a repaint, or a view that shares
+ * only a line or two with it.
+ */
+export function continuationOf(
+  previous: string,
+  current: string,
+): { from: number; separate: boolean } | null {
+  if (current.startsWith(previous)) {
+    return { from: previous.length, separate: false };
+  }
+  const whole = lineOverlap(previous, current);
+  if (whole !== null) return { from: whole, separate: false };
+  const lastBreak = previous.lastIndexOf("\n");
+  if (lastBreak < 0 || lastBreak === previous.length - 1) return null;
+  const head = previous.slice(0, lastBreak + 1);
+  const rest = current.startsWith(head)
+    ? head.length
+    : lineOverlap(head, current);
+  return rest === null ? null : { from: rest, separate: true };
 }
 
 /**
@@ -107,10 +166,8 @@ export class OutputTracker {
         this.states.delete(oldest);
       }
     } else if (current !== state.snapshot) {
-      const overlap = current.startsWith(state.snapshot)
-        ? state.snapshot.length
-        : suffixPrefixOverlap(state.snapshot, current);
-      if (overlap === 0) {
+      const next = continuationOf(state.snapshot, current);
+      if (!next) {
         state.generation += 1;
         state.snapshot = current;
         state.stream = current;
@@ -118,7 +175,7 @@ export class OutputTracker {
         state.total = current.length;
         repainted = true;
       } else {
-        const appended = current.slice(overlap);
+        const appended = `${next.separate ? "\n" : ""}${current.slice(next.from)}`;
         state.snapshot = current;
         state.stream += appended;
         state.total += appended.length;
