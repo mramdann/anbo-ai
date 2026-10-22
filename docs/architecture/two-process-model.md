@@ -123,6 +123,13 @@ Three distinct surfaces:
 - `get_launch_dir` - CLI launch directory, drained on first read
 - `open_settings_window` - open the separate settings webview (optional `tab` deep-link)
 
+## The UI thread's message queue (Windows)
+
+On Windows every webview lives on the UI thread, and much of the traffic to it is a posted message: each event, channel message and script from Rust, each reply to an async command, and WebView2's own wake-ups. The thread's queue holds 10,000 posted messages. Past that a post fails, and what it carried is lost. Two things keep a full queue from stopping Anbo for good:
+
+- Terminal output carries stream offsets, so the UI notices a lost message and attaches a new channel (`pty_attach`), and Rust sends again from what the UI received.
+- `src-tauri/src/modules/webview_pump.rs` wakes WebView2's message pump once a second. When WebView2 lost a wake-up to a full queue, every later request of the page stayed inside WebView2 for about five minutes. A full queue is logged as "the UI thread's message queue refused posts for N ms".
+
 ## Invariants
 
 - The webview must not spawn processes, read files, or make network calls except through the commands above.

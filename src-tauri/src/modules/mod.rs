@@ -27,6 +27,7 @@ pub mod skills;
 pub mod voice_push_to_talk;
 pub mod voice_runtime;
 pub mod webview_position;
+pub mod webview_pump;
 pub mod window_fit;
 pub mod window_frame;
 pub mod window_menu_key;

@@ -449,6 +449,10 @@ pub fn run() {
                 modules::panic_log::install(log_dir);
             }
             browser_automation::server::cleanup_stale_descriptor();
+            // On the UI thread: WebView2's pump here can sleep through a wake-up
+            // that a full message queue lost, which stalls the page's IPC.
+            #[cfg(windows)]
+            modules::webview_pump::keep_awake();
             // Before the first tab exists, so the only host it can find is one a
             // previous run left behind.
             #[cfg(windows)]
