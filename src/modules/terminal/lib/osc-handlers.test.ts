@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Terminal } from "@xterm/xterm";
 import {
   createShellIntegrationState,
+  createPromptMarks,
   registerCwdHandler,
   registerOsc52ClipboardHandler,
   registerPromptTracker,
@@ -197,6 +198,28 @@ describe("OSC 133 command-state tracking", () => {
       running: false,
       exitCode: 0,
       completed: true,
+    });
+  });
+
+  it("keeps the prompt marks when the terminal gets a new renderer slot", () => {
+    // Measured (round 60): a hidden terminal got a new slot between an
+    // agent's input-clearing Ctrl+C and its next command; the new tracker had
+    // never seen a C, took the redrawn prompt's D for a command's end, and the
+    // command read the Ctrl+C's exit code with a negative duration.
+    const marks = createPromptMarks();
+    const first = makeFakeTerm();
+    registerPromptTracker(first.term, undefined, vi.fn(), marks);
+    first.handlers.get(133)?.("C;ping 127.0.0.1");
+    first.handlers.get(133)?.("D;-1073741510");
+    first.handlers.get(133)?.("A");
+    const next = makeFakeTerm();
+    const onCommandState = vi.fn();
+    registerPromptTracker(next.term, undefined, onCommandState, marks);
+    next.handlers.get(133)?.("D;-1073741510");
+    expect(onCommandState).toHaveBeenLastCalledWith({
+      running: false,
+      exitCode: -1073741510,
+      completed: false,
     });
   });
 

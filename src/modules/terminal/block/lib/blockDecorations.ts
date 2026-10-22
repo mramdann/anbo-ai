@@ -1,5 +1,7 @@
 import {
+  createPromptMarks,
   createShellIntegrationState,
+  type PromptMarks,
   registerCwdHandler,
 } from "@/modules/terminal/lib/osc-handlers";
 import type { IDecoration, IMarker, Terminal } from "@xterm/xterm";
@@ -69,6 +71,8 @@ export type VisibleBlocks = {
 export type BlockMatch = { line: number; col: number; len: number };
 
 export type BlockDecorationsOptions = {
+  /** The session's prompt marks, kept across renderer slots. */
+  promptMarks?: PromptMarks;
   onCwd?: (cwd: string) => void;
   onMode?: (mode: BlockMode) => void;
   onCommandComplete?: (exitCode: number | null) => void;
@@ -78,7 +82,7 @@ export type BlockDecorationsOptions = {
 export class BlockDecorations {
   private readonly entries: Entry[] = [];
   private live: LiveBlock | null = null;
-  private sawCommandStart = false;
+  private readonly marks: PromptMarks;
   private cwd = "";
   private idSeq = 0;
   private selectedId: string | null = null;
@@ -98,6 +102,7 @@ export class BlockDecorations {
     private readonly term: Terminal,
     opts?: BlockDecorationsOptions,
   ) {
+    this.marks = opts?.promptMarks ?? createPromptMarks();
     this.onCwd = opts?.onCwd;
     this.onMode = opts?.onMode;
     this.onCommandComplete = opts?.onCommandComplete;
@@ -460,6 +465,7 @@ export class BlockDecorations {
     switch (marker) {
       case "A":
         this.shellState.inCommand = false;
+        this.marks.started = false;
         this.mode = reduceMode(this.mode, { type: "osc133", marker: "A" });
         break;
       case "B":
@@ -468,14 +474,16 @@ export class BlockDecorations {
         break;
       case "C":
         this.shellState.inCommand = true;
-        this.sawCommandStart = true;
+        this.marks.seenStart = true;
+        this.marks.started = true;
         this.mode = reduceMode(this.mode, { type: "osc133", marker: "C" });
         this.startBlock(rest);
         break;
       case "D": {
         // As registerPromptTracker: with no block started since the prompt,
         // this D is the prompt drawn again and ends no command.
-        const ended = this.live !== null || !this.sawCommandStart;
+        const ended = this.marks.started || !this.marks.seenStart;
+        this.marks.started = false;
         this.shellState.inCommand = false;
         this.finishBlock(rest);
         if (ended) this.onCommandComplete?.(parseExitCode(rest));

@@ -26,7 +26,9 @@ import {
   PROMPT_END_LENGTH,
 } from "./firstPrompt";
 import {
+  createPromptMarks,
   createShellIntegrationState,
+  type PromptMarks,
   registerCwdHandler,
   registerOsc52ClipboardHandler,
   registerPromptTracker,
@@ -129,6 +131,7 @@ type Session = {
   promptEndMatched: number;
   /** The last input the PTY refused, and when. */
   writeError: { at: number; message: string } | null;
+  promptMarks: PromptMarks;
 };
 
 const MAX_COMMAND_COMPLETIONS = 64;
@@ -824,6 +827,7 @@ function ensureSession(
     promptEnded: false,
     promptEndMatched: 0,
     writeError: null,
+    promptMarks: createPromptMarks(),
   };
   sessions.set(leafId, session);
 
@@ -1096,6 +1100,7 @@ function bindLeafToSlot(leafId: number, s: Session): void {
       if (s.blocks) {
         const osc52 = registerOsc52ClipboardHandler(term);
         const deco = new BlockDecorations(term, {
+          promptMarks: s.promptMarks,
           onCwd: (next) => {
             markSessionReady(leafId);
             if (s.lastCwd === next) return;
@@ -1129,8 +1134,11 @@ function bindLeafToSlot(leafId: number, s: Session): void {
       // 7 emitted by untrusted command output (remote SSH, `cat` of an
       // attacker file, etc.).
       const shellState = createShellIntegrationState();
-      const prompt = registerPromptTracker(term, shellState, (change) =>
-        onLeafCommandState(leafId, change),
+      const prompt = registerPromptTracker(
+        term,
+        shellState,
+        (change) => onLeafCommandState(leafId, change),
+        s.promptMarks,
       );
       const cwd = registerCwdHandler(
         term,
@@ -1226,6 +1234,7 @@ async function respawnSession(leafId: number, cwd?: string): Promise<void> {
   s.promptEnded = false;
   s.promptEndMatched = 0;
   s.writeError = null;
+  s.promptMarks = createPromptMarks();
   cancelHiddenRelease(s);
 
   const slot = getSlotForLeaf(leafId);

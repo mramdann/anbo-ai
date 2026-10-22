@@ -3011,6 +3011,78 @@ describe("terminals whose output stopped reaching Anbo", () => {
   });
 });
 
+describe("a prompt redraw while a command is sent", () => {
+  it("does not end the command at it", async () => {
+    // Measured (round 60): terminal_wait answered the Ctrl+C's exit code
+    // -1073741510 and durationMs -4 for "echo selesai".
+    vi.useFakeTimers();
+    try {
+      let generation = 2;
+      let completions: { generation: number; exitCode: number; at: number }[] =
+        [];
+      let checks = 0;
+      const state = (): TerminalSessionState => ({
+        ready: true,
+        shellExited: false,
+        commandRunning: false,
+        blockMode: "prompt",
+        commandGeneration: generation,
+        commandCompletions: completions,
+        lastExitCode: 0,
+        shell: "pwsh",
+        inputPending: false,
+      });
+      const service = createTerminalAutomationService(
+        dependencies({
+          getBuffer: () => "PS C:\\work\\alpha> ",
+          getSessionState: state,
+          hasForegroundProcess: async () => {
+            checks += 1;
+            // The second check is the last one before the write.
+            if (checks === 2) {
+              generation += 1;
+              completions = [
+                ...completions,
+                { generation, exitCode: -1073741510, at: Date.now() },
+              ];
+            }
+            return false;
+          },
+          write: () => true,
+        }),
+      );
+      const executed = await service.handle("terminal_execute", {
+        workspace: workspaceRoot,
+        terminalId: "terminal:10:101",
+        text: "echo selesai",
+      });
+      await vi.advanceTimersByTimeAsync(300);
+      const waited = service.handle("terminal_wait", {
+        workspace: workspaceRoot,
+        terminalId: "terminal:10:101",
+        executionId: (executed.result as { executionId: string }).executionId,
+        timeout: 2_000,
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      generation += 1;
+      completions = [
+        ...completions,
+        { generation, exitCode: 0, at: Date.now() },
+      ];
+      await vi.advanceTimersByTimeAsync(2_000);
+      const result = (await waited).result as {
+        completed: boolean;
+        exitCode: number | null;
+        durationMs: number;
+      };
+      expect(result).toMatchObject({ completed: true, exitCode: 0 });
+      expect(result.durationMs).toBeGreaterThanOrEqual(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("a terminal just opened", () => {
   it("is found while its tab enters the tab list", async () => {
     // Measured (round 61): terminal_execute in the same script as its

@@ -692,6 +692,17 @@ export function createTerminalAutomationService(
       );
       return true;
     }
+    // A prompt redraw that ended before this command was typed is not its end.
+    for (const done of state.commandCompletions ?? []) {
+      if (
+        done.generation === execution.baselineGeneration + 1 &&
+        done.at !== undefined &&
+        execution.dispatchedAt !== undefined &&
+        done.at < execution.dispatchedAt
+      ) {
+        execution.baselineGeneration = done.generation;
+      }
+    }
     const targetGeneration = execution.baselineGeneration + 1;
     const completion = state.commandCompletions?.find(
       (candidate) => candidate.generation === targetGeneration,
@@ -897,7 +908,12 @@ export function createTerminalAutomationService(
     // would run.
     if (execution.phase !== "queued") return;
     const raw = deps.getBuffer(execution.terminal.leafId) ?? "";
-    execution.baselineGeneration = latestState.commandGeneration ?? 0;
+    // Read now: a prompt the shell drew again while the checks above awaited
+    // (Ctrl+C clearing the input line) ended before this command.
+    execution.baselineGeneration =
+      deps.getSessionState(execution.terminal.leafId)?.commandGeneration ??
+      latestState.commandGeneration ??
+      0;
     execution.cursor = output.checkpoint(execution.terminalId, raw);
     execution.initialFingerprint = bufferFingerprint(raw);
     execution.usesOsc = shellSupportsOsc(latestState.shell);

@@ -42,6 +42,17 @@ export type PromptTracker = {
   dispose: () => void;
 };
 
+/** What the prompt marks said so far: whether the shell writes C at all, and
+ *  whether one came since the last prompt. The session keeps them, so a
+ *  terminal that gets a new renderer slot goes on with them: started over, the
+ *  prompt Ctrl+C draws again after clearing the input line ended a command
+ *  once more (round 60). */
+export type PromptMarks = { seenStart: boolean; started: boolean };
+
+export function createPromptMarks(): PromptMarks {
+  return { seenStart: false, started: false };
+}
+
 export type CommandStateChange = {
   running: boolean;
   exitCode: number | null;
@@ -54,19 +65,18 @@ export function registerPromptTracker(
   // Fires on C (process executing) and A/D (back at prompt). Distinct from
   // inCommand, which is already true from B while the user merely types.
   onCommandState?: (change: CommandStateChange) => void,
+  marks: PromptMarks = createPromptMarks(),
 ): PromptTracker {
   let marker: IMarker | null = null;
   // A D with no C since the last prompt is the prompt drawn again (Ctrl+C on
   // the input line, an empty Enter), not a command's end: counted as one, it
   // closed the command an agent ran right after clearing its input. A shell
   // that never writes C (PowerShell without PSReadLine) still ends one at D.
-  let seenStart = false;
-  let started = false;
   const d = term.parser.registerOscHandler(133, (data) => {
     // OSC 133 A — start of new prompt (between commands).
     if (data.startsWith("A")) {
       if (state) state.inCommand = false;
-      started = false;
+      marks.started = false;
       onCommandState?.({ running: false, exitCode: null, completed: false });
       marker?.dispose();
       marker = term.registerMarker(0);
@@ -77,8 +87,8 @@ export function registerPromptTracker(
     } else if (data.startsWith("C")) {
       // OSC 133 C — command pre-execution marker; still inside command.
       if (state) state.inCommand = true;
-      seenStart = true;
-      started = true;
+      marks.seenStart = true;
+      marks.started = true;
       onCommandState?.({ running: true, exitCode: null, completed: false });
     } else if (data.startsWith("D")) {
       // OSC 133 D — command ends.
@@ -88,9 +98,9 @@ export function registerPromptTracker(
       onCommandState?.({
         running: false,
         exitCode: Number.isSafeInteger(parsed) ? parsed : null,
-        completed: started || !seenStart,
+        completed: marks.started || !marks.seenStart,
       });
-      started = false;
+      marks.started = false;
     }
     return true;
   });
