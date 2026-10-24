@@ -189,7 +189,9 @@ event, or write it into `key` as `"Control+A"` (`"Ctrl+Shift+K"` and
 or `down`/`up`; only `press` supports postconditions and Enter observation.
 `browser_dialog` clicks a ref
 and answers the alert, confirm or prompt it raises, reporting `clickDispatched`
-and `dialogOpened` separately. `browser_download` arms exactly one download and
+and `dialogOpened` separately. A plain `browser_click` that opens one dismisses
+it, so it cannot block the page, and names it in `dialog`; to accept it, use
+`browser_dialog` on the same ref. `browser_download` arms exactly one download and
 clicks a ref; a `timedOut` result from `browser_download_wait` is normal for a
 large file and keeps the `downloadId`, so poll it again rather than arming a
 second download. `browser_console_logs` returns up to 50 recent bounded

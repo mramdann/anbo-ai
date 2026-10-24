@@ -1753,7 +1753,8 @@ async fn handle_action_attempt(
                         .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
                     ensure_current_ref(&ref_id, get_current_generation(tab_id))?;
                     let target = get_ref_frame_target(tab_id, &ref_id);
-                    let result = hidden_input::click(
+                    let captured = capture_click_dialogs(&webview, target.as_ref()).await;
+                    let mut result = hidden_input::click(
                         &webview,
                         target.as_ref(),
                         tab_id,
@@ -1761,6 +1762,13 @@ async fn handle_action_attempt(
                         click_count,
                     )
                     .await?;
+                    if captured {
+                        if let Some(dialog) =
+                            clicked_dialog(&webview, target.as_ref(), tab_id).await
+                        {
+                            result["dialog"] = dialog;
+                        }
+                    }
                     (webview, result)
                 };
                 note_page_errors(&mut result, page_errors_since(&webview, clicked_at).await);
@@ -1771,7 +1779,7 @@ async fn handle_action_attempt(
                 }
                 return Ok(result);
             }
-            let (webview, dispatch, revealed, media) = {
+            let (webview, dispatch, revealed, media, dialog) = {
                 let _lock = timings.measure("queue", tab_lock.lock()).await;
                 let webview = get_embed_webview(app, tab_id)
                     .map_err(|e| (error_codes::TAB_NOT_FOUND.to_string(), e))?;
@@ -1785,8 +1793,21 @@ async fn handle_action_attempt(
                 // browser: Chrome and Edge themselves, Anbo's own browser
                 // through on_new_window. Opening it here as well gave one
                 // click two tabs once that came over a second later (round 60).
+                let captured = timings
+                    .measure(
+                        "dialogCapture",
+                        capture_click_dialogs(&webview, target.as_ref()),
+                    )
+                    .await;
                 let dispatch =
                     click_ref_profiled(&webview, tab_id, &ref_id, click_count, timings).await?;
+                let dialog = if captured {
+                    timings
+                        .measure("dialog", clicked_dialog(&webview, target.as_ref(), tab_id))
+                        .await
+                } else {
+                    None
+                };
                 let revealed = timings
                     .measure(
                         "reveal",
@@ -1811,7 +1832,7 @@ async fn handle_action_attempt(
                         .measure("media", media_state(&webview, target.as_ref(), &ref_id))
                         .await
                 };
-                (webview, dispatch, revealed, media)
+                (webview, dispatch, revealed, media, dialog)
             };
             let mut result = json!({
                 "tabId": tab_id,
@@ -1821,6 +1842,9 @@ async fn handle_action_attempt(
             });
             if click_count == 2 {
                 result["clickCount"] = json!(2);
+            }
+            if let Some(dialog) = dialog {
+                result["dialog"] = dialog;
             }
             if let Some(media) = media {
                 result["media"] = media;
@@ -7239,6 +7263,55 @@ async fn wait_for_checked_state(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// How long a click waits to set up, or read back, its dialog capture.
+const CLICK_DIALOG_SCRIPT_TIMEOUT: Duration = Duration::from_millis(1_000);
+
+/// Makes an alert, confirm or prompt a click opens answer at once as
+/// dismissed. A real one blocks the page: on a hidden Chrome or Edge tab the
+/// click waited 10 s and the tab was then lost (round 63, R63-1); on a shown
+/// one it waits for the user. Best effort: the click goes on without it.
+async fn capture_click_dialogs(webview: &Webview, target: Option<&RefFrameTarget>) -> bool {
+    matches!(
+        tokio::time::timeout(
+            CLICK_DIALOG_SCRIPT_TIMEOUT,
+            install_dialog_capture(webview, target, false, ""),
+        )
+        .await,
+        Ok(Ok(()))
+    )
+}
+
+/// The dialog a click opened, dismissed by its capture, for the reply. A
+/// click that started a navigation took the capture away with its document.
+async fn clicked_dialog(
+    webview: &Webview,
+    target: Option<&RefFrameTarget>,
+    tab_id: i64,
+) -> Option<Value> {
+    if active_loading(tab_id) == Some(true) || active_pending_url(tab_id).is_some() {
+        return None;
+    }
+    let dialog = tokio::time::timeout(
+        CLICK_DIALOG_SCRIPT_TIMEOUT,
+        take_dialog_capture(webview, target),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let kind = dialog.get("kind").and_then(Value::as_str)?.to_string();
+    let note = if kind == "alert" {
+        "the click opened an alert, and Anbo closed it so it could not block the page".to_string()
+    } else {
+        format!("the click opened a {kind}, and Anbo dismissed it so it could not block the page, so the page took it as cancelled; to accept it, call browser_dialog on this ref with dialogAction accept")
+    };
+    Some(json!({
+        "kind": kind,
+        "message": dialog.get("message").cloned().unwrap_or(Value::Null),
+        "answered": if kind == "alert" { "closed" } else { "dismissed" },
+        "note": note
+    }))
 }
 
 async fn install_dialog_capture(
