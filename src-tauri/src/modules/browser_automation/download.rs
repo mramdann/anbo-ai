@@ -63,6 +63,14 @@ fn is_terminal(status: &str) -> bool {
 }
 
 fn bounded_source_url(value: &str) -> String {
+    // A data: URL is the file itself, base64 an agent never reads: its type
+    // and length say enough (round 64, R64-11: 2,000 characters of a JPEG in
+    // both download answers).
+    if let Some(rest) = value.strip_prefix("data:") {
+        let kind = rest.split([',', ';']).next().unwrap_or_default();
+        let kind: String = kind.chars().take(100).collect();
+        return format!("data:{kind} ({} characters)", value.len());
+    }
     let Ok(mut url) = url::Url::parse(value) else {
         return value.chars().take(2_000).collect();
     };
@@ -467,6 +475,11 @@ mod tests {
             bounded_source_url("https://user:pass@example.com/file?q=secret#token"),
             "https://example.com/file"
         );
+        assert_eq!(
+            bounded_source_url("data:image/jpeg;base64,/9j/4AAQSkZJRg"),
+            "data:image/jpeg (37 characters)"
+        );
+        assert_eq!(bounded_source_url("data:,hello"), "data: (11 characters)");
     }
 
     #[tokio::test]
