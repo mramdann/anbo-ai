@@ -21,6 +21,22 @@ describe("OutputTracker", () => {
     expect(next.cursor).toMatch(/^t1:2:/);
   });
 
+  it("flags left-out history only on a read that did not start at a cursor", () => {
+    // Round 64 (R64-12): every cursor read of a terminal with earlier output
+    // said historyTruncated, and agents took complete reads for cut ones.
+    const tracker = new OutputTracker("t1", 10);
+    const lines = Array.from({ length: 200 }, (_, i) => `line ${i}`);
+    const tail = tracker.read("a", lines.join("\n"), undefined, 100);
+    expect(tail.historyTruncated).toBe(true);
+    const more = `${lines.join("\n")}\nline 200\nline 201`;
+    const next = tracker.read("a", more, tail.cursor, 100);
+    expect(next).toMatchObject({
+      output: "\nline 200\nline 201",
+      reset: false,
+      historyTruncated: false,
+    });
+  });
+
   it("does not take another tracker's cursor", () => {
     const tracker = new OutputTracker("t1", 10);
     tracker.read("a", "output", undefined, 100);

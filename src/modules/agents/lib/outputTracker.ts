@@ -221,7 +221,10 @@ export class OutputTracker {
       output,
       cursor: this.cursorAt(state.generation, nextOffset),
       hasMore: nextOffset < state.total,
-      historyTruncated: start > state.base,
+      // A read from a cursor that still applies starts where the caller left
+      // off: older output it skips is not lost to it. Agents read the flag set
+      // on every such read as a cut read (round 64, R64-12).
+      historyTruncated: (!parsed || reset) && start > state.base,
       reset,
     };
   }
