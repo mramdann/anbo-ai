@@ -289,10 +289,12 @@ one). When it says nothing was sent, act on it, then run the command again.
 A line the shell reads as unfinished, such as one with an open quote or
 bracket, ends `dispatch_failed` too: Anbo cancels it with Ctrl+C rather than
 leave the shell waiting for more, so correct it and run it again.
-`terminal_wait` keeps the exit code, completion reason and whole output of
-one `executionId`, so a later command cannot overwrite the answer you were
-waiting for. Each call cuts that output to its own `maxChars`, keeping the
-start and the latest part around a note of what was left out;
+`terminal_wait` keeps the exit code, completion reason and output of one
+`executionId`, so a later command cannot overwrite the answer you were
+waiting for. A long burst of output can lose its start in the terminal itself;
+`reset: true` then says the output does not start at the command. Each call
+cuts that output to its own `maxChars`, keeping the start and the latest part
+around a note of what was left out (under 400 characters, only the latest);
 `terminal_read` from `omittedCursor` reads that part. `durationMs` counts
 from when the command was typed, and `queuedMs` is the wait for the shell
 before that. One call waits at most 50 s; call again for a longer job. `terminal_interrupt` cancels a specific execution, including one still
