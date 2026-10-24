@@ -22,7 +22,10 @@ export function externalPageGone(
   workspaceRoot: string | null,
 ): boolean {
   const external = tab.external;
-  if (!external || external.connected || !workspaceRoot) return false;
+  // A tab still being bound is not gone: one a page had just opened read
+  // pageGone until its binding landed (round 64, R64-3).
+  if (!external || external.connected || external.connecting || !workspaceRoot)
+    return false;
   return useExternalBrowsers
     .getState()
     .connections.some(

@@ -295,10 +295,15 @@ export function createExternalBrowserSync(
             last !== undefined && host.tabs().some((tab) => tab.id === last)
               ? last
               : beside?.id;
+          // Connecting until the binding lands, so the tab does not read as
+          // one whose page is gone meanwhile.
+          const connecting = { ...external, connecting: true };
+          const existing = claimedTab?.id ?? saved?.id;
+          if (existing !== undefined)
+            host.update(existing, { external: connecting });
           const id =
-            claimedTab?.id ??
-            saved?.id ??
-            host.create(remote.url, false, space.id, external, after);
+            existing ??
+            host.create(remote.url, false, space.id, connecting, after);
           if (beside) opened.set(beside.id, id);
           // The agent's open reads this page before it answers, and a dock
           // move would stall that read, so the dock waits for it. A tab a
@@ -365,6 +370,7 @@ export function createExternalBrowserSync(
           previous.external?.connectionId === external.connectionId &&
           previous.external?.selectionId === external.selectionId &&
           previous.external?.connected === external.connected &&
+          previous.external?.connecting === external.connecting &&
           previous.external?.error === external.error;
         host.update(binding.id, {
           url: remote.url,

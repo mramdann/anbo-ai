@@ -6,6 +6,8 @@ export type ExternalBrowser = {
   browserTabId?: number;
   selectionId?: string;
   connected?: boolean;
+  /** Anbo is binding this tab to its browser's tab right now. */
+  connecting?: boolean;
   error?: string;
 };
 

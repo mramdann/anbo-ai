@@ -1,6 +1,7 @@
 import type { ExternalConnection } from "@/modules/browser/external/model";
 import {
   approvedHere,
+  externalPageGone,
   pendingConnections,
   profileLabel,
   useExternalBrowsers,
@@ -32,6 +33,24 @@ describe("external browser store", () => {
         connection("c", null),
       ]).map((item) => item.connectionId),
     ).toEqual(["a", "c"]);
+  });
+
+  it("does not call a tab being bound gone", () => {
+    useExternalBrowsers.setState({ connections: [connection("a", "D:/work")] });
+    const external = {
+      browser: "chrome" as const,
+      profileId: "00112233-4455-6677-8899-aabbccddeeff",
+      name: "Work",
+      connected: false,
+    };
+    expect(externalPageGone({ external }, "D:/work")).toBe(true);
+    expect(
+      externalPageGone(
+        { external: { ...external, connecting: true } },
+        "D:/work",
+      ),
+    ).toBe(false);
+    useExternalBrowsers.setState({ connections: [] });
   });
 
   it("knows which workspace a profile's pages land in", () => {

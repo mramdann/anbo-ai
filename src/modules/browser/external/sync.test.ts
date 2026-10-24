@@ -209,6 +209,31 @@ describe("external browser workspace synchronization", () => {
     });
   });
 
+  it("marks a new tab connecting while its binding runs", async () => {
+    // Round 64 (R64-3): a tab a page had opened read pageGone until its
+    // binding landed.
+    const state = harness();
+    const started = deferred<void>();
+    const pending = deferred<void>();
+    state.calls.mockImplementation(async (command) => {
+      if (command === "browser_external_connections") return [connection()];
+      if (command === "browser_external_bind") {
+        started.resolve();
+        await pending.promise;
+      }
+    });
+    const refresh = state.service.refresh();
+    await started.promise;
+    expect(state.tabs()[0].external).toMatchObject({
+      connected: false,
+      connecting: true,
+    });
+    pending.resolve();
+    await refresh;
+    expect(state.tabs()[0].external?.connected).toBe(true);
+    expect(state.tabs()[0].external?.connecting).toBeUndefined();
+  });
+
   it("does not publish a late binding or open another tab after stopping", async () => {
     const state = harness();
     const started = deferred<void>();
