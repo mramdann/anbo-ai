@@ -353,9 +353,15 @@ class TerminalOutputTracker {
     const lost =
       span.reset || (ended && command !== "" && !span.text.includes(command));
     if (!lost) {
+      // A repaint can put blank rows and the prompt's width in spaces ahead of
+      // the echo: a mission's first wait began with four empty lines and 43
+      // spaces (round 64, R64-6). The output starts at the echo then.
+      const echo = command ? span.text.indexOf(command) : -1;
+      const lead =
+        echo > 0 && span.text.slice(0, echo).trim() === "" ? echo : 0;
       return {
-        text: span.text,
-        cursorAt: span.cursorAt,
+        text: span.text.slice(lead),
+        cursorAt: (index) => span.cursorAt(lead + index),
         reset: false,
         replayed: false,
         historyTruncated: false,

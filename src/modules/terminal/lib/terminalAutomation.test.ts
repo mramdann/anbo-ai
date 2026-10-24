@@ -2469,6 +2469,51 @@ describe("terminal_wait answers and executions that never end", () => {
     }
   });
 
+  it("starts a wait's output at the command's echo, not at blank rows before it", async () => {
+    // Round 64 (R64-6): after a repaint a mission's first wait began with four
+    // empty lines and the prompt's width in spaces before the echo.
+    const rig = shellRig();
+    rig.buffer = prompt;
+    const service = createTerminalAutomationService(
+      dependencies({
+        getBuffer: () => rig.buffer,
+        getSessionState: rig.state,
+        write: (_leafId, data) => {
+          if (data === "git status\r") {
+            rig.buffer += `\n\n\n\n${" ".repeat(prompt.length)}git status\n`;
+            rig.running = true;
+            setTimeout(() => {
+              rig.buffer += `clean\n${prompt}`;
+              rig.running = false;
+              rig.generation += 1;
+              rig.completions = [
+                { generation: rig.generation, exitCode: 0, at: Date.now() },
+              ];
+            }, 20);
+          }
+          return true;
+        },
+      }),
+    );
+    const executionId = idOf(
+      await service.handle("terminal_execute", {
+        ...target,
+        text: "git status",
+      }),
+    );
+    const waited = await service.handle("terminal_wait", {
+      ...target,
+      executionId,
+      timeout: 2_000,
+    });
+    expect(waited.result).toMatchObject({ completed: true, reset: false });
+    expect(
+      (waited.result as { output: string }).output.startsWith(
+        "git status\nclean",
+      ),
+    ).toBe(true);
+  });
+
   it("times a command from when it was typed and says how long it queued", async () => {
     // Measured: a 90 s job read 110 s, 20 of them spent waiting for a new
     // shell's first prompt.
