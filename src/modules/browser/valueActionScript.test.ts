@@ -230,6 +230,17 @@ describe("guarded value actions", () => {
     expect(h.events).toEqual(["input", "change"]);
   });
 
+  it("names the options when no value or whole label matches", () => {
+    // Round 64 (R64-8): a part of a label failed with a bare option_not_found.
+    const h = harness(true);
+    const result = h.run("Bet");
+    expect(result).toMatchObject({ ok: false, error: "option_not_found" });
+    expect(result.options.length).toBeGreaterThan(0);
+    expect(result.options).toContainEqual({ value: "b", label: "Beta" });
+    expect(result.optionCount).toBe(h.el.options.length);
+    expect(h.events).toEqual([]);
+  });
+
   it("rejects disabled options and disabled optgroups", () => {
     for (const inherited of [false, true]) {
       const h = harness(true);

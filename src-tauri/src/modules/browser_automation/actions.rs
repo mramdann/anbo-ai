@@ -3480,6 +3480,14 @@ async fn handle_action_attempt(
                         error_codes::STALE_REF.to_string(),
                         format!("element ref '{ref_id}' is stale or no longer valid"),
                     ))
+                } else if err == "option_not_found" {
+                    Err((
+                        error_codes::INVALID_REQUEST.to_string(),
+                        format!(
+                            "select_option on ref '{ref_id}' failed: option_not_found; no option has that value or that whole label. {}",
+                            select_options_hint(&parsed)
+                        ),
+                    ))
                 } else {
                     Err((
                         error_codes::INVALID_REQUEST.to_string(),
@@ -7292,6 +7300,51 @@ async fn wait_for_checked_state(
     }
 }
 
+/// The options a select has, for an option_not_found answer.
+fn select_options_hint(parsed: &Value) -> String {
+    let options: Vec<String> = parsed
+        .get("options")
+        .and_then(Value::as_array)
+        .map(|options| {
+            options
+                .iter()
+                .map(|option| {
+                    let value = option
+                        .get("value")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let label = option
+                        .get("label")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    format!(
+                        "{} ({})",
+                        serde_json::json!(value),
+                        serde_json::json!(label)
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if options.is_empty() {
+        return "The select has no options.".to_string();
+    }
+    let count = parsed
+        .get("optionCount")
+        .and_then(as_count)
+        .unwrap_or(options.len() as u64);
+    let more = count.saturating_sub(options.len() as u64);
+    format!(
+        "Its options, value (label): {}{}",
+        options.join(", "),
+        if more > 0 {
+            format!(", and {more} more")
+        } else {
+            String::new()
+        }
+    )
+}
+
 /// How long a click waits to set up, or read back, its dialog capture.
 const CLICK_DIALOG_SCRIPT_TIMEOUT: Duration = Duration::from_millis(1_000);
 
@@ -9496,6 +9549,29 @@ fn ensure_current_ref(ref_id: &str, current_generation: u64) -> Result<(), (Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn option_not_found_names_the_options() {
+        // Round 64 (R64-8): "Reguler" for "Reguler (Rp 10.000)" answered a bare
+        // option_not_found, and the agent spent a turn reading the options.
+        let parsed = json!({
+            "ok": false,
+            "error": "option_not_found",
+            "options": [
+                { "value": "reguler", "label": "Reguler (Rp 10.000)" },
+                { "value": "ekspres", "label": "Ekspres (Rp 25.000)" }
+            ],
+            "optionCount": 3
+        });
+        assert_eq!(
+            select_options_hint(&parsed),
+            r#"Its options, value (label): "reguler" ("Reguler (Rp 10.000)"), "ekspres" ("Ekspres (Rp 25.000)"), and 1 more"#
+        );
+        assert_eq!(
+            select_options_hint(&json!({ "options": [] })),
+            "The select has no options."
+        );
+    }
 
     #[test]
     fn navigation_retires_retained_refs_and_an_in_flight_scan() {

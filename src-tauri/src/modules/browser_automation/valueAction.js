@@ -95,7 +95,14 @@ function selectValue(el, refRegistry, refId, want) {
   if (el.tagName !== 'SELECT') return { ok: false, error: 'not_a_select' };
   const matchesWanted = opt => opt.value === want || (opt.textContent || '').trim() === want;
   const matched = Array.from(el.options).find(matchesWanted);
-  if (!matched) return { ok: false, error: 'option_not_found' };
+  if (!matched) {
+    // Named, so the next call can use a value or a whole label: "Reguler" for
+    // "Reguler (Rp 10.000)" failed with nothing else to go on (round 64).
+    const options = Array.from(el.options)
+      .slice(0, 10)
+      .map(opt => ({ value: opt.value, label: (opt.textContent || '').trim().slice(0, 80) }));
+    return { ok: false, error: 'option_not_found', options, optionCount: el.options.length };
+  }
   const available = () => !matched.disabled && !matched.matches(':disabled') && matchesWanted(matched) && Array.from(el.options).includes(matched);
   if (!available()) return { ok: false, error: 'input_not_ready' };
   const closedPicker = closeSelectPicker(el);
