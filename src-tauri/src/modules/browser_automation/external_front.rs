@@ -155,6 +155,23 @@ pub async fn bring_to_front(
     )))
 }
 
+/// Brings a Chrome or Edge tab its browser does not show forward for a
+/// capture, as for pointer input: the turn, held while the capture runs, or
+/// why the tab could not come. A shown page, or Anbo's own browser, needs
+/// nothing. Called before the tab lock, which the dock takes to bring it in.
+pub async fn front_for_capture(
+    app: &AppHandle,
+    tab_id: i64,
+) -> Result<Option<PointerTurn>, String> {
+    let Ok(target) = get_embed_webview(app, tab_id) else {
+        return Ok(None);
+    };
+    if capture_shown(&target).await {
+        return Ok(None);
+    }
+    bring_to_front(app, tab_id).await.map_err(|(_, why)| why)
+}
+
 /// Waits a moment for a dock move under way to finish, so the next look at a
 /// page reads where that move left it.
 pub async fn settle_dock() {
@@ -184,7 +201,7 @@ fn docked_live(tab_id: i64) -> bool {
 
 /// Why a capture of a Chrome or Edge page its browser does not show is
 /// refused.
-pub const NOT_SHOWN_FOR_CAPTURE: &str = "this Chrome/Edge tab is not shown in its browser, so its page draws nothing to capture; nothing was captured. Anbo's browser panel shows a Chrome/Edge page only while it is the panel's tab in a shown workspace, and a capture, like any read, leaves the tab where it is. Read the page with browser_snapshot or browser_get_text, or capture again once the tab is shown";
+pub const NOT_SHOWN_FOR_CAPTURE: &str = "this Chrome/Edge tab is not shown in its browser, so its page draws nothing to capture; nothing was captured. Anbo brings such a tab forward for a capture, as for a click, only while its workspace is shown and the user is in Anbo. Read the page with browser_snapshot or browser_get_text, or capture again once the tab can be shown.";
 
 /// Whether a capture of a Chrome or Edge page should answer at once: its
 /// browser draws the page, or has it in front of a window that is not

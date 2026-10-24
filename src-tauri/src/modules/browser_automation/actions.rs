@@ -1110,6 +1110,25 @@ async fn handle_action_attempt(
             }
         }
     }
+    // A capture of a Chrome or Edge page its browser does not show brings the
+    // tab forward the same way, while its workspace is shown and the user is
+    // in Anbo (round 64, R64-1); a tab that cannot come keeps the plain
+    // answer, which then says why.
+    let mut not_shown_for_capture = None;
+    if method == "screenshot" {
+        if let Ok(tab_id) = extract_tab_id(&params) {
+            match timings
+                .measure(
+                    "front",
+                    super::external_front::front_for_capture(app, tab_id),
+                )
+                .await
+            {
+                Ok(turn) => pointer_turn = turn,
+                Err(why) => not_shown_for_capture = Some(why),
+            }
+        }
+    }
     if params.get("locator").is_some() {
         // A malformed submit is refused before the lookup can spend its timeout.
         if matches!(method, "type" | "type_text") {
@@ -3194,8 +3213,10 @@ async fn handle_action_attempt(
             };
             // A Chrome or Edge page its browser does not show may still draw
             // behind the dock's page; one in a window Anbo covers never does,
-            // so it gets a short try and a plain answer (round 60).
-            let shown = super::external_front::capture_shown(&webview).await;
+            // so it gets a short try and a plain answer (round 60). One that
+            // could come forward came before the lock, and is shown now.
+            let shown =
+                pointer_turn.is_some() || super::external_front::capture_shown(&webview).await;
             let _design_layer = super::design::hide_for_capture(&webview).await;
             let response = super::cdp::capture_screenshot_within(
                 &webview,
@@ -3211,7 +3232,13 @@ async fn handle_action_attempt(
                 if unshown_capture_failure(shown, &e) {
                     (
                         error_codes::INPUT_NOT_READY.to_string(),
-                        super::external_front::NOT_SHOWN_FOR_CAPTURE.to_string(),
+                        match &not_shown_for_capture {
+                            Some(why) => format!(
+                                "{} It could not be brought forward now: {why}",
+                                super::external_front::NOT_SHOWN_FOR_CAPTURE
+                            ),
+                            None => super::external_front::NOT_SHOWN_FOR_CAPTURE.to_string(),
+                        },
                     )
                 } else {
                     (error_codes::CDP_FAILED.to_string(), e)
