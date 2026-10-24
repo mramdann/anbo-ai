@@ -493,13 +493,23 @@ pub async fn handle_action_as(
                         tokio::time::sleep(Duration::from_millis(50)).await;
                     }
                 }
+                // A waitFor the call carried and met already shows what the
+                // agent wanted, so no look for results naming the typed words:
+                // on a page that only adds a list item that look waited its
+                // whole 3 s (round 64, R64-10: 3.2 to 3.4 s per call with the
+                // wait met in 0.2 to 0.3 s).
+                let met = value
+                    .pointer("/postcondition/matched")
+                    .and_then(Value::as_bool)
+                    == Some(true);
+                let search = search.as_deref().filter(|_| !met);
                 // A submitted search always looks: Maps can answer before its
                 // URL moves, and the look waits for results naming the query.
                 if navigated || search.is_some() {
                     let hints = if routed && !native && search.is_none() {
                         routed_landing_hints(&webview, id).await
                     } else {
-                        navigation_hints(&webview, id, search.as_deref()).await
+                        navigation_hints(&webview, id, search).await
                     };
                     // The wait may have let the page retitle itself or move on.
                     if search.is_some() || (routed && !native) {
