@@ -249,6 +249,8 @@ fn flush_output(id: u32, output: &Output) {
             },
             Err(e) => {
                 state.broken = true;
+                // A full UI-thread queue refuses WebView2's own wake-up too.
+                crate::modules::webview_pump::note_refused_post();
                 log::warn!(
                     "pty {id}: output send failed ({e}); waiting for the UI to attach a new channel"
                 );
