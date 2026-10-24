@@ -116,6 +116,9 @@ type ServiceDependencies = {
   /** Terminals that are the caller's own to close, shared with the terminal
    *  tools: an agent_spawn terminal is, once its CLI has ended. */
   openedTerminals?: Set<string>;
+  /** The agent_spawn terminals, with whether their agent has been seen
+   *  running; the terminal tools leave one alone until its agent has ended. */
+  spawnedTerminals?: Map<string, boolean>;
 };
 
 type ResolvedWorkspace = { id: string; root: string };
@@ -1289,11 +1292,22 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
           typeof params.timeout === "number" && Number.isInteger(params.timeout)
             ? Math.max(100, Math.min(MAX_HELD_MS, params.timeout))
             : 15_000;
-        deps.openedTerminals?.add(
-          `terminal:${spawned.tabId}:${spawned.leafId}`,
-        );
+        const spawnedId = `terminal:${spawned.tabId}:${spawned.leafId}`;
+        deps.openedTerminals?.add(spawnedId);
+        if (deps.spawnedTerminals) {
+          deps.spawnedTerminals.set(spawnedId, false);
+          while (deps.spawnedTerminals.size > MAX_TRACKED_AGENTS) {
+            const oldest = deps.spawnedTerminals.keys().next().value;
+            if (oldest === undefined) break;
+            deps.spawnedTerminals.delete(oldest);
+          }
+        }
         const agent = await waitForSpawn(resolved.workspace, spawned, timeout);
+        if (agent && !("failed" in agent)) {
+          deps.spawnedTerminals?.set(spawnedId, true);
+        }
         if (agent && "failed" in agent) {
+          deps.spawnedTerminals?.delete(spawnedId);
           deps.discardSpawn?.(spawned.tabId);
           return automationError(
             agent.failed.includes("resource_exhausted")

@@ -116,6 +116,9 @@ export type TerminalAutomationDependencies = {
   /** The caller's own terminals, shared with the agent tools, which add the
    *  terminal of an agent they spawned. */
   openedTerminals?: Set<string>;
+  /** Terminals agent_spawn made, with whether their agent has been seen
+   *  running: the terminal tools leave one alone until its agent has ended. */
+  spawnedTerminals?: Map<string, boolean>;
   initialPromptSyncTimeoutMs?: number;
 };
 
@@ -455,6 +458,8 @@ export async function collectSharedTerminals(
   /** Terminals kept even after an agent CLI started in one made its tab an
    *  agent tab: the ones terminal_open made, which stay theirs to close. */
   opened?: ReadonlySet<string>,
+  /** Terminals agent_spawn made: their agent's while it starts or runs. */
+  spawned?: Map<string, boolean>,
 ): Promise<SharedTerminalDescriptor[]> {
   const sessions = deps.getSessions();
   const activeTabId = deps.getActiveTabId();
@@ -467,10 +472,15 @@ export async function collectSharedTerminals(
     .flatMap((tab) =>
       leafIds(tab.paneTree).flatMap((leafId) => {
         const id = terminalId(tab.id, leafId);
-        if (
-          (tab.agent || isAgentLeaf(sessions, tab.id, leafId)) &&
-          !opened?.has(id)
-        ) {
+        const live = isAgentLeaf(sessions, tab.id, leafId);
+        // An agent_spawn terminal is its agent's until that agent ends: listed
+        // while it ran, another agent could read it, interrupt it or type
+        // into its CLI (round 64, R64-2). agent_* tools reach it meanwhile.
+        if (spawned?.has(id)) {
+          if (live) spawned.set(id, true);
+          if (live || !spawned.get(id)) return [];
+        }
+        if ((tab.agent || live) && !opened?.has(id)) {
           return [];
         }
         const state = deps.getSessionState(leafId);
@@ -1030,6 +1040,7 @@ export function createTerminalAutomationService(
         workspace.space,
         verifyForeground,
         opened,
+        deps.spawnedTerminals,
       ),
     };
   };
@@ -1272,6 +1283,7 @@ export function createTerminalAutomationService(
           );
         }
         openedTerminals.delete(id);
+        deps.spawnedTerminals?.delete(id);
         output.remove(id);
         for (const [executionId, execution] of executions) {
           if (execution.terminalId === id) executions.delete(executionId);

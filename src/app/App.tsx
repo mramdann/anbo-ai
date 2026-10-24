@@ -2114,9 +2114,12 @@ export default function App() {
           // A terminal agent_spawn made is the spawner's to close once its CLI
           // has ended, as a terminal_open one is.
           const openedTerminals = new Set<string>();
+          // Until its agent has ended, an agent_spawn terminal is that agent's.
+          const spawnedTerminals = new Map<string, boolean>();
           const agentService = createAgentAutomationService({
             ...shared,
             openedTerminals,
+            spawnedTerminals,
             getShellState: getTerminalSessionState,
             discardSpawn: (tabId) => closeTab(tabId),
             prepare: prepareTerminalAutomationSession,
@@ -2168,6 +2171,7 @@ export default function App() {
           const terminalService = createTerminalAutomationService({
             ...shared,
             openedTerminals,
+            spawnedTerminals,
             getSessionState: getTerminalSessionState,
             hasForegroundProcess: leafHasForegroundProcess,
             foregroundProcesses: leafForegroundProcesses,

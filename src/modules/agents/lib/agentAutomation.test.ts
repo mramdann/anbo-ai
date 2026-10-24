@@ -1960,6 +1960,7 @@ describe("agents agent_spawn starts", () => {
     // Measured: helper agents that exited left their tab and a live shell
     // that no tool of the agent that spawned them could close.
     const openedTerminals = new Set<string>();
+    const spawnedTerminals = new Map<string, boolean>();
     const service = createAgentAutomationService({
       getTabs: () => [spawnedTab()],
       getSpaces: () => [space()],
@@ -1972,6 +1973,7 @@ describe("agents agent_spawn starts", () => {
       spawn: () => handle,
       subscribeSessions: () => () => {},
       openedTerminals,
+      spawnedTerminals,
     });
     await expect(
       service.handle({
@@ -1981,6 +1983,9 @@ describe("agents agent_spawn starts", () => {
       }),
     ).resolves.toMatchObject({ result: { ok: true, pending: false } });
     expect([...openedTerminals]).toEqual(["terminal:12:121"]);
+    // Its agent was seen running, so the terminal tools leave it alone until
+    // that agent has ended (round 64, R64-2).
+    expect([...spawnedTerminals]).toEqual([["terminal:12:121", true]]);
     service.dispose();
   });
 });
