@@ -1,6 +1,7 @@
 import { IS_WINDOWS } from "@/lib/platform";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { warn } from "@tauri-apps/plugin-log";
 import { LatestResizeQueue } from "./latestResizeQueue";
 import {
   freshWatch,
@@ -31,6 +32,9 @@ export type PtySession = {
 const WATCH_INTERVAL_MS = 2_000;
 /** A status call that never answers must not stop later checks. */
 const WATCH_CALL_TIMEOUT_MS = 5_000;
+/** How long a replaced channel is still heard: what it gets was late, not
+ *  lost. */
+const LATE_WINDOW_MS = 5_000;
 
 /**
  * A PTY's output as it reaches the UI: every message carries the stream
@@ -201,7 +205,13 @@ async function reattach(stream: PtyStream): Promise<void> {
   stream.attaching = true;
   const previous = stream.channel;
   stream.channel = stream.newChannel();
-  previous.onmessage = () => {};
+  // Messages the old channel still gets were only late, and the new one has
+  // them again; none means one was lost. Round 64's soak could not tell: all
+  // its reattaches came while a new browser host was starting.
+  let late = 0;
+  previous.onmessage = () => {
+    late += 1;
+  };
   console.warn(
     "[anbo] terminal output stalled; attaching a new channel",
     stream.id,
@@ -220,10 +230,16 @@ async function reattach(stream: PtyStream): Promise<void> {
   } catch (cause) {
     console.warn("[anbo] terminal output attach failed", stream.id, cause);
   } finally {
-    // Nothing reads the old channel any more; a failed attach is retried on
-    // a fresh one at the next check.
-    forgetChannel(previous);
+    // A failed attach is retried on a fresh channel at the next check.
     stream.attaching = false;
+    setTimeout(() => {
+      forgetChannel(previous);
+      void warn(
+        late > 0
+          ? `terminal ${stream.id}: its replaced output channel still got ${late} messages, so they were late, not lost`
+          : `terminal ${stream.id}: its replaced output channel got nothing more, so a message was lost`,
+      ).catch(() => {});
+    }, LATE_WINDOW_MS);
   }
 }
 
