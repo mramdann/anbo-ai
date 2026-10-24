@@ -4027,8 +4027,26 @@ async fn handle_action_attempt(
             let (mut logs, included_frames, skipped_frames) = collect_console_logs(&webview).await;
             // The browser writes a failed request to the console itself
             // ("Failed to load resource"), where the page's own log never
-            // sees it; an agent looking for it there found nothing.
-            logs.extend(super::network::failed_requests(tab_id));
+            // sees it; an agent looking for it there found nothing. Only the
+            // current document's: the request list keeps earlier loads, and
+            // three loads of a page read as three 404s beside one
+            // console.error (round 64, R64-5).
+            let document_started = ref_context::execute_main(&webview, "performance.timeOrigin")
+                .await
+                .ok()
+                .and_then(|raw| page_json::from_str::<f64>(&raw).ok())
+                .filter(|origin| origin.is_finite() && *origin > 0.0)
+                .map(|origin| origin as u64);
+            logs.extend(
+                super::network::failed_requests(tab_id)
+                    .into_iter()
+                    .filter(|entry| {
+                        let at = entry.get("ts").and_then(as_count).unwrap_or(0);
+                        // The document's own request goes out just before its
+                        // clock starts.
+                        document_started.is_none_or(|started| at + 1_000 >= started)
+                    }),
+            );
             logs.sort_by_key(|entry| entry.get("ts").and_then(as_count).unwrap_or(0));
             let total = logs.len();
             let mut clipped = 0usize;
