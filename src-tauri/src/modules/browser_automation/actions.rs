@@ -9527,9 +9527,12 @@ mod reveal_ref_tests {
         // The point of handing back the surface is that its items can be acted
         // on. Naming them with a private letter made every one of them
         // unusable: the parser refused the ref before anything else ran.
-        let ref_id = format!("{}1", reveal_ref_prefix(13));
-        assert_eq!(parse_ref_generation(&ref_id), Ok(13));
-        assert!(ensure_current_ref(&ref_id, 13).is_ok());
+        let tab = -930_401;
+        let generation = get_next_generation(tab);
+        let ref_id = format!("{}1", reveal_ref_prefix(generation));
+        assert_eq!(parse_ref_generation(&ref_id), Ok(generation));
+        assert!(ensure_current_ref(&ref_id, generation).is_ok());
+        crate::modules::browser_automation::snapshot::remove_generation(tab);
     }
 }
 
@@ -9541,27 +9544,34 @@ fn invalid_ref_error() -> (String, String) {
     )
 }
 
-/// A ref is usable while its scan is inside the retained window; whether the
-/// node itself is still there is the page registry's call. Before this, any
-/// find retired every earlier ref, so find A, find B, drag A onto B always
-/// failed on A.
+/// A ref is usable while its scan is one of the last scans of the tab the
+/// caller named; whether the node itself is still there is the page
+/// registry's call. Before this, any find retired every earlier ref, so find
+/// A, find B, drag A onto B always failed on A. Scan numbers are unique across
+/// tabs, so a ref from another tab's page is told apart instead of reaching
+/// this tab's element of the same number (round 64, R64-4).
 fn ensure_current_ref(ref_id: &str, current_generation: u64) -> Result<(), (String, String)> {
     let generation = parse_ref_generation(ref_id).map_err(|_| invalid_ref_error())?;
-    if generation > current_generation {
-        return Err((
-            error_codes::STALE_REF.to_string(),
-            format!("element ref '{ref_id}' is stale or no longer valid"),
-        ));
-    }
-    if generation + REF_GENERATIONS_KEPT < current_generation {
-        return Err((
+    let here = super::snapshot::scan_owner(current_generation);
+    match (super::snapshot::scan_owner(generation), here) {
+        (Some((owner, _)), Some((tab, _))) if owner == tab => Ok(()),
+        (Some((owner, _)), _) => Err((
             error_codes::STALE_REF.to_string(),
             format!(
-                "element ref '{ref_id}' is from scan {generation}; only the last {REF_GENERATIONS_KEPT} finds or snapshots are kept (this tab is at {current_generation}), find it again"
+                "element ref '{ref_id}' is from another tab's page (tab {owner}), not this tab's; pass tabId {owner} with it, or find the element again in this tab"
             ),
-        ));
+        )),
+        (None, _) if generation > current_generation => Err((
+            error_codes::STALE_REF.to_string(),
+            format!("element ref '{ref_id}' is stale or no longer valid"),
+        )),
+        (None, _) => Err((
+            error_codes::STALE_REF.to_string(),
+            format!(
+                "element ref '{ref_id}' is from an older find or snapshot of this tab; only its last {REF_GENERATIONS_KEPT} are kept, find it again"
+            ),
+        )),
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -9594,12 +9604,12 @@ mod tests {
     #[test]
     fn navigation_retires_retained_refs_and_an_in_flight_scan() {
         let tab = -930002;
-        super::super::snapshot::commit_generation(tab, 3);
+        let base = get_next_generation(tab);
         let pending = super::super::snapshot::peek_next_generation(tab);
         super::super::snapshot::record_ref_frame_targets(
             tab,
             HashMap::from([(
-                "g3-f1-e1".to_string(),
+                format!("g{base}-f1-e1"),
                 RefFrameTarget {
                     frame_id: "old-frame".into(),
                     is_main: false,
@@ -9609,12 +9619,31 @@ mod tests {
         super::super::snapshot::invalidate_document(tab);
         super::super::snapshot::commit_generation(tab, pending);
         let current = get_current_generation(tab);
-        assert!(ensure_current_ref("g3-f1-e1", current).is_err());
+        assert!(ensure_current_ref(&format!("g{base}-f1-e1"), current).is_err());
         assert!(ensure_current_ref(&format!("g{pending}-e1"), current).is_err());
-        assert!(get_ref_frame_target(tab, "g3-f1-e1").is_none());
+        assert!(get_ref_frame_target(tab, &format!("g{base}-f1-e1")).is_none());
         let fresh = get_next_generation(tab);
         assert!(ensure_current_ref(&format!("g{fresh}-f1-e1"), fresh).is_ok());
         super::super::snapshot::remove_generation(tab);
+    }
+
+    #[test]
+    fn a_ref_from_another_tab_names_that_tab() {
+        // Round 64 (R64-4): counted per tab, two tabs both handed out g35-e1,
+        // and a ref sent with the other tab's id reached that tab's element.
+        let (one, two) = (-930_301, -930_302);
+        let mine = get_next_generation(one);
+        let theirs = get_next_generation(two);
+        let error =
+            ensure_current_ref(&format!("g{theirs}-e1"), get_current_generation(one)).unwrap_err();
+        assert_eq!(error.0, error_codes::STALE_REF);
+        assert!(error.1.contains(&format!("tab {two}")), "{}", error.1);
+        assert!(ensure_current_ref(&format!("g{mine}-e1"), get_current_generation(one)).is_ok());
+        // A tab that has not scanned yet refuses another tab's ref the same way.
+        let error = ensure_current_ref(&format!("g{theirs}-e1"), 0).unwrap_err();
+        assert!(error.1.contains(&format!("tab {two}")), "{}", error.1);
+        super::super::snapshot::remove_generation(one);
+        super::super::snapshot::remove_generation(two);
     }
 
     #[test]
@@ -9664,17 +9693,29 @@ mod tests {
 
     #[test]
     fn a_ref_stays_usable_for_the_kept_scans_and_expires_after() {
-        assert!(ensure_current_ref("g3-e1", 3).is_ok());
-        assert!(ensure_current_ref("g3-e1", 3 + REF_GENERATIONS_KEPT).is_ok());
-        assert!(ensure_current_ref("g3-f1-e2", 3 + REF_GENERATIONS_KEPT).is_ok());
-        let expired = ensure_current_ref("g3-e1", 4 + REF_GENERATIONS_KEPT).unwrap_err();
+        let tab = -930_201;
+        let first = get_next_generation(tab);
+        assert!(ensure_current_ref(&format!("g{first}-e1"), first).is_ok());
+        for _ in 0..REF_GENERATIONS_KEPT {
+            get_next_generation(tab);
+        }
+        let current = get_current_generation(tab);
+        assert!(ensure_current_ref(&format!("g{first}-e1"), current).is_ok());
+        assert!(ensure_current_ref(&format!("g{first}-f1-e2"), current).is_ok());
+        get_next_generation(tab);
+        let expired =
+            ensure_current_ref(&format!("g{first}-e1"), get_current_generation(tab)).unwrap_err();
         assert_eq!(expired.0, error_codes::STALE_REF);
         assert!(expired.1.contains("find it again"), "{}", expired.1);
         // A ref from a scan that has not happened is never valid.
+        let future = get_current_generation(tab) + 1_000_000;
         assert_eq!(
-            ensure_current_ref("g5-e1", 4).unwrap_err().0,
+            ensure_current_ref(&format!("g{future}-e1"), get_current_generation(tab))
+                .unwrap_err()
+                .0,
             error_codes::STALE_REF
         );
+        super::super::snapshot::remove_generation(tab);
         // The page registry must keep the same window.
         assert!(
             REF_REGISTRY_JS.contains(&format!("const KEEP = {REF_GENERATIONS_KEPT};")),
@@ -9782,15 +9823,28 @@ mod tests {
 
     #[test]
     fn refs_are_refused_only_outside_the_retained_window() {
-        assert!(ensure_current_ref("g2-e1", 2).is_ok());
-        assert!(ensure_current_ref("g2-f1-e1", 2).is_ok());
-        // An older ref stays usable while the window keeps it...
-        assert!(ensure_current_ref("g1-e1", 2).is_ok());
-        assert!(ensure_current_ref("g1-e1", 1 + REF_GENERATIONS_KEPT).is_ok());
+        let tab = -930_202;
+        let one = get_next_generation(tab);
+        let two = get_next_generation(tab);
+        assert!(ensure_current_ref(&format!("g{two}-e1"), two).is_ok());
+        assert!(ensure_current_ref(&format!("g{two}-f1-e1"), two).is_ok());
+        // An older ref stays usable while the window keeps it, however many
+        // numbers other tabs took in between...
+        for _ in 0..50 {
+            get_next_generation(-930_203);
+        }
+        for _ in 0..REF_GENERATIONS_KEPT - 1 {
+            get_next_generation(tab);
+        }
+        assert!(ensure_current_ref(&format!("g{one}-e1"), get_current_generation(tab)).is_ok());
         // ...and is refused once the window has moved on.
-        let error = ensure_current_ref("g1-e1", 2 + REF_GENERATIONS_KEPT).unwrap_err();
+        get_next_generation(tab);
+        let error =
+            ensure_current_ref(&format!("g{one}-e1"), get_current_generation(tab)).unwrap_err();
         assert_eq!(error.0, error_codes::STALE_REF);
-        assert!(error.1.contains("g1-e1"));
+        assert!(error.1.contains(&format!("g{one}-e1")));
+        super::super::snapshot::remove_generation(tab);
+        super::super::snapshot::remove_generation(-930_203);
     }
 
     #[test]

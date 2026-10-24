@@ -55,9 +55,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::browser_automation::snapshot::{
-        commit_generation, get_current_generation, remove_generation,
-    };
+    use crate::modules::browser_automation::snapshot::{get_current_generation, remove_generation};
     use std::time::Duration;
 
     #[tokio::test]
@@ -83,8 +81,7 @@ mod tests {
         let tab_id = -810_001;
         let lock = get_tab_lock(tab_id);
         let held = lock.lock().await;
-        let generation = 1;
-        commit_generation(tab_id, generation);
+        let generation = super::super::snapshot::get_next_generation(tab_id);
         let waiting = tokio::spawn(scan_with_fresh_refs(
             tab_id,
             tokio::time::Instant::now() + Duration::from_secs(1),
@@ -95,7 +92,7 @@ mod tests {
         assert_eq!(get_current_generation(tab_id), generation);
         drop(held);
         let (next, value) = waiting.await.unwrap().unwrap();
-        assert_eq!(next, generation + 1);
+        assert!(next > generation);
         assert_eq!(value, next);
         remove_generation(tab_id);
     }
@@ -152,18 +149,19 @@ mod tests {
                 scan_with_fresh_refs(tab_id, deadline, |g| async move { Ok(g) }, |_| false)
                     .await
                     .unwrap();
-            // The number it would have taken is handed back for the scan's own
-            // refs, but the page still answers for the generation that matched.
-            assert_eq!(claimed, found + 1);
+            // A fresh number is handed back for the scan's own refs, but the
+            // page still answers for the generation that matched.
+            assert!(claimed > found);
             assert_eq!(get_current_generation(tab_id), found);
         }
+        // Its refs are still the caller's to use.
+        assert!(super::super::snapshot::scan_owner(found).is_some_and(|(tab, _)| tab == tab_id));
 
-        // The next scan that does match publishes the very next number, so
-        // nothing is burned by the failures in between.
+        // The next scan that does match publishes its own number.
         let (next, _) = scan_with_fresh_refs(tab_id, deadline, |g| async move { Ok(g) }, |_| true)
             .await
             .unwrap();
-        assert_eq!(next, found + 1);
+        assert!(next > found);
         assert_eq!(get_current_generation(tab_id), next);
         remove_generation(tab_id);
     }

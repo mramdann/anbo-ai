@@ -131,6 +131,30 @@ describe("shipped isolated ref registry", () => {
       "generation_changed",
     );
   });
+  it("keeps a ref through this page's next KEEP scans however far apart their numbers", () => {
+    // Round 64 (R64-4): scan numbers come from one counter for every tab, so
+    // this page's own scans are not consecutive.
+    const f = fixture();
+    const a = f.node();
+    const b = f.node();
+    f.run("refRegistry.begin(3);refRegistry.remember('g3-e1', a)", { a });
+    for (let i = 1; i <= KEEP; i++) {
+      const scan = 3 + i * 50;
+      f.run(
+        `refRegistry.begin(${scan});refRegistry.remember('g${scan}-e1', b)`,
+        {
+          b,
+        },
+      );
+    }
+    expect(f.run("return refRegistry.resolve('g3-e1')")).toBe(a);
+    const next = 3 + (KEEP + 1) * 50;
+    f.run(`refRegistry.begin(${next});refRegistry.remember('g${next}-e1', b)`, {
+      b,
+    });
+    expect(f.run("return refRegistry.resolve('g3-e1')")).toBeNull();
+  });
+
   it("still rejects a retained ref whose node left the document", () => {
     const f = fixture();
     const a = f.node();
@@ -147,7 +171,9 @@ describe("shipped isolated ref registry", () => {
     f.run("refRegistry.begin(1);refRegistry.remember('g1-e1', a)", { a });
     // Re-found under a newer ref: the node now wears that label.
     f.run("refRegistry.begin(5);refRegistry.remember('g5-e1', a)");
-    const last = KEEP + 2;
+    // The window counts this page's own scans (the live one and KEEP before
+    // it): numbers from other tabs fall between them (round 64, R64-4).
+    const last = KEEP + 5;
     for (let scan = 6; scan <= last; scan++) {
       f.run(
         `refRegistry.begin(${scan});refRegistry.remember('g${scan}-e1', a)`,

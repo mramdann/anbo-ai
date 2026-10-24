@@ -14,11 +14,15 @@ const refRegistry = (() => {
     // whole window. `current` counts the live scan against the cap.
     const refs = new Map();
     let current = 0;
+    // This page's scans in the window, oldest first: the live one and the KEEP
+    // before it. Scan numbers come from one counter for every tab, so a ref
+    // names its tab, and they are not consecutive here (round 64, R64-4).
+    const scans = [];
     const scanOf = ref => {
         const match = /^g(\d+)-/.exec(ref);
         return match ? Number(match[1]) : NaN;
     };
-    const retained = scan => Number.isFinite(scan) && scan <= generation && scan + KEEP >= generation;
+    const retained = scan => Number.isFinite(scan) && scans.includes(scan);
     const parent = node => node.assignedSlot || node.parentElement || node.getRootNode?.().host || null;
     const identityAttributes = ['data-item-id', 'data-id', 'data-key', 'data-video-id'];
     const repeatedItem = node => {
@@ -110,8 +114,10 @@ const refRegistry = (() => {
                 // A new scan retires only what falls out of the window. A node
                 // keeps its newest label, so an older ref that was re-found
                 // under a new one leaves that label alone.
+                scans.push(pending);
+                while (scans.length > KEEP + 1) scans.shift();
                 for (const [old, entry] of refs) {
-                    if (scanOf(old) + KEEP >= pending) continue;
+                    if (scans.includes(scanOf(old))) continue;
                     const stale = entry.node.deref();
                     if (stale?.getAttribute('data-anbo-ref') === old) {
                         stale.removeAttribute('data-anbo-ref');

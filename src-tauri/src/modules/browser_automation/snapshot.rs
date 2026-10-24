@@ -1,12 +1,58 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use super::accessible_name::ACCESSIBLE_NAME_JS;
 use super::ref_context::REF_REGISTRY_JS;
 use super::visibility::VISIBILITY_JS;
 
-static SNAPSHOT_GENERATIONS: Mutex<Option<HashMap<i64, u64>>> = Mutex::new(None);
+static SNAPSHOT_GENERATIONS: Mutex<Option<Generations>> = Mutex::new(None);
+/// Scan numbers come from one counter for every tab, so a ref names the tab it
+/// came from: counted per tab, two tabs handed out the same refs (g35-e1), and
+/// a ref sent with the other tab's id reached that tab's element of the same
+/// number without an error (round 64, R64-4).
+static NEXT_SCAN: AtomicU64 = AtomicU64::new(0);
+
+/// A tab's newest scan number and how many scans it has committed. The window
+/// of usable refs is counted in the tab's own scans: other tabs' numbers fall
+/// between them.
+#[derive(Debug, Default, Clone, Copy)]
+struct TabScans {
+    current: u64,
+    count: u64,
+}
+
+#[derive(Debug, Default)]
+struct Generations {
+    tabs: HashMap<i64, TabScans>,
+    /// Each scan number still in a tab's window: that tab, and its count there.
+    owners: HashMap<u64, (i64, u64)>,
+}
+
+impl Generations {
+    fn commit(&mut self, tab_id: i64, generation: u64, step: u64) {
+        let tab = self.tabs.entry(tab_id).or_default();
+        if generation <= tab.current {
+            return;
+        }
+        tab.current = generation;
+        tab.count += step;
+        let count = tab.count;
+        self.owners.insert(generation, (tab_id, count));
+        self.owners
+            .retain(|_, (owner, kept)| *owner != tab_id || *kept + REF_GENERATIONS_KEPT >= count);
+    }
+
+    fn forget(&mut self, tab_id: i64) {
+        self.tabs.remove(&tab_id);
+        self.owners.retain(|_, (owner, _)| *owner != tab_id);
+    }
+}
+
+fn next_scan_number() -> u64 {
+    NEXT_SCAN.fetch_add(1, Ordering::Relaxed) + 1
+}
 static REF_FRAME_TARGETS: Mutex<Option<HashMap<i64, HashMap<String, RefFrameTarget>>>> =
     Mutex::new(None);
 
@@ -28,54 +74,59 @@ pub struct RefFrameTarget {
 /// registry keeps the same window (`KEEP` in refRegistry.js).
 pub const REF_GENERATIONS_KEPT: u64 = 32;
 
-fn generations() -> &'static Mutex<Option<HashMap<i64, u64>>> {
-    &SNAPSHOT_GENERATIONS
+fn with_generations<T>(work: impl FnOnce(&mut Generations) -> T) -> T {
+    let mut guard = SNAPSHOT_GENERATIONS.lock().unwrap();
+    work(guard.get_or_insert_with(Generations::default))
 }
 
+/// A new scan number, committed for the tab at once (a snapshot always
+/// registers refs).
 pub fn get_next_generation(tab_id: i64) -> u64 {
-    let mut guard = generations().lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    let next = map.get(&tab_id).copied().unwrap_or(0) + 1;
-    map.insert(tab_id, next);
+    let next = next_scan_number();
+    with_generations(|generations| generations.commit(tab_id, next, 1));
     next
 }
 
-/// The number a scan would take if it earns one, without spending it.
-///
-/// A lookup that matches nothing registers no refs, and the page keeps the
-/// ones it already had. Committing the number up front instead retired every
-/// live ref the moment a search began, so one selector that missed cost the
-/// caller every target it was holding.
-pub fn peek_next_generation(tab_id: i64) -> u64 {
-    get_current_generation(tab_id) + 1
+/// The number a scan takes if it earns one. Taking it spends nothing for the
+/// tab: a lookup that matches nothing registers no refs, and the page keeps
+/// the ones it already had. Committing the number up front instead retired
+/// every live ref the moment a search began, so one selector that missed cost
+/// the caller every target it was holding. Each call hands out a number no
+/// other scan of any tab gets.
+pub fn peek_next_generation(_tab_id: i64) -> u64 {
+    next_scan_number()
 }
 
 /// Publish a generation a scan actually used. Never moves backwards.
 pub fn commit_generation(tab_id: i64, generation: u64) {
-    let mut guard = generations().lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    let entry = map.entry(tab_id).or_insert(0);
-    if generation > *entry {
-        *entry = generation;
-    }
+    with_generations(|generations| generations.commit(tab_id, generation, 1));
 }
 
 pub fn get_current_generation(tab_id: i64) -> u64 {
-    let mut guard = generations().lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    map.get(&tab_id).copied().unwrap_or(0)
+    with_generations(|generations| {
+        generations
+            .tabs
+            .get(&tab_id)
+            .map(|tab| tab.current)
+            .unwrap_or(0)
+    })
+}
+
+/// The tab a kept scan number belongs to, and that tab's count at it. None
+/// once the number has left its tab's window, or for one never committed.
+pub fn scan_owner(generation: u64) -> Option<(i64, u64)> {
+    with_generations(|generations| generations.owners.get(&generation).copied())
 }
 
 pub fn invalidate_document(tab_id: i64) {
-    {
-        let mut guard = generations().lock().unwrap();
-        let entry = guard
-            .get_or_insert_with(HashMap::new)
-            .entry(tab_id)
-            .or_default();
-        // Also retire the next generation an in-flight scan may have claimed.
-        *entry = entry.saturating_add(REF_GENERATIONS_KEPT + 2);
-    }
+    // A fresh number above any scan in flight, which then finds itself stale,
+    // counted far enough on that every ref kept for the old document leaves
+    // the window.
+    let fresh = next_scan_number();
+    with_generations(|generations| {
+        generations.owners.retain(|_, (owner, _)| *owner != tab_id);
+        generations.commit(tab_id, fresh, REF_GENERATIONS_KEPT + 2);
+    });
     if let Ok(mut guard) = REF_FRAME_TARGETS.lock() {
         if let Some(map) = guard.as_mut() {
             map.remove(&tab_id);
@@ -117,9 +168,9 @@ pub struct SnapshotElement {
 
 pub fn remove_generation(tab_id: i64) {
     super::ref_context::remove(tab_id);
-    if let Ok(mut guard) = generations().lock() {
-        if let Some(map) = guard.as_mut() {
-            map.remove(&tab_id);
+    if let Ok(mut guard) = SNAPSHOT_GENERATIONS.lock() {
+        if let Some(generations) = guard.as_mut() {
+            generations.forget(tab_id);
         }
     }
     if let Ok(mut guard) = REF_FRAME_TARGETS.lock() {
@@ -131,9 +182,10 @@ pub fn remove_generation(tab_id: i64) {
 
 pub fn clear_generations() {
     super::ref_context::clear();
-    if let Ok(mut guard) = generations().lock() {
-        if let Some(map) = guard.as_mut() {
-            map.clear();
+    if let Ok(mut guard) = SNAPSHOT_GENERATIONS.lock() {
+        if let Some(generations) = guard.as_mut() {
+            generations.tabs.clear();
+            generations.owners.clear();
         }
     }
     if let Ok(mut guard) = REF_FRAME_TARGETS.lock() {
@@ -153,10 +205,13 @@ pub fn record_ref_frame_targets(tab_id: i64, targets: HashMap<String, RefFrameTa
         .entry(tab_id)
         .or_default();
     map.extend(targets);
+    // The scan that just recorded its targets may not be committed yet.
     if let Some(newest) = map.keys().filter_map(|ref_id| ref_generation(ref_id)).max() {
         map.retain(|ref_id, _| {
-            ref_generation(ref_id)
-                .is_some_and(|generation| generation + REF_GENERATIONS_KEPT >= newest)
+            ref_generation(ref_id).is_some_and(|generation| {
+                generation == newest
+                    || scan_owner(generation).is_some_and(|(owner, _)| owner == tab_id)
+            })
         });
     }
 }
@@ -850,7 +905,39 @@ mod tests {
         let cur = get_current_generation(tab_id);
         assert_eq!(gen1, cur);
         let gen2 = get_next_generation(tab_id);
-        assert_eq!(gen2, gen1 + 1);
+        assert!(gen2 > gen1);
+        assert_eq!(scan_owner(gen2).map(|(tab, _)| tab), Some(tab_id));
+    }
+
+    #[test]
+    fn two_tabs_never_hand_out_the_same_scan_number() {
+        // Round 64 (R64-4): counted per tab, both tabs' refs began at g35-e1.
+        let (one, two) = (-930_101, -930_102);
+        let numbers: Vec<(i64, u64)> = (0..10)
+            .flat_map(|_| {
+                [
+                    (one, get_next_generation(one)),
+                    (two, get_next_generation(two)),
+                ]
+            })
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        for (tab, number) in &numbers {
+            assert!(
+                seen.insert(*number),
+                "scan number {number} handed out twice"
+            );
+            assert_eq!(scan_owner(*number).map(|(owner, _)| owner), Some(*tab));
+        }
+        // Each tab's window counts its own scans: ten each, all still kept.
+        let first_of_one = numbers[0].1;
+        assert!(scan_owner(first_of_one).is_some());
+        for _ in 0..REF_GENERATIONS_KEPT {
+            get_next_generation(one);
+        }
+        assert!(scan_owner(first_of_one).is_none());
+        remove_generation(one);
+        remove_generation(two);
     }
 
     #[test]
@@ -907,38 +994,37 @@ mod tests {
             frame_id: frame_id.to_string(),
             is_main: false,
         };
-        record_ref_frame_targets(
-            tab_id,
-            HashMap::from([("g1-f1-e1".to_string(), target("child-a"))]),
-        );
+        let first = format!("g{}-f1-e1", get_next_generation(tab_id));
+        record_ref_frame_targets(tab_id, HashMap::from([(first.clone(), target("child-a"))]));
         assert_eq!(
-            get_ref_frame_target(tab_id, "g1-f1-e1"),
+            get_ref_frame_target(tab_id, &first),
             Some(target("child-a"))
         );
         // A scan that found nothing keeps what the caller holds.
         record_ref_frame_targets(tab_id, HashMap::new());
         assert_eq!(
-            get_ref_frame_target(tab_id, "g1-f1-e1"),
+            get_ref_frame_target(tab_id, &first),
             Some(target("child-a"))
         );
-        // A window of scans later the ref is still inside it.
-        let last = format!("g{}-f1-e1", 1 + REF_GENERATIONS_KEPT);
+        // A window of the tab's own scans later the ref is still inside it,
+        // however many numbers other tabs took meanwhile.
+        for _ in 0..REF_GENERATIONS_KEPT - 1 {
+            get_next_generation(tab_id);
+            get_next_generation(tab_id + 1);
+        }
+        let last = format!("g{}-f1-e1", get_next_generation(tab_id));
         record_ref_frame_targets(tab_id, HashMap::from([(last.clone(), target("child-b"))]));
         assert_eq!(
-            get_ref_frame_target(tab_id, "g1-f1-e1"),
+            get_ref_frame_target(tab_id, &first),
             Some(target("child-a"))
         );
         // The next pushes it out; the newer one stays.
-        record_ref_frame_targets(
-            tab_id,
-            HashMap::from([(
-                format!("g{}-f1-e1", 2 + REF_GENERATIONS_KEPT),
-                target("child-c"),
-            )]),
-        );
-        assert!(get_ref_frame_target(tab_id, "g1-f1-e1").is_none());
+        let next = format!("g{}-f1-e1", get_next_generation(tab_id));
+        record_ref_frame_targets(tab_id, HashMap::from([(next, target("child-c"))]));
+        assert!(get_ref_frame_target(tab_id, &first).is_none());
         assert_eq!(get_ref_frame_target(tab_id, &last), Some(target("child-b")));
         remove_generation(tab_id);
+        remove_generation(tab_id + 1);
     }
 
     #[test]
