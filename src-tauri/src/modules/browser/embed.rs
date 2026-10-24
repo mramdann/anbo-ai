@@ -961,9 +961,35 @@ const WARM_HOST_LABEL: &str = "browser-host-warm";
 const WARM_HOST_IDLE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 #[cfg(windows)]
 static WARM_HOST_SWEEP: AtomicBool = AtomicBool::new(false);
+/// When a tab of Anbo's own browser was last open. Idle minutes counted at the
+/// sweep's looks missed a tab opened and closed between two of them, so the
+/// warm host went as soon as 165 s after its last tab (round 65) and the next
+/// open started a cold one: on a busy machine that held every post to the page
+/// for 2 to 4 s (round 64, R64-9).
+#[cfg(windows)]
+static LAST_TAB_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+#[cfg(windows)]
+fn note_tab_seen() {
+    if let Ok(mut last) = LAST_TAB_AT.lock() {
+        *last = Some(std::time::Instant::now());
+    }
+}
+
+/// Whether the warm host has had no tab for `WARM_HOST_IDLE`.
+#[cfg(any(windows, test))]
+fn warm_host_expired(
+    last_tab: Option<std::time::Instant>,
+    now: std::time::Instant,
+    tabs_open: bool,
+    idle: std::time::Duration,
+) -> bool {
+    !tabs_open && last_tab.is_none_or(|last| now.saturating_duration_since(last) >= idle)
+}
 
 #[cfg(windows)]
 fn keep_host_warm(window: &tauri::Window) {
+    note_tab_seen();
     let app = window.app_handle().clone();
     if app.get_webview(WARM_HOST_LABEL).is_none() {
         let (Ok(profile), Ok(blank)) = (super::data::profile_dir(&app), Url::parse("about:blank"))
@@ -1006,16 +1032,14 @@ fn keep_host_warm(window: &tauri::Window) {
     }
     tauri::async_runtime::spawn(async move {
         let tick = std::time::Duration::from_secs(60);
-        let mut idle = std::time::Duration::ZERO;
         loop {
             tokio::time::sleep(tick).await;
-            idle = if list_active_tab_ids().is_empty() {
-                idle + tick
-            } else {
-                std::time::Duration::ZERO
-            };
-            if idle >= WARM_HOST_IDLE {
-                idle = std::time::Duration::ZERO;
+            let tabs_open = !list_active_tab_ids().is_empty();
+            if tabs_open {
+                note_tab_seen();
+            }
+            let last = LAST_TAB_AT.lock().ok().and_then(|last| *last);
+            if warm_host_expired(last, std::time::Instant::now(), tabs_open, WARM_HOST_IDLE) {
                 if let Some(webview) = app.get_webview(WARM_HOST_LABEL) {
                     let _ = webview.close();
                 }
@@ -2728,6 +2752,9 @@ pub async fn browser_embed_close(
         close_embed_locked(&app, tab_id, &instance_id).await
     };
     remove_tab_lock(tab_id);
+    // The warm host's five minutes start when the last tab goes.
+    #[cfg(windows)]
+    note_tab_seen();
     result.map(|_| ())
 }
 
@@ -2740,6 +2767,42 @@ mod tests {
     };
     use std::collections::HashSet;
     use url::Url;
+
+    #[test]
+    fn the_warm_host_waits_its_whole_idle_time_after_the_last_tab() {
+        // Round 65: idle minutes counted at 60 s looks missed a tab opened and
+        // closed in between, and the warm host went 165 s after that tab.
+        use std::time::{Duration, Instant};
+        let idle = Duration::from_secs(300);
+        let closed = Instant::now();
+        assert!(!super::warm_host_expired(
+            Some(closed),
+            closed + Duration::from_secs(165),
+            false,
+            idle
+        ));
+        assert!(!super::warm_host_expired(
+            Some(closed),
+            closed + Duration::from_secs(299),
+            false,
+            idle
+        ));
+        assert!(super::warm_host_expired(
+            Some(closed),
+            closed + idle,
+            false,
+            idle
+        ));
+        // Never while a tab is open, however long ago the last close was.
+        assert!(!super::warm_host_expired(
+            Some(closed),
+            closed + Duration::from_secs(3_600),
+            true,
+            idle
+        ));
+        // A host warmed before any tab was recorded goes at the first idle look.
+        assert!(super::warm_host_expired(None, closed, false, idle));
+    }
 
     #[test]
     fn a_reconciled_child_is_absent_but_a_missing_handle_is_not_proof() {
