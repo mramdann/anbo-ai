@@ -348,6 +348,30 @@ fn open_settings(app: &tauri::AppHandle, tab: Option<String>) -> Result<(), Stri
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Stack for each async worker. Tauri's own runtime gives tokio's 2 MiB, and
+/// the browser actions nest (browser_type with submit runs browser_press
+/// inside it): a debug build's frames for them passed 2 MiB, and Dev died of a
+/// stack overflow on browser_type with submit and waitFor (round 65).
+const ASYNC_WORKER_STACK: usize = 8 * 1024 * 1024;
+
+/// Hands Tauri a multi-thread runtime whose workers have `ASYNC_WORKER_STACK`.
+/// Before anything spawns on Tauri's runtime; it lives as long as the app.
+fn use_roomy_async_runtime() {
+    match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("tokio-rt-worker")
+        .thread_stack_size(ASYNC_WORKER_STACK)
+        .build()
+    {
+        Ok(runtime) => {
+            tauri::async_runtime::set(runtime.handle().clone());
+            std::mem::forget(runtime);
+        }
+        // Tauri then starts its own, with the default stack.
+        Err(error) => eprintln!("could not start the async runtime: {error}"),
+    }
+}
+
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
     // A hook command an older Anbo wrote into an agent's config. Startup
@@ -360,6 +384,8 @@ pub fn run() {
         );
         std::process::exit(0);
     }
+
+    use_roomy_async_runtime();
 
     let launch = parse_launch_target();
     let cli_dir = launch.dir.clone();
