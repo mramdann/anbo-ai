@@ -96,6 +96,9 @@ export type TerminalAutomationDependencies = {
   /** The terminal's whole scrollback, for finding a command's start once a
    *  burst of output scrolled it out of getBuffer's lines. */
   getHistory?: (leafId: number) => string | null;
+  /** The width the terminal's grid wraps its rows at now, read with
+   *  getBuffer: a new width re-wraps the rows getBuffer reads. */
+  getColumns?: (leafId: number) => number | undefined;
   getSessionState: (leafId: number) => TerminalSessionState | null;
   hasForegroundProcess: (leafId: number) => Promise<boolean>;
   /** The programs the shell runs, to name what holds a busy terminal. */
@@ -303,8 +306,14 @@ async function busyShellReason(
 class TerminalOutputTracker {
   private readonly tracker = new OutputTracker("t1", MAX_TRACKED_TERMINALS);
 
+  /** `layoutOf` gives the width a terminal's grid wraps its rows at now. */
+  constructor(
+    private readonly layoutOf: (id: string) => number | undefined = () =>
+      undefined,
+  ) {}
+
   checkpoint(id: string, rawOutput: string): string {
-    return this.tracker.checkpoint(id, rawOutput);
+    return this.tracker.checkpoint(id, rawOutput, this.layoutOf(id));
   }
 
   read(
@@ -313,7 +322,13 @@ class TerminalOutputTracker {
     cursor: unknown,
     requestedMaxChars: unknown,
   ): TerminalReadSnapshot {
-    const read = this.tracker.read(id, rawOutput, cursor, requestedMaxChars);
+    const read = this.tracker.read(
+      id,
+      rawOutput,
+      cursor,
+      requestedMaxChars,
+      this.layoutOf(id),
+    );
     return {
       output: read.output,
       cursor: read.cursor,
@@ -337,7 +352,7 @@ class TerminalOutputTracker {
     ended: boolean,
     history?: () => string | null,
   ): ExecutionOutput {
-    const span = this.tracker.span(id, rawOutput, cursor);
+    const span = this.tracker.span(id, rawOutput, cursor, this.layoutOf(id));
     if (span.dropped) {
       return {
         text: span.text,
@@ -615,7 +630,10 @@ export function createTerminalAutomationService(
         )
       : undefined,
   };
-  const output = new TerminalOutputTracker();
+  const output = new TerminalOutputTracker((id) => {
+    const leafId = Number(id.split(":")[2]);
+    return Number.isSafeInteger(leafId) ? deps.getColumns?.(leafId) : undefined;
+  });
   const executions = new Map<string, ExecutionState>();
   const openedTerminals = deps.openedTerminals ?? new Set<string>();
   let executionSequence = 0;

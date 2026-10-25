@@ -201,6 +201,12 @@ const dormantReads = new WeakMap<
   { revision: number; snapshot: string | null; maxLines: number; text: string }
 >();
 
+/** The width the live grid wraps rows at, the rows readTerminalBuffer reads;
+ *  undefined for a terminal without one, whose text does not wrap. */
+export function readTerminalColumns(leafId: number): number | undefined {
+  return getLiveSlotForLeaf(leafId)?.term.cols;
+}
+
 export function readTerminalBuffer(
   leafId: number,
   maxLines = 200,

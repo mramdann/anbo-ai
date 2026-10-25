@@ -90,4 +90,32 @@ describe("OutputTracker continuation", () => {
       reset: false,
     });
   });
+
+  it("reads a window a new width moved back as a repaint, not as new output", () => {
+    // Round 66 (R66-6): the same job ran twice in one terminal. Widened, the
+    // last rows reached back to the first run's end, identical to the second
+    // run's, and the history after it came back as new output, reset false.
+    const tracker = new OutputTracker("t1", 10);
+    const job = `node job.js\n${rows("langkah", 90)}\nSELESAI\n${prompt}`;
+    const afterFirst = `npm install dayjs\nup to date in 735ms\n${prompt}`;
+    const narrow = `${afterFirst}\nSet-Content job.js\n${job}`;
+    const cursor = tracker.checkpoint("a", narrow, 80);
+    const wide = `langkah 88\nlangkah 89\nSELESAI\n${prompt}\n${narrow}`;
+    const next = tracker.read("a", wide, cursor, 12_000, 120);
+    expect(next.reset).toBe(true);
+    expect(next.cursor).toMatch(/^t1:2:/);
+    expect(next.output.endsWith(job)).toBe(true);
+  });
+
+  it("goes on at the same width with lines that repeat", () => {
+    const tracker = new OutputTracker("t1", 10);
+    const before = `${rows("build", 30)}\nSELESAI\n${prompt}`;
+    const cursor = tracker.checkpoint("a", before, 80);
+    const after = `${before.split("\n").slice(10).join("\n")}npm test\nSELESAI\n${prompt}`;
+    const next = tracker.read("a", after, cursor, 12_000, 80);
+    expect(next).toMatchObject({
+      output: `npm test\nSELESAI\n${prompt}`,
+      reset: false,
+    });
+  });
 });

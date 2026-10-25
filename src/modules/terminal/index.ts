@@ -25,6 +25,7 @@ export {
   ptyIdForLeaf,
   prepareTerminalAutomationSession,
   readTerminalBuffer,
+  readTerminalColumns,
   readTerminalScreen,
   getTerminalSessionState,
   retryShellStart,

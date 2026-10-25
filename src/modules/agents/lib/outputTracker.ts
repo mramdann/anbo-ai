@@ -17,6 +17,8 @@ type OutputState = {
   stream: string;
   base: number;
   total: number;
+  /** The width the source wrapped the snapshot at, when it says. */
+  layout?: number;
 };
 
 export type OutputRead = {
@@ -144,9 +146,16 @@ export class OutputTracker {
     private readonly maxSources: number,
   ) {}
 
+  /** `layout` is the width the source wrapped `rawOutput` at, when it has one:
+   *  a new width re-wraps every long row, so the same number of rows starts
+   *  somewhere else in the history. Read as going on from the last snapshot,
+   *  that window matched an earlier run's identical last lines, and the
+   *  history after them came back as new output (round 66, R66-6). Changed
+   *  output at a new width is a repaint instead. */
   private update(
     id: string,
     rawOutput: string,
+    layout?: number,
   ): { state: OutputState; repainted: boolean } {
     const current = keptOutput(rawOutput);
     let state = this.states.get(id);
@@ -158,6 +167,7 @@ export class OutputTracker {
         stream: current,
         base: 0,
         total: current.length,
+        layout,
       };
       this.states.set(id, state);
       while (this.states.size > this.maxSources) {
@@ -166,7 +176,11 @@ export class OutputTracker {
         this.states.delete(oldest);
       }
     } else if (current !== state.snapshot) {
-      const next = continuationOf(state.snapshot, current);
+      const rewrapped =
+        layout !== undefined &&
+        state.layout !== undefined &&
+        layout !== state.layout;
+      const next = rewrapped ? null : continuationOf(state.snapshot, current);
       if (!next) {
         state.generation += 1;
         state.snapshot = current;
@@ -186,12 +200,13 @@ export class OutputTracker {
         }
       }
     }
+    if (layout !== undefined) state.layout = layout;
     return { state, repainted };
   }
 
   /** The cursor just past what `rawOutput` shows now. */
-  checkpoint(id: string, rawOutput: string): string {
-    const { state } = this.update(id, rawOutput);
+  checkpoint(id: string, rawOutput: string, layout?: number): string {
+    const { state } = this.update(id, rawOutput, layout);
     return this.cursorAt(state.generation, state.total);
   }
 
@@ -200,9 +215,10 @@ export class OutputTracker {
     rawOutput: string,
     cursor: unknown,
     requestedMaxChars: unknown,
+    layout?: number,
   ): OutputRead {
     const maxChars = clampMaxChars(requestedMaxChars);
-    const { state, repainted } = this.update(id, rawOutput);
+    const { state, repainted } = this.update(id, rawOutput, layout);
     const parsed = this.parseCursor(cursor);
     const cursorInvalid =
       cursor !== undefined &&
@@ -233,8 +249,13 @@ export class OutputTracker {
    *  answer cut its own way (terminal_wait keeps a command's start and end).
    *  After a repaint, or for a cursor that no longer applies, it is all the
    *  kept output, flagged reset. */
-  span(id: string, rawOutput: string, cursor: unknown): OutputSpan {
-    const { state, repainted } = this.update(id, rawOutput);
+  span(
+    id: string,
+    rawOutput: string,
+    cursor: unknown,
+    layout?: number,
+  ): OutputSpan {
+    const { state, repainted } = this.update(id, rawOutput, layout);
     const parsed = this.parseCursor(cursor);
     const reset =
       repainted ||
