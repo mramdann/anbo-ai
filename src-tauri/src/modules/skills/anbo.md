@@ -335,7 +335,10 @@ long message in more slowly than your timeout: the result then says
 `delivery: "typing"`, and Anbo finishes typing it and presses Enter itself, so
 do not send it again. `agent_spawn` starts a new one; once a CLI you spawned
 has ended, its terminal stays in `terminal_list` as yours and `terminal_close`
-closes it. Some CLIs are capped: OpenCode allows two at once, so a third
+closes it. One stuck at a question of its own, such as an update or trust
+prompt, never takes `/exit`: `terminal_close` with `force: true` on its
+terminal ends it. Never end an agent by killing its process. Some CLIs are
+capped: OpenCode allows two at once, so a third
 `agent_spawn` is refused rather than risking an out-of-memory crash. Short of
 memory, Anbo refuses new terminals, agents and tabs with `resource_exhausted`
 (a Chrome or Edge tab asks the least); close what you no longer need before

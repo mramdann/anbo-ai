@@ -1,4 +1,5 @@
 import { resolveAgentWorkspace } from "@/modules/agents/lib/agentAutomation";
+import { agentIdFor } from "@/modules/agents/lib/agentIdentity";
 import {
   type AgentAutomationResponse,
   automationError,
@@ -429,9 +430,37 @@ function isAgentLeaf(
   tabId: number,
   leafId: number,
 ): boolean {
-  return Object.values(sessions).some(
+  return agentSessionAt(sessions, tabId, leafId) !== undefined;
+}
+
+function agentSessionAt(
+  sessions: Record<number, AgentSession>,
+  tabId: number,
+  leafId: number,
+): AgentSession | undefined {
+  return Object.values(sessions).find(
     (session) => session.tabId === tabId && session.leafId === leafId,
   );
+}
+
+/** A terminal the terminal tools leave to the agent in it. */
+type AgentTerminal = {
+  tabId: number;
+  leafId: number;
+  /** Null while the CLI agent_spawn started has not come up yet. */
+  agentId: string | null;
+  /** agent_spawn started it. */
+  spawned: boolean;
+};
+
+/** Why a terminal tool does not reach an agent's terminal, and what does. */
+function agentTerminalMessage(id: string, agent: AgentTerminal): string {
+  const who = agent.agentId
+    ? `agent ${agent.agentId}`
+    : "an agent that is still starting";
+  return agent.spawned
+    ? `${id} is the terminal of ${who}, which agent_spawn started, so terminal tools leave it to that agent while it runs: agent_read and agent_send reach it, agent_send '/exit' or '/quit' ends it at its prompt, and terminal_close with force: true closes it, ending the agent and its shell`
+    : `${id} is the terminal of ${who}, so terminal tools leave it alone: agent_read and agent_send reach it`;
 }
 
 function baseStatus(
@@ -1069,6 +1098,39 @@ export function createTerminalAutomationService(
     };
   };
 
+  /** The agent's terminal `id` names in `space`, or null when it names no
+   *  terminal an agent holds. */
+  const agentTerminal = (
+    space: { id: string },
+    id: string,
+  ): AgentTerminal | null => {
+    const match = /^terminal:(\d+):(\d+)$/.exec(id);
+    if (!match) return null;
+    const tabId = Number(match[1]);
+    const leafId = Number(match[2]);
+    const tab = deps
+      .getTabs()
+      .find(
+        (candidate): candidate is TerminalTab =>
+          candidate.kind === "terminal" &&
+          candidate.id === tabId &&
+          candidate.spaceId === space.id,
+      );
+    if (!tab || !leafIds(tab.paneTree).includes(leafId)) return null;
+    const session = agentSessionAt(deps.getSessions(), tabId, leafId);
+    const spawned = deps.spawnedTerminals?.has(id) ?? false;
+    const starting = spawned && deps.spawnedTerminals?.get(id) === false;
+    if (!session && !starting && !tab.agent) return null;
+    return {
+      tabId,
+      leafId,
+      agentId: session
+        ? agentIdFor(session.name, session.agent, session.tabId)
+        : null,
+      spawned,
+    };
+  };
+
   const resolveTarget = async (
     params: Record<string, unknown>,
     verifyForeground = true,
@@ -1099,11 +1161,16 @@ export function createTerminalAutomationService(
     }
     if (!terminal) {
       output.remove(id);
+      // An agent's terminal exists: "not available" read as if it had gone
+      // (round 66, R66-1).
+      const agent = agentTerminal(resolved.workspace, id);
       return {
         ok: false as const,
         response: automationError(
           "terminal_not_found",
-          `shared terminal is not available in workspace: ${id}`,
+          agent
+            ? agentTerminalMessage(id, agent)
+            : `shared terminal is not available in workspace: ${id}`,
         ),
       };
     }
@@ -1245,6 +1312,58 @@ export function createTerminalAutomationService(
       }
 
       if (method === "terminal_close") {
+        // An agent agent_spawn started can be ended by force: one stuck at a
+        // question of its own (Codex's update prompt) never took '/exit', no
+        // tool ended it, and its spawner killed the process by PID (round 66,
+        // R66-1). Agents the user opened are never closed this way.
+        const spawnedId = paramString(params, "terminalId");
+        if (spawnedId && deps.spawnedTerminals?.has(spawnedId)) {
+          const workspace = resolveAgentWorkspace(
+            deps.getSpaces(),
+            params.workspace,
+          );
+          if (!workspace.ok) {
+            return automationError("workspace_not_found", workspace.error);
+          }
+          const agent = agentTerminal(workspace.space, spawnedId);
+          if (
+            agent &&
+            (agent.agentId !== null ||
+              deps.spawnedTerminals.get(spawnedId) === false)
+          ) {
+            if (params.force !== true) {
+              return automationError(
+                "terminal_busy",
+                agentTerminalMessage(spawnedId, agent),
+              );
+            }
+            if (!deps.close(agent.tabId, agent.leafId)) {
+              return automationError(
+                "terminal_close_failed",
+                `${spawnedId} could not be closed safely`,
+              );
+            }
+            openedTerminals.delete(spawnedId);
+            deps.spawnedTerminals.delete(spawnedId);
+            output.remove(spawnedId);
+            for (const [executionId, execution] of executions) {
+              if (execution.terminalId === spawnedId) {
+                executions.delete(executionId);
+              }
+            }
+            return {
+              result: {
+                ok: true,
+                closed: true,
+                terminalId: spawnedId,
+                tabId: agent.tabId,
+                leafId: agent.leafId,
+                workspace: workspace.space.root,
+                endedAgent: agent.agentId,
+              },
+            };
+          }
+        }
         const target = await resolveTarget(params, false, openedTerminals);
         if (!target.ok) return target.response;
         const id = target.terminal.terminalId;

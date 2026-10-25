@@ -532,6 +532,100 @@ describe("shared terminal input", () => {
     expect(spawnedTerminals.has("terminal:30:301")).toBe(false);
   });
 
+  it("ends a spawned agent by force and names the agent a terminal belongs to", async () => {
+    // Round 66 (R66-1): a spawned Codex sat at its update prompt and never took
+    // '/exit'; terminal_close answered "not available", and the spawner killed
+    // codex.exe by its PID.
+    const session = (tabId: number, leafId: number, agent: string, name: string) => ({
+      leafId,
+      tabId,
+      agent,
+      name,
+      status: "waiting" as const,
+      phase: "attention" as const,
+      startedAt: 1,
+      lastActivityAt: 1,
+      attentionSince: 1,
+    });
+    const spawnedTab = terminal({
+      id: 30,
+      title: "Codex",
+      agent: { launcherId: "codex", icon: "codex", label: "Codex", name: "Altair" },
+      paneTree: { kind: "leaf", id: 301, cwd: workspaceRoot },
+      activeLeafId: 301,
+    });
+    const userAgentTab = terminal({
+      id: 40,
+      title: "Claude",
+      agent: { launcherId: "claude", icon: "claude", label: "Claude", name: "Vega" },
+      paneTree: { kind: "leaf", id: 401, cwd: workspaceRoot },
+      activeLeafId: 401,
+    });
+    const sessions = {
+      301: session(30, 301, "codex", "Altair"),
+      401: session(40, 401, "claude", "Vega"),
+    };
+    const spawnedTerminals = new Map([["terminal:30:301", true]]);
+    const close = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({
+        getTabs: () => [terminal(), spawnedTab, userAgentTab],
+        getSessions: () => sessions,
+        openedTerminals: new Set(["terminal:30:301"]),
+        spawnedTerminals,
+        close,
+      }),
+    );
+    const message = (response: unknown) =>
+      (response as { error?: { message?: string } }).error?.message ?? "";
+
+    const read = await service.handle("terminal_read", {
+      workspace: workspaceRoot,
+      terminalId: "terminal:30:301",
+    });
+    expect(read).toMatchObject({ error: { code: "terminal_not_found" } });
+    expect(message(read)).toContain(
+      "is the terminal of agent altair-codex:30, which agent_spawn started",
+    );
+
+    const busy = await service.handle("terminal_close", {
+      workspace: workspaceRoot,
+      terminalId: "terminal:30:301",
+    });
+    expect(busy).toMatchObject({ error: { code: "terminal_busy" } });
+    expect(message(busy)).toContain("terminal_close with force: true closes it");
+    expect(close).not.toHaveBeenCalled();
+
+    await expect(
+      service.handle("terminal_close", {
+        workspace: workspaceRoot,
+        terminalId: "terminal:30:301",
+        force: true,
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        ok: true,
+        closed: true,
+        terminalId: "terminal:30:301",
+        endedAgent: "altair-codex:30",
+      },
+    });
+    expect(close).toHaveBeenCalledWith(30, 301);
+    expect(spawnedTerminals.has("terminal:30:301")).toBe(false);
+
+    // An agent the user opened is never closed, force or not.
+    const user = await service.handle("terminal_close", {
+      workspace: workspaceRoot,
+      terminalId: "terminal:40:401",
+      force: true,
+    });
+    expect(user).toMatchObject({ error: { code: "terminal_not_found" } });
+    expect(message(user)).toContain(
+      "is the terminal of agent vega-claude:40, so terminal tools leave it alone",
+    );
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses an agent tab that terminal_open did not make", async () => {
     const agentTab = terminal({
       id: 12,
