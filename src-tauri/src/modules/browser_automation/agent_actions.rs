@@ -406,9 +406,7 @@ mod tests {
     fn terminal_text_is_counted_in_characters_as_its_schema_says() {
         // Round 66 (R66-5): the schema and the UI allow 8,000 characters, but
         // this side counted bytes, so 4,000 accented letters were refused.
-        let params = |text: String| {
-            json!({ "workspace": "C:/repo", "terminalId": "terminal:1:1", "text": text })
-        };
+        let params = |text: String| json!({ "workspace": "C:/repo", "terminalId": "terminal:1:1", "text": text });
         for method in ["terminal_execute", "terminal_insert"] {
             assert!(validate_params(method, &mut params("é".repeat(8_000))).is_ok());
             assert!(validate_params(method, &mut params("a".repeat(8_000))).is_ok());

@@ -556,6 +556,9 @@ mod tests {
         let narrow = not_docked(Some("panel-too-narrow"), SHOW_PATIENCE);
         assert_eq!(refusal_reason(&refusal(&narrow).1), narrow);
         // Any other message comes back as it is.
-        assert_eq!(refusal_reason("other agents hold the turn"), "other agents hold the turn");
+        assert_eq!(
+            refusal_reason("other agents hold the turn"),
+            "other agents hold the turn"
+        );
     }
 }

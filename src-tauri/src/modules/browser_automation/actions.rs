@@ -4053,7 +4053,9 @@ async fn handle_action_attempt(
             // listed two loads' console errors beside one failed request
             // (round 66, R66-4). Only the current document's there too.
             let earlier_pages = match (&webview, document_started) {
-                (Webview::External { .. }, Some(started)) => keep_current_document(&mut logs, started),
+                (Webview::External { .. }, Some(started)) => {
+                    keep_current_document(&mut logs, started)
+                }
                 _ => 0,
             };
             logs.extend(
