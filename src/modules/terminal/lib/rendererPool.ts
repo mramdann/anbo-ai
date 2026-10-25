@@ -94,6 +94,9 @@ export type Slot = {
 };
 
 const slots: Slot[] = [];
+// Resizes of each grid. A resize re-wraps the rows, and one there and back
+// between two reads leaves the same width but other rows (round 66, R66-6).
+const gridResizes = new WeakMap<Terminal, number>();
 let nextSlotId = 0;
 let recyclerEl: HTMLDivElement | null = null;
 let adapter: SlotAdapter | null = null;
@@ -522,6 +525,7 @@ function createSlot(): Slot {
   term.onScroll(syncTerminalLayout);
   term.onWriteParsed(syncTerminalLayout);
   term.onResize(syncTerminalLayout);
+  term.onResize(() => gridResizes.set(term, (gridResizes.get(term) ?? 0) + 1));
   syncTerminalLayout();
 
   term.attachCustomKeyEventHandler((event) => {
@@ -1490,6 +1494,13 @@ export function getLiveSlotForLeaf(leafId: number): Slot | null {
       (s) => s.currentLeafId === leafId || s.retainedLeafId === leafId,
     ) ?? null
   );
+}
+
+/** How many times the leaf's live grid has been resized, or undefined when
+ *  it has none. */
+export function liveGridResizes(leafId: number): number | undefined {
+  const slot = getLiveSlotForLeaf(leafId);
+  return slot ? (gridResizes.get(slot.term) ?? 0) : undefined;
 }
 
 const IS_MAC =

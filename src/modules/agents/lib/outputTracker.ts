@@ -17,7 +17,7 @@ type OutputState = {
   stream: string;
   base: number;
   total: number;
-  /** The width the source wrapped the snapshot at, when it says. */
+  /** How the source wrapped the snapshot, when it says. */
   layout?: number;
 };
 
@@ -146,12 +146,12 @@ export class OutputTracker {
     private readonly maxSources: number,
   ) {}
 
-  /** `layout` is the width the source wrapped `rawOutput` at, when it has one:
-   *  a new width re-wraps every long row, so the same number of rows starts
-   *  somewhere else in the history. Read as going on from the last snapshot,
-   *  that window matched an earlier run's identical last lines, and the
-   *  history after them came back as new output (round 66, R66-6). Changed
-   *  output at a new width is a repaint instead. */
+  /** `layout` names how the source wrapped `rawOutput`, when it can say (a
+   *  terminal counts its grid's resizes): a resize re-wraps every long row, so
+   *  the same number of rows starts somewhere else in the history. Read as
+   *  going on from the last snapshot, that window matched an earlier run's
+   *  identical last lines, and the history after them came back as new output
+   *  (round 66, R66-6). Changed output under a new layout is a repaint. */
   private update(
     id: string,
     rawOutput: string,

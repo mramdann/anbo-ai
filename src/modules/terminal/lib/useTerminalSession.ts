@@ -56,6 +56,7 @@ import {
   getSlotForLeaf,
   isLeafAltScreen,
   liveBufferLeaves,
+  liveGridResizes,
   parkLeafSlot,
   poolSize,
   poolSlotStats,
@@ -201,10 +202,11 @@ const dormantReads = new WeakMap<
   { revision: number; snapshot: string | null; maxLines: number; text: string }
 >();
 
-/** The width the live grid wraps rows at, the rows readTerminalBuffer reads;
- *  undefined for a terminal without one, whose text does not wrap. */
-export function readTerminalColumns(leafId: number): number | undefined {
-  return getLiveSlotForLeaf(leafId)?.term.cols;
+/** A number that changes whenever the live grid readTerminalBuffer reads is
+ *  resized, which re-wraps its rows; undefined for a terminal without one,
+ *  whose text does not wrap. */
+export function readTerminalLayout(leafId: number): number | undefined {
+  return liveGridResizes(leafId);
 }
 
 export function readTerminalBuffer(
