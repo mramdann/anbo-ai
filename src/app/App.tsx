@@ -2205,16 +2205,18 @@ export default function App() {
               if (activated) setActiveId(opened.tabId);
               return { ...opened, activated };
             },
-            close: (tabId, leafId) => {
+            close: (tabId, leafId, endingAgent = false) => {
               const tab = tabsRef.current.find(
                 (candidate) => candidate.id === tabId,
               );
               // An agent CLI started in a terminal_open terminal makes it an
-              // agent tab, which its opener may close once the CLI has ended.
+              // agent tab, which its opener may close once the CLI has ended,
+              // or by force while an agent_spawn one runs (R66-1).
               if (
                 tab?.kind !== "terminal" ||
                 tab.private ||
-                useAgentStore.getState().sessions[leafId] !== undefined ||
+                (!endingAgent &&
+                  useAgentStore.getState().sessions[leafId] !== undefined) ||
                 tab.activeLeafId !== leafId ||
                 leafIds(tab.paneTree).length !== 1
               ) {

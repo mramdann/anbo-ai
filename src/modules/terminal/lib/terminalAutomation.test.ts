@@ -610,7 +610,8 @@ describe("shared terminal input", () => {
         endedAgent: "altair-codex:30",
       },
     });
-    expect(close).toHaveBeenCalledWith(30, 301);
+    // The UI's close may end the agent in it for this call alone.
+    expect(close).toHaveBeenCalledWith(30, 301, true);
     expect(spawnedTerminals.has("terminal:30:301")).toBe(false);
 
     // An agent the user opened is never closed, force or not.

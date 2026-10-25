@@ -111,7 +111,9 @@ export type TerminalAutomationDependencies = {
     workspace: { id: string; root: string },
     title: string,
   ) => { tabId: number; leafId: number; activated?: boolean } | null;
-  close: (tabId: number, leafId: number) => boolean;
+  /** Closes a terminal tab; `endingAgent` lets it end the agent CLI in it,
+   *  which only terminal_close with force asks, for an agent_spawn one. */
+  close: (tabId: number, leafId: number, endingAgent?: boolean) => boolean;
   write: (leafId: number, data: string) => boolean;
   /** Mounts a restored tab that was never shown, so its shell starts. */
   warm?: (tabId: number) => void;
@@ -1337,7 +1339,7 @@ export function createTerminalAutomationService(
                 agentTerminalMessage(spawnedId, agent),
               );
             }
-            if (!deps.close(agent.tabId, agent.leafId)) {
+            if (!deps.close(agent.tabId, agent.leafId, true)) {
               return automationError(
                 "terminal_close_failed",
                 `${spawnedId} could not be closed safely`,
