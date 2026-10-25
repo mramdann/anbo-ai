@@ -352,3 +352,23 @@ export function configuredAgentLaunchRequest(
     ? { agent: launcher.id, command: command.command, instances: 1 }
     : null;
 }
+
+/** Codex's own setting for its check for a newer version at start. */
+const CODEX_UPDATE_CHECK_OFF = "-c check_for_update_on_startup=false";
+
+/**
+ * The command agent_spawn runs: Codex starts without its "Update available"
+ * question, which waits for an answer the spawning agent must not give, and
+ * which no Anbo tool can end the agent from (round 66, R66-1). Every other
+ * command, a Codex command that sets the key itself, and one the setting
+ * would take past the length a launch command may have, stays as it is.
+ */
+export function spawnedAgentCommand(command: string): string {
+  const program = command.trim().split(/\s+/, 1)[0]?.toLowerCase() ?? "";
+  const codex = /^(?:.*[\\/])?codex(?:\.(?:exe|cmd|ps1))?$/.test(program);
+  if (!codex || command.includes("check_for_update_on_startup")) {
+    return command;
+  }
+  const quiet = `${command.trim()} ${CODEX_UPDATE_CHECK_OFF}`;
+  return quiet.length > MAX_AGENT_COMMAND_LENGTH ? command : quiet;
+}

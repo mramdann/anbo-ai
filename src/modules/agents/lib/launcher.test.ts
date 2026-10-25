@@ -12,6 +12,7 @@ import {
   launcherResumeAgent,
   normalizeAgentLaunchCommands,
   normalizeCustomCliAgents,
+  spawnedAgentCommand,
   validateAgentLaunchCommand,
   validateCustomCliAgentName,
 } from "./launcher";
@@ -294,6 +295,32 @@ describe("the command a launcher would run", () => {
       { id: "custom:z", icon: "claude", name: "ClaudeZ", command: "myclaude" },
     ]).filter((agent) => agent.custom);
     expect(configuredAgentLaunchCommand(custom, commands)).toBe("myclaude");
+  });
+});
+
+describe("the command agent_spawn runs", () => {
+  it("starts Codex without its update question and leaves the rest alone", () => {
+    // Round 66 (R66-1): every spawned Codex sat at "Update available", which
+    // the spawner must not answer and could not end through Anbo.
+    expect(spawnedAgentCommand("codex")).toBe(
+      "codex -c check_for_update_on_startup=false",
+    );
+    expect(spawnedAgentCommand("codex --yolo")).toBe(
+      "codex --yolo -c check_for_update_on_startup=false",
+    );
+    expect(spawnedAgentCommand("C:\\Tools\\codex.exe --yolo")).toBe(
+      "C:\\Tools\\codex.exe --yolo -c check_for_update_on_startup=false",
+    );
+    expect(
+      spawnedAgentCommand("codex -c check_for_update_on_startup=true"),
+    ).toBe("codex -c check_for_update_on_startup=true");
+    expect(spawnedAgentCommand("claude")).toBe("claude");
+    expect(spawnedAgentCommand("codexify --x")).toBe("codexify --x");
+    expect(spawnedAgentCommand("kimi --auto")).toBe("kimi --auto");
+    // Past the launch command limit the spawn would fail outright.
+    const long = `codex ${"-c x=1 ".repeat(32)}`.trim();
+    expect(validateAgentLaunchCommand(long).ok).toBe(true);
+    expect(spawnedAgentCommand(long)).toBe(long);
   });
 });
 

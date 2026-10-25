@@ -14,6 +14,7 @@ export {
   findAgentLauncher,
   launcherResumeAgent,
   MAX_PARALLEL_OPENCODE_AGENTS,
+  spawnedAgentCommand,
   validateAgentLaunchCommand,
 } from "./lib/launcher";
 export {

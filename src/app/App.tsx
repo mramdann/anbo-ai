@@ -37,6 +37,7 @@ import {
   resumeMcpFlavour,
   sameAgentFamily,
   shouldWarmAgentTabOnReopen,
+  spawnedAgentCommand,
   validateAgentLaunchCommand,
   withAgentMcpRuntime,
 } from "@/modules/agents";
@@ -2144,13 +2145,17 @@ export default function App() {
                 preferences.customCliAgents,
               );
               if (!request) return null;
-              const launched = await launchAgentGroupAtRef.current(request, {
-                spaceId: space.id,
-                root: space.root,
-                cwd: space.root,
-                workspace: space.env,
-                activate: "if-empty",
-              });
+              // A spawned Codex starts without its update question (R66-1).
+              const launched = await launchAgentGroupAtRef.current(
+                { ...request, command: spawnedAgentCommand(request.command) },
+                {
+                  spaceId: space.id,
+                  root: space.root,
+                  cwd: space.root,
+                  workspace: space.env,
+                  activate: "if-empty",
+                },
+              );
               if (!launched) return null;
               const tabId = launched.tabIds[0];
               const leafId = launched.leafIds[0];
