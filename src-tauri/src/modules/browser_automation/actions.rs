@@ -4038,6 +4038,15 @@ async fn handle_action_attempt(
                 .and_then(|raw| page_json::from_str::<f64>(&raw).ok())
                 .filter(|origin| origin.is_finite() && *origin > 0.0)
                 .map(|origin| origin as u64);
+            // A Chrome or Edge tab's console comes from the bridge, which keeps
+            // it across the tab's documents, while Anbo's own browser reads it
+            // from the page, which starts again with each one: an Edge tab
+            // listed two loads' console errors beside one failed request
+            // (round 66, R66-4). Only the current document's there too.
+            let earlier_pages = match (&webview, document_started) {
+                (Webview::External { .. }, Some(started)) => keep_current_document(&mut logs, started),
+                _ => 0,
+            };
             logs.extend(
                 super::network::failed_requests(tab_id)
                     .into_iter()
@@ -4083,13 +4092,17 @@ async fn handle_action_attempt(
                     entry
                 })
                 .collect();
-            Ok(json!({
+            let mut answer = json!({
                 "logs": logs,
                 "includedFrames": included_frames,
                 "skippedFrames": skipped_frames,
                 "totalBeforeFilter": total,
                 "truncatedMessages": clipped
-            }))
+            });
+            if earlier_pages > 0 {
+                answer["earlierPagesLeftOut"] = json!(earlier_pages);
+            }
+            Ok(answer)
         }
 
         _ => Err((
@@ -5002,6 +5015,20 @@ fn note_page_errors(result: &mut Value, errors: Vec<String>) {
         None => json!(note),
     };
     result["pageErrors"] = json!(errors);
+}
+
+/// Drops the console entries logged before the current document started, as
+/// a Chrome or Edge tab's bridge keeps them across documents; how many went.
+/// An entry without a time stays: nothing says it came earlier.
+fn keep_current_document(logs: &mut Vec<Value>, started: u64) -> usize {
+    let before = logs.len();
+    logs.retain(|entry| {
+        entry
+            .get("ts")
+            .and_then(as_count)
+            .is_none_or(|at| at >= started)
+    });
+    before - logs.len()
 }
 
 async fn collect_console_logs(webview: &Webview) -> (Vec<Value>, usize, usize) {
@@ -9600,6 +9627,28 @@ mod tests {
             select_options_hint(&json!({ "options": [] })),
             "The select has no options."
         );
+    }
+
+    #[test]
+    fn an_external_console_keeps_only_the_current_document() {
+        // Round 66 (R66-4): an Edge tab listed the console.error of its first
+        // load and its last one, beside only the last load's failed request.
+        let mut logs = vec![
+            json!({ "level": "error", "msg": "first load", "ts": 1_000u64 }),
+            json!({ "level": "error", "msg": "last load", "ts": 5_100u64 }),
+            json!({ "level": "log", "msg": "no time" }),
+        ];
+        assert_eq!(keep_current_document(&mut logs, 5_000), 1);
+        assert_eq!(
+            logs,
+            vec![
+                json!({ "level": "error", "msg": "last load", "ts": 5_100u64 }),
+                json!({ "level": "log", "msg": "no time" }),
+            ]
+        );
+        let mut current = vec![json!({ "msg": "now", "ts": 5_000u64 })];
+        assert_eq!(keep_current_document(&mut current, 5_000), 0);
+        assert_eq!(current.len(), 1);
     }
 
     #[test]
