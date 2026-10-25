@@ -15,6 +15,10 @@ const MAX_MESSAGE_BYTES: usize = 32 * 1024;
 const MAX_MESSAGE_ID_BYTES: usize = 128;
 const MAX_CURSOR_BYTES: usize = 128;
 const MAX_READ_CHARS: u64 = 12_000;
+/// terminal_insert and terminal_execute text, counted as the schema's
+/// maxLength and the UI's check count it (UTF-16 units): in bytes, text
+/// outside ASCII was refused well short of it (round 66, R66-5).
+const MAX_TERMINAL_TEXT_CHARS: usize = 8_000;
 /// The longest a call holds its answer: as browser waits do (actions.rs), it
 /// ends before the MCP client's own 60 s request limit, which a wait asked for
 /// 60 s had crossed and come back as a bare "The operation timed out.".
@@ -166,7 +170,13 @@ fn validate_params(method: &str, params: &mut Value) -> Result<u64, (String, Str
             Ok(10_000)
         }
         "terminal_insert" | "terminal_execute" => {
-            let text = required_bounded_string(params, "text", 8_000)?;
+            let text = required_bounded_string(params, "text", 4 * MAX_TERMINAL_TEXT_CHARS)?;
+            if text.encode_utf16().count() > MAX_TERMINAL_TEXT_CHARS {
+                return Err((
+                    error_codes::INVALID_REQUEST.to_string(),
+                    format!("text exceeds {MAX_TERMINAL_TEXT_CHARS} characters"),
+                ));
+            }
             if text.chars().any(char::is_control) {
                 return Err((
                     error_codes::INVALID_REQUEST.to_string(),
@@ -390,6 +400,22 @@ mod tests {
             json!({ "workspace": "C:/repo", "terminalId": "terminal:1:1", "force": "yes" })
         )
         .is_err());
+    }
+
+    #[test]
+    fn terminal_text_is_counted_in_characters_as_its_schema_says() {
+        // Round 66 (R66-5): the schema and the UI allow 8,000 characters, but
+        // this side counted bytes, so 4,000 accented letters were refused.
+        let params = |text: String| {
+            json!({ "workspace": "C:/repo", "terminalId": "terminal:1:1", "text": text })
+        };
+        for method in ["terminal_execute", "terminal_insert"] {
+            assert!(validate_params(method, &mut params("é".repeat(8_000))).is_ok());
+            assert!(validate_params(method, &mut params("a".repeat(8_000))).is_ok());
+            let error = validate_params(method, &mut params("é".repeat(8_001))).unwrap_err();
+            assert_eq!(error.1, "text exceeds 8000 characters");
+            assert!(validate_params(method, &mut params("a".repeat(8_001))).is_err());
+        }
     }
 
     #[test]
