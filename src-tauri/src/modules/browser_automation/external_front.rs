@@ -323,12 +323,24 @@ fn noted(message: String, visibility: &Value) -> String {
 }
 
 const REFUSAL: &str = "the tab is hidden in its browser";
+const POINTER_CLAUSE: &str = ", which delivers no pointer input to a hidden page, and ";
+const NOTHING_SENT: &str = " No input was sent.";
 
 fn refusal(why: &str) -> (String, String) {
     (
         error_codes::INPUT_NOT_READY.to_string(),
-        format!("{REFUSAL}, which delivers no pointer input to a hidden page, and {why} No input was sent."),
+        format!("{REFUSAL}{POINTER_CLAUSE}{why}{NOTHING_SENT}"),
     )
+}
+
+/// Only the why of a bring_to_front refusal, for a capture's answer: the
+/// words about pointer input were beside the point there (round 66, R66-2).
+pub fn refusal_reason(message: &str) -> &str {
+    let why = message
+        .strip_prefix(REFUSAL)
+        .and_then(|rest| rest.strip_prefix(POINTER_CLAUSE))
+        .unwrap_or(message);
+    why.strip_suffix(NOTHING_SENT).unwrap_or(why)
 }
 
 /// Whether bring_to_front refused because the page cannot be shown now, as
@@ -533,5 +545,17 @@ mod tests {
         assert!(refusal(not_in_front(Standing::Behind).unwrap())
             .1
             .contains("and Anbo is not the window the user is in: bringing"));
+    }
+
+    #[test]
+    fn a_capture_gets_the_reason_without_the_pointer_words() {
+        let behind = not_in_front(Standing::Behind).unwrap();
+        assert_eq!(refusal_reason(&refusal(behind).1), behind);
+        let workspace = not_shown(Some("workspace"));
+        assert_eq!(refusal_reason(&refusal(workspace).1), workspace);
+        let narrow = not_docked(Some("panel-too-narrow"), SHOW_PATIENCE);
+        assert_eq!(refusal_reason(&refusal(&narrow).1), narrow);
+        // Any other message comes back as it is.
+        assert_eq!(refusal_reason("other agents hold the turn"), "other agents hold the turn");
     }
 }

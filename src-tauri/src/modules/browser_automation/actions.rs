@@ -3234,8 +3234,9 @@ async fn handle_action_attempt(
                         error_codes::INPUT_NOT_READY.to_string(),
                         match &not_shown_for_capture {
                             Some(why) => format!(
-                                "{} It could not be brought forward now: {why}",
-                                super::external_front::NOT_SHOWN_FOR_CAPTURE
+                                "{} It could not be brought forward now: {}",
+                                super::external_front::NOT_SHOWN_FOR_CAPTURE,
+                                super::external_front::refusal_reason(why)
                             ),
                             None => super::external_front::NOT_SHOWN_FOR_CAPTURE.to_string(),
                         },
