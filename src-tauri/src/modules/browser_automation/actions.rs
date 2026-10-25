@@ -1110,6 +1110,15 @@ async fn handle_action_attempt(
             }
         }
     }
+    // A hidden page's stand-in input, and a moment after it, keep the
+    // foreground with Anbo while the user is in it: a tab the page opened
+    // brought its browser over Anbo (round 66, R66-3).
+    #[cfg(windows)]
+    let _front_hold = if hidden_page {
+        crate::modules::browser_external::dock::hold_front(app)
+    } else {
+        None
+    };
     // A capture of a Chrome or Edge page its browser does not show brings the
     // tab forward the same way, while its workspace is shown and the user is
     // in Anbo (round 64, R64-1); a tab that cannot come keeps the plain

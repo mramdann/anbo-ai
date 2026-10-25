@@ -28,6 +28,7 @@ pub(super) fn stands_in(method: &str) -> bool {
 const KEYBOARD_NOTE: &str = "the page is hidden in its browser (its workspace is not shown), so Anbo activated the control with the keyboard instead of a pointer click; check the result before relying on it";
 const DOM_NOTE: &str = "the page is hidden in its browser (its workspace is not shown), so Anbo sent the page's own pointer and mouse events instead of real pointer input: page handlers act on them, CSS :hover does not follow them; check the result before relying on it";
 const FOCUS_NOTE: &str = "the page stays hidden in its browser (its workspace is not shown); keys you send reach the focused element";
+const LINK_NOTE: &str = "the page is hidden in its browser (its workspace is not shown), so Anbo activated the link with Ctrl+Enter, which opens it in a new background tab; check the result before relying on it";
 
 /// Event helpers every hidden-page script starts with.
 const HIDDEN_INPUT_JS: &str = r#"
@@ -72,7 +73,14 @@ const HIDDEN_INPUT_JS: &str = r#"
             const native = tag === 'button' || (tag === 'a' && node.hasAttribute('href')) ||
                 tag === 'summary' ||
                 (tag === 'input' && ['button', 'submit', 'reset', 'image', 'checkbox', 'radio'].includes(type));
-            return { tag, type, toggles, native };
+            // A link that opens another tab or window, by its own target or the
+            // page's base target.
+            const base = node.ownerDocument.querySelector('base[target]');
+            const target = (node.getAttribute('target') ?? (base ? base.getAttribute('target') : '') ?? '')
+                .trim().toLowerCase();
+            const opensTab = tag === 'a' && node.hasAttribute('href') && target !== '' &&
+                !['_self', '_parent', '_top'].includes(target);
+            return { tag, type, toggles, native, opensTab };
         };
         const disabled = (node) => node.disabled === true || node.getAttribute('aria-disabled') === 'true';
         const click = (node, count) => {
@@ -154,8 +162,11 @@ fn answer(tab_id: i64, ref_id: &str, input: &str) -> Value {
     })
 }
 
-async fn press(webview: &Webview, key: &str) -> Result<(), (String, String)> {
-    dispatch_key_action(webview, key, "press", 0)
+/// The Ctrl bit of a CDP key event's modifiers.
+const CTRL: u8 = 2;
+
+async fn press(webview: &Webview, key: &str, modifiers: u8) -> Result<(), (String, String)> {
+    dispatch_key_action(webview, key, "press", modifiers)
         .await
         .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))
 }
@@ -183,17 +194,30 @@ pub(super) async fn click(
             if (anboHidden.disabled(el)) return JSON.stringify({{ ok: false, error: 'disabled' }});
             const kind = anboHidden.kind(el);
             if ({count} === 1 && kind.native && anboHidden.focusOn(el)) {{
-                return JSON.stringify({{ ok: true, input: 'keyboard', key: kind.toggles ? ' ' : 'Enter' }});
+                return JSON.stringify({{ ok: true, input: 'keyboard', key: kind.toggles ? ' ' : 'Enter', opensTab: kind.opensTab }});
             }}
             return JSON.stringify(anboHidden.click(el, {count}));"#
         ),
     )
     .await?;
     let input = prepared["input"].as_str().unwrap_or("dom-events");
+    // Enter on a link to another tab opened that tab in front, and its browser
+    // window came over Anbo and took the user's focus (round 66, R66-3). With
+    // Ctrl the browser opens it behind, as a middle click would.
+    let background = input == "keyboard" && prepared["opensTab"].as_bool() == Some(true);
     if input == "keyboard" {
-        press(webview, prepared["key"].as_str().unwrap_or("Enter")).await?;
+        press(
+            webview,
+            prepared["key"].as_str().unwrap_or("Enter"),
+            if background { CTRL } else { 0 },
+        )
+        .await?;
     }
     let mut result = answer(tab_id, ref_id, input);
+    if background {
+        result["note"] = json!(LINK_NOTE);
+        result["newTab"] = json!("background");
+    }
     if count == 2 {
         result["clickCount"] = json!(2);
     }
@@ -243,7 +267,7 @@ pub(super) async fn check(
         return Ok(result);
     }
     if input == "keyboard" {
-        press(webview, " ").await?;
+        press(webview, " ", 0).await?;
     }
     let mut checked = wait_for_checked_state(webview, target, ref_id, requested).await;
     // A page that handles the key itself can keep Space from toggling.

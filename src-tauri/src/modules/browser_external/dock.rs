@@ -500,6 +500,28 @@ pub enum Standing {
     Behind,
 }
 
+/// While it lives, and for 2 s after, other apps cannot take the foreground
+/// from Anbo (see hold_front).
+#[cfg(windows)]
+pub struct FrontHold(());
+
+/// Keeps other apps from taking the foreground while Anbo sends input to a
+/// Chrome or Edge page its browser hides: a tab the page opened from that
+/// input brought its browser window over Anbo and took the user's keys
+/// (round 66, R66-3). Only while the user is in Anbo; None otherwise. The
+/// user's own switches still go through.
+#[cfg(windows)]
+pub fn hold_front<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<FrontHold> {
+    native::hold_front(app).then_some(FrontHold(()))
+}
+
+#[cfg(windows)]
+impl Drop for FrontHold {
+    fn drop(&mut self) {
+        native::release_front_hold();
+    }
+}
+
 pub fn standing<R: tauri::Runtime>(app: &AppHandle<R>) -> Standing {
     #[cfg(windows)]
     {
@@ -1666,6 +1688,36 @@ mod native {
         } else {
             Standing::Behind
         }
+    }
+
+    // FrontHold's lock on the foreground: one for every hold alive or
+    // releasing, so overlapping actions share it.
+    static FRONT_HOLDS: AtomicUsize = AtomicUsize::new(0);
+    const FRONT_HOLD_AFTER: Duration = Duration::from_secs(2);
+
+    /// Whether the foreground is locked for a new hold: only while Anbo has
+    /// it, as only the foreground process may lock it.
+    pub(super) fn hold_front<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
+        if standing(app) != Standing::Front {
+            return false;
+        }
+        if FRONT_HOLDS.fetch_add(1, Ordering::AcqRel) == 0
+            && unsafe { LockSetForegroundWindow(LSFW_LOCK) }.is_err()
+        {
+            FRONT_HOLDS.fetch_sub(1, Ordering::AcqRel);
+            return false;
+        }
+        true
+    }
+
+    /// Ends a hold FRONT_HOLD_AFTER from now, and the lock with the last one.
+    pub(super) fn release_front_hold() {
+        std::thread::spawn(|| {
+            std::thread::sleep(FRONT_HOLD_AFTER);
+            if FRONT_HOLDS.fetch_sub(1, Ordering::AcqRel) == 1 {
+                let _ = unsafe { LockSetForegroundWindow(LSFW_UNLOCK) };
+            }
+        });
     }
 
     // The foreground watch: what it last saw (see front_value), read without
