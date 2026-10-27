@@ -2,6 +2,7 @@ import type { AgentSession } from "@/modules/agents/lib/types";
 import type { SpaceMeta } from "@/modules/spaces/lib/store";
 import type { Tab, TerminalTab } from "@/modules/tabs";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { agentScreens } from "./agentScreen.fixtures";
 import {
   AgentOutputTracker,
   agentIdFor,
@@ -260,6 +261,16 @@ describe("agent messages", () => {
         "codex",
         "This command requires approval\n› 1. Yes\n\ngpt-5.6-sol high",
       ),
+    ).toBe(false);
+  });
+
+  it("takes a Codex resumed on a later day, whose turn row carries a date", () => {
+    // Round 68 (R68-1): every agent_send to such a Codex timed out, because
+    // the dated row did not end the turn and no rollout turn followed.
+    const screen = agentScreens.codexResumedDated.join("\n");
+    expect(isAgentTuiReady("codex", screen)).toBe(true);
+    expect(
+      isAgentTuiReady("codex", screen.replace(/^\s*Worked for .*$/m, "")),
     ).toBe(false);
   });
 

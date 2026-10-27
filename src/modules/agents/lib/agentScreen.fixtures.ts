@@ -686,6 +686,34 @@ const codexPermissionsMenu: readonly string[] = [
   "  enter select · esc back",
 ];
 
+/** resumed two days later: its last turn's row carries the date (Codex 0.163,
+ *  captured 2026-10-27; the agent's em dash is a hyphen here) */
+const codexResumedDated: readonly string[] = [
+  "› [Uji QC Anbo, tugas M05-3] Workspace kamu: D:/work/demo. Aturan: (1) kerjakan hany… ",
+  "  ────────────────  ────────────────────────────────",
+  "   Subjects          Maths",
+  "  ────────────────  ────────────────────────────────",
+  "   Hobbies           Reading",
+  "  ────────────────  ────────────────────────────────",
+  "   Picture           qc-foto.png - PNG 1×1, 70 byte",
+  "  ────────────────  ────────────────────────────────",
+  "   Address           Jl. QC No. 3",
+  "  ────────────────  ────────────────────────────────",
+  "   State and City    NCR Delhi",
+  "",
+  "  Dialog sudah ditutup dan terverifikasi hilang, lalu tab 207 ditutup.",
+  "",
+  "  QC-RESULT M05-3: OK formulir terkirim, tabel konfirmasi sesuai, gambar terunggah, dialog dan tab ditutup.   ",
+  "",
+  "  Worked for 4m 55s • Oct 25 at 20:40                                                                         ",
+  "                                                                                                              ",
+  "",
+  "› Ask Codex to do anything",
+  "",
+  "  GPT-6.1-Sol xhigh · D:\\work\\demo · Context 49% used · weekly 90% left",
+  "  ? for shortcuts                                                                    ⚠ 1 warning · f2 to view ",
+];
+
 /** interrupted, background terminal left running */
 const codexInterrupted: readonly string[] = [
   "• Ran Set-Content -LiteralPath 'catatan.txt' -Value 'halo' -NoNewline",
@@ -1364,6 +1392,7 @@ export const agentScreens = {
   codexCommentary,
   codexApproval,
   codexPermissionsMenu,
+  codexResumedDated,
   codexInterrupted,
   kimiTrust,
   kimiTrustProjectMcp,

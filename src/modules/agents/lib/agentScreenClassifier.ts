@@ -162,7 +162,9 @@ function readClaude(rows: Rows): AgentScreenReading {
 // row "• Working (10s • esc to interrupt)". A turn ends with a row of its own:
 // "Worked for 1m 22s · 14:01" after a long one, the bare time "13:56" after a
 // short one (0.156+), "Worked for 6s" with rules in older builds, or
-// "■ Conversation interrupted".
+// "■ Conversation interrupted". A turn that ended on another day carries its
+// date: "Oct 25 at 20:40", or "Oct 25, 2025 at 20:40" in another year; a
+// session resumed the next day shows only such rows.
 const CODEX_PROMPT = /^\s*›(?!\s*\d+\.)(?:\s|$)/;
 // The status row itself, "• Working (10s • esc to interrupt)", not a tip that
 // happens to mention the key.
@@ -179,7 +181,7 @@ const CODEX_MENU = /esc back|enter select/;
 const CODEX_ACTIVITY = /^\s{0,2}[•›]\s+\S/;
 // 0.156 separates the time with "·", 0.159 with "•".
 const CODEX_TURN_END =
-  /^\s{0,2}(?:[─━-]+\s*)?Worked for (?:\d{1,4}h )?(?:\d{1,4}m )?\d{1,4}(?:\.\d{1,3})?s(?:\s*[·•]\s*\d{1,2}:\d{2}(?:\s*[AP]M)?)?\s*[─━-]*\s*$|^\s{0,2}\d{1,2}:\d{2}(?:\s*[AP]M)?\s*$|^\s{0,2}■\s+Conversation interrupted/i;
+  /^\s{0,2}(?:[─━-]+\s*)?Worked for (?:\d{1,4}h )?(?:\d{1,4}m )?\d{1,4}(?:\.\d{1,3})?s(?:\s*[·•]\s*(?:[A-Z][a-z]{2} \d{1,2}(?:, \d{4})? at )?\d{1,2}:\d{2}(?:\s*[AP]M)?)?\s*[─━-]*\s*$|^\s{0,2}(?:[A-Z][a-z]{2} \d{1,2}(?:, \d{4})? at )?\d{1,2}:\d{2}(?:\s*[AP]M)?\s*$|^\s{0,2}■\s+Conversation interrupted/i;
 const CODEX_TERMINALS = /(\d+) background terminals? running/;
 
 function readCodex(rows: Rows, evidence: TurnEvidence): AgentScreenReading {

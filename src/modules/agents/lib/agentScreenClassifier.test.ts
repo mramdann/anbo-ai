@@ -273,6 +273,13 @@ describe("codex", () => {
     "■ Conversation interrupted - tell the model what to do differently.",
     // Codex 0.159.2, seen live on 2026-09-30.
     "  Worked for 3s • 18:29",
+    // A turn that ended on another day (Codex 0.163's own formats).
+    "  Worked for 4m 55s • Oct 25 at 20:40",
+    "  Worked for 4m 55s • Oct 25 at 8:40 PM",
+    "  Worked for 4m 55s • Oct 25, 2025 at 20:40",
+    "  Oct 25 at 20:40",
+    "  Oct 5 at 8:40 PM",
+    "  Oct 25, 2025 at 20:40",
   ])("recognises the turn-end row %s", (end) => {
     const screen = [
       "• The baseline is ready. I will open one background tab.",
@@ -287,9 +294,19 @@ describe("codex", () => {
     "The report says Worked for 12s",
     "    Worked for 12s",
     "> Worked for 12s",
+    "  The last turn ended Oct 25 at 20:40",
+    "  Worked for 4m 55s \u2022 Oct 25 at 20:40, see above",
+    "    Oct 25 at 20:40",
   ])("does not take quoted text for a turn-end row: %s", (quote) => {
     const screen = `OpenAI Codex\n\u2022 Continuing the test\n${quote}\n\u203a `;
     expect(readAgentScreen("codex", screen).settling).toBe(true);
+  });
+
+  it("reads a Codex resumed two days later as finished, not settling", () => {
+    expect(readAgentScreen("codex", text("codexResumedDated"))).toMatchObject({
+      state: "ready",
+      settling: false,
+    });
   });
 
   it("trusts an open rollout turn unless the screen already closed it", () => {
