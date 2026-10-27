@@ -405,6 +405,10 @@ pub async fn handle_action_as(
         (Err((code, message)), Some(tab), Some(ref_id)) if code == error_codes::STALE_REF => {
             Err((code, stale_ref_hint(app, tab, ref_id, message).await))
         }
+        (Err((_, message)), Some(tab), _) if lost_page_connection(&message) => Err((
+            error_codes::TAB_NOT_FOUND.to_string(),
+            lost_page_answer(tab),
+        )),
         (Err((code, message)), Some(tab), _)
             if (code == error_codes::TIMEOUT || code == error_codes::NOT_FOUND)
                 && waits_on_page =>
@@ -4162,6 +4166,23 @@ const UNSHOWN_CAPTURE_TIMEOUT: Duration = Duration::from_secs(3);
 /// found the last such capture still waiting for a frame.
 fn unshown_capture_failure(shown: bool, error: &str) -> bool {
     !shown && (error.contains("timed out") || error.contains("still pending"))
+}
+
+/// A call on a Chrome or Edge tab whose page connection is gone: Anbo's own
+/// check (no navigation generation), the binding Anbo let go, or the
+/// extension refusing a selection it revoked, as it does for a command still
+/// running 20 s past its deadline. Agents got these three wordings, two of
+/// them as internal errors, for that one cause (round 68, R68-3).
+fn lost_page_connection(message: &str) -> bool {
+    message == "browser tab closed"
+        || message.contains("browser tab binding was released")
+        || message.contains("Invalid or unselected browser tab")
+}
+
+fn lost_page_answer(tab: i64) -> String {
+    format!(
+        "tab {tab} lost its connection to its page (the page was closed or replaced in the browser, or the browser let it go after a command there did not finish). Open its URL again with browser_open, or close the tab with browser_close."
+    )
 }
 
 /// Methods that act on one tab, and so stay inside the caller's workspace.
@@ -12244,6 +12265,27 @@ mod workspace_scope_tests {
         assert!(unshown_capture_failure(false, pending));
         assert!(!unshown_capture_failure(true, timed_out));
         assert!(!unshown_capture_failure(false, "browser tab 7 not found"));
+    }
+
+    #[test]
+    fn a_lost_page_connection_answers_tab_not_found_with_what_to_do() {
+        // Round 68 (R68-3): one cause reached agents as "[cdp_failed] browser
+        // tab closed", "[internal] browser tab binding was released" and
+        // "[internal] Invalid or unselected browser tab".
+        for message in [
+            "browser tab closed",
+            "browser tab binding was released",
+            "Invalid or unselected browser tab",
+        ] {
+            assert!(lost_page_connection(message), "{message}");
+        }
+        assert!(!lost_page_connection(
+            "browser tab closed before the download completed"
+        ));
+        assert!(!lost_page_connection("browser disconnected"));
+        let answer = lost_page_answer(208);
+        assert!(answer.starts_with("tab 208 lost its connection to its page"));
+        assert!(answer.contains("browser_open") && answer.contains("browser_close"));
     }
 
     #[test]
