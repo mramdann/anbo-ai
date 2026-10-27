@@ -5,12 +5,16 @@ import { createDockManager } from "./dock.js";
 // The version this code is, kept equal to manifest.json. After an update the
 // browser reads the new manifest but can keep running the old scripts until the
 // extension reloads, so the manifest alone would hide that a reload is due.
-export const EXTENSION_VERSION = "0.5.8";
+export const EXTENSION_VERSION = "0.5.9";
 
 const MAX_TABS = 128;
 // A new tab opened this soon after Anbo sent input to the tab it opened from
 // came from an agent's click or key, not the user's.
 const AGENT_INPUT_MS = 2_000;
+// When, after a tab an agent's input opened, its window is looked at again to
+// put it back the way it was: the browser brought it up about 60 ms after the
+// key (Oct 28 2026).
+const KEEP_WINDOW_CHECKS_MS = [0, 25, 50, 100, 200, 400, 800, 1_500];
 // How long a tab a page opened may take to reach a web page before it is left
 // to the browser.
 const ADOPT_WAIT_MS = 15_000;
@@ -35,6 +39,9 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
   // When Anbo last sent each tab input (Input.* commands, an agent's clicks
   // and keys).
   const inputAt = new Map();
+  // Each such tab's window as it was right before an agent's key or press:
+  // { windowId, state, focused, at }.
+  const windowBefore = new Map();
   let keptRenderers = "";
   let disposed = false;
 
@@ -350,12 +357,43 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     if (behind) opener = behind;
     const first = tab.pendingUrl || tab.url;
     if (disposed || !opener || tab.incognito || !Number.isSafeInteger(tab.id) || attached.has(tab.id) || pending.has(tab.id)) return;
-    if ((first && !/^https?:/i.test(first)) || attached.size + pending.size >= MAX_TABS) return;
     const agent = driven(opener.id);
+    if (agent && !fromDock) void keepWindow(opener.id, tab.windowId).catch(() => {});
+    if ((first && !/^https?:/i.test(first)) || attached.size + pending.size >= MAX_TABS) return;
     if (!fromDock && !agent) return;
     const openedFrom = { selectionId: opener.selectionId, background: tab.active !== true || behind !== null, agent };
     const front = behind && tab.active === true && Number.isSafeInteger(tab.openerTabId) ? tab.openerTabId : null;
     void track(adopt(tab, openedFrom, front)).catch(() => {});
+  }
+
+  // The browser brings a minimized window back, and in front of the window the
+  // user is in, for a tab a page in it opens, even one it opens behind
+  // (Ctrl+Enter), and Windows lets it once the user has been idle a few
+  // minutes: the user's terminal lost the foreground to Chrome 8 of 8 times,
+  // also over the browser's own CDP without Anbo (round 68, R68-2). The window
+  // an agent's input made a tab in goes back to how it was before that input:
+  // minimized again, or behind the window it came over. Anbo's dock window is
+  // Anbo's to show.
+  async function keepWindow(openerId, windowId) {
+    const before = windowBefore.get(openerId);
+    if (!before || before.windowId !== windowId || Date.now() - before.at > AGENT_INPUT_MS) return;
+    if (dock.ownsWindow(windowId) || (before.state !== "minimized" && before.focused)) return;
+    let waited = 0;
+    for (const at of KEEP_WINDOW_CHECKS_MS) {
+      await new Promise((resolve) => setTimeout(resolve, at - waited));
+      waited = at;
+      if (disposed) return;
+      const window = await api.windows.get(windowId).catch(() => null);
+      if (!window) return;
+      if (before.state === "minimized" && window.state !== "minimized") {
+        await api.windows.update(windowId, { state: "minimized" });
+        return;
+      }
+      if (before.state !== "minimized" && window.focused === true) {
+        await api.windows.update(windowId, { focused: false });
+        return;
+      }
+    }
   }
 
   async function adopt(tab, openedFrom, front = null) {
@@ -397,6 +435,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     invalidate(tabId);
     owned.delete(tabId);
     inputAt.delete(tabId);
+    windowBefore.delete(tabId);
     if (attached.delete(tabId)) publish();
   }
 
@@ -421,6 +460,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     transports.delete(tabId);
     owned.delete(tabId);
     inputAt.delete(tabId);
+    windowBefore.delete(tabId);
     const token = attaching.get(tabId);
     if (token) token.valid = false;
     if (attached.delete(tabId)) publish();
@@ -452,6 +492,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     renderers.clear();
     connecting.clear();
     inputAt.clear();
+    windowBefore.clear();
     const ids = [...owned];
     attached.clear();
     await Promise.allSettled([...running, ...ids.map((tabId) => detach(tabId))]);
@@ -461,11 +502,36 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     return transports.get(source.tabId)?.event(source, method, params) ?? false;
   }
 
+  // Where an agent's key or press begins.
+  function startsInput(message) {
+    const type = message.params?.type;
+    return (message.method === "Input.dispatchKeyEvent" && (type === "keyDown" || type === "rawKeyDown")) || (message.method === "Input.dispatchMouseEvent" && type === "mousePressed");
+  }
+
+  // The window an agent's input may make a tab in, as it is before that input.
+  async function noteWindow(tabId) {
+    try {
+      const tab = await api.tabs.get(tabId);
+      const window = await api.windows.get(tab.windowId);
+      windowBefore.set(tabId, { windowId: window.id, state: window.state, focused: window.focused === true, at: Date.now() });
+    } catch {
+      windowBefore.delete(tabId);
+    }
+  }
+
   function command(message, check) {
     if (["anbo.dockPrepare", "anbo.dockCommit", "anbo.dockRelease", "anbo.dockSwap"].includes(message.method)) return dock.command(message, check);
     const transport = transports.get(message.tabId);
     if (!transport) throw new Error("Browser tab transport unavailable");
-    if (message.method.startsWith("Input.")) inputAt.set(message.tabId, Date.now());
+    if (message.method.startsWith("Input.")) {
+      inputAt.set(message.tabId, Date.now());
+      if (startsInput(message)) {
+        return noteWindow(message.tabId).then(() => {
+          check();
+          return transport.command(message.method, message.params);
+        });
+      }
+    }
     return transport.command(message.method, message.params);
   }
 

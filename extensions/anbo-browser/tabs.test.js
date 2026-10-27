@@ -665,6 +665,46 @@ describe("tabs a page Anbo drives opens", () => {
     expect(state.api.tabs.update).toHaveBeenCalledWith(11, { active: true });
   });
 
+  it("puts a minimized window back when an agent's key opens a tab from it", async () => {
+    // Round 68 (R68-2): Chrome brought its minimized window over the user's
+    // terminal for a tab an agent's Ctrl+Enter opened behind.
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    let shown = "minimized";
+    state.api.windows.get.mockImplementation(async (id) => ({ id, type: "normal", incognito: false, state: shown, focused: shown !== "minimized" }));
+    await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter", modifiers: 2 });
+    shown = "normal";
+    state.manager.created(openedTab(state, 13, { active: false }));
+    await vi.waitFor(() => expect(state.api.windows.update).toHaveBeenCalledWith(20, { state: "minimized" }));
+    await vi.waitFor(() => expect(state.selected.has(13)).toBe(true));
+  });
+
+  it("sends a window back behind the user's when an agent's press opened a tab and it took the focus", async () => {
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    let focused = false;
+    state.api.windows.get.mockImplementation(async (id) => ({ id, type: "normal", incognito: false, state: "normal", focused }));
+    await state.run("Input.dispatchMouseEvent", 10, { type: "mousePressed", x: 5, y: 5, button: "left" });
+    focused = true;
+    state.manager.created(openedTab(state, 13));
+    await vi.waitFor(() => expect(state.api.windows.update).toHaveBeenCalledWith(20, { focused: false }));
+  });
+
+  it("leaves the window as it is for the user's own tab, or when the browser had the focus before", async () => {
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    state.api.windows.get.mockImplementation(async (id) => ({ id, type: "normal", incognito: false, state: "normal", focused: true }));
+    // The user's own click in the browser: no input from Anbo before it.
+    state.manager.created(openedTab(state, 13), true);
+    // An agent's key while the user was in the browser itself.
+    await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter" });
+    state.manager.created(openedTab(state, 14));
+    await vi.waitFor(() => expect(state.selected.has(14)).toBe(true));
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(state.api.windows.update).not.toHaveBeenCalledWith(20, { state: "minimized" });
+    expect(state.api.windows.update).not.toHaveBeenCalledWith(20, { focused: false });
+  });
+
   it("leaves to the browser a tab the user opens there from a tab Anbo holds but does not show", async () => {
     const state = harness();
     await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
