@@ -112,6 +112,28 @@ fn capture_plan(full_page: bool, timeout: Duration) -> CapturePlan {
     }
 }
 
+/// A capture the page has to draw a frame for, its picture dropped. A Chrome or
+/// Edge page its browser does not show keeps a cleared viewport override in its
+/// layout until it draws or reloads, and one such capture laid it out at its
+/// own size in 77 ms (round 68, R68-4). Anbo's own pages lay out at once.
+pub async fn draw_frame(target: &BrowserTarget, timeout: Duration) -> Result<(), String> {
+    let BrowserTarget::External {
+        target: external, ..
+    } = target
+    else {
+        return Ok(());
+    };
+    let cheap = ScreenshotEncoding {
+        format: "jpeg",
+        quality: Some(1),
+        clip: None,
+    };
+    external
+        .call_within("Page.captureScreenshot", cheap.protocol_params(), timeout)
+        .await
+        .map(|_| ())
+}
+
 /// A capture whose Chrome or Edge page gets `timeout` to draw a frame.
 pub async fn capture_screenshot_within(
     target: &BrowserTarget,

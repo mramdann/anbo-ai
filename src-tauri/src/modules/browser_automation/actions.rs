@@ -103,7 +103,30 @@ fn emulated_tabs() -> std::sync::MutexGuard<'static, EmulatedTabs> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-const SEEN_BY_PAGE_JS: &str = "({innerWidth: innerWidth, innerHeight: innerHeight, devicePixelRatio: devicePixelRatio, maxTouchPoints: navigator.maxTouchPoints})";
+/// Tabs where a capture Anbo sent may still wait for a frame: one that timed
+/// out, or was refused because the one before it still waited. Chromium puts
+/// back the device metrics such a capture started with once it ends, and a
+/// viewport change makes it end (round 68, R68-4).
+static PENDING_CAPTURES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<i64>>> =
+    std::sync::OnceLock::new();
+
+fn pending_captures() -> std::sync::MutexGuard<'static, std::collections::HashSet<i64>> {
+    PENDING_CAPTURES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// How long a capture's own frame may take to come in for a page that has to
+/// lay out at a cleared override's size: it came in 77 ms (Oct 28 2026).
+const LAYOUT_FRAME_TIMEOUT: Duration = Duration::from_millis(1_500);
+/// How long a waiting capture may take to put its size back after a viewport
+/// change: it did so about 0.1 s after the change.
+const SIZE_BACK_WINDOW: Duration = Duration::from_millis(400);
+
+const STILL_EMULATED_NOTE: &str = "this Chrome/Edge page is not shown in its browser and still lays out at the emulated size; it takes its own size once its browser shows it, or after browser_reload";
+
+const SEEN_BY_PAGE_JS: &str = "({innerWidth: innerWidth, innerHeight: innerHeight, clientWidth: document.documentElement.clientWidth, clientHeight: document.documentElement.clientHeight, devicePixelRatio: devicePixelRatio, maxTouchPoints: navigator.maxTouchPoints})";
 
 /// What the page itself reads of its viewport (see the emulate action).
 async fn seen_by_page(webview: &Webview) -> Option<Value> {
@@ -149,6 +172,36 @@ async fn seen_by_page_after_clear(
             return seen;
         }
         previous = size;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// One read of the page after a viewport change: whether the size it had
+/// before is back after the page had left it.
+fn back_again(size: Option<(i64, i64)>, prior: (i64, i64), left: &mut bool) -> bool {
+    if size == Some(prior) {
+        return *left;
+    }
+    *left = true;
+    false
+}
+
+/// Whether the size the page had before a viewport change comes back within
+/// SIZE_BACK_WINDOW, or is still there at its end.
+async fn size_came_back(webview: &Webview, prior: Option<(i64, i64)>) -> bool {
+    let Some(prior) = prior else {
+        return false;
+    };
+    let deadline = tokio::time::Instant::now() + SIZE_BACK_WINDOW;
+    let mut left = false;
+    loop {
+        let size = seen_by_page(webview).await.as_ref().and_then(seen_size);
+        if back_again(size, prior, &mut left) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return size == Some(prior);
+        }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
@@ -3072,21 +3125,47 @@ async fn handle_action_attempt(
             // the page's own, kept for when that override is cleared.
             let had = emulated_tabs().get(&tab_id).copied();
             let clearing = width == 0 && had.is_some();
-            let before = if clearing || (width > 0 && had.is_none()) {
+            let external = matches!(webview, Webview::External { .. });
+            let before = if clearing || (width > 0 && had.is_none()) || external {
                 seen_by_page(&webview).await.as_ref().and_then(seen_size)
             } else {
                 None
             };
-            super::registry::apply_viewport(
-                &webview,
-                width as u32,
-                height as u32,
-                scale,
-                mobile,
-                fit,
-            )
-            .await
-            .map_err(|e| (error_codes::INTERNAL.to_string(), e))?;
+            let apply = || {
+                super::registry::apply_viewport(
+                    &webview,
+                    width as u32,
+                    height as u32,
+                    scale,
+                    mobile,
+                    fit,
+                )
+            };
+            apply()
+                .await
+                .map_err(|e| (error_codes::INTERNAL.to_string(), e))?;
+            // A Chrome or Edge page its browser does not show (R68-4): a
+            // capture still waiting there for a frame ends on this change and
+            // puts back the size it started with, about 0.1 s later, and a
+            // cleared override leaves the layout only once the page draws. So a
+            // change the old size came back over is made once more, and a page
+            // still at a cleared override's size draws one frame.
+            if external {
+                if pending_captures().remove(&tab_id) && size_came_back(&webview, before).await {
+                    apply()
+                        .await
+                        .map_err(|e| (error_codes::INTERNAL.to_string(), e))?;
+                }
+                if clearing
+                    && before.is_some()
+                    && seen_by_page(&webview).await.as_ref().and_then(seen_size) == before
+                    && super::cdp::draw_frame(&webview, LAYOUT_FRAME_TIMEOUT)
+                        .await
+                        .is_err()
+                {
+                    pending_captures().insert(tab_id);
+                }
+            }
             // Report what the page ended up with, not just what was asked
             // for: an override that silently failed to apply would otherwise
             // look identical to one that worked.
@@ -3115,7 +3194,7 @@ async fn handle_action_attempt(
             } else {
                 seen_by_page(&webview).await
             };
-            Ok(json!({
+            let mut reply = json!({
                 "tabId": tab_id,
                 "emulating": width > 0,
                 "width": width,
@@ -3125,7 +3204,15 @@ async fn handle_action_attempt(
                 "fit": fit,
                 "applied": applied,
                 "seenByPage": seen_by_page,
-            }))
+            });
+            if external
+                && clearing
+                && before.is_some()
+                && seen_by_page.as_ref().and_then(seen_size) == before
+            {
+                reply["note"] = json!(STILL_EMULATED_NOTE);
+            }
+            Ok(reply)
         }
 
         "screenshot" => {
@@ -3243,6 +3330,7 @@ async fn handle_action_attempt(
             .await
             .map_err(|e| {
                 if unshown_capture_failure(shown, &e) {
+                    pending_captures().insert(tab_id);
                     (
                         error_codes::INPUT_NOT_READY.to_string(),
                         match &not_shown_for_capture {
@@ -3258,6 +3346,9 @@ async fn handle_action_attempt(
                     (error_codes::CDP_FAILED.to_string(), e)
                 }
             })?;
+            // The extension takes one capture per tab at a time, so none waits
+            // there any more.
+            pending_captures().remove(&tab_id);
             let bytes = decode_screenshot_response(&response)
                 .map_err(|e| (error_codes::CDP_FAILED.to_string(), e))?;
             let capture = super::artifacts::Capture {
@@ -12265,6 +12356,21 @@ mod workspace_scope_tests {
         assert!(unshown_capture_failure(false, pending));
         assert!(!unshown_capture_failure(true, timed_out));
         assert!(!unshown_capture_failure(false, "browser tab 7 not found"));
+    }
+
+    #[test]
+    fn a_size_put_back_after_a_viewport_change_is_seen() {
+        // Round 68 (R68-4): a hidden Chrome page read 984x665 right after the
+        // reset, then 375x812 again 0.1 s later, when a capture that had waited
+        // for a frame since before the reset ended.
+        let phone = (375, 812);
+        let mut left = false;
+        assert!(!back_again(Some((984, 665)), phone, &mut left));
+        assert!(back_again(Some(phone), phone, &mut left));
+        // A page still at the old size has not had it put back (yet).
+        let mut left = false;
+        assert!(!back_again(Some(phone), phone, &mut left));
+        assert!(!back_again(Some(phone), phone, &mut left));
     }
 
     #[test]
