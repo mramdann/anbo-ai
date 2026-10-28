@@ -179,6 +179,9 @@ const CODEX_OPTION_CURSOR = /^\s*›\s*\d+\.\s/;
 const CODEX_MENU = /esc back|enter select/;
 // Transcript cells: the agent's "• …" and the user's own "› …" message.
 const CODEX_ACTIVITY = /^\s{0,2}[•›]\s+\S/;
+const CODEX_USER_MESSAGE = /^\s{0,2}›\s+\S/;
+// The session banner, in a box before 0.164: "│ >_ OpenAI Codex (v0.157.1)".
+const CODEX_BANNER = /^[\s│]*>_ OpenAI Codex\b/;
 // 0.156 separates the time with "·", 0.159 with "•".
 const CODEX_TURN_END =
   /^\s{0,2}(?:[─━-]+\s*)?Worked for (?:\d{1,4}h )?(?:\d{1,4}m )?\d{1,4}(?:\.\d{1,3})?s(?:\s*[·•]\s*(?:[A-Z][a-z]{2} \d{1,2}(?:, \d{4})? at )?\d{1,2}:\d{2}(?:\s*[AP]M)?)?\s*[─━-]*\s*$|^\s{0,2}(?:[A-Z][a-z]{2} \d{1,2}(?:, \d{4})? at )?\d{1,2}:\d{2}(?:\s*[AP]M)?\s*$|^\s{0,2}■\s+Conversation interrupted/i;
@@ -213,7 +216,16 @@ function readCodex(rows: Rows, evidence: TurnEvidence): AgentScreenReading {
   // The composer row itself looks like a user message, so activity is read
   // from the transcript above it; a turn-end row counts wherever it is.
   const transcript = composer < 0 ? rows : rows.slice(0, composer);
-  const unfinished = lastIndex(transcript, CODEX_ACTIVITY) > endAt;
+  // Before its first message a session's "• " cells are notices, such as
+  // 0.164's "• You have 1 usage limit reset available." above its banner: no
+  // rollout turn yet, the banner on screen and no message under it.
+  const banner = lastIndex(transcript, CODEX_BANNER);
+  const beforeFirstTurn =
+    evidence === null &&
+    banner >= 0 &&
+    !any(transcript.slice(banner), CODEX_USER_MESSAGE);
+  const unfinished =
+    !beforeFirstTurn && lastIndex(transcript, CODEX_ACTIVITY) > endAt;
   // An open rollout turn is work, unless the screen already closed it: an
   // interrupted turn may never be recorded as finished.
   if (evidence === "running" && unfinished) {

@@ -274,6 +274,23 @@ describe("agent messages", () => {
     ).toBe(false);
   });
 
+  it("takes a fresh Codex whose screen starts with a notice", () => {
+    // Round 70 (R70-2): agent_send to a just-spawned Codex timed out after
+    // 30 s because its "• You have 1 usage limit reset available." read as
+    // an unfinished turn, and a session with no turn has no rollout yet.
+    const screen = agentScreens.codexFreshNotice.join("\n");
+    expect(isAgentTuiReady("codex", screen)).toBe(true);
+    expect(
+      isAgentTuiReady(
+        "codex",
+        screen.replace(
+          "› Ask Codex",
+          "› Baca app.js\n\n• Saya akan membaca app.js.\n\n› Ask Codex",
+        ),
+      ),
+    ).toBe(false);
+  });
+
   it("reports the callsign the workspace gave the agent, not the CLI label", () => {
     // "codex:11" says which CLI and which tab. It is an address, not a name.
     const space = { id: "sp-1", root: "C:/work" };

@@ -714,6 +714,35 @@ const codexResumedDated: readonly string[] = [
   "  ? for shortcuts                                                                    ⚠ 1 warning · f2 to view ",
 ];
 
+/** a session no message has reached yet, with a notice above its banner
+ *  (Codex 0.164, captured 2026-10-28) */
+const codexFreshNotice: readonly string[] = [
+  "• You have 1 usage limit reset available. Run /usage to use one.",
+  " ",
+  " ",
+  "  >_ OpenAI Codex (v0.164.0)",
+  "     D:\\work\\demo",
+  "  permissions: YOLO mode",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "› Ask Codex to do anything",
+  "",
+  "  GPT-6.1-Sol xhigh · D:\\work\\demo · Context 0% used …",
+  "  ? for shortcuts                                      ⚠ 1 warning · f2 to view",
+];
+
 /** interrupted, background terminal left running */
 const codexInterrupted: readonly string[] = [
   "• Ran Set-Content -LiteralPath 'catatan.txt' -Value 'halo' -NoNewline",
@@ -1393,6 +1422,7 @@ export const agentScreens = {
   codexApproval,
   codexPermissionsMenu,
   codexResumedDated,
+  codexFreshNotice,
   codexInterrupted,
   kimiTrust,
   kimiTrustProjectMcp,

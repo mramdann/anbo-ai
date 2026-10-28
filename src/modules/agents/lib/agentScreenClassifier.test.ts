@@ -309,6 +309,43 @@ describe("codex", () => {
     });
   });
 
+  it("reads a session's notice before its first message as no turn", () => {
+    expect(readAgentScreen("codex", text("codexFreshNotice"))).toMatchObject({
+      state: "ready",
+      settling: false,
+    });
+    // A turn the rollout has open still counts.
+    expect(
+      classifyAgentScreen("codex", text("codexFreshNotice"), "running"),
+    ).toBe("working");
+  });
+
+  it("still reads the first turn under the banner", () => {
+    const composer = /^› Ask Codex to do anything/;
+    const first = (rows: string[]) =>
+      withTranscript("codexFreshNotice", composer, [
+        "› Baca app.js",
+        "",
+        ...rows,
+        "",
+      ]);
+    expect(
+      readAgentScreen("codex", first(["• Saya akan membaca app.js."])),
+    ).toMatchObject({ state: "ready", settling: true });
+    expect(
+      classifyAgentScreen(
+        "codex",
+        first(["• Working (3s • esc to interrupt)"]),
+      ),
+    ).toBe("working");
+    expect(
+      readAgentScreen(
+        "codex",
+        first(["• Tiga saran untuk app.js.", "", "  Worked for 12s • 17:35"]),
+      ).settling,
+    ).toBe(false);
+  });
+
   it("trusts an open rollout turn unless the screen already closed it", () => {
     expect(
       classifyAgentScreen("codex", text("codexCommentary"), "running"),
