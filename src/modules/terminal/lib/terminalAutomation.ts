@@ -94,6 +94,8 @@ export type TerminalAutomationDependencies = {
   getSessions: () => Record<number, AgentSession>;
   getActiveTabId: () => number | null;
   getBuffer: (leafId: number) => string | null;
+  /** The bottom of the terminal as the rows it draws, wrapped rows unjoined. */
+  getScreen?: (leafId: number) => string | null;
   /** The terminal's whole scrollback, for finding a command's start once a
    *  burst of output scrolled it out of getBuffer's lines. */
   getHistory?: (leafId: number) => string | null;
@@ -1783,8 +1785,13 @@ export function createTerminalAutomationService(
             `${target.terminal.terminalId} is starting, so no Ctrl+C was sent: one before the shell's first prompt can end the shell. Wait until terminal_list shows it idle.`,
           );
         }
-        // A pager quits on q and ignores Ctrl+C.
-        if (pagerOnScreen(deps.getBuffer(target.terminal.leafId) ?? "")) {
+        // A pager quits on q and ignores Ctrl+C. The buffer joins less's ":"
+        // onto a full-width row above it, so the drawn rows are read first.
+        const leafId = target.terminal.leafId;
+        if (
+          pagerOnScreen(deps.getScreen?.(leafId) ?? "") ||
+          pagerOnScreen(deps.getBuffer(leafId) ?? "")
+        ) {
           if (execution) {
             execution.interruptRequested = true;
             execution.interruptSentAt = Date.now();

@@ -2945,6 +2945,58 @@ describe("a pager in a terminal", () => {
     expect(write).toHaveBeenLastCalledWith("q");
     expect(write).not.toHaveBeenCalledWith("\x03");
   });
+
+  it("finds less's prompt under a full-width row", async () => {
+    // Round 70 (R70-3): over 80-column rows the buffer joined the ":" onto
+    // the row above, Anbo sent Ctrl+C, and less held the terminal for good.
+    const row = `+baris 004 ${"x".repeat(69)}`;
+    const write = vi.fn((_data: string) => true);
+    let running = false;
+    const service = createTerminalAutomationService(
+      dependencies({
+        getBuffer: () =>
+          running
+            ? `diff --git a/x b/x\n${row}${row}:`
+            : "PS C:\\work\\alpha> ",
+        getScreen: () =>
+          running
+            ? `diff --git a/x b/x\n${row}\n${row}\n:`
+            : "PS C:\\work\\alpha> ",
+        getSessionState: () => ({
+          ready: true,
+          shellExited: false,
+          commandRunning: running,
+          blockMode: running ? "running" : "prompt",
+          commandGeneration: 2,
+          commandCompletions: [],
+          lastExitCode: 0,
+          shell: "pwsh",
+          inputPending: false,
+        }),
+        write: (_leafId: number, data: string) => {
+          write(data);
+          if (data === "git log -p\r") running = true;
+          return true;
+        },
+      }),
+    );
+    const executed = await service.handle("terminal_execute", {
+      workspace: workspaceRoot,
+      terminalId: "terminal:10:101",
+      text: "git log -p",
+    });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 400));
+    expect(pagerOnScreen(`${row}${row}:`)).toBe(false);
+    await expect(
+      service.handle("terminal_interrupt", {
+        workspace: workspaceRoot,
+        terminalId: "terminal:10:101",
+        executionId: (executed.result as { executionId: string }).executionId,
+      }),
+    ).resolves.toMatchObject({ result: { ok: true, quitPager: true } });
+    expect(write).toHaveBeenLastCalledWith("q");
+    expect(write).not.toHaveBeenCalledWith("\x03");
+  });
 });
 
 describe("terminals whose output stopped reaching Anbo", () => {
