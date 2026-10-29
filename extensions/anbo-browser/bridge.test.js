@@ -42,7 +42,7 @@ function command(overrides = {}) {
 function harness(tabs = [10]) {
   const attached = new Map(tabs.map((id) => [id, { selectionId: "lease" }]));
   const api = {
-    debugger: { sendCommand: vi.fn(async () => ({ value: "ok" })), detach: vi.fn(async () => {}) },
+    debugger: { sendCommand: vi.fn(async () => ({ value: "ok" })), detach: vi.fn(async () => {}), getTargets: vi.fn(async () => []) },
     tabs: { update: vi.fn(async () => ({ windowId: 20 })), get: vi.fn(async (id) => ({ id, windowId: 20, active: false })) },
     windows: { update: vi.fn(async () => ({})), get: vi.fn(async (id) => ({ id, state: "normal" })) },
   };
@@ -265,10 +265,11 @@ describe("external browser bridge", () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it("lets go of a tab whose command never finishes", async () => {
+  it("lets go of a tab whose command never finishes once the browser no longer has it", async () => {
     vi.useFakeTimers();
     try {
       const state = harness([10, 11]);
+      state.api.tabs.get.mockRejectedValue(new Error("No tab with id: 10."));
       state.api.debugger.sendCommand.mockImplementationOnce(() => new Promise(() => {}));
       const stuck = state.dispatch(command({ method: "Input.insertText", params: { text: "x" } }));
       await vi.advanceTimersByTimeAsync(10_000);
@@ -281,6 +282,67 @@ describe("external browser bridge", () => {
       expect(state.attached.has(11)).toBe(true);
       expect(state.api.debugger.detach).toHaveBeenCalledExactlyOnceWith({ tabId: 10 });
       expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps a tab whose page stays busy, and sends its later commands to the page", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = harness([10, 11]);
+      state.api.debugger.getTargets.mockImplementation(async () => [{ tabId: 10, attached: true }, { tabId: 11, attached: true }]);
+      let complete;
+      state.api.debugger.sendCommand.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+      const busy = state.dispatch(command({ params: { expression: "scan()" } }));
+      await vi.advanceTimersByTimeAsync(10_000);
+      await busy;
+      expect(state.replies[0].error).toContain("timed out");
+      await vi.advanceTimersByTimeAsync(STUCK_MS);
+      expect(state.attached.has(10)).toBe(true);
+      expect(state.api.debugger.detach).not.toHaveBeenCalled();
+      // The next command is sent to the page, not refused as waiting behind it.
+      await state.dispatch(command({ id: 2 }));
+      expect(state.api.debugger.sendCommand).toHaveBeenCalledTimes(2);
+      expect(state.replies.at(-1)).toEqual({ type: "reply", id: 2, result: { value: "ok" } });
+      complete({ value: "late" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(state.replies).toHaveLength(2);
+      expect(state.attached.has(10)).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("lets go of a busy tab Anbo's debugger is no longer on", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = harness();
+      state.api.debugger.getTargets.mockImplementation(async () => [{ tabId: 10, attached: false }]);
+      state.api.debugger.sendCommand.mockImplementationOnce(() => new Promise(() => {}));
+      const stuck = state.dispatch(command());
+      await vi.advanceTimersByTimeAsync(10_000 + STUCK_MS);
+      await stuck;
+      expect(state.attached.has(10)).toBe(false);
+      expect(state.api.debugger.detach).toHaveBeenCalledExactlyOnceWith({ tabId: 10 });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps a tab whose command finished while the browser was asked about it", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = harness();
+      let complete;
+      let answer;
+      state.api.debugger.sendCommand.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+      state.api.debugger.getTargets.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+      const slow = state.dispatch(command());
+      await vi.advanceTimersByTimeAsync(10_000 + STUCK_MS);
+      await slow;
+      expect(answer).toBeTypeOf("function");
+      complete({});
+      await vi.advanceTimersByTimeAsync(0);
+      answer([]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(state.attached.has(10)).toBe(true);
+      expect(state.api.debugger.detach).not.toHaveBeenCalled();
     } finally { vi.useRealTimers(); }
   });
 

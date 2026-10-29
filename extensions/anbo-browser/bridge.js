@@ -15,7 +15,8 @@ const TAB_METHODS = new Set(["anbo.selectTab", "anbo.releaseTab", "anbo.closeTab
 const CONTROL_METHODS = new Set(["anbo.focusTab", "anbo.tabState", "anbo.dockPrepare", "anbo.dockCommit", "anbo.dockRelease", "anbo.dockSwap"]);
 // A command past its deadline can still finish in the page, so the tab's next
 // command waits for it. One still running this long after its deadline means
-// the tab stopped answering, and the tab is let go.
+// the tab stopped answering, and the tab is let go, unless the browser still
+// has it with Anbo's debugger on it: that page is only busy.
 export const STUCK_MS = 20_000;
 const TIMED_OUT = "Browser command timed out; the tab stays connected. It was not replayed and may still finish, so check the page before repeating it.";
 const STILL_RUNNING = "An earlier command on this tab is still running, so this one was not sent. Check the page before trying again.";
@@ -171,6 +172,20 @@ export function webUrl(address) {
   return url.href;
 }
 
+/** Whether the browser still has the tab, with its page and Anbo's debugger
+ * on it. A command there that is still running long past its deadline then
+ * waits on a busy page (a long script), not on a tab that is gone. */
+async function stillThere(api, tabId) {
+  try {
+    const tab = await api.tabs.get(tabId);
+    if (!tab || tab.discarded === true) return false;
+    const targets = await api.debugger.getTargets();
+    return targets.some((target) => target.tabId === tabId && target.attached === true);
+  } catch {
+    return false;
+  }
+}
+
 /** Resolves once `previous` does, or fails with `busy` when `expiresAt` comes first. */
 function turnAfter(previous, expiresAt, busy) {
   let timer;
@@ -227,20 +242,27 @@ export function createDispatcher(api, attached, send, active, controls) {
       if (capture && (captures.has(message.tabId) || captures.size >= 32)) throw new Error("A previous screenshot is still pending. Tab control remains connected; show the browser tab before trying another capture.");
       let timer;
       let stuck;
+      let finished = false;
+      // A page that only stays busy keeps its tab: the command goes on there,
+      // and the tab's later commands go to the page and wait there, each up to
+      // its own deadline. Letting go cost agents a tab whose page ran a long
+      // script (round 70, R70-4).
+      const stop = async () => {
+        const gone = attached.get(message.tabId) === selection && !(await stillThere(api, message.tabId));
+        if (gone && !finished && attached.get(message.tabId) === selection) {
+          if (controls?.expire) controls.expire(message.tabId, selection);
+          else {
+            attached.delete(message.tabId);
+            void api.debugger.detach({ tabId: message.tabId }).catch(() => {});
+          }
+        }
+        release();
+      };
       const deadline = new Promise((_, reject) => {
         timer = setTimeout(() => {
           expired = true;
           if (!readonlyCapture) {
-            stuck = setTimeout(() => {
-              if (attached.get(message.tabId) === selection) {
-                if (controls?.expire) controls.expire(message.tabId, selection);
-                else {
-                  attached.delete(message.tabId);
-                  void api.debugger.detach({ tabId: message.tabId }).catch(() => {});
-                }
-              }
-              release();
-            }, STUCK_MS);
+            stuck = setTimeout(() => void stop(), STUCK_MS);
           }
           reject(new Error(readonlyCapture ? CAPTURE_TIMED_OUT : TIMED_OUT));
         }, Math.max(0, message.expiresAt - Date.now()));
@@ -271,6 +293,7 @@ export function createDispatcher(api, attached, send, active, controls) {
       if (!readonlyCapture) {
         holding = true;
         const settled = () => {
+          finished = true;
           clearTimeout(stuck);
           release();
         };
