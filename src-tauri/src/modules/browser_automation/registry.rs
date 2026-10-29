@@ -79,16 +79,29 @@ pub fn get_embed_webview(app: &AppHandle, tab_id: i64) -> Result<BrowserTarget, 
     // A tab a page opened in the background is in Anbo before its page has
     // started, which can wait for memory: "webview window ... unavailable"
     // for 10 to 75 s said neither why nor whether a retry would help.
-    let webview = app.get_webview(&label).ok_or_else(|| match embed::spawn_failure(tab_id) {
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| unstarted_page(tab_id, embed::spawn_failure(tab_id)))?;
+    super::activity::stage("running");
+    Ok(webview.into())
+}
+
+fn unstarted_page(tab_id: i64, failure: Option<String>) -> String {
+    match failure {
         Some(reason) => format!(
             "tab {tab_id}'s page could not start: {reason}. Anbo starts it again when memory allows; retry, or close tabs you no longer need"
         ),
         None => format!(
             "tab {tab_id}'s page has not started yet (a tab opened in the background starts when Anbo has room for it); retry in a moment"
         ),
-    })?;
-    super::activity::stage("running");
-    Ok(webview.into())
+    }
+}
+
+/// Whether a tab lookup failed because the tab's page could not start for lack
+/// of memory. Such a call answers `resource_exhausted`, as an open short of
+/// memory does, not `tab_not_found` for a tab that is still there (round 70).
+pub fn short_of_memory(message: &str) -> bool {
+    message.contains("'s page could not start: resource_exhausted")
 }
 
 pub fn active_navigation_generation(tab_id: i64) -> Option<u64> {
@@ -196,6 +209,21 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         let gone = dir.to_string_lossy().into_owned();
         assert_eq!(canonical_root(&gone), std::path::PathBuf::from(&gone));
+    }
+
+    #[test]
+    fn a_page_that_could_not_start_for_memory_reads_as_short_of_memory() {
+        // Measured (round 70): "[tab_not_found] tab 490's page could not start:
+        // resource_exhausted ..." for a tab that was still in Anbo.
+        let memory = unstarted_page(490, Some("resource_exhausted: not enough memory".into()));
+        assert!(memory.starts_with("tab 490's page could not start: resource_exhausted"));
+        assert!(short_of_memory(&memory));
+        assert!(!short_of_memory(&unstarted_page(
+            490,
+            Some("the browser could not start".into())
+        )));
+        assert!(!short_of_memory(&unstarted_page(490, None)));
+        assert!(!short_of_memory("tab 490 not found or closed"));
     }
 
     #[test]

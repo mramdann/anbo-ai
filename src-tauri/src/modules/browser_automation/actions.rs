@@ -462,6 +462,11 @@ pub async fn handle_action_as(
             error_codes::TAB_NOT_FOUND.to_string(),
             lost_page_answer(tab),
         )),
+        (Err((code, message)), Some(_), _)
+            if code == error_codes::TAB_NOT_FOUND && super::registry::short_of_memory(&message) =>
+        {
+            Err(("resource_exhausted".to_string(), message))
+        }
         (Err((code, message)), Some(tab), _)
             if (code == error_codes::TIMEOUT || code == error_codes::NOT_FOUND)
                 && waits_on_page =>
