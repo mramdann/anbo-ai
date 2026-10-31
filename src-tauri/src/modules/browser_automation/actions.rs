@@ -3340,17 +3340,19 @@ async fn handle_action_attempt(
             let shown =
                 pointer_turn.is_some() || super::external_front::capture_shown(&webview).await;
             let _design_layer = super::design::hide_for_capture(&webview).await;
-            let response = super::cdp::capture_screenshot_within(
-                &webview,
-                encoding,
-                if shown {
-                    SHOWN_CAPTURE_TIMEOUT
-                } else {
-                    UNSHOWN_CAPTURE_TIMEOUT
-                },
-            )
-            .await
-            .map_err(|e| {
+            // Such a page draws for the capture only while something on it
+            // changes (`cdp.rs` CAPTURE_PAINT_JS).
+            let painting = !shown && super::cdp::begin_capture_paint(&webview).await;
+            let captured = if shown {
+                super::cdp::capture_screenshot_within(&webview, encoding, SHOWN_CAPTURE_TIMEOUT)
+                    .await
+            } else {
+                unshown_capture(&webview, encoding).await
+            };
+            if painting {
+                super::cdp::end_capture_paint(&webview).await;
+            }
+            let response = captured.map_err(|e| {
                 if unshown_capture_failure(shown, &e) {
                     pending_captures().insert(tab_id);
                     (
@@ -4279,8 +4281,37 @@ fn resolve_requested_workspace(params: &Value) -> Result<PathBuf, (String, Strin
 /// take.
 const SHOWN_CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a Chrome or Edge page its browser does not show gets to draw a
-/// frame for a capture. One behind the dock's page answered in 0.3 s.
-const UNSHOWN_CAPTURE_TIMEOUT: Duration = Duration::from_secs(3);
+/// frame for a capture. One behind the dock's page answered in 0.3 s, one in a
+/// minimized window with the capture's paint in 0.06 to 1.1 s; pages typed
+/// into, their caret the only change, took 2.6 to 4.5 s in the round 72 soak,
+/// where the 3 s this was refused about half of them (R72-2).
+const UNSHOWN_CAPTURE_TIMEOUT: Duration = Duration::from_secs(6);
+
+/// How soon a capture that found the tab's last one still waiting for a frame
+/// is sent again.
+const PENDING_CAPTURE_RETRY: Duration = Duration::from_millis(250);
+
+/// A capture of a Chrome or Edge page its browser does not show, within
+/// UNSHOWN_CAPTURE_TIMEOUT. One that finds the tab's last capture still waiting
+/// in the browser for a frame is sent again while the capture's paint lets
+/// that one finish: an emulate reset's own capture on a hidden page an agent's
+/// input had left focus emulated, where frames came in 1 to 4 s, waited out its
+/// 1.5 s, and the capture right after it was refused at once (round 73).
+async fn unshown_capture(
+    webview: &Webview,
+    encoding: super::cdp::ScreenshotEncoding,
+) -> Result<String, String> {
+    let deadline = tokio::time::Instant::now() + UNSHOWN_CAPTURE_TIMEOUT;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match super::cdp::capture_screenshot_within(webview, encoding, left).await {
+            Err(error) if error.contains("still pending") && left > 2 * PENDING_CAPTURE_RETRY => {
+                tokio::time::sleep(PENDING_CAPTURE_RETRY).await;
+            }
+            answer => return answer,
+        }
+    }
+}
 
 /// A capture of a page its browser did not show that ran out of time, or
 /// found the last such capture still waiting for a frame.

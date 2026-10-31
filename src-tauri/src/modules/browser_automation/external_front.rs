@@ -201,26 +201,20 @@ fn docked_live(tab_id: i64) -> bool {
 
 /// Why a capture of a Chrome or Edge page its browser does not show is
 /// refused.
-pub const NOT_SHOWN_FOR_CAPTURE: &str = "this Chrome/Edge tab is not shown in its browser, so its page draws nothing to capture; nothing was captured. Anbo brings such a tab forward for a capture, as for a click, only while its workspace is shown and the user is in Anbo. Read the page with browser_snapshot or browser_get_text, or capture again once the tab can be shown.";
+pub const NOT_SHOWN_FOR_CAPTURE: &str = "this Chrome/Edge tab is not shown in its browser, and its page drew no frame for the capture in time; nothing was captured. A hidden page draws slowly, and capturing again in a moment often works. Anbo brings such a tab forward for a capture, as for a click, only while its workspace is shown and the user is in Anbo. Read the page with browser_snapshot or browser_get_text if the picture is not needed.";
 
 /// Whether a capture of a Chrome or Edge page should answer at once: its
-/// browser draws the page, or has it in front of a window that is not
-/// minimized. A page behind another tab of its window can still be captured
-/// while that window draws (one behind the dock's page), but not in a window
-/// that Anbo covers (a tab Anbo has not docked, as one opened in a workspace
-/// that was then hidden): that capture waited 10 s for a frame, and every
-/// retry was refused as still pending (round 60).
+/// browser has it in front of a window that is not minimized. A page behind
+/// another tab of its window can still be captured while that window draws
+/// (one behind the dock's page), but not in a window that Anbo covers (a tab
+/// Anbo has not docked, as one opened in a workspace that was then hidden):
+/// that capture waited 10 s for a frame, and every retry was refused as still
+/// pending (round 60). A hidden page an agent's input left focus emulated
+/// draws as if shown, and counting it shown gave it the 10 s and then "show
+/// the browser tab", where the same page without the emulation was told it was
+/// not shown (round 72, R72-2): it takes the hidden page's try too.
 pub async fn capture_shown(target: &BrowserTarget) -> bool {
-    if !matches!(target, BrowserTarget::External { .. }) {
-        return true;
-    }
-    let drawn = tokio::time::timeout(
-        Duration::from_millis(600),
-        super::ref_context::execute_awaited(target, None, DRAWN_JS),
-    )
-    .await
-    .is_ok_and(|state| state.is_ok_and(|state| state == "\"drawn\""));
-    drawn || in_front(target).await
+    !matches!(target, BrowserTarget::External { .. }) || in_front(target).await
 }
 
 async fn page_shown(target: &BrowserTarget) -> bool {

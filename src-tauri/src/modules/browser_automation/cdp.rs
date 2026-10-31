@@ -115,7 +115,11 @@ fn capture_plan(full_page: bool, timeout: Duration) -> CapturePlan {
 /// A capture the page has to draw a frame for, its picture dropped. A Chrome or
 /// Edge page its browser does not show keeps a cleared viewport override in its
 /// layout until it draws or reloads, and one such capture laid it out at its
-/// own size in 77 ms (round 68, R68-4). Anbo's own pages lay out at once.
+/// own size in 77 ms (round 68, R68-4). Anbo's own pages lay out at once. Like
+/// any capture of such a page it gets a frame only while something on the page
+/// changes, so it paints too: without, a hidden tab's reset after a 375 px
+/// emulation waited out its 1.5 s, kept the phone layout, and left the next
+/// capture refused as still pending (round 73).
 pub async fn draw_frame(target: &BrowserTarget, timeout: Duration) -> Result<(), String> {
     let BrowserTarget::External {
         target: external, ..
@@ -128,10 +132,61 @@ pub async fn draw_frame(target: &BrowserTarget, timeout: Duration) -> Result<(),
         quality: Some(1),
         clip: None,
     };
-    external
+    let painting = begin_capture_paint(target).await;
+    let drawn = external
         .call_within("Page.captureScreenshot", cheap.protocol_params(), timeout)
         .await
-        .map(|_| ())
+        .map(|_| ());
+    if painting {
+        end_capture_paint(target).await;
+    }
+    drawn
+}
+
+/// A pixel in the page's corner whose colour changes every frame, too faint
+/// to see in the picture. A Chrome or Edge page its browser does not show
+/// draws a frame for a capture only when something on it changes: in a
+/// minimized window a fresh page gave no frame in 8 s, with focus emulation or
+/// without, and with this pixel one in 55 ms to 1.1 s (round 73); a page typed
+/// into drew in 2.6 to 4.5 s, by its blinking caret (round 72, R72-2).
+const CAPTURE_PAINT_JS: &str = r#"(() => {
+    const paint = document.createElement('anbo-capture-paint');
+    paint.setAttribute('aria-hidden', 'true');
+    paint.style.cssText = 'position:fixed!important;right:0!important;bottom:0!important;width:1px!important;height:1px!important;margin:0!important;border:0!important;padding:0!important;z-index:2147483647!important;pointer-events:none!important;contain:strict!important;display:block!important;background:rgba(0,0,0,0.004)';
+    paint.animate([{ backgroundColor: 'rgba(0,0,0,0.004)' }, { backgroundColor: 'rgba(0,0,0,0.008)' }], { duration: 100, iterations: Infinity, direction: 'alternate' });
+    const root = document.documentElement || document.body;
+    if (!root) return false;
+    root.appendChild(paint);
+    return true;
+})()"#;
+const CAPTURE_PAINT_END_JS: &str =
+    "(() => { for (const paint of document.querySelectorAll('anbo-capture-paint')) paint.remove(); return true; })()";
+const CAPTURE_PAINT_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Puts CAPTURE_PAINT_JS's pixel on a Chrome or Edge page for a capture its
+/// browser does not show; true once it is there, for `end_capture_paint`.
+pub async fn begin_capture_paint(target: &BrowserTarget) -> bool {
+    matches!(target, BrowserTarget::External { .. })
+        && run_capture_paint(target, CAPTURE_PAINT_JS).await == Ok(true)
+}
+
+pub async fn end_capture_paint(target: &BrowserTarget) {
+    let _ = run_capture_paint(target, CAPTURE_PAINT_END_JS).await;
+}
+
+/// In Anbo's own world, where the page's scripts cannot reach the code, and
+/// without a user gesture, which would let the page open a window meanwhile.
+async fn run_capture_paint(target: &BrowserTarget, script: &str) -> Result<bool, String> {
+    let context = super::ref_context::main_context(target).await?;
+    let raw = call_devtools_protocol_method(
+        target,
+        "Runtime.evaluate",
+        &json!({"expression": script, "contextId": context, "returnByValue": true}).to_string(),
+        CAPTURE_PAINT_TIMEOUT,
+    )
+    .await?;
+    let payload: Value = super::page_json::from_str(&raw).map_err(|error| error.to_string())?;
+    Ok(payload["result"]["value"] == true)
 }
 
 /// A capture whose Chrome or Edge page gets `timeout` to draw a frame.
@@ -188,6 +243,23 @@ mod tests {
         // A page its browser draws gets the capture it asked for at once.
         assert_eq!(capture_plan(true, FULL_CAPTURE_BUDGET), CapturePlan::Whole);
         assert_eq!(capture_plan(false, FULL_CAPTURE_BUDGET), CapturePlan::Whole);
+    }
+
+    #[test]
+    fn the_capture_paint_is_a_faint_pixel_the_end_takes_away() {
+        // Round 73 (R72-2): a hidden page drew for a capture only while
+        // something on it changed.
+        for part in [
+            "createElement('anbo-capture-paint')",
+            "pointer-events:none!important",
+            "width:1px!important",
+            "rgba(0,0,0,0.004)",
+            "iterations: Infinity",
+        ] {
+            assert!(CAPTURE_PAINT_JS.contains(part), "{part}");
+        }
+        assert!(CAPTURE_PAINT_END_JS.contains("querySelectorAll('anbo-capture-paint')"));
+        assert!(CAPTURE_PAINT_END_JS.contains("paint.remove()"));
     }
 
     #[test]
