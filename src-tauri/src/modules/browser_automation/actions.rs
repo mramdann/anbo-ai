@@ -4284,8 +4284,11 @@ const SHOWN_CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
 /// frame for a capture. One behind the dock's page answered in 0.3 s, one in a
 /// minimized window with the capture's paint in 0.06 to 1.1 s; pages typed
 /// into, their caret the only change, took 2.6 to 4.5 s in the round 72 soak,
-/// where the 3 s this was refused about half of them (R72-2).
-const UNSHOWN_CAPTURE_TIMEOUT: Duration = Duration::from_secs(6);
+/// where the 3 s this was refused about half of them (R72-2). A page an agent's
+/// input left focus emulated draws slowly even with the paint: the capture right
+/// after an emulate reset there took 4.7 s of the 6 s this was (round 73), so
+/// a busier machine gets some room.
+const UNSHOWN_CAPTURE_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// How soon a capture that found the tab's last one still waiting for a frame
 /// is sent again.
