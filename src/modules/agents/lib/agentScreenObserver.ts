@@ -37,9 +37,17 @@ export type AgentScreenObserverOptions = {
    * waiting; null keeps the last phase instead.
    */
   settleUnknownMs?: number | null;
+  /**
+   * Hears, at most once a turn, a turn that stayed open past its screen's
+   * last sign of work: one an idle screen that kept changing held open until
+   * its CLI's limit, or one read as working on a screen that stopped changing.
+   * Such a turn kept an agent at working long after it answered, and nothing
+   * said why (round 72, R72-3).
+   */
+  note?: (message: string) => void;
 };
 
-type Turn = { startedAt: number; sawWork: boolean };
+type Turn = { startedAt: number; sawWork: boolean; noted?: boolean };
 
 type Entry = {
   leafId: number;
@@ -56,6 +64,8 @@ type Entry = {
   workingUntil: number;
   background: string | null;
   screen: string | null;
+  /** The screen before its last change, to name the row that moved. */
+  previousScreen: string | null;
   changedAt: number;
   /** The last reading and what it read; a screen that did not change reads
    * the same, so it is not run through the patterns again. */
@@ -73,6 +83,19 @@ const TYPED_LIMIT = 4_096;
 const NULL_SETTLE_MS = 10_000;
 /** How long a turn that looks unfinished (see `settling`) is given. */
 const SETTLING_HOLD_MS = 30_000;
+/**
+ * How long a CLI's idle reading may go on while its screen keeps changing
+ * before the turn counts as over anyway. Only for a CLI whose idle screen is
+ * never text still arriving: Antigravity shows a progress row or "esc to
+ * cancel" for as long as its model runs. In the round 72 soak one of 269
+ * Antigravity turns read as working for 12 min after it answered (R72-3).
+ */
+const MOVING_IDLE_LIMIT_MS: Record<string, number> = {
+  antigravity: 30_000,
+  agy: 30_000,
+};
+/** A turn read as working on a screen still for this long is noted. */
+const STILL_WORK_NOTE_MS = 5 * 60_000;
 
 /**
  * How long a quiet-looking screen must stay quiet before a turn counts as
@@ -123,6 +146,33 @@ const defaultReadyHold = (agent: string) =>
 const PASTE = /\x1b\[20([01])~/g;
 const KEY_SEQUENCE =
   /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[\]P_^][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[^[\]P_^]/g;
+
+/**
+ * Which row moved last, counted from the bottom. Only the CLI's own last two
+ * rows (its footer) are quoted: rows above them can be the user's.
+ */
+function movedRow(before: string | null, after: string | null): string {
+  if (before === null || after === null) return "no earlier screen";
+  const old = before.split("\n");
+  const rows = after.split("\n");
+  for (let back = 1; back <= Math.max(old.length, rows.length); back += 1) {
+    const row = rows[rows.length - back] ?? "";
+    if ((old[old.length - back] ?? "") === row) continue;
+    const quoted =
+      back <= 2 ? `: ${JSON.stringify(row.trim().slice(0, 100))}` : "";
+    return `row ${back} from the bottom${quoted}`;
+  }
+  return "no row";
+}
+
+const footer = (screen: string | null): string =>
+  JSON.stringify(
+    (screen ?? "")
+      .split("\n")
+      .filter((row) => row.trim())
+      .slice(-2)
+      .map((row) => row.trim().slice(0, 100)),
+  );
 
 type Typing = { typed: string; pasting: boolean };
 
@@ -184,6 +234,7 @@ export class AgentScreenObserver {
   private readonly evidenceFor: (leafId: number, agent: string) => TurnEvidence;
   private readonly readyHold: (agent: string) => number;
   private readonly settleUnknownMs: number | null;
+  private readonly note: (message: string) => void;
 
   constructor(options: AgentScreenObserverOptions | Reader = {}) {
     const resolved =
@@ -201,6 +252,7 @@ export class AgentScreenObserver {
       resolved.settleUnknownMs === undefined
         ? NULL_SETTLE_MS
         : resolved.settleUnknownMs;
+    this.note = resolved.note ?? (() => {});
   }
 
   start(
@@ -224,6 +276,7 @@ export class AgentScreenObserver {
       workingUntil: 0,
       background: null,
       screen: null,
+      previousScreen: null,
       changedAt: now,
     };
     this.entries.set(leafId, entry);
@@ -289,6 +342,7 @@ export class AgentScreenObserver {
       // No buffer to read says nothing about the agent.
       if (screen === null) continue;
       if (screen !== entry.screen) {
+        entry.previousScreen = entry.screen;
         entry.screen = screen;
         entry.changedAt = now;
       }
@@ -327,6 +381,12 @@ export class AgentScreenObserver {
         if (entry.phase !== "working") {
           entry.phase = "working";
           signals.push(this.signal(entry, "working"));
+        }
+        if (!entry.turn.noted && now - entry.changedAt >= STILL_WORK_NOTE_MS) {
+          entry.turn.noted = true;
+          this.note(
+            `${cli(entry.agent)} on leaf ${entry.leafId} has read as working for ${Math.round((now - entry.changedAt) / 60_000)} min on a screen that has not changed since; its last rows: ${footer(screen)}`,
+          );
         }
         continue;
       }
@@ -387,7 +447,16 @@ export class AgentScreenObserver {
             ? Math.max(this.readyHold(entry.agent), SETTLING_HOLD_MS)
             : this.readyHold(entry.agent);
       const since = entry.readySince ?? now;
-      if (now - since < hold || now - entry.changedAt < hold) return null;
+      if (now - since < hold) return null;
+      if (now - entry.changedAt < hold) {
+        const limit = MOVING_IDLE_LIMIT_MS[cli(entry.agent)];
+        if (limit === undefined || reading.settling || now - since < limit) {
+          return null;
+        }
+        this.note(
+          `${cli(entry.agent)} turn on leaf ${entry.leafId} ended on its idle reading after ${Math.round((now - since) / 1_000)} s in which its screen kept changing (last ${movedRow(entry.previousScreen, entry.screen)}); its last rows: ${footer(entry.screen)}`,
+        );
+      }
       entry.turn = null;
       entry.phase = "ready";
       return {

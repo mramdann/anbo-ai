@@ -10,6 +10,7 @@ import {
 } from "@/modules/terminal";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { warn } from "@tauri-apps/plugin-log";
 import { useEffect, useRef } from "react";
 import {
   AGENT_BROWSER_WORKING_MS,
@@ -27,6 +28,11 @@ import type { AgentSession, AgentSignal } from "../lib/types";
 import { useWindowFocus } from "../lib/useWindowFocus";
 import { useAgentStore } from "../store/agentStore";
 import { useManagedAgentsStore } from "../store/managedAgentsStore";
+
+/** A turn the status observer could not end as usual goes to Anbo's log. */
+const noteAgentTurn = (message: string) => {
+  if (isTauri()) void warn(`[agents] ${message}`).catch(() => {});
+};
 
 type Activate = (tabId: number, leafId: number) => void;
 type Started = (leafId: number, agent: string, sessionId?: string) => void;
@@ -198,7 +204,9 @@ export function AgentNotificationsBridge({
   onExit: Exit;
 }) {
   const focused = useWindowFocus();
-  const observerRef = useRef(new AgentScreenObserver());
+  const observerRef = useRef(
+    new AgentScreenObserver({ note: noteAgentTurn }),
+  );
   const browserRef = useRef(new BrowserTurnObserver());
   const codexRef = useRef<CodexTurnWatch | null>(null);
   const ctxRef = useRef<Ctx>({

@@ -198,6 +198,52 @@ describe("pauses inside a turn", () => {
     expect(done[0].at).toBe(10_400);
   });
 
+  it("ends an Antigravity turn on its idle reading when its screen keeps changing", () => {
+    // Round 72 (R72-3): one Antigravity turn read as working for 12 min after
+    // it answered, its idle footer on screen.
+    const notes: string[] = [];
+    const observer = new AgentScreenObserver({ note: (message) => notes.push(message) });
+    observer.start(1, 7, "antigravity", 0);
+    run(observer, screen("agyIdle"), 200, 1_000);
+    observer.input(1, "jalankan\r", 2_000);
+    run(observer, screen("agyGenerating"), 2_200, 4_000);
+    const moving = (now: number) =>
+      [...screens.agyIdle.slice(0, 9), `  ${Math.floor(now / 1_000)}`, ...screens.agyIdle.slice(9)].join("\n");
+    const done = run(observer, moving, 4_200, 40_000);
+    expect(kinds(done)).toEqual(["finished"]);
+    expect(done[0].at).toBeGreaterThanOrEqual(34_200);
+    expect(done[0].at).toBeLessThan(35_000);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("antigravity turn on leaf 1 ended on its idle reading after 30 s");
+    // The moved row is the user's side of the screen, so it is not quoted.
+    expect(notes[0]).toContain("last row 6 from the bottom)");
+    expect(notes[0]).toContain("? for shortcuts");
+  });
+
+  it("keeps a Kimi turn open while its idle screen keeps changing, as text still arriving", () => {
+    const notes: string[] = [];
+    const observer = new AgentScreenObserver({ note: (message) => notes.push(message) });
+    observer.start(1, 7, "kimi", 0);
+    run(observer, screen("kimiIdle"), 200, 1_000);
+    observer.input(1, "tulis panjang\r", 2_000);
+    run(observer, screen("kimiSpinner"), 2_200, 3_000);
+    const streaming = (now: number) =>
+      [`  paragraf ${Math.floor(now / 200)}`, ...screens.kimiIdle].join("\n");
+    expect(run(observer, streaming, 3_200, 60_000)).toEqual([]);
+    expect(notes).toEqual([]);
+  });
+
+  it("notes once a turn read as working on a screen that stopped changing", () => {
+    const notes: string[] = [];
+    const observer = new AgentScreenObserver({ note: (message) => notes.push(message) });
+    observer.start(1, 7, "antigravity", 0);
+    run(observer, screen("agyIdle"), 200, 1_000);
+    observer.input(1, "jalankan\r", 2_000);
+    expect(run(observer, screen("agyGenerating"), 2_200, 2_200 + 6 * 60_000)).toEqual([]);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("antigravity on leaf 1 has read as working for 5 min on a screen that has not changed since");
+  });
+
   it("treats a tool call Anbo served as work until the calls stop", () => {
     const observer = settled("claude", "claudeIdleBypass");
     expect(observer.activity(1, 2_000, 6_000)?.kind).toBe("working");
