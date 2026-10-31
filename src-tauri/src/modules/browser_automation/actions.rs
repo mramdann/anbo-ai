@@ -431,16 +431,16 @@ pub async fn handle_action_as(
                 .map(str::to_string)
         })
         .flatten();
-    let before_url = match tab_id.filter(|_| lands) {
+    let before_page = match tab_id.filter(|_| lands) {
         Some(id) => match get_embed_webview(app, id) {
             Ok(webview) => super::cdp::read_page_info(&webview, Duration::from_millis(150))
                 .await
-                .ok()
-                .map(|(_, url)| url),
+                .ok(),
             Err(_) => None,
         },
         None => None,
     };
+    let (before_title, before_url) = before_page.unzip();
     let waits_on_page = super::external_front::waits_on_page(method, &params);
     let result = super::activity::track(
         app,
@@ -564,7 +564,18 @@ pub async fn handle_action_as(
                     .pointer("/postcondition/matched")
                     .and_then(Value::as_bool)
                     == Some(true);
-                let search = search.as_deref().filter(|_| !met);
+                // Unless the page retitled itself since the call: a single-page
+                // app on its way somewhere. Maps titles itself with the query at
+                // once ("Monas Jakarta - Google Maps") and moves to the place a
+                // second later; a waitFor naming the query was met by that title,
+                // and without the look the reply came before the place, with no
+                // heading and no ref for the map: Maps took 8 calls and 5 errors
+                // in benchmark R45 against 4 and 0 before (R44).
+                let retitled = before_title
+                    .as_deref()
+                    .zip(value["page"]["title"].as_str())
+                    .is_some_and(|(before, after)| retitled(before, after));
+                let search = search.as_deref().filter(|_| !met || retitled);
                 // A submitted search always looks: Maps can answer before its
                 // URL moves, and the look waits for results naming the query.
                 if navigated || search.is_some() {
@@ -654,6 +665,12 @@ fn submits_type(method: &str, params: &Value) -> bool {
 fn url_moved(before: &str, after: &str) -> bool {
     let page = |url: &str| url.split('#').next().unwrap_or(url).to_string();
     !before.is_empty() && !after.is_empty() && page(before) != page(after)
+}
+
+/// A tab title that changed during the call; an empty one (a page that has
+/// not titled itself yet) says nothing.
+fn retitled(before: &str, after: &str) -> bool {
+    !before.trim().is_empty() && !after.trim().is_empty() && before.trim() != after.trim()
 }
 
 /// Actions after which the agent wants to know where the tab is.
@@ -11061,6 +11078,18 @@ mod tests {
         assert!(submits_type("type", &json!({ "submit": true })));
         assert!(!submits_type("type", &json!({ "submit": false })));
         assert!(!submits_type("click", &json!({ "submit": true })));
+    }
+
+    #[test]
+    fn a_page_that_retitled_itself_is_on_its_way_somewhere() {
+        // Benchmark R45: Maps titled itself with the query at once, before it
+        // moved to the place; a list page that only adds an item keeps its
+        // title (round 64, R64-10).
+        assert!(retitled("Google Maps", "Monas Jakarta - Google Maps"));
+        assert!(!retitled("Daftar Belanja", "Daftar Belanja"));
+        assert!(!retitled("Daftar Belanja", " Daftar Belanja "));
+        assert!(!retitled("", "Monas Jakarta - Google Maps"));
+        assert!(!retitled("Google Maps", ""));
     }
 
     #[test]
