@@ -138,6 +138,14 @@ fn page_expectation_prop() -> Value {
     })
 }
 
+/// Antigravity 1.4.7 and later load MCP tools on demand: the agent reads a
+/// tool's file under ~/.gemini/antigravity-cli/mcp/<server>/ before it can call
+/// it. Gemini found Anbo's tools that way, with extra turns at the start of
+/// every task, but GPT-OSS 120B never did: it guessed server names and failed
+/// both missions it ran in the round 70 soak (R70-1). A tool marked so reaches
+/// the agent at once, as every tool did before 1.4.7. Other clients ignore it.
+const ALWAYS_LOAD_KEY: &str = "antigravity/alwaysLoad";
+
 /// The `tools` array returned by `tools/list`, grouped by capability prefix.
 pub fn tool_definitions() -> Value {
     let tab = tab_id_prop();
@@ -347,6 +355,11 @@ pub fn tool_definitions() -> Value {
     {
         tool["inputSchema"]["properties"]["fields"]["items"]["properties"]["locator"] = locator;
     }
+    for tool in definitions.as_array_mut().unwrap() {
+        let mut meta = serde_json::Map::new();
+        meta.insert(ALWAYS_LOAD_KEY.into(), Value::Bool(true));
+        tool["_meta"] = Value::Object(meta);
+    }
     definitions
 }
 
@@ -508,6 +521,20 @@ mod tests {
             assert!(
                 tool_name_to_method(n).is_some(),
                 "no method mapping for {n}"
+            );
+        }
+    }
+
+    #[test]
+    fn antigravity_gets_every_tool_without_looking_it_up() {
+        // Round 70 (R70-1): on demand, GPT-OSS 120B in Antigravity 1.4.7 never
+        // found one Anbo tool.
+        for tool in tool_definitions().as_array().unwrap() {
+            assert_eq!(
+                tool["_meta"],
+                json!({ "antigravity/alwaysLoad": true }),
+                "{}",
+                tool["name"]
             );
         }
     }
@@ -708,11 +735,17 @@ mod tests {
         // the locator object repeated with its prose in fourteen tools; the
         // budget keeps a future description from quietly growing them back.
         let tools = tool_definitions();
-        let browser: Vec<&Value> = tools
+        // `_meta` is for the client (R70-1), never part of a prompt.
+        let browser: Vec<Value> = tools
             .as_array()
             .unwrap()
             .iter()
             .filter(|tool| tool["name"].as_str().unwrap().starts_with("browser_"))
+            .map(|tool| {
+                let mut tool = tool.clone();
+                tool.as_object_mut().unwrap().remove("_meta");
+                tool
+            })
             .collect();
         let size = serde_json::to_string(&browser).unwrap().len();
         // 39.5k since round 6: the locator object rides on browser_drag too, and
