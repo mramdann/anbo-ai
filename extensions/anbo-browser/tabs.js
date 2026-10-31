@@ -495,7 +495,11 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     try {
       const next = tabInfo(tab);
       if (current.url === next.url && current.title === next.title && current.loading === next.loading) return;
-      if (current.url !== next.url || (next.loading && !current.loading)) current.generation += 1;
+      // The generation moves on for a new document of the top frame, which the
+      // tab's debugger session reports (frames.js). Not for a loading status,
+      // which an iframe's own load sets too, nor for an address a single-page
+      // app changes within its document: refs outlive both, as in Anbo's own
+      // browser (round 72, R72-5).
       Object.assign(current, next);
       publish();
     } catch {

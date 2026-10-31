@@ -167,7 +167,15 @@ describe("tabs selected directly from Anbo", () => {
     const original = { ...state.selected.get(10) };
     state.manager.updated(10, { title: "Clock" }, { ...state.tabs.get(10), title: "Clock" });
     expect(state.selected.get(10).generation).toBe(original.generation);
+    // An iframe's load sets the tab loading, and a single-page app changes the
+    // address in place: neither is a new document (round 72, R72-5).
     state.manager.updated(10, { status: "loading" }, { ...state.tabs.get(10), status: "loading" });
+    state.manager.updated(10, { url: "https://example.com/#/form" }, { ...state.tabs.get(10), url: "https://example.com/#/form", status: "complete" });
+    expect(state.selected.get(10).generation).toBe(original.generation);
+    expect(state.selected.get(10).url).toBe("https://example.com/#/form");
+    state.manager.event({ tabId: 10 }, "Page.frameNavigated", { frame: { id: "ad", parentId: "root" } });
+    expect(state.selected.get(10).generation).toBe(original.generation);
+    state.manager.event({ tabId: 10 }, "Page.frameNavigated", { frame: { id: "root" } });
     expect(state.selected.get(10).generation).toBeGreaterThan(original.generation);
     expect(state.selected.get(10).selectionId).toBe(original.selectionId);
   });

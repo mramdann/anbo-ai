@@ -28,27 +28,40 @@ export function createFrameTransport(api, tabId, changed) {
     await raw(sessionId, "Target.setAutoAttach", AUTO_ATTACH);
   };
 
-  const invalidate = (sessionId) => {
+  // Drops what Anbo holds in one session: its contexts and objects.
+  const forget = (sessionId) => {
     for (const [key, entry] of contexts) if (entry.sessionId === sessionId) contexts.delete(key);
     for (const [key, entry] of objects) if (entry.sessionId === sessionId) objects.delete(key);
     for (const [key, owner] of owners) if (owner === sessionId) owners.delete(key);
-    changed();
+  };
+  const forgetContext = (sessionId, match) => {
+    for (const [key, entry] of contexts) if (entry.sessionId === sessionId && match(entry)) contexts.delete(key);
   };
 
+  // Only the top frame's new document is a new document of the tab, and moves
+  // its generation on. An iframe that navigates or reloads by itself, as an ad
+  // does, took every ref of the page with it here, where Anbo's own browser
+  // keeps them (round 72, R72-5): its contexts alone go.
   function event(source, method, params) {
     const sessionId = source.sessionId ?? "";
     if (disposed || source.tabId !== tabId || !sessions.has(sessionId)) return false;
+    const top = sessionId === "" && (method === "Runtime.executionContextsCleared" || (method === "Page.frameNavigated" && !params.frame?.parentId));
     if (method === "Target.attachedToTarget") {
       if (params.targetInfo?.type !== "iframe" || typeof params.sessionId !== "string" || sessions.size >= MAX_SESSIONS) return false;
       sessions.add(params.sessionId);
-      void prepare(params.sessionId).catch(() => { sessions.delete(params.sessionId); invalidate(params.sessionId); });
+      void prepare(params.sessionId).catch(() => { sessions.delete(params.sessionId); forget(params.sessionId); });
     } else if (method === "Target.detachedFromTarget") {
       sessions.delete(params.sessionId);
-      invalidate(params.sessionId);
+      forget(params.sessionId);
+    } else if (top) {
+      forget("");
+      changed();
     } else if (method === "Runtime.executionContextsCleared") {
-      invalidate(sessionId);
+      forget(sessionId);
     } else if (method === "Page.frameNavigated") {
-      invalidate(sessionId);
+      forgetContext(sessionId, (entry) => entry.frameId === params.frame?.id);
+    } else if (method === "Runtime.executionContextDestroyed") {
+      forgetContext(sessionId, (entry) => entry.id === params.executionContextId);
     }
     return true;
   }
@@ -118,7 +131,7 @@ export function createFrameTransport(api, tabId, changed) {
       }
       if (contexts.size >= MAX_CONTEXTS) throw new Error("Browser frame context limit reached");
       const id = ++counter;
-      contexts.set(id, { sessionId, id: result.executionContextId, world: params.worldName });
+      contexts.set(id, { sessionId, id: result.executionContextId, world: params.worldName, frameId: params.frameId });
       return { ...result, executionContextId: id };
     }
     if (result.result?.objectId) {

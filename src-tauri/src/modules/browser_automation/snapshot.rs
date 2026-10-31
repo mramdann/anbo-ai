@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
@@ -28,7 +28,14 @@ struct Generations {
     tabs: HashMap<i64, TabScans>,
     /// Each scan number still in a tab's window: that tab, and its count there.
     owners: HashMap<u64, (i64, u64)>,
+    /// Scans a new document took out of their tab's window, and that tab: a
+    /// ref from one was told it fell out of the window of the last 32 scans,
+    /// which sent agents after a scan count they never reached (round 72,
+    /// R72-5). The newest RETIRED_KEPT are remembered.
+    retired: BTreeMap<u64, i64>,
 }
+
+const RETIRED_KEPT: usize = 4_096;
 
 impl Generations {
     fn commit(&mut self, tab_id: i64, generation: u64, step: u64) {
@@ -47,6 +54,21 @@ impl Generations {
     fn forget(&mut self, tab_id: i64) {
         self.tabs.remove(&tab_id);
         self.owners.retain(|_, (owner, _)| *owner != tab_id);
+        self.retired.retain(|_, owner| *owner != tab_id);
+    }
+
+    /// Moves the tab's scans out of its window as retired by a new document.
+    fn retire(&mut self, tab_id: i64) {
+        let retired = &mut self.retired;
+        self.owners.retain(|scan, (owner, _)| {
+            if *owner == tab_id {
+                retired.insert(*scan, tab_id);
+            }
+            *owner != tab_id
+        });
+        while retired.len() > RETIRED_KEPT {
+            retired.pop_first();
+        }
     }
 }
 
@@ -118,13 +140,18 @@ pub fn scan_owner(generation: u64) -> Option<(i64, u64)> {
     with_generations(|generations| generations.owners.get(&generation).copied())
 }
 
+/// The tab whose new document retired this scan, while that is remembered.
+pub fn retired_by_document(generation: u64) -> Option<i64> {
+    with_generations(|generations| generations.retired.get(&generation).copied())
+}
+
 pub fn invalidate_document(tab_id: i64) {
     // A fresh number above any scan in flight, which then finds itself stale,
     // counted far enough on that every ref kept for the old document leaves
     // the window.
     let fresh = next_scan_number();
     with_generations(|generations| {
-        generations.owners.retain(|_, (owner, _)| *owner != tab_id);
+        generations.retire(tab_id);
         generations.commit(tab_id, fresh, REF_GENERATIONS_KEPT + 2);
     });
     if let Ok(mut guard) = REF_FRAME_TARGETS.lock() {
@@ -186,6 +213,7 @@ pub fn clear_generations() {
         if let Some(generations) = guard.as_mut() {
             generations.tabs.clear();
             generations.owners.clear();
+            generations.retired.clear();
         }
     }
     if let Ok(mut guard) = REF_FRAME_TARGETS.lock() {
@@ -936,7 +964,28 @@ mod tests {
             get_next_generation(one);
         }
         assert!(scan_owner(first_of_one).is_none());
+        // Out of the window by count, not retired by a new document.
+        assert_eq!(retired_by_document(first_of_one), None);
         remove_generation(one);
+        remove_generation(two);
+    }
+
+    #[test]
+    fn a_new_document_retires_the_scans_of_its_tab_only() {
+        let (one, two) = (-930_401, -930_402);
+        let old = get_next_generation(one);
+        let other = get_next_generation(two);
+        invalidate_document(one);
+        assert_eq!(scan_owner(old), None);
+        assert_eq!(retired_by_document(old), Some(one));
+        // The other tab's scans stay in its window.
+        assert_eq!(scan_owner(other).map(|(tab, _)| tab), Some(two));
+        assert_eq!(retired_by_document(other), None);
+        // A scan of the new document is in the window again.
+        let fresh = get_next_generation(one);
+        assert_eq!(scan_owner(fresh).map(|(tab, _)| tab), Some(one));
+        remove_generation(one);
+        assert_eq!(retired_by_document(old), None);
         remove_generation(two);
     }
 

@@ -9772,6 +9772,15 @@ fn ensure_current_ref(ref_id: &str, current_generation: u64) -> Result<(), (Stri
                 "element ref '{ref_id}' is from another tab's page (tab {owner}), not this tab's; pass tabId {owner} with it, or find the element again in this tab"
             ),
         )),
+        // A navigation or reload, not the scan count, ended it (round 72, R72-5).
+        (None, Some((tab, _))) if super::snapshot::retired_by_document(generation) == Some(tab) => {
+            Err((
+                error_codes::STALE_REF.to_string(),
+                format!(
+                    "element ref '{ref_id}' is from before this tab's page loaded a new document (it navigated or reloaded since that find or snapshot); find it again"
+                ),
+            ))
+        }
         (None, _) if generation > current_generation => Err((
             error_codes::STALE_REF.to_string(),
             format!("element ref '{ref_id}' is stale or no longer valid"),
@@ -9852,7 +9861,18 @@ mod tests {
         super::super::snapshot::invalidate_document(tab);
         super::super::snapshot::commit_generation(tab, pending);
         let current = get_current_generation(tab);
-        assert!(ensure_current_ref(&format!("g{base}-f1-e1"), current).is_err());
+        // Told it was the new document, not the window of the last scans
+        // (round 72, R72-5).
+        let retired = ensure_current_ref(&format!("g{base}-f1-e1"), current).unwrap_err();
+        assert_eq!(retired.0, error_codes::STALE_REF);
+        assert!(
+            retired
+                .1
+                .contains("from before this tab's page loaded a new document"),
+            "{}",
+            retired.1
+        );
+        assert!(!retired.1.contains("only its last"), "{}", retired.1);
         assert!(ensure_current_ref(&format!("g{pending}-e1"), current).is_err());
         assert!(get_ref_frame_target(tab, &format!("g{base}-f1-e1")).is_none());
         let fresh = get_next_generation(tab);
@@ -9940,6 +9960,7 @@ mod tests {
             ensure_current_ref(&format!("g{first}-e1"), get_current_generation(tab)).unwrap_err();
         assert_eq!(expired.0, error_codes::STALE_REF);
         assert!(expired.1.contains("find it again"), "{}", expired.1);
+        assert!(expired.1.contains("only its last"), "{}", expired.1);
         // A ref from a scan that has not happened is never valid.
         let future = get_current_generation(tab) + 1_000_000;
         assert_eq!(

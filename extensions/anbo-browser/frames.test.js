@@ -50,6 +50,44 @@ describe("selected-tab child frames", () => {
     await expect(first.transport.command("Page.getFrameTree", {})).rejects.toThrow("detached");
   });
 
+  it("moves the tab's document on only for its top frame, and drops an iframe's contexts alone", async () => {
+    // Round 72 (R72-5): an ad iframe reloading by itself retired every ref of
+    // a demoqa page on Chrome and Edge, where Anbo's own browser kept them.
+    const state = harness();
+    const answer = state.calls.getMockImplementation();
+    const worlds = { root: 5, ad: 6, child: 7 };
+    state.calls.mockImplementation(async (source, method, params) => {
+      if (method === "Page.getFrameTree" && !source.sessionId) return { frameTree: { frame: { id: "root" }, childFrames: [{ frame: { id: "ad", parentId: "root" } }] } };
+      if (method === "Page.createIsolatedWorld") return { executionContextId: worlds[params.frameId] };
+      return answer(source, method, params);
+    });
+    state.transport.event({ tabId: 10 }, "Target.attachedToTarget", { sessionId: "child-session", targetInfo: { type: "iframe" } });
+    await state.transport.command("Page.getFrameTree", {});
+    const world = async (frameId) => (await state.transport.command("Page.createIsolatedWorld", { frameId })).executionContextId;
+    const reads = (contextId) => state.transport.command("Runtime.evaluate", { contextId, returnByValue: true });
+    const [root, ad, child] = [await world("root"), await world("ad"), await world("child")];
+    // The same-process ad frame navigates: its world goes, the page's stays.
+    state.transport.event({ tabId: 10 }, "Page.frameNavigated", { frame: { id: "ad", parentId: "root" } });
+    await expect(reads(ad)).rejects.toThrow("expired");
+    await expect(reads(root)).resolves.toEqual({ result: { value: "root" } });
+    // The out-of-process frame reloads, is cleared, or goes away.
+    state.transport.event({ tabId: 10, sessionId: "child-session" }, "Page.frameNavigated", { frame: { id: "child", parentId: "root" } });
+    await expect(reads(child)).rejects.toThrow("expired");
+    const again = await world("child");
+    state.transport.event({ tabId: 10, sessionId: "child-session" }, "Runtime.executionContextDestroyed", { executionContextId: worlds.child });
+    await expect(reads(again)).rejects.toThrow("expired");
+    state.transport.event({ tabId: 10, sessionId: "child-session" }, "Runtime.executionContextsCleared", {});
+    state.transport.event({ tabId: 10 }, "Target.detachedFromTarget", { sessionId: "child-session" });
+    await expect(reads(root)).resolves.toEqual({ result: { value: "root" } });
+    expect(state.changed).not.toHaveBeenCalled();
+    // The top frame's new document is the tab's.
+    state.transport.event({ tabId: 10 }, "Page.frameNavigated", { frame: { id: "root" } });
+    expect(state.changed).toHaveBeenCalledTimes(1);
+    await expect(reads(root)).rejects.toThrow("expired");
+    state.transport.event({ tabId: 10 }, "Runtime.executionContextsCleared", {});
+    expect(state.changed).toHaveBeenCalledTimes(2);
+  });
+
   it("leaves out a child frame that does not answer instead of waiting on it", async () => {
     vi.useFakeTimers();
     try {
