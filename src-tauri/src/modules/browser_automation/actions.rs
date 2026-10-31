@@ -1149,8 +1149,9 @@ async fn handle_action_attempt(
     // keeps the dock's turn until its input is done.
     let mut pointer_turn = None;
     // A page that cannot be shown now, as one in a workspace Anbo is not
-    // showing, still takes keys and its own DOM events instead of a refusal.
-    let mut hidden_page = false;
+    // showing, still takes keys and its own DOM events instead of a refusal;
+    // this is why, in the words its answer gives.
+    let mut hidden_page: Option<&'static str> = None;
     if super::external_front::needs_shown_page(method) {
         if let Ok(tab_id) = extract_tab_id(&params) {
             match timings
@@ -1162,11 +1163,11 @@ async fn handle_action_attempt(
                     if hidden_input::stands_in(method)
                         && super::external_front::cannot_show(&error) =>
                 {
+                    let why = super::external_front::hidden_because(&error.1);
                     log::info!(
-                        "[browser_automation] {method} on tab {tab_id} without showing it: {}",
-                        error.1
+                        "[browser_automation] {method} on tab {tab_id} without showing it ({why}): stand-in input to the hidden page"
                     );
-                    hidden_page = true;
+                    hidden_page = Some(why);
                 }
                 Err(error) => return Err(error),
             }
@@ -1176,7 +1177,7 @@ async fn handle_action_attempt(
     // foreground with Anbo while the user is in it: a tab the page opened
     // brought its browser over Anbo (round 66, R66-3).
     #[cfg(windows)]
-    let _front_hold = if hidden_page {
+    let _front_hold = if hidden_page.is_some() {
         crate::modules::browser_external::dock::hold_front(app)
     } else {
         None
@@ -1836,7 +1837,7 @@ async fn handle_action_attempt(
             // click keeps paying almost nothing for it.
             let budget = reveal_budget(&params, DEFAULT_REVEAL_MS);
             let clicked_at = epoch_millis();
-            if hidden_page {
+            if let Some(why) = hidden_page {
                 let (webview, mut result) = {
                     let _lock = timings.measure("queue", tab_lock.lock()).await;
                     let webview = get_embed_webview(app, tab_id)
@@ -1850,6 +1851,7 @@ async fn handle_action_attempt(
                         tab_id,
                         &ref_id,
                         click_count,
+                        why,
                     )
                     .await?;
                     if captured {
@@ -1971,8 +1973,8 @@ async fn handle_action_attempt(
             let generation = get_current_generation(tab_id);
             ensure_current_ref(&ref_id, generation)?;
             let target = get_ref_frame_target(tab_id, &ref_id);
-            if hidden_page {
-                return hidden_input::focus(&webview, target.as_ref(), tab_id, &ref_id).await;
+            if let Some(why) = hidden_page {
+                return hidden_input::focus(&webview, target.as_ref(), tab_id, &ref_id, why).await;
             }
             wait_for_actionable_ref(
                 &webview,
@@ -2019,9 +2021,16 @@ async fn handle_action_attempt(
             let generation = get_current_generation(tab_id);
             ensure_current_ref(&ref_id, generation)?;
             let target = get_ref_frame_target(tab_id, &ref_id);
-            if hidden_page {
-                return hidden_input::check(&webview, target.as_ref(), tab_id, &ref_id, requested)
-                    .await;
+            if let Some(why) = hidden_page {
+                return hidden_input::check(
+                    &webview,
+                    target.as_ref(),
+                    tab_id,
+                    &ref_id,
+                    requested,
+                    why,
+                )
+                .await;
             }
             let actionable = timings
                 .measure(
@@ -2107,7 +2116,7 @@ async fn handle_action_attempt(
                     "drag source and target must be in the same document or frame".to_string(),
                 ));
             }
-            if hidden_page {
+            if let Some(why) = hidden_page {
                 return hidden_input::drag(
                     &webview,
                     source_target.as_ref(),
@@ -2116,6 +2125,7 @@ async fn handle_action_attempt(
                     &target_ref,
                     source_position,
                     target_position,
+                    why,
                 )
                 .await;
             }
@@ -2984,11 +2994,11 @@ async fn handle_action_attempt(
             let generation = get_current_generation(tab_id);
             ensure_current_ref(&ref_id, generation)?;
             let target = get_ref_frame_target(tab_id, &ref_id);
-            // A page that cannot be shown now (its workspace is not) takes the
-            // click as keys or its own events, and the capture answers the
-            // dialog either way: in the round 60 soak every dialog click on
-            // such a Chrome tab was refused as hidden.
-            let actionable = if hidden_page {
+            // A page that cannot be shown now takes the click as keys or its
+            // own events, and the capture answers the dialog either way: in
+            // the round 60 soak every dialog click on such a Chrome tab was
+            // refused as hidden.
+            let actionable = if hidden_page.is_some() {
                 None
             } else {
                 Some(
@@ -3005,15 +3015,22 @@ async fn handle_action_attempt(
                 .await?;
             let mut hidden_note = Value::Null;
             let trigger_result = match &actionable {
-                None => hidden_input::click(&webview, target.as_ref(), tab_id, &ref_id, 1)
-                    .await
-                    .map(|answer| {
-                        hidden_note = answer["note"].clone();
-                        answer["dispatch"]
-                            .as_str()
-                            .unwrap_or("dom-events")
-                            .to_string()
-                    }),
+                None => hidden_input::click(
+                    &webview,
+                    target.as_ref(),
+                    tab_id,
+                    &ref_id,
+                    1,
+                    hidden_page.unwrap_or_default(),
+                )
+                .await
+                .map(|answer| {
+                    hidden_note = answer["note"].clone();
+                    answer["dispatch"]
+                        .as_str()
+                        .unwrap_or("dom-events")
+                        .to_string()
+                }),
                 Some(_) if target.as_ref().is_some_and(|target| !target.is_main) => {
                     dom_click_ref(&webview, target.as_ref(), &ref_id, 1)
                         .await
@@ -3618,9 +3635,16 @@ async fn handle_action_attempt(
             let cur_gen = get_current_generation(tab_id);
             ensure_current_ref(&ref_id, cur_gen)?;
             let target = get_ref_frame_target(tab_id, &ref_id);
-            if hidden_page {
-                return hidden_input::hover(&webview, target.as_ref(), tab_id, &ref_id, position)
-                    .await;
+            if let Some(why) = hidden_page {
+                return hidden_input::hover(
+                    &webview,
+                    target.as_ref(),
+                    tab_id,
+                    &ref_id,
+                    position,
+                    why,
+                )
+                .await;
             }
             let actionable = wait_for_actionable_ref(
                 &webview,

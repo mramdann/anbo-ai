@@ -350,19 +350,41 @@ pub fn cannot_show((code, message): &(String, String)) -> bool {
     code == error_codes::INPUT_NOT_READY && message.starts_with(REFUSAL)
 }
 
+const MINIMIZED: &str = "Anbo is minimized, so it cannot bring the tab to the front. Ask the user to restore Anbo, then retry.";
+const BEHIND: &str = "Anbo is not the window the user is in: bringing the tab forward now would open its browser window over what they are using. Retry once they are back in Anbo, or ask them to switch to it.";
+const OTHER_WORKSPACE: &str = "it is in a workspace Anbo is not showing. Ask the user to open that workspace in Anbo, then retry.";
+const PANEL_IN_USE: &str = "it shares its Anbo panel with the tab the user is working in, which Anbo does not switch away under them. Ask the user to show the tab, or to give browser tabs their own panel with the layout button in Anbo's tab bar, then retry.";
+const NOT_BROUGHT: &str = "Anbo could not bring it to the front of its panel. Ask the user to show the tab in Anbo, then retry.";
+
 fn not_in_front(standing: Standing) -> Option<&'static str> {
     match standing {
         Standing::Front => None,
-        Standing::Minimized => Some("Anbo is minimized, so it cannot bring the tab to the front. Ask the user to restore Anbo, then retry."),
-        Standing::Behind => Some("Anbo is not the window the user is in: bringing the tab forward now would open its browser window over what they are using. Retry once they are back in Anbo, or ask them to switch to it."),
+        Standing::Minimized => Some(MINIMIZED),
+        Standing::Behind => Some(BEHIND),
     }
 }
 
 fn not_shown(reason: Option<&str>) -> &'static str {
     match reason {
-        Some("workspace") => "it is in a workspace Anbo is not showing. Ask the user to open that workspace in Anbo, then retry.",
-        Some("in-use") => "it shares its Anbo panel with the tab the user is working in, which Anbo does not switch away under them. Ask the user to show the tab, or to give browser tabs their own panel with the layout button in Anbo's tab bar, then retry.",
-        _ => "Anbo could not bring it to the front of its panel. Ask the user to show the tab in Anbo, then retry.",
+        Some("workspace") => OTHER_WORKSPACE,
+        Some("in-use") => PANEL_IN_USE,
+        _ => NOT_BROUGHT,
+    }
+}
+
+/// Why a page that could not be shown took stand-in input, as its answer says
+/// it (`actions/hidden_input.rs`). Every such answer used to say "its workspace
+/// is not shown", but in the round 72 soak every one of Dev's 609 stand-ins
+/// came while Anbo was not the window the user was in, 135 of the 480 notes
+/// the agents got with their workspace shown, and Codex asked the user five
+/// times to show a workspace that already was (R72-4).
+pub fn hidden_because(message: &str) -> &'static str {
+    match refusal_reason(message) {
+        BEHIND => "Anbo is not the window the user is in",
+        MINIMIZED => "Anbo is minimized",
+        OTHER_WORKSPACE => "its workspace is not shown in Anbo",
+        PANEL_IN_USE => "its Anbo panel shows the tab the user is working in",
+        _ => "Anbo could not bring it forward",
     }
 }
 
@@ -560,5 +582,33 @@ mod tests {
             refusal_reason("other agents hold the turn"),
             "other agents hold the turn"
         );
+    }
+
+    #[test]
+    fn a_stand_in_names_the_reason_the_page_stayed_hidden() {
+        let because = |why: &str| hidden_because(&refusal(why).1);
+        assert_eq!(
+            because(not_in_front(Standing::Behind).unwrap()),
+            "Anbo is not the window the user is in"
+        );
+        assert_eq!(
+            because(not_in_front(Standing::Minimized).unwrap()),
+            "Anbo is minimized"
+        );
+        assert_eq!(
+            because(not_shown(Some("workspace"))),
+            "its workspace is not shown in Anbo"
+        );
+        assert_eq!(
+            because(not_shown(Some("in-use"))),
+            "its Anbo panel shows the tab the user is working in"
+        );
+        for why in [
+            not_shown(None).to_string(),
+            not_docked(Some("panel-too-narrow"), SHOW_PATIENCE),
+            not_docked(None, SHOW_PATIENCE),
+        ] {
+            assert_eq!(because(&why), "Anbo could not bring it forward", "{why}");
+        }
     }
 }

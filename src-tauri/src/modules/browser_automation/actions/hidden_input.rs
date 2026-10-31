@@ -9,7 +9,8 @@
 //! Enter, or Space for a checkbox or radio. Anything else gets the page's own
 //! pointer and mouse events at its middle, which its handlers act on, although
 //! CSS :hover does not follow them and a drag that captures the real pointer
-//! may not. Every answer says which input ran and that the page stayed hidden.
+//! may not. Every answer says which input ran, that the page stayed hidden,
+//! and why (`external_front::hidden_because`).
 
 use super::{
     deep_ref_expression, dispatch_key_action, error_codes, execute_ref_script, page_json,
@@ -25,10 +26,24 @@ pub(super) fn stands_in(method: &str) -> bool {
     )
 }
 
-const KEYBOARD_NOTE: &str = "the page is hidden in its browser (its workspace is not shown), so Anbo activated the control with the keyboard instead of a pointer click; check the result before relying on it";
-const DOM_NOTE: &str = "the page is hidden in its browser (its workspace is not shown), so Anbo sent the page's own pointer and mouse events instead of real pointer input: page handlers act on them, CSS :hover does not follow them; check the result before relying on it";
-const FOCUS_NOTE: &str = "the page stays hidden in its browser (its workspace is not shown); keys you send reach the focused element";
-const LINK_NOTE: &str = "the page is hidden in its browser (its workspace is not shown), so Anbo activated the link with Ctrl+Enter, which opens it in a new background tab; check the result before relying on it";
+// `why` is the reason the page could not be shown, as "Anbo is not the window
+// the user is in": an agent that read "its workspace is not shown" asked the
+// user to show a workspace already on screen (round 72, R72-4).
+fn keyboard_note(why: &str) -> String {
+    format!("the page is hidden in its browser ({why}), so Anbo activated the control with the keyboard instead of a pointer click; check the result before relying on it")
+}
+
+fn dom_note(why: &str) -> String {
+    format!("the page is hidden in its browser ({why}), so Anbo sent the page's own pointer and mouse events instead of real pointer input: page handlers act on them, CSS :hover does not follow them; check the result before relying on it")
+}
+
+fn focus_note(why: &str) -> String {
+    format!("the page stays hidden in its browser ({why}); keys you send reach the focused element")
+}
+
+fn link_note(why: &str) -> String {
+    format!("the page is hidden in its browser ({why}), so Anbo activated the link with Ctrl+Enter, which opens it in a new background tab; check the result before relying on it")
+}
 
 /// Event helpers every hidden-page script starts with.
 const HIDDEN_INPUT_JS: &str = r#"
@@ -151,14 +166,14 @@ fn refusal(ref_id: &str, parsed: &Value) -> (String, String) {
     }
 }
 
-fn answer(tab_id: i64, ref_id: &str, input: &str) -> Value {
+fn answer(tab_id: i64, ref_id: &str, input: &str, why: &str) -> Value {
     json!({
         "tabId": tab_id,
         "ref": ref_id,
         "ok": true,
         "dispatch": input,
         "pageHidden": true,
-        "note": if input == "keyboard" { KEYBOARD_NOTE } else { DOM_NOTE },
+        "note": if input == "keyboard" { keyboard_note(why) } else { dom_note(why) },
     })
 }
 
@@ -179,6 +194,7 @@ pub(super) async fn click(
     tab_id: i64,
     ref_id: &str,
     count: u8,
+    why: &str,
 ) -> Result<Value, (String, String)> {
     // The page counts as focused before its control takes focus.
     super::ref_context::ensure_focus(webview)
@@ -213,9 +229,9 @@ pub(super) async fn click(
         )
         .await?;
     }
-    let mut result = answer(tab_id, ref_id, input);
+    let mut result = answer(tab_id, ref_id, input, why);
     if background {
-        result["note"] = json!(LINK_NOTE);
+        result["note"] = json!(link_note(why));
         result["newTab"] = json!("background");
     }
     if count == 2 {
@@ -232,6 +248,7 @@ pub(super) async fn check(
     tab_id: i64,
     ref_id: &str,
     requested: bool,
+    why: &str,
 ) -> Result<Value, (String, String)> {
     super::ref_context::ensure_focus(webview)
         .await
@@ -258,7 +275,7 @@ pub(super) async fn check(
         .unwrap_or("dom-events")
         .to_string();
     if input == "none" {
-        let mut result = answer(tab_id, ref_id, "none");
+        let mut result = answer(tab_id, ref_id, "none", why);
         result["checked"] = json!(requested);
         result["changed"] = json!(false);
         if let Some(object) = result.as_object_mut() {
@@ -291,7 +308,7 @@ pub(super) async fn check(
         input = "dom-events".to_string();
         checked = wait_for_checked_state(webview, target, ref_id, requested).await;
     }
-    let mut result = answer(tab_id, ref_id, &input);
+    let mut result = answer(tab_id, ref_id, &input, why);
     result["checked"] = json!(checked?);
     result["changed"] = json!(true);
     Ok(result)
@@ -302,6 +319,7 @@ pub(super) async fn focus(
     target: Option<&RefFrameTarget>,
     tab_id: i64,
     ref_id: &str,
+    why: &str,
 ) -> Result<Value, (String, String)> {
     super::ref_context::ensure_focus(webview)
         .await
@@ -321,7 +339,7 @@ pub(super) async fn focus(
         "ok": true,
         "focused": true,
         "pageHidden": true,
-        "note": FOCUS_NOTE,
+        "note": focus_note(why),
     }))
 }
 
@@ -331,6 +349,7 @@ pub(super) async fn hover(
     tab_id: i64,
     ref_id: &str,
     position: Option<(f64, f64)>,
+    why: &str,
 ) -> Result<Value, (String, String)> {
     let position = position
         .map(|(x, y)| json!({ "x": x, "y": y }))
@@ -347,12 +366,13 @@ pub(super) async fn hover(
         ),
     )
     .await?;
-    Ok(answer(tab_id, ref_id, "dom-events"))
+    Ok(answer(tab_id, ref_id, "dom-events", why))
 }
 
 /// A drag from one element to another, or within one, in the same document:
 /// HTML drag and drop events for a draggable source, otherwise a press, moves
 /// over whatever lies on the way, and a release.
+#[allow(clippy::too_many_arguments)] // One call site; splitting it would only hide the wiring.
 pub(super) async fn drag(
     webview: &Webview,
     target: Option<&RefFrameTarget>,
@@ -361,6 +381,7 @@ pub(super) async fn drag(
     target_ref: &str,
     source_position: Option<(f64, f64)>,
     target_position: Option<(f64, f64)>,
+    why: &str,
 ) -> Result<Value, (String, String)> {
     let at = |position: Option<(f64, f64)>| {
         position
@@ -411,8 +432,28 @@ pub(super) async fn drag(
         ),
     )
     .await?;
-    let mut result = answer(tab_id, source_ref, "dom-events");
+    let mut result = answer(tab_id, source_ref, "dom-events", why);
     result["targetRef"] = json!(target_ref);
     result["dragKind"] = dragged["kind"].clone();
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_note_says_why_the_page_stayed_hidden() {
+        let why = "Anbo is not the window the user is in";
+        for input in ["keyboard", "dom-events", "none"] {
+            let note = answer(7, "g1-e1", input, why)["note"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            assert!(note.starts_with(&format!("the page is hidden in its browser ({why}), so ")));
+        }
+        assert!(focus_note(why).contains(&format!("({why});")));
+        assert!(link_note(why).contains(&format!("({why}), so Anbo activated the link")));
+        assert!(!keyboard_note(why).contains("workspace"));
+    }
 }
