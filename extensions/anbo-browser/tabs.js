@@ -5,16 +5,21 @@ import { createDockManager } from "./dock.js";
 // The version this code is, kept equal to manifest.json. After an update the
 // browser reads the new manifest but can keep running the old scripts until the
 // extension reloads, so the manifest alone would hide that a reload is due.
-export const EXTENSION_VERSION = "0.5.10";
+export const EXTENSION_VERSION = "0.5.11";
 
 const MAX_TABS = 128;
 // A new tab opened this soon after Anbo sent input to the tab it opened from
 // came from an agent's click or key, not the user's.
 const AGENT_INPUT_MS = 2_000;
-// When, after a tab an agent's input opened, its window is looked at again to
-// put it back the way it was: the browser brought it up about 60 ms after the
-// key (Oct 28 2026).
-const KEEP_WINDOW_CHECKS_MS = [0, 25, 50, 100, 200, 400, 800, 1_500];
+// How long, after a tab an agent's input opened, its window is watched to put
+// it back the way it was, and how often it is looked at meanwhile: the browser
+// brought it up about 60 ms after the key (Oct 28 2026). Looked at 0, 25, 50,
+// 100, 200, 400, 800 and 1,500 ms after the tab came, a minimized window
+// stayed in front of the user's for 0.13 to 0.49 s, 23 times for 32 such tabs
+// (round 72, R72-1). The browser's word that the window took the focus or
+// moved has it looked at at once.
+const KEEP_WINDOW_MS = 1_500;
+const KEEP_WINDOW_LOOK_MS = 25;
 // How long a tab a page opened may take to reach a web page before it is left
 // to the browser.
 const ADOPT_WAIT_MS = 15_000;
@@ -42,6 +47,8 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
   // Each such tab's window as it was right before an agent's key or press:
   // { windowId, state, focused, at }.
   const windowBefore = new Map();
+  // The windows being put back (keepWindow), each with its watches' wake-ups.
+  const keeping = new Map();
   let keptRenderers = "";
   let disposed = false;
 
@@ -378,22 +385,38 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     const before = windowBefore.get(openerId);
     if (!before || before.windowId !== windowId || Date.now() - before.at > AGENT_INPUT_MS) return;
     if (dock.ownsWindow(windowId) || (before.state !== "minimized" && before.focused)) return;
-    let waited = 0;
-    for (const at of KEEP_WINDOW_CHECKS_MS) {
-      await new Promise((resolve) => setTimeout(resolve, at - waited));
-      waited = at;
-      if (disposed) return;
-      const window = await api.windows.get(windowId).catch(() => null);
-      if (!window) return;
-      if (before.state === "minimized" && window.state !== "minimized") {
-        await api.windows.update(windowId, { state: "minimized" });
-        return;
+    const watch = { wake: () => {} };
+    const watches = keeping.get(windowId) ?? new Set();
+    keeping.set(windowId, watches.add(watch));
+    try {
+      for (const until = Date.now() + KEEP_WINDOW_MS; !disposed; ) {
+        const window = await api.windows.get(windowId).catch(() => null);
+        if (!window || disposed) return;
+        if (before.state === "minimized" && window.state !== "minimized") {
+          await api.windows.update(windowId, { state: "minimized" });
+          return;
+        }
+        if (before.state !== "minimized" && window.focused === true) {
+          await api.windows.update(windowId, { focused: false });
+          return;
+        }
+        const left = until - Date.now();
+        if (left <= 0) return;
+        await new Promise((resolve) => {
+          const timer = setTimeout(resolve, Math.min(KEEP_WINDOW_LOOK_MS, left));
+          watch.wake = () => { clearTimeout(timer); resolve(); };
+        });
       }
-      if (before.state !== "minimized" && window.focused === true) {
-        await api.windows.update(windowId, { focused: false });
-        return;
-      }
+    } finally {
+      watches.delete(watch);
+      if (watches.size === 0 && keeping.get(windowId) === watches) keeping.delete(windowId);
     }
+  }
+
+  // The browser says a window took the focus or moved: one being put back is
+  // looked at now, not at its next look.
+  function windowChanged(windowId) {
+    for (const watch of keeping.get(windowId) ?? []) watch.wake();
   }
 
   async function adopt(tab, openedFrom, front = null) {
@@ -493,6 +516,8 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     connecting.clear();
     inputAt.clear();
     windowBefore.clear();
+    for (const watches of keeping.values()) for (const watch of watches) watch.wake();
+    keeping.clear();
     const ids = [...owned];
     attached.clear();
     await Promise.allSettled([...running, ...ids.map((tabId) => detach(tabId))]);
@@ -535,5 +560,5 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     return transport.command(message.method, message.params);
   }
 
-  return { prepare, removed, detached, updated, committed, created, expire, dispose, publish, event, command, dockTopology: dock.topology };
+  return { prepare, removed, detached, updated, committed, created, expire, dispose, publish, event, command, windowChanged, dockTopology: dock.topology };
 }

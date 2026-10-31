@@ -122,6 +122,9 @@ chrome.tabs.onCreated.addListener((tab) => {
   if (current?.approved) current.tabs.created(tab, fromDock);
 });
 chrome.tabs.onDetached.addListener((tabId, info) => session?.tabs.dockTopology({ kind: "detached", tabId, windowId: info.oldWindowId }));
+// A window the browser brought up for a tab an agent's input opened goes back at once.
+chrome.windows.onFocusChanged.addListener((windowId) => session?.tabs.windowChanged(windowId));
+chrome.windows.onBoundsChanged?.addListener((window) => session?.tabs.windowChanged(window.id));
 chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
   const current = session;
   current?.tabs.dockTopology({ kind: "activated", tabId, windowId });
