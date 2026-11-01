@@ -654,6 +654,19 @@ pub(crate) const ELEMENT_PROPERTIES: [&str; 25] = [
     "tagName",
 ];
 
+/// How long browser_type waits for a load in flight before it fills anyway.
+/// Maps finished within half a second of its open; a page whose images keep
+/// it loading longer is typed into after this, as before.
+const TYPE_LOAD_PATIENCE: Duration = Duration::from_millis(2_000);
+
+/// Waits, up to `patience`, while `busy` says so, looking every 50 ms.
+async fn wait_while(busy: impl Fn() -> bool, patience: Duration) {
+    let deadline = tokio::time::Instant::now() + patience;
+    while busy() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// Whether browser_type was asked to press Enter after filling.
 fn submits_type(method: &str, params: &Value) -> bool {
     matches!(method, "type" | "type_text")
@@ -2318,6 +2331,17 @@ async fn handle_action_attempt(
                 .or_else(|| params.get("skipActionability").and_then(|v| v.as_bool()))
                 .unwrap_or(false);
 
+            // A page still loading may yet rebuild its fields. Typed into the
+            // moment its open answered, Google Maps cleared the search while it
+            // loaded and Enter was refused: all 4 types sent mid-load failed,
+            // 9 of 10 went through once they waited (after benchmark R46). The
+            // load gets a moment to finish; the lock is not held meanwhile.
+            timings
+                .measure(
+                    "loadWait",
+                    wait_while(|| active_loading(tab_id) == Some(true), TYPE_LOAD_PATIENCE),
+                )
+                .await;
             let tab_lock = get_tab_lock(tab_id);
             let _lock = timings.measure("queue", tab_lock.lock()).await;
             let webview = get_embed_webview(app, tab_id)
@@ -11078,6 +11102,29 @@ mod tests {
         assert!(submits_type("type", &json!({ "submit": true })));
         assert!(!submits_type("type", &json!({ "submit": false })));
         assert!(!submits_type("click", &json!({ "submit": true })));
+    }
+
+    #[tokio::test]
+    async fn a_type_waits_out_a_load_but_not_past_its_patience() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let loading = std::sync::Arc::new(AtomicBool::new(true));
+        let done = loading.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            done.store(false, Ordering::Release);
+        });
+        let started = std::time::Instant::now();
+        wait_while(|| loading.load(Ordering::Acquire), Duration::from_secs(5)).await;
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(120) && waited < Duration::from_secs(2));
+        // A page that never stops loading holds the type only its patience.
+        let started = std::time::Instant::now();
+        wait_while(|| true, Duration::from_millis(200)).await;
+        assert!(started.elapsed() < Duration::from_secs(2));
+        // A page that is not loading costs nothing.
+        let started = std::time::Instant::now();
+        wait_while(|| false, Duration::from_secs(5)).await;
+        assert!(started.elapsed() < Duration::from_millis(50));
     }
 
     #[test]
