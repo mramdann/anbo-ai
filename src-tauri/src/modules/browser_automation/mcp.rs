@@ -159,7 +159,7 @@ pub fn tool_definitions() -> Value {
         { "name": "skills_list", "description": "List the skills available in a workspace: project procedures kept in .anbo/skills, plus the skills Anbo ships. Returns names, one-line descriptions and, for skills read on demand, their section titles, so it stays cheap to scan. Check this before solving a task from first principles.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
         { "name": "skills_read", "description": "Read a skill and follow it. A skill read on demand returns its essentials plus a section index; pass section to read one section in full. Names come from skills_list.", "annotations": { "readOnlyHint": true }, "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone(), "name": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Skill name from skills_list." }, "section": { "type": "string", "minLength": 1, "maxLength": 120, "description": "A section title from the skill's index, matched case-insensitively." } }, "required": ["workspace", "name"] } },
         { "name": "browser_open", "description": "Open a page in the user's real browser: a visible tab in this app, not a private fetch. Pass your own workspace root or space id. To read the page in this same call, add find:{by,value} or snapshot:true; both wait for it to load, so no separate wait or snapshot. With find, closeTab:true makes a one-off lookup one call. The reply carries the tabId and your controlId.", "inputSchema": { "type": "object", "properties": { "url": { "type": "string" }, "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." }, "profile": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Chrome/Edge profile name or id, when several are approved here." } }, "required": ["url", "workspace"] } },
-        { "name": "browser_close", "description": "Close a native browser tab in an explicitly selected Anbo workspace. Pass endSession: true when this is the last tab of your task, so closing it and ending your session is one call instead of two.", "annotations": { "destructiveHint": true, "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "minLength": 1, "description": "Required Anbo workspace root or space id for agent isolation." }, "endSession": { "type": "boolean", "default": false, "description": "Also end your control session after the tab closes; the reply then carries sessionEnded: true." } }, "required": ["tabId", "workspace"] } },
+        { "name": "browser_close", "description": "Close a native browser tab of your workspace. Pass endSession: true when this is the last tab of your task, so closing it and ending your session is one call instead of two.", "annotations": { "destructiveHint": true, "readOnlyHint": false }, "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "workspace": { "type": "string", "minLength": 1, "description": "Optional workspace root or space id; left out, the tab's own, and a tab of another workspace is still refused." }, "endSession": { "type": "boolean", "default": false, "description": "Also end your control session after the tab closes; the reply then carries sessionEnded: true." } }, "required": ["tabId"] } },
         { "name": "browser_tabs", "description": "List the open browser tabs of your workspace with foreground, space, loading, pendingUrl and automation metadata; while loading, url is the last committed URL. Other workspaces' tabs are neither listed nor usable. yours marks tabs you opened or drove (yourTabs counts them); otherTabsInSpace counts the shown space's terminal and editor tabs.", "inputSchema": { "type": "object", "properties": { "workspace": workspace.clone() }, "required": ["workspace"] } },
         { "name": "browser_navigate", "description": "Navigate a browser tab to an http(s) URL. Returns at once unless waitFor names the page to wait for; browser_stop interrupts the load.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "url": { "type": "string" }, "waitFor": { "type": "object", "description": "As browser_press waitFor." } }, "required": ["tabId", "url"] } },
         { "name": "browser_emulate", "description": "Emulate a device viewport on a browser tab so the page lays out as it would on that device. Pass width 0 to clear the emulation. Sets the device pixel ratio and, for mobile, touch support. The emulation survives navigation until cleared.", "inputSchema": { "type": "object", "properties": { "tabId": tab.clone(), "width": { "type": "integer", "minimum": 0, "maximum": 10000, "description": "CSS pixels wide. 0 clears the emulation." }, "height": { "type": "integer", "minimum": 0, "maximum": 10000 }, "scale": { "type": "number", "minimum": 0.1, "maximum": 4, "default": 1, "description": "Device pixel ratio." }, "mobile": { "type": "boolean", "default": false, "description": "Report a mobile device and enable touch." }, "fit": { "type": "number", "minimum": 0.05, "maximum": 1, "default": 1, "description": "Shrink the painted result so a viewport wider than the pane is shown whole instead of cropped." } }, "required": ["tabId", "width", "height"] } },
@@ -1034,7 +1034,10 @@ mod tests {
     }
 
     #[test]
-    fn browser_close_requires_tab_and_workspace() {
+    fn browser_close_needs_only_its_tab() {
+        // Claude and GPT-OSS both called browser_close without a workspace and
+        // were refused (benchmark R47, round 74's Antigravity check); the tab
+        // id names its workspace, and another workspace's tab is still refused.
         let tools = tool_definitions();
         let close = tools
             .as_array()
@@ -1042,9 +1045,12 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "browser_close")
             .unwrap();
-        assert_eq!(
-            close["inputSchema"]["required"],
-            json!(["tabId", "workspace"])
+        assert_eq!(close["inputSchema"]["required"], json!(["tabId"]));
+        assert!(
+            close["inputSchema"]["properties"]["workspace"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("another workspace is still refused")
         );
         assert_eq!(close["annotations"]["destructiveHint"], true);
         assert_eq!(tool_name_to_method("browser_close"), Some("close"));

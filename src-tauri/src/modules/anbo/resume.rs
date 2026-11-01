@@ -91,7 +91,7 @@ pub fn encode_claude_cwd(cwd: &str) -> String {
 /// leading dashes (`----C--...`) and never match the folder Claude creates.
 /// Verbatim UNC (`\\?\UNC\server\share`) maps back to the Node form
 /// (`\\server\share`). No-op on platforms that don't add the prefix.
-fn strip_verbatim_prefix(p: &str) -> String {
+pub(crate) fn strip_verbatim_prefix(p: &str) -> String {
     if let Some(rest) = p.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{}", rest)
     } else if let Some(rest) = p.strip_prefix(r"\\?\") {

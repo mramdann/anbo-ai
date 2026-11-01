@@ -9551,7 +9551,24 @@ async fn open_browser(
 }
 
 async fn close_browser(app: &AppHandle, params: &Value) -> Result<Value, (String, String)> {
-    let (tab_id, workspace) = extract_browser_close_params(params)?;
+    let (tab_id, named) = extract_browser_close_params(params)?;
+    // A tab id already names its workspace, and the scope check has let this
+    // caller act on the tab, so a close that leaves the workspace out closes it
+    // in its own. Claude and GPT-OSS both left it out and paid a refusal and a
+    // second call (benchmark R47, round 74's Antigravity check).
+    let workspace = match named {
+        Some(named) => named.to_string(),
+        None => active_local_root(tab_id)
+            .map(|root| {
+                crate::modules::anbo::resume::strip_verbatim_prefix(&root.to_string_lossy())
+            })
+            .ok_or_else(|| {
+                (
+                    error_codes::INVALID_REQUEST.to_string(),
+                    format!("browser_close does not know tab {tab_id}'s workspace; pass workspace (its root or space id)"),
+                )
+            })?,
+    };
     // No precheck here. A tab whose embed registration was already dropped is
     // exactly the tab that most needs closing, and rejecting it as not-found
     // left it running with nothing able to reach it.
@@ -9698,21 +9715,25 @@ fn extract_browser_open_profile(params: &Value) -> Result<Option<&str>, (String,
     Ok(Some(profile))
 }
 
-fn extract_browser_close_params(params: &Value) -> Result<(i64, &str), (String, String)> {
+/// The tab and the workspace a close names, if it names one; a workspace it
+/// passes must be a root or space id.
+fn extract_browser_close_params(params: &Value) -> Result<(i64, Option<&str>), (String, String)> {
     let tab_id = extract_tab_id(params)?;
-    let workspace = params
-        .get("workspace")
-        .and_then(Value::as_str)
+    let Some(workspace) = params.get("workspace") else {
+        return Ok((tab_id, None));
+    };
+    let workspace = workspace
+        .as_str()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             (
                 error_codes::INVALID_REQUEST.to_string(),
-                "browser_close requires a workspace root or space id".to_string(),
+                "browser_close's workspace must be a workspace root or space id".to_string(),
             )
         })?;
     ensure_bounded(workspace, MAX_WORKSPACE_BYTES, "workspace")?;
-    Ok((tab_id, workspace))
+    Ok((tab_id, Some(workspace)))
 }
 
 fn ensure_bounded(value: &str, max_bytes: usize, field: &str) -> Result<(), (String, String)> {
@@ -11629,11 +11650,11 @@ mod tests {
     }
 
     #[test]
-    fn browser_close_requires_a_tab_and_explicit_workspace() {
+    fn browser_close_takes_a_tab_and_an_optional_workspace() {
         for params in [
-            json!({ "tabId": 7 }),
             json!({ "tabId": 7, "workspace": "" }),
             json!({ "tabId": 7, "workspace": "   " }),
+            json!({ "tabId": 7, "workspace": 7 }),
             json!({ "workspace": "C:\\work\\alpha" }),
         ] {
             let error = extract_browser_close_params(&params).unwrap_err();
@@ -11645,7 +11666,13 @@ mod tests {
                 "workspace": " C:\\work\\alpha "
             }))
             .unwrap(),
-            (7, "C:\\work\\alpha")
+            (7, Some("C:\\work\\alpha"))
+        );
+        // Left out, the tab's own workspace: the scope check already decided
+        // whether this caller may act on the tab.
+        assert_eq!(
+            extract_browser_close_params(&json!({ "tabId": 7 })).unwrap(),
+            (7, None)
         );
     }
 
