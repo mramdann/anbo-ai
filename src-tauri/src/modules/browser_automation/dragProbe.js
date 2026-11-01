@@ -5,7 +5,7 @@ if (scroll) {
     source.scrollIntoView({block:'center',inline:'center',behavior:'instant'});
     destination.scrollIntoView({block:'nearest',inline:'nearest',behavior:'instant'});
 }
-const inspect = (el, name, position) => {
+const inspect = (el, name, position, pan) => {
     if (!isRenderedElement(el)) return {error:name + ' is not visible'};
     if (el.disabled || el.getAttribute('aria-disabled') === 'true') return {error:name + ' is disabled'};
     const rect = el.getBoundingClientRect();
@@ -18,6 +18,12 @@ const inspect = (el, name, position) => {
     if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) {
         return {error:name + ' is outside the viewport; both drag endpoints must be visible together'};
     }
+    // A pan inside one element keeps moving it once the press landed: maps,
+    // charts and sliders follow the pointer over a panel drawn on top of
+    // them, because they listen on the document or capture the pointer. So
+    // its end needs only to be on screen. Benchmark R46: every Google Maps
+    // session lost a call to a leftward pan ending under the place panel.
+    if (pan) return {x,y};
     const root = el.getRootNode();
     const first = (root.elementFromPoint ? root : document).elementFromPoint(x, y);
     // No element answers at a point outside the page's content area, such as
@@ -29,5 +35,5 @@ const inspect = (el, name, position) => {
     }
     return {error:name + ' is covered by another element'};
 };
-const from = inspect(source, 'drag source', sourcePosition), to = inspect(destination, 'drag target', targetPosition);
+const from = inspect(source, 'drag source', sourcePosition), to = inspect(destination, 'drag target', targetPosition, destination === source);
 return JSON.stringify(from.error ? from : to.error ? to : {points:[from.x,from.y,to.x,to.y]});

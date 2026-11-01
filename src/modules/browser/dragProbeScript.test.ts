@@ -66,11 +66,12 @@ function fixture() {
     scroll = true,
     sourcePosition: [number, number] | null = null,
     targetPosition: [number, number] | null = null,
+    pan = false,
   ) =>
     JSON.parse(
       vm.runInNewContext(`(() => {${source}})()`, {
         source: from.resolved ? from : null,
-        destination: to.resolved ? to : null,
+        destination: pan ? from : to.resolved ? to : null,
         generation: "gen-1",
         scroll,
         sourcePosition,
@@ -137,6 +138,23 @@ describe("shipped drag endpoint probe", () => {
     f.to.hidden = false;
     f.root.elementFromPoint = () => f.to;
     expect(f.run().error).toContain("source is covered by another element");
+  });
+  it("lets a pan inside one element end under a panel drawn over it", () => {
+    // Benchmark R46: a leftward pan on Google Maps ended under the place
+    // panel and was refused in every session, though the map follows the
+    // pointer there. Only the press has to land on the element.
+    const f = fixture();
+    // The other element stands in for the panel over the left of the map.
+    f.root.elementFromPoint = (x: number) => (x < 60 ? f.to : f.from);
+    expect(f.run(true, [0.9, 0.5], [0.2, 0.5], true).points).toEqual([
+      92, 300, 36, 300,
+    ]);
+    expect(f.run(true, [0.2, 0.5], [0.9, 0.5], true).error).toBe(
+      "drag source is covered by another element",
+    );
+    // Between two elements the drop point still has to be the target's.
+    f.root.elementFromPoint = () => f.from;
+    expect(f.run().error).toBe("drag target is covered by another element");
   });
   it("does not call a point no element answers at covered", () => {
     const f = fixture();
