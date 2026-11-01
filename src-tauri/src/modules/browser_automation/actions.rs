@@ -2192,7 +2192,7 @@ async fn handle_action_attempt(
                 ));
             }
             if let Some(why) = hidden_page {
-                return hidden_input::drag(
+                let mut answer = hidden_input::drag(
                     &webview,
                     source_target.as_ref(),
                     tab_id,
@@ -2202,7 +2202,15 @@ async fn handle_action_attempt(
                     target_position,
                     why,
                 )
-                .await;
+                .await?;
+                if source_ref == target_ref {
+                    if let Some(name) =
+                        panned_name(&webview, source_target.as_ref(), &source_ref).await
+                    {
+                        answer["name"] = json!(name);
+                    }
+                }
+                return Ok(answer);
             }
             let source = wait_for_actionable_ref(
                 &webview,
@@ -2258,13 +2266,20 @@ async fn handle_action_attempt(
                 .map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
                 "devtools"
             };
-            Ok(json!({
+            let mut result = json!({
                 "tabId": tab_id,
                 "sourceRef": source_ref,
                 "targetRef": target_ref,
                 "ok": true,
                 "dispatch": dispatch
-            }))
+            });
+            if source_ref == target_ref {
+                if let Some(name) = panned_name(&webview, source_target.as_ref(), &source_ref).await
+                {
+                    result["name"] = json!(name);
+                }
+            }
+            Ok(result)
         }
 
         // Several fields, one call: each runs the same type, check or select path
@@ -7230,6 +7245,34 @@ fn actionable_attempt_script(
     format!(
         "(() => {{ {sampler}\nreturn waitForActionableSample((scroll) => JSON.parse({probe}), '{requirement}', {scroll}, {value_action}, {on_ready}{external}); }})()"
     )
+}
+
+/// The accessible name of the element a pan moved inside, read after it.
+/// TradingView keeps its URL on the old symbol, so after panning the chart the
+/// agent spent another find on the canvas just to read "Chart for
+/// BINANCE:ETHUSDT, 1 month" (benchmark R46).
+async fn panned_name(
+    webview: &Webview,
+    target: Option<&RefFrameTarget>,
+    ref_id: &str,
+) -> Option<String> {
+    let script = deep_ref_expression(
+        ref_id,
+        &format!(
+            "{ACCESSIBLE_NAME_JS} return JSON.stringify(el ? accessibleName(el).slice(0, 120) : '');"
+        ),
+    );
+    let response = tokio::time::timeout(
+        Duration::from_millis(500),
+        execute_ref_script(webview, target, &script),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let decoded: String = page_json::from_str(&response).unwrap_or(response);
+    let name: String = page_json::from_str(&decoded).unwrap_or(decoded);
+    let name = name.trim().to_string();
+    (!name.is_empty()).then_some(name)
 }
 
 fn drag_points_stable(previous: [f64; 4], current: [f64; 4]) -> bool {
