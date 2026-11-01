@@ -1104,6 +1104,14 @@ async fn handle_action_inner(
         .filter(|_| super::external_front::needs_shown_page(method))
         .filter(|&tab_id| crate::modules::browser_external::get_target(tab_id).is_some())
         .map(|_| params.clone());
+    // Nothing reached the page yet in these refusals either, so the action
+    // runs once more from the start: a press whose element moved under the
+    // pointer, and a submit whose field the page emptied before Enter.
+    let once_more = matches!(
+        method,
+        "click" | "double_click" | "check" | "dialog" | "type" | "type_text"
+    )
+    .then(|| params.clone());
     let result = handle_action_attempt(app, method, params, timings, caller).await;
     match (result, again) {
         (Err(error), Some(params)) if went_out_of_view(&error) => {
@@ -1113,8 +1121,45 @@ async fn handle_action_inner(
             super::external_front::settle_dock().await;
             handle_action_attempt(app, method, params, timings, caller).await
         }
+        (Err(error), _) if moved_before_press(&error) || page_emptied_field(&error) => {
+            match once_more {
+                Some(params) => {
+                    log::info!(
+                        "[browser_automation] {method}: {}; running it once more",
+                        if moved_before_press(&error) {
+                            "the element moved before the press, nothing was sent"
+                        } else {
+                            "the page emptied the typed field before Enter"
+                        }
+                    );
+                    handle_action_attempt(app, method, params, timings, caller).await
+                }
+                None => Err(error),
+            }
+        }
         (result, _) => result,
     }
+}
+
+/// The Enter guard's refusal when the page itself cleared the field just
+/// filled: Google Maps, typed into right after its open, did so once its load
+/// finished. Nothing was submitted, so browser_type fills it once more.
+const PAGE_EMPTIED_FIELD: &str =
+    "key was not dispatched: the page emptied the field after it was filled; nothing was submitted";
+
+/// A press refused because its element moved after the pointer reached it,
+/// before any button went down: a Wikipedia link scrolled into view moved
+/// again as the article finished laying out (benchmark R46).
+fn moved_before_press((code, message): &(String, String)) -> bool {
+    code == error_codes::INPUT_NOT_READY
+        && message
+            .contains("changed before mouse-down (reason: moved); 0 click(s) already dispatched")
+}
+
+/// A submit refused because the page emptied the field it had just been filled
+/// with, before Enter went down.
+fn page_emptied_field((code, message): &(String, String)) -> bool {
+    code == error_codes::INPUT_MISMATCH && message.contains(PAGE_EMPTIED_FIELD)
 }
 
 /// Pointer input refused because the page went out of view while the action
@@ -2707,7 +2752,12 @@ async fn handle_action_attempt(
                                 Some("input_mismatch") => error_codes::INPUT_MISMATCH,
                                 _ => error_codes::INPUT_NOT_READY,
                             };
-                            return Err((code.to_string(), "key was not dispatched: the input changed or could not be focused; inspect it before retrying".to_string()));
+                            let message = if guard.get("emptied").and_then(Value::as_bool) == Some(true) {
+                                PAGE_EMPTIED_FIELD
+                            } else {
+                                "key was not dispatched: the input changed or could not be focused; inspect it before retrying"
+                            };
+                            return Err((code.to_string(), message.to_string()));
                         }
                         focused_ancestor = guard.get("focusedAncestor").filter(|value| value.is_object()).cloned();
                     }
@@ -11102,6 +11152,35 @@ mod tests {
         assert!(submits_type("type", &json!({ "submit": true })));
         assert!(!submits_type("type", &json!({ "submit": false })));
         assert!(!submits_type("click", &json!({ "submit": true })));
+    }
+
+    #[test]
+    fn only_refusals_that_sent_nothing_run_once_more() {
+        let refused = |code: &str, message: &str| (code.to_string(), message.to_string());
+        assert!(moved_before_press(&refused(
+            error_codes::INPUT_NOT_READY,
+            "element ref 'g96-e1' changed before mouse-down (reason: moved); 0 click(s) already dispatched; inspect the target before retrying"
+        )));
+        // A double click whose second press was refused already clicked once.
+        assert!(!moved_before_press(&refused(
+            error_codes::INPUT_NOT_READY,
+            "element ref 'g96-e1' changed before mouse-down (reason: moved); 1 click(s) already dispatched; inspect the target before retrying"
+        )));
+        assert!(!moved_before_press(&refused(
+            error_codes::INPUT_NOT_READY,
+            "element ref 'g96-e1' changed before mouse-down (reason: covered); 0 click(s) already dispatched; inspect the target before retrying"
+        )));
+        let emptied =
+            format!("the text was typed, but Enter did not complete: {PAGE_EMPTIED_FIELD}");
+        assert!(page_emptied_field(&refused(
+            error_codes::INPUT_MISMATCH,
+            &emptied
+        )));
+        // A field the page rewrote to something else stays refused.
+        assert!(!page_emptied_field(&refused(
+            error_codes::INPUT_MISMATCH,
+            "the text was typed, but Enter did not complete: key was not dispatched: the input changed or could not be focused; inspect it before retrying"
+        )));
     }
 
     #[tokio::test]

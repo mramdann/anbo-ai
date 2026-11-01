@@ -172,7 +172,9 @@ pub fn input_guard_body(expected_value: Option<&str>) -> String {
         if (!el || !el.isConnected) return JSON.stringify({{ok:false,error:'stale_ref'}});
         const expected = {expected};
         const value = el.isContentEditable ? (el.textContent || '') : el.value;
-        if (expected !== null && value !== expected) return JSON.stringify({{ok:false,error:'input_mismatch'}});
+        // emptied: the page cleared the field after the fill, as Google Maps does
+        // while it loads; nothing was submitted, so the text can go in again.
+        if (expected !== null && value !== expected) return JSON.stringify({{ok:false,error:'input_mismatch',emptied:value === ''}});
         if (el.disabled || el.readOnly || el.getAttribute('aria-disabled') === 'true') return JSON.stringify({{ok:false,error:'input_not_ready'}});
         const holds = node => {{ const active = node.getRootNode().activeElement; return active === node || node.contains(active); }};
         el.focus({{preventScroll:true}});
@@ -193,7 +195,7 @@ pub fn input_guard_body(expected_value: Option<&str>) -> String {
             if (!focusedAncestor) return JSON.stringify({{ok:false,error:'input_not_ready'}});
         }}
         const focusedValue = el.isContentEditable ? (el.textContent || '') : el.value;
-        if (!el.isConnected || (expected !== null && focusedValue !== expected)) return JSON.stringify({{ok:false,error:'input_mismatch'}});
+        if (!el.isConnected || (expected !== null && focusedValue !== expected)) return JSON.stringify({{ok:false,error:'input_mismatch',emptied:el.isConnected && focusedValue === ''}});
         if (!focusedAncestor) return JSON.stringify({{ok:true}});
         const label = (focusedAncestor.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
         return JSON.stringify({{ok:true, focusedAncestor: {{
@@ -257,6 +259,13 @@ mod tests {
             .script()
             .contains(&serde_json::to_string(value).unwrap()));
         assert!(input_guard_body(Some(value)).contains(&serde_json::to_string(value).unwrap()));
+    }
+
+    #[test]
+    fn a_field_the_page_emptied_says_so() {
+        let body = input_guard_body(Some("Monas Jakarta"));
+        assert!(body.contains("error:'input_mismatch',emptied:value === ''"));
+        assert!(body.contains("emptied:el.isConnected && focusedValue === ''"));
     }
 
     #[test]
