@@ -35,12 +35,20 @@ const REPLY_GRACE: Duration = Duration::from_millis(1_500);
 /// How long a profile asked to reload its extension has to connect again and
 /// get its approval back.
 const RELOAD_RECONNECT: Duration = Duration::from_secs(60);
+/// The workspaces one profile can serve at once.
+const MAX_WORKSPACES: usize = 32;
 type Reply = oneshot::Sender<Result<Value, String>>;
 
 struct Connection {
     profile: Profile,
-    workspace: Option<String>,
+    /// The workspaces approved to use this profile, in the order approved.
+    /// Each tab Anbo shows belongs to one of them (its binding's workspace).
+    workspaces: Vec<String>,
     tabs: Vec<Tab>,
+    /// The workspace each selected tab was last bound in. A new UI page (which
+    /// binds every tab again) and a profile that left a workspace learn from
+    /// it where each tab belongs; saved tabs keep no selection.
+    placed: BTreeMap<String, String>,
     /// The extension version the browser runs, once asked after approval;
     /// empty when an extension too old to answer refused the question.
     extension: Option<String>,
@@ -66,7 +74,7 @@ struct Registry {
 /// A profile Anbo asked to reload its extension after an update.
 struct ReloadedProfile {
     key: String,
-    workspace: String,
+    workspaces: Vec<String>,
     asked: Instant,
 }
 
@@ -109,8 +117,9 @@ fn valid_extension_version(version: &str) -> bool {
 pub struct ConnectionInfo {
     connection_id: String,
     profile: Profile,
-    workspace: Option<String>,
+    workspaces: Vec<String>,
     tabs: Vec<Tab>,
+    placed: BTreeMap<String, String>,
     extension_outdated: bool,
 }
 
@@ -149,11 +158,18 @@ impl Registry {
         let Some(connection) = self.connections.get(id) else {
             return false;
         };
-        let Some(workspace) = connection.workspace.clone() else {
+        let workspaces = connection.workspaces.clone();
+        if workspaces.is_empty() {
             return false;
-        };
-        // Code too old to name its version cannot reload itself either.
-        if !connection.extension_outdated() || connection.extension.as_deref() == Some("") {
+        }
+        // Code too old to name its version cannot reload itself either. A
+        // reload lets go of every tab, so a profile already serving tabs (one
+        // approved for a second workspace) is not asked: the menu asks the
+        // user instead.
+        if !connection.extension_outdated()
+            || connection.extension.as_deref() == Some("")
+            || !connection.tabs.is_empty()
+        {
             return false;
         }
         let key = profile_key(&connection.profile);
@@ -163,7 +179,7 @@ impl Registry {
         self.reloads.retain(|reload| reload.key != key);
         self.reloads.push(ReloadedProfile {
             key,
-            workspace,
+            workspaces,
             asked: Instant::now(),
         });
         true
@@ -230,21 +246,54 @@ impl Registry {
             .ok_or_else(|| "browser disconnected; reconnect the same profile explicitly".into())
     }
 
+    /// Approves the profile for one more workspace; it keeps the ones it
+    /// serves. Only the first approval tells the extension.
     fn approve(&mut self, id: &str, workspace: String) -> Result<(), String> {
         let connection = self.connection_mut(id)?;
-        if connection
-            .workspace
-            .as_ref()
-            .is_some_and(|current| current != &workspace)
-        {
-            return Err("disconnect before assigning this profile to another workspace".into());
+        if connection.workspaces.contains(&workspace) {
+            return Ok(());
         }
-        connection
-            .sender
-            .try_send(json!({"type":"approved"}))
-            .map_err(|_| "browser bridge is busy or disconnected")?;
-        connection.workspace = Some(workspace);
+        if connection.workspaces.len() >= MAX_WORKSPACES {
+            return Err("this profile already serves the most workspaces Anbo allows; remove it from one first".into());
+        }
+        if connection.workspaces.is_empty() {
+            connection
+                .sender
+                .try_send(json!({"type":"approved"}))
+                .map_err(|_| "browser bridge is busy or disconnected")?;
+        }
+        connection.workspaces.push(workspace);
         Ok(())
+    }
+
+    /// Takes one workspace off the profile, with the bindings of its tabs
+    /// there, and returns those browser tabs for the extension to let go of.
+    /// The profile's last workspace goes with the connection itself: the
+    /// extension has no way back from approved.
+    fn leave(&mut self, id: &str, workspace: &str) -> Result<Vec<i64>, String> {
+        let connection = self.connection_mut(id)?;
+        let Some(index) = connection
+            .workspaces
+            .iter()
+            .position(|known| same_root(known, workspace))
+        else {
+            return Err("this browser profile is not used in this workspace".into());
+        };
+        if connection.workspaces.len() == 1 {
+            self.remove(id);
+            return Ok(Vec::new());
+        }
+        let left = connection.workspaces.remove(index);
+        let mut released = Vec::new();
+        self.bindings.retain(|tab_id, target| {
+            let gone = target.connection_id == id && target.workspace == left;
+            if gone {
+                released.push(target.browser_tab_id);
+                self.retired.push(*tab_id);
+            }
+            !gone
+        });
+        Ok(released)
     }
 
     fn queue(
@@ -274,7 +323,7 @@ impl Registry {
             "anbo.selectTab" | "anbo.releaseTab" => protocol::valid_tab_id(tab_id),
             _ => connection.tabs.iter().any(|tab| tab.id == tab_id),
         };
-        if connection.workspace.is_none() || !target_allowed {
+        if connection.workspaces.is_empty() || !target_allowed {
             return Err("approve this profile and select a tab inside Anbo first".into());
         }
         if connection.pending.len() >= MAX_PENDING {
@@ -317,7 +366,7 @@ impl Registry {
             protocol::Incoming::Event { .. } => Err("unexpected browser event".into()),
             protocol::Incoming::Tabs { tabs } => {
                 protocol::validate_tabs(&tabs)?;
-                if connection.workspace.is_none() {
+                if connection.workspaces.is_empty() {
                     return Err("profile approval is required before selecting tabs".into());
                 }
                 if tabs.iter().any(|tab| tab.selection_id.is_none()) {
@@ -335,6 +384,10 @@ impl Registry {
                 }
                 connection.tabs = tabs;
                 let tabs = connection.tabs.clone();
+                connection.placed.retain(|selection, _| {
+                    tabs.iter()
+                        .any(|tab| tab.selection_id.as_deref() == Some(selection))
+                });
                 self.bindings.retain(|tab_id, target| {
                     let selected = tabs.iter().find(|tab| {
                         tab.id == target.browser_tab_id
@@ -504,8 +557,9 @@ where
             id.clone(),
             Connection {
                 profile,
-                workspace: None,
+                workspaces: Vec::new(),
                 tabs: Vec::new(),
+                placed: BTreeMap::new(),
                 extension: None,
                 sender,
                 pending: BTreeMap::new(),
@@ -592,11 +646,25 @@ pub fn browser_external_connections(webview: Webview) -> Result<Vec<ConnectionIn
         .map(|(id, connection)| ConnectionInfo {
             connection_id: id.clone(),
             profile: connection.profile.clone(),
-            workspace: connection.workspace.clone(),
+            workspaces: connection.workspaces.clone(),
             tabs: connection.tabs.clone(),
+            placed: connection.placed.clone(),
             extension_outdated: connection.extension_outdated(),
         })
         .collect())
+}
+
+/// Whether two workspace roots name one folder, as the UI compares them: the
+/// raw root a call names against the canonical one a profile keeps.
+fn same_root(left: &str, right: &str) -> bool {
+    let plain = |root: &str| {
+        let root = root
+            .strip_prefix(r"\\?\")
+            .unwrap_or(root)
+            .replace('\\', "/");
+        root.trim_end_matches('/').to_lowercase()
+    };
+    plain(left) == plain(right)
 }
 
 /// Whether an agent's open for `workspace`, a root (a space id names none),
@@ -613,7 +681,7 @@ pub(crate) fn approved_for(workspace: &str) -> bool {
         registry
             .connections
             .values()
-            .any(|connection| connection.workspace.as_deref() == Some(root.as_str()))
+            .any(|connection| connection.workspaces.contains(&root))
     })
 }
 
@@ -633,6 +701,59 @@ pub fn browser_external_approve(
         .approve(&connection_id, workspace)?;
     changed(&app);
     check_extension(app, connection_id);
+    Ok(())
+}
+
+/// Takes this workspace off a profile that serves other workspaces too. Its
+/// tabs there stay open in the browser, let go, and Anbo's tabs for them read
+/// as not connected, as after a disconnect. For the profile's only workspace
+/// this is a disconnect.
+#[tauri::command]
+pub async fn browser_external_leave(
+    app: AppHandle,
+    webview: Webview,
+    connection_id: String,
+    workspace: String,
+) -> Result<(), String> {
+    ensure_main(&webview)?;
+    if workspace.len() > 4096 {
+        return Err("invalid workspace path".into());
+    }
+    let root = std::fs::canonicalize(&workspace)
+        .map(crate::modules::fs::to_canon)
+        .unwrap_or(workspace);
+    let releases = {
+        let mut registry = REGISTRY
+            .lock()
+            .map_err(|_| "browser registry unavailable")?;
+        let released = registry.leave(&connection_id, &root)?;
+        released
+            .into_iter()
+            .filter_map(|tab_id| {
+                registry
+                    .queue(
+                        &connection_id,
+                        tab_id,
+                        "anbo.closeTab",
+                        json!({ "close": false }),
+                    )
+                    .ok()
+            })
+            .map(|(request_id, receiver)| {
+                (
+                    RequestGuard {
+                        connection_id: connection_id.clone(),
+                        request_id,
+                    },
+                    receiver,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    changed(&app);
+    for (_guard, receiver) in releases {
+        let _ = tokio::time::timeout(REQUEST_TIMEOUT + REPLY_GRACE, receiver).await;
+    }
     Ok(())
 }
 
@@ -687,20 +808,31 @@ async fn ask_reload(connection_id: &str) {
 }
 
 /// The profile Anbo asked to reload has connected again, and is approved for
-/// the same workspace while that is still authorized. Anbo asks right after an
-/// approval, before any tab is selected, so there are no tabs to take back.
+/// the same workspaces while they are still authorized. Anbo asks only a
+/// profile serving no tab yet (`plan_reload`), so there are no tabs to take back.
 fn resume_after_reload(app: AppHandle, id: String, reload: ReloadedProfile) {
-    let workspace = app
+    let workspaces: Vec<String> = app
         .try_state::<WorkspaceRegistry>()
-        .and_then(|registry| authorized_workspace(&registry, &reload.workspace).ok());
-    let approved = workspace
-        .ok_or_else(|| "its workspace is no longer authorized".to_string())
-        .and_then(|workspace| {
-            REGISTRY
-                .lock()
-                .map_err(|_| "browser registry unavailable".to_string())?
-                .approve(&id, workspace)
-        });
+        .map(|registry| {
+            reload
+                .workspaces
+                .iter()
+                .filter_map(|workspace| authorized_workspace(&registry, workspace).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    let approved = if workspaces.is_empty() {
+        Err("its workspaces are no longer authorized".to_string())
+    } else {
+        REGISTRY
+            .lock()
+            .map_err(|_| "browser registry unavailable".to_string())
+            .and_then(|mut registry| {
+                workspaces
+                    .into_iter()
+                    .try_for_each(|workspace| registry.approve(&id, workspace))
+            })
+    };
     if let Err(error) = approved {
         log::info!(
             "[browser_bridge] the profile connected again after its extension reload, but {error}; approve it in the browser menu"
@@ -708,7 +840,7 @@ fn resume_after_reload(app: AppHandle, id: String, reload: ReloadedProfile) {
         return;
     }
     log::info!(
-        "[browser_bridge] the profile connected again after its extension reload and is approved for its workspace again"
+        "[browser_bridge] the profile connected again after its extension reload and is approved for its workspaces again"
     );
     changed(&app);
     check_extension(app, id);
@@ -851,8 +983,9 @@ mod tests {
                     browser: protocol::Browser::Chrome,
                     name: "Work".into(),
                 },
-                workspace: None,
+                workspaces: Vec::new(),
                 tabs: Vec::new(),
+                placed: BTreeMap::new(),
                 extension: None,
                 sender,
                 pending: BTreeMap::new(),
@@ -926,7 +1059,7 @@ mod tests {
             !registry.plan_reload("first"),
             "only an approved profile is asked"
         );
-        share(&mut registry, "first");
+        registry.approve("first", "D:/workspace".into()).unwrap();
         let bundled = BUNDLED_EXTENSION.clone().unwrap();
         registry.connections.get_mut("first").unwrap().extension = Some(bundled);
         assert!(
@@ -939,6 +1072,7 @@ mod tests {
             "code too old to name its version cannot reload itself"
         );
         registry.connections.get_mut("first").unwrap().extension = Some("0.0.1".into());
+        registry.approve("first", "D:/second".into()).unwrap();
         assert!(registry.plan_reload("first"));
         assert!(!registry.plan_reload("first"), "asked once per session");
 
@@ -949,7 +1083,7 @@ mod tests {
         let reload = registry
             .take_reload(&profile)
             .expect("the same profile resumes");
-        assert_eq!(reload.workspace, "D:/workspace");
+        assert_eq!(reload.workspaces, ["D:/workspace", "D:/second"]);
         assert!(registry.take_reload(&profile).is_none(), "it resumes once");
         assert!(registry
             .queue("first", 0, "anbo.reloadExtension", json!({}))
@@ -957,6 +1091,11 @@ mod tests {
         assert!(registry
             .queue("first", 1, "anbo.reloadExtension", json!({}))
             .is_err());
+
+        // A reload lets go of every tab: a profile serving tabs is not asked.
+        registry.reload_asked.clear();
+        share(&mut registry, "first");
+        assert!(!registry.plan_reload("first"));
     }
 
     #[test]
@@ -964,7 +1103,7 @@ mod tests {
         let mut registry = Registry::default();
         let (first, _receiver) = connection("profile-one");
         registry.insert("first".into(), first).unwrap();
-        share(&mut registry, "first");
+        registry.approve("first", "D:/workspace".into()).unwrap();
         registry.connections.get_mut("first").unwrap().extension = Some("0.0.1".into());
         let profile = registry.connections["first"].profile.clone();
         assert!(registry.plan_reload("first"));
@@ -999,9 +1138,6 @@ mod tests {
         let (_, mut pending) = registry
             .queue("first", 1, "Runtime.evaluate", json!({}))
             .unwrap();
-        assert!(registry
-            .approve("first", "D:/other-workspace".into())
-            .is_err());
         registry.remove("second");
         assert!(matches!(
             pending.try_recv(),
@@ -1012,6 +1148,28 @@ mod tests {
         assert!(registry
             .queue("first", 1, "Runtime.evaluate", json!({}))
             .is_err());
+    }
+
+    #[test]
+    fn a_profile_serves_several_workspaces_and_tells_the_extension_once() {
+        let mut registry = Registry::default();
+        let (first, mut sent) = connection("profile-one");
+        registry.insert("first".into(), first).unwrap();
+        registry.approve("first", "D:/workspace".into()).unwrap();
+        registry.approve("first", "D:/other".into()).unwrap();
+        registry.approve("first", "D:/workspace".into()).unwrap();
+        assert_eq!(
+            registry.connections["first"].workspaces,
+            ["D:/workspace", "D:/other"]
+        );
+        assert_eq!(sent.try_recv().unwrap(), json!({"type":"approved"}));
+        assert!(sent.try_recv().is_err(), "approved only once");
+        for index in 2..MAX_WORKSPACES {
+            registry.approve("first", format!("D:/w{index}")).unwrap();
+        }
+        assert!(registry.approve("first", "D:/one-too-many".into()).is_err());
+        assert!(same_root(r"\\?\D:\Work\", "d:/work"));
+        assert!(!same_root("D:/work", "D:/workshop"));
     }
 
     #[tokio::test]

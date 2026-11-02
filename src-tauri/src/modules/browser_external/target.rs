@@ -55,8 +55,19 @@ pub struct BindingRequest {
     workspace: String,
 }
 
+/// What a bind did.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Bound {
+    New,
+    /// The tab's binding was already this one.
+    Same,
+    /// The tab moved to another workspace its profile serves, and its binding
+    /// went along.
+    Moved,
+}
+
 impl Registry {
-    fn bind(&mut self, binding: BindingRequest) -> Result<(ExternalTarget, bool), String> {
+    fn bind(&mut self, binding: BindingRequest) -> Result<(ExternalTarget, Bound), String> {
         let BindingRequest {
             connection_id,
             browser_tab_id,
@@ -84,16 +95,25 @@ impl Registry {
             .lock()
             .map_err(|_| "browser navigation state unavailable")?
             .observed_generation = generation;
-        for existing in self.bindings.values() {
+        for existing in self.bindings.values_mut() {
             if existing.tab_id == tab_id {
-                if existing.connection_id == target.connection_id
-                    && existing.browser_tab_id == browser_tab_id
-                    && existing.selection_id == target.selection_id
-                    && existing.workspace == target.workspace
+                if existing.connection_id != target.connection_id
+                    || existing.browser_tab_id != browser_tab_id
+                    || existing.selection_id != target.selection_id
                 {
-                    return Ok((existing.clone(), false));
+                    return Err("Anbo tab is already bound to another browser tab".into());
                 }
-                return Err("Anbo tab is already bound to another browser tab".into());
+                if existing.workspace == target.workspace {
+                    return Ok((existing.clone(), Bound::Same));
+                }
+                // Its logs, navigation and network state go along.
+                existing.workspace = target.workspace;
+                if let Some(connection) = self.connections.get_mut(&existing.connection_id) {
+                    connection
+                        .placed
+                        .insert(existing.selection_id.clone(), existing.workspace.clone());
+                }
+                return Ok((existing.clone(), Bound::Moved));
             }
             if existing.connection_id == target.connection_id
                 && existing.browser_tab_id == browser_tab_id
@@ -105,8 +125,22 @@ impl Registry {
             return Err("Anbo external tab limit reached; release an unused tab first".into());
         }
         self.bindings.insert(tab_id, target.clone());
-        Ok((target, true))
+        if let Some(connection) = self.connections.get_mut(&target.connection_id) {
+            connection
+                .placed
+                .insert(target.selection_id.clone(), target.workspace.clone());
+        }
+        Ok((target, Bound::New))
     }
+}
+
+/// The name the extension keeps for a tab's workspace: opaque, so it can tell
+/// whether two tabs belong to one workspace without learning its path.
+fn scope_of(workspace: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    workspace.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 impl ExternalTarget {
@@ -128,7 +162,7 @@ impl ExternalTarget {
             .connections
             .get(&self.connection_id)
             .ok_or("browser profile disconnected")?;
-        if connection.workspace.as_deref() != Some(&self.workspace) {
+        if !connection.workspaces.contains(&self.workspace) {
             return Err("browser workspace changed".into());
         }
         connection
@@ -379,28 +413,50 @@ pub async fn browser_external_bind(
     }
     let lock = registry::get_tab_lock(tab_id);
     let _guard = lock.lock().await;
-    let (target, created) = {
+    let (target, bound) = {
         let mut registry = REGISTRY
             .lock()
             .map_err(|_| "browser registry unavailable")?;
         registry.bind(binding)?
     };
-    if !created {
+    if bound == Bound::Same {
+        return Ok(());
+    }
+    // A profile can serve several workspaces. The extension learns which one
+    // each tab is in, so it never hands a tab a page opened to the wrong one
+    // (tabs.js `created`). Older extension code does not know the command.
+    // It goes on the tab's control lane, beside the page's own setup below.
+    let scope = async {
+        if let Err(error) = target
+            .call(
+                "anbo.scopeTab",
+                json!({ "scope": scope_of(&target.workspace) }),
+                Duration::from_secs(2),
+            )
+            .await
+        {
+            log::debug!(
+                "[browser_bridge] the extension did not take tab {tab_id}'s workspace: {error}"
+            );
+        }
+    };
+    if bound == Bound::Moved {
+        scope.await;
         return Ok(());
     }
     crate::modules::browser_automation::snapshot::invalidate_document(tab_id);
     #[cfg(windows)]
     {
-        let enabled = target
-            .call(
-                "Network.enable",
-                json!({"maxTotalBufferSize":1,"maxResourceBufferSize":1,"maxPostDataSize":0}),
-                Duration::from_secs(2),
-            )
-            .await
-            .is_ok();
-        target.network.external_enabled(enabled);
+        let network = target.call(
+            "Network.enable",
+            json!({"maxTotalBufferSize":1,"maxResourceBufferSize":1,"maxPostDataSize":0}),
+            Duration::from_secs(2),
+        );
+        let ((), enabled) = tokio::join!(scope, network);
+        target.network.external_enabled(enabled.is_ok());
     }
+    #[cfg(not(windows))]
+    scope.await;
     let handle = BrowserTarget::External {
         app,
         target,
@@ -647,7 +703,8 @@ mod tests {
                     browser: protocol::Browser::Chrome,
                     name: "Work".into(),
                 },
-                workspace: Some("D:/work".into()),
+                workspaces: vec!["D:/work".into()],
+                placed: Default::default(),
                 tabs: vec![Tab {
                     id: 10,
                     selection_id: Some(LEASE.into()),
@@ -684,8 +741,8 @@ mod tests {
         let mut wrong = binding();
         wrong.selection_id = "stale".into();
         assert!(registry.bind(wrong).is_err());
-        assert!(registry.bind(binding()).unwrap().1);
-        assert!(!registry.bind(binding()).unwrap().1);
+        assert_eq!(registry.bind(binding()).unwrap().1, Bound::New);
+        assert_eq!(registry.bind(binding()).unwrap().1, Bound::Same);
         let mut duplicate = binding();
         duplicate.tab_id = 43;
         assert!(registry.bind(duplicate).is_err());
@@ -708,13 +765,65 @@ mod tests {
         registry.forget_bindings();
         assert!(registry.bindings.is_empty());
         assert_eq!(registry.retired, vec![42]);
-        assert!(registry.bind(renumbered()).unwrap().1);
+        assert_eq!(registry.bind(renumbered()).unwrap().1, Bound::New);
+    }
+
+    #[test]
+    fn a_tab_moves_between_workspaces_its_profile_serves_and_leaves_with_one() {
+        let (mut registry, _receiver) = fixture();
+        let mut other = binding();
+        other.workspace = "D:/other".into();
+        assert!(registry.bind(other).is_err(), "not approved there yet");
+        registry.approve("profile", "D:/other".into()).unwrap();
+        let (first, _) = registry.bind(binding()).unwrap();
+        let mut moved = binding();
+        moved.workspace = "D:/other".into();
+        assert_eq!(registry.connections["profile"].placed[LEASE], "D:/work");
+        let (target, bound) = registry.bind(moved).unwrap();
+        assert_eq!(bound, Bound::Moved);
+        assert_eq!(target.workspace, "D:/other");
+        assert_eq!(registry.bindings[&42].workspace, "D:/other");
+        assert!(std::sync::Arc::ptr_eq(
+            &first.navigation,
+            &target.navigation
+        ));
+        // A copy taken before the move still reaches the tab: both workspaces
+        // are the profile's.
+        assert!(first.validate(&registry).is_ok());
+        // A new UI page learns where the tab was.
+        registry.forget_bindings();
+        assert_eq!(registry.connections["profile"].placed[LEASE], "D:/other");
+        registry.retired.clear();
+        let mut again = binding();
+        again.workspace = "D:/other".into();
+        let (target, _) = registry.bind(again).unwrap();
+
+        // Leaving the tab's workspace lets the tab go; the profile stays.
+        assert_eq!(registry.leave("profile", r"d:\other\").unwrap(), vec![10]);
+        assert!(registry.bindings.is_empty());
+        assert_eq!(registry.retired, vec![42]);
+        assert_eq!(registry.connections["profile"].workspaces, ["D:/work"]);
+        assert!(target.validate(&registry).is_err());
+        assert!(registry.leave("profile", "D:/other").is_err());
+        // The last workspace goes with the connection.
+        assert!(registry.leave("profile", "D:/work").unwrap().is_empty());
+        assert!(registry.connections.is_empty());
+    }
+
+    #[test]
+    fn a_workspace_scope_is_opaque_and_one_per_workspace() {
+        let scope = scope_of("D:/work");
+        assert_eq!(scope.len(), 16);
+        assert!(scope.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(scope, scope_of("D:/work"));
+        assert_ne!(scope, scope_of("D:/other"));
     }
 
     #[test]
     fn revoked_or_reselected_tabs_never_reuse_a_live_binding() {
         let (mut registry, _receiver) = fixture();
         let (old, _) = registry.bind(binding()).unwrap();
+        assert!(registry.connections["profile"].placed.contains_key(LEASE));
         let mut replacement = registry.connections["profile"].tabs[0].clone();
         replacement.selection_id = Some("ffeeddcc-bbaa-9988-7766-554433221100".into());
         registry
@@ -728,6 +837,8 @@ mod tests {
         assert!(registry.bindings.is_empty());
         assert_eq!(registry.retired, vec![42]);
         assert!(old.validate(&registry).is_err());
+        // A selection the browser let go of is forgotten.
+        assert!(registry.connections["profile"].placed.is_empty());
     }
 
     #[test]

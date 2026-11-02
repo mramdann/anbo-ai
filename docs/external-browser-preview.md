@@ -95,7 +95,7 @@ restricted page also revoke control. Disconnect during attachment cleans up the
 late debugger connection. Already-dispatched browser actions cannot be undone.
 
 Each native connection has its own random Anbo connection ID, request counter,
-bounded command queue, replies, tab list, and approved workspace. Browser tab IDs
+bounded command queue, replies, tab list, and approved workspaces. Browser tab IDs
 are never treated as globally unique. Disconnect clears approval and pending
 requests. Reconnect requires approval again and never silently switches profiles.
 Cloned profile IDs are refused while an identical browser/profile is connected.
@@ -112,7 +112,17 @@ background. Multiple approved profiles require explicit disambiguation: the agen
 passes `browser_open`'s `profile` (a name, or an id when names repeat), and a refusal
 lists the approved profiles. A named profile that is not approved fails. A workspace
 with disconnected external tabs fails instead of falling back to WebView2 or another
-login. Selected tabs remain live across workspace switches, not cross-workspace moves.
+login. Selected tabs remain live across workspace switches. A move to another
+workspace the profile serves keeps the page; any other cross-workspace move lets it go.
+
+One profile can serve several workspaces. The browser menu's Use here approves a
+profile other workspaces use for the workspace shown too, and Remove takes it off
+that workspace while the others keep it; for its last workspace Remove is a
+disconnect. The approved workspaces share the profile's logins, but each Anbo tab
+belongs to one of them and agents reach only their own workspace's tabs, as before.
+A tab a page opens goes to its opener's workspace. When agents of two workspaces sent
+input in the 2 s a page takes to open a tab, Anbo cannot tell whose input opened it,
+so the tab stays in the browser (extension 0.5.12).
 
 A tab the user opens from the + menu or Ctrl+P is Anbo's own browser. New tab on a
 profile in the header menu starts a new tab page whose first web page opens in that

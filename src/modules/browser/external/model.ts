@@ -14,7 +14,12 @@ export type ExternalBrowser = {
 export type ExternalConnection = {
   connectionId: string;
   profile: { profileId: string; browser: "chrome" | "edge"; name: string };
-  workspace: string | null;
+  /** The workspaces approved to use the profile; none while it waits for
+   * approval. Each of its tabs in Anbo belongs to one of them. */
+  workspaces: string[];
+  /** The workspace each selected tab was last bound in, by selection, so a
+   * new page binds it there again. */
+  placed?: Record<string, string>;
   /** The browser still runs extension files from before an Anbo update. */
   extensionOutdated?: boolean;
   tabs: {
@@ -54,6 +59,18 @@ export function sameWorkspace(left: string, right: string): boolean {
   return (
     left.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase() ===
     right.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()
+  );
+}
+
+/** Whether the profile is approved for this workspace, so its pages may show
+ * there. */
+export function servesWorkspace(
+  connection: ExternalConnection,
+  root: string | null,
+): boolean {
+  return (
+    root !== null &&
+    connection.workspaces.some((workspace) => sameWorkspace(workspace, root))
   );
 }
 

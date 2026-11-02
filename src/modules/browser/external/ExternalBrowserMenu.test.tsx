@@ -26,7 +26,7 @@ const connection = (
     browser: "chrome",
     name: "Your Chrome",
   },
-  workspace,
+  workspaces: workspace === null ? [] : [workspace],
   tabs,
 });
 const noop = () => {};
@@ -111,6 +111,36 @@ describe("browser menu", () => {
     expect(markup).toContain(">other-project</span>");
     // Its pages would land in that workspace, not this one.
     expect(markup).not.toContain("New tab</button>");
+  });
+
+  it("offers a profile other workspaces use to this one too", () => {
+    const markup = body([connection("a", "D:/other-project")]);
+    expect(markup).toContain("Use here</button>");
+    expect(markup).toContain(">Disconnect</button>");
+    expect(markup).toContain(
+      "Used in other-project. Use it here too to open its tabs in anbo-ai",
+    );
+    // Its tabs would open in the other workspace.
+    expect(markup).not.toContain("Other tabs");
+  });
+
+  it("removes a profile from this workspace while others keep it", () => {
+    const shared = {
+      ...connection("a", "D:/anbo-ai"),
+      workspaces: ["D:/anbo-ai", "D:/other-project"],
+    };
+    const markup = body([shared]);
+    expect(markup).toContain(">also other-project</span>");
+    expect(markup).toContain("Remove</button>");
+    expect(markup).not.toContain(">Disconnect</button>");
+    expect(markup).not.toContain("Use here");
+    expect(markup).toContain("Other tabs");
+    expect(markup).toContain("New tab</button>");
+    // The last workspace that uses it disconnects it.
+    expect(body([shared], "D:/other-project")).toContain("Remove</button>");
+    expect(body([connection("a", "D:/anbo-ai")])).toContain(
+      ">Disconnect</button>",
+    );
   });
 
   it("folds each profile when several are connected", () => {

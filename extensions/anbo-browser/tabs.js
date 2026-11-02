@@ -5,7 +5,7 @@ import { createDockManager } from "./dock.js";
 // The version this code is, kept equal to manifest.json. After an update the
 // browser reads the new manifest but can keep running the old scripts until the
 // extension reloads, so the manifest alone would hide that a reload is due.
-export const EXTENSION_VERSION = "0.5.11";
+export const EXTENSION_VERSION = "0.5.12";
 
 const MAX_TABS = 128;
 // A new tab opened this soon after Anbo sent input to the tab it opened from
@@ -49,6 +49,9 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
   const windowBefore = new Map();
   // The windows being put back (keepWindow), each with its watches' wake-ups.
   const keeping = new Map();
+  // The workspace of each tab Anbo holds, as an opaque name Anbo gives it, with
+  // the selection it was given for. One profile can serve several workspaces.
+  const scopes = new Map();
   let keptRenderers = "";
   let disposed = false;
 
@@ -251,6 +254,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
       const wanted = typeof message.params.close === "boolean" ? message.params.close : selection?.createdByAnbo === true;
       const close = message.method === "anbo.closeTab" && selection !== undefined && wanted;
       invalidate(message.tabId);
+      scopes.delete(message.tabId);
       if (attached.delete(message.tabId)) publish();
       const cleanup = track((async () => {
         if (owned.has(message.tabId)) await detach(message.tabId);
@@ -342,25 +346,54 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
   // popup window (a sign-in, which talks to its opener).
   const driven = (tabId) => Date.now() - (inputAt.get(tabId) ?? Number.NEGATIVE_INFINITY) < AGENT_INPUT_MS;
 
+  // The workspace Anbo named for a selection; empty from an Anbo that names none.
+  function scopeOf(selection) {
+    const named = scopes.get(selection.id);
+    return named?.selectionId === selection.selectionId ? named.scope : "";
+  }
+
   // The tab Anbo holds that an agent's input reached last, within the moment
-  // a page takes to open a tab.
+  // a page takes to open a tab, and the workspaces of all the tabs input
+  // reached in that moment.
   function lastDriven() {
     let found = null;
     let at = Number.NEGATIVE_INFINITY;
+    const workspaces = new Set();
     for (const [tabId, selection] of attached) {
-      const input = inputAt.get(tabId) ?? Number.NEGATIVE_INFINITY;
-      if (driven(tabId) && input > at) [found, at] = [selection, input];
+      if (!driven(tabId)) continue;
+      workspaces.add(scopeOf(selection));
+      const input = inputAt.get(tabId);
+      if (input > at) [found, at] = [selection, input];
     }
-    return found;
+    return { found, workspaces };
+  }
+
+  // Whether a tab of another workspace had input at or after this tab's last.
+  function laterElsewhere(selection) {
+    const scope = scopeOf(selection);
+    const at = inputAt.get(selection.id);
+    return [...attached].some(([tabId, other]) => tabId !== selection.id && driven(tabId) && scopeOf(other) !== scope && inputAt.get(tabId) >= at);
   }
 
   function created(tab, fromDock = false) {
     let opener = attached.get(tab.openerTabId);
+    const named = Boolean(opener && driven(opener.id));
+    const recent = fromDock ? null : lastDriven();
+    // Agents of two workspaces sent input in the moment a page takes to open a
+    // tab: the browser's opener could be either one's (below), so the tab could
+    // land in the wrong workspace. It stays the browser's; only its window goes
+    // back. A named opener holds unless another workspace's tab had input at
+    // or after its own, as when that tab's key opened it.
+    if (recent && recent.workspaces.size > 1 && (!named || laterElsewhere(opener))) {
+      const source = [...attached.keys()].find((id) => driven(id) && windowBefore.get(id)?.windowId === tab.windowId);
+      if (!disposed && !tab.incognito && source !== undefined) void keepWindow(source, tab.windowId).catch(() => {});
+      return;
+    }
     // The browser names the tab in front of its window as a new tab's opener.
     // An agent's key on a page Anbo holds behind the user's tab, as in a
     // workspace Anbo is not showing, opened it from there: the new tab was
     // left in the browser, and in front of the user's own.
-    const behind = !fromDock && !(opener && driven(opener.id)) ? lastDriven() : null;
+    const behind = recent && !named ? recent.found : null;
     if (behind) opener = behind;
     const first = tab.pendingUrl || tab.url;
     if (disposed || !opener || tab.incognito || !Number.isSafeInteger(tab.id) || attached.has(tab.id) || pending.has(tab.id)) return;
@@ -459,6 +492,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     owned.delete(tabId);
     inputAt.delete(tabId);
     windowBefore.delete(tabId);
+    scopes.delete(tabId);
     if (attached.delete(tabId)) publish();
   }
 
@@ -484,6 +518,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     owned.delete(tabId);
     inputAt.delete(tabId);
     windowBefore.delete(tabId);
+    scopes.delete(tabId);
     const token = attaching.get(tabId);
     if (token) token.valid = false;
     if (attached.delete(tabId)) publish();
@@ -520,6 +555,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     connecting.clear();
     inputAt.clear();
     windowBefore.clear();
+    scopes.clear();
     for (const watches of keeping.values()) for (const watch of watches) watch.wake();
     keeping.clear();
     const ids = [...owned];
@@ -550,6 +586,12 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
 
   function command(message, check) {
     if (["anbo.dockPrepare", "anbo.dockCommit", "anbo.dockRelease", "anbo.dockSwap"].includes(message.method)) return dock.command(message, check);
+    if (message.method === "anbo.scopeTab") {
+      const scope = message.params.scope;
+      if (typeof scope !== "string" || !/^[a-f0-9]{1,64}$/.test(scope)) throw new Error("Invalid workspace scope");
+      scopes.set(message.tabId, { selectionId: message.selectionId, scope });
+      return {};
+    }
     const transport = transports.get(message.tabId);
     if (!transport) throw new Error("Browser tab transport unavailable");
     if (message.method.startsWith("Input.")) {

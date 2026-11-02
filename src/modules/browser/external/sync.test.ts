@@ -28,7 +28,7 @@ const profile = {
 const connection = (): ExternalConnection => ({
   connectionId: "session",
   profile,
-  workspace: "D:/work",
+  workspaces: ["D:/work"],
   tabs: [
     {
       id: 10,
@@ -342,7 +342,7 @@ describe("external browser workspace synchronization", () => {
     const connections = spaces.map((space, index) => ({
       ...connection(),
       connectionId: `connection-${index}`,
-      workspace: space.root,
+      workspaces: [space.root],
       tabs: [{ ...connection().tabs[0], selectionId: `lease-${index}` }],
     }));
     state.setSpaces(spaces);
@@ -700,7 +700,7 @@ describe("external browser workspace synchronization", () => {
         {
           connectionId: "personal",
           profile: second,
-          workspace: "D:/work",
+          workspaces: ["D:/work"],
           tabs: [
             {
               id: 20,
@@ -910,7 +910,7 @@ describe("external browser workspace synchronization", () => {
       );
       listed = listed.map((item) =>
         item.connectionId === "personal"
-          ? { ...item, workspace: "D:/other" }
+          ? { ...item, workspaces: ["D:/other"] }
           : item,
       );
       work.resolve();
@@ -927,7 +927,7 @@ describe("external browser workspace synchronization", () => {
 
     it("never takes a named profile approved for another workspace, nor Anbo's browser", async () => {
       const state = harness();
-      state.connections([{ ...connection(), workspace: "D:/other" }]);
+      state.connections([{ ...connection(), workspaces: ["D:/other"] }]);
       // Null would open the page in Anbo's browser, with another login.
       await expect(
         state.service.open("https://example.org", "D:/work", false, "Work"),
@@ -999,7 +999,7 @@ describe("external browser workspace synchronization", () => {
     const timer = vi.spyOn(globalThis, "setInterval");
     try {
       const state = harness();
-      state.connections([{ ...connection(), workspace: null }]);
+      state.connections([{ ...connection(), workspaces: [] }]);
       await state.service.refresh();
       expect(state.create).not.toHaveBeenCalled();
       expect(timer).not.toHaveBeenCalled();
@@ -1052,11 +1052,11 @@ describe("external browser workspace synchronization", () => {
     const state = harness([
       { id: 7, kind: "browser", url: "", title: "New tab", spaceId: "work" },
     ]);
-    state.connections([{ ...connection(), workspace: null }]);
+    state.connections([{ ...connection(), workspaces: [] }]);
     await expect(
       state.service.openInto("https://example.com/", "D:/work", 7, profile),
     ).rejects.toThrow("not connected to this workspace");
-    state.connections([{ ...connection(), workspace: "D:/other" }]);
+    state.connections([{ ...connection(), workspaces: ["D:/other"] }]);
     await expect(
       state.service.openInto("https://example.com/", "D:/work", 7, profile),
     ).rejects.toThrow("not connected to this workspace");
@@ -1113,10 +1113,255 @@ describe("external browser workspace synchronization", () => {
       return undefined;
     });
     await expect(
-      state.service.select("session", 10, "https://example.com/"),
+      state.service.select("session", 10, "https://example.com/", "D:/work"),
     ).resolves.toBe(100);
     expect(state.create).toHaveBeenCalledTimes(1);
     expect(state.service.tabFor("session", "lease")).toBe(100);
+  });
+
+  describe("a profile several workspaces use", () => {
+    const remote = (
+      id: number,
+      extra: Partial<ExternalConnection["tabs"][number]> = {},
+    ) => ({
+      id,
+      title: "Page",
+      url: `https://example.com/${id}`,
+      selectionId: `lease-${id}`,
+      loading: false,
+      ...extra,
+    });
+    // The profile serves both workspaces. An open or a selection adds its tab
+    // to what the browser lists, as the extension announces it before it
+    // answers.
+    const shared = (tabs: ExternalConnection["tabs"] = [], initial?: Tab[]) => {
+      const state = harness(initial);
+      let listed: ExternalConnection[] = [
+        { ...connection(), workspaces: ["D:/work", "D:/other"], tabs },
+      ];
+      let next = 30;
+      let announce = async () => {};
+      state.calls.mockImplementation(async (command: string) => {
+        if (command === "browser_external_connections") return listed;
+        if (
+          command === "browser_external_open_tab" ||
+          command === "browser_external_select_tab"
+        ) {
+          const added = remote(next++);
+          listed = [{ ...listed[0], tabs: [...listed[0].tabs, added] }];
+          await announce();
+          return added;
+        }
+        return undefined;
+      });
+      return {
+        ...state,
+        list: (change: (current: ExternalConnection) => ExternalConnection) => {
+          listed = [change(listed[0])];
+        },
+        onAnnounce: (run: () => Promise<void>) => {
+          announce = run;
+        },
+      };
+    };
+    const binds = (state: ReturnType<typeof shared>) =>
+      state.calls.mock.calls
+        .filter(([command]) => command === "browser_external_bind")
+        .map(
+          (call) =>
+            (call as unknown[])[1] as {
+              binding: { tabId: number; workspace: string };
+            },
+        )
+        .map(({ binding }) => [binding.tabId, binding.workspace]);
+
+    it("puts each tab in the workspace that opened or chose it", async () => {
+      const state = shared();
+      await expect(
+        state.service.open("https://example.org", "D:/other"),
+      ).resolves.toBe(100);
+      await expect(
+        state.service.select(
+          "session",
+          31,
+          "https://example.com/31",
+          "d:\\work",
+        ),
+      ).resolves.toBe(101);
+      expect(
+        state
+          .tabs()
+          .map((tab) => [tab.id, tab.spaceId, tab.external?.selectionId]),
+      ).toEqual([
+        [100, "other", "lease-30"],
+        [101, "work", "lease-31"],
+      ]);
+      // Each binding names the workspace as the profile keeps it.
+      expect(binds(state)).toEqual([
+        [100, "D:/other"],
+        [101, "D:/work"],
+      ]);
+      await expect(
+        state.service.select(
+          "session",
+          32,
+          "https://example.com/32",
+          "D:/third",
+        ),
+      ).rejects.toThrow("not used in this workspace");
+    });
+
+    it("waits for an open's answer before it places the tab the browser announced", async () => {
+      const state = shared();
+      state.onAnnounce(async () => {
+        // The browser's change event, before the open's answer.
+        await state.service.refresh();
+        expect(state.create).not.toHaveBeenCalled();
+      });
+      await expect(
+        state.service.open("https://example.org", "D:/other"),
+      ).resolves.toBe(100);
+      expect(state.tabs()[0].spaceId).toBe("other");
+      expect(state.calls).not.toHaveBeenCalledWith(
+        "browser_external_release_tab",
+        expect.anything(),
+      );
+    });
+
+    it("leaves to the browser a tab no workspace can be told for, once", async () => {
+      const state = shared([remote(10)]);
+      await state.service.refresh();
+      await state.service.refresh();
+      expect(state.create).not.toHaveBeenCalled();
+      expect(
+        state.calls.mock.calls.filter(
+          ([command]) => command === "browser_external_release_tab",
+        ),
+      ).toEqual([
+        [
+          "browser_external_release_tab",
+          { connectionId: "session", tabId: 10 },
+        ],
+      ]);
+    });
+
+    it("puts a tab a page opened in its opener's workspace, beside it", async () => {
+      const state = shared();
+      await state.service.open("https://example.org", "D:/other");
+      state.list((current) => ({
+        ...current,
+        tabs: [
+          ...current.tabs,
+          remote(40, {
+            openedFrom: {
+              selectionId: "lease-30",
+              background: true,
+              agent: true,
+            },
+          }),
+        ],
+      }));
+      await state.service.refresh();
+      expect(state.tabs().map((tab) => [tab.id, tab.spaceId])).toEqual([
+        [100, "other"],
+        [101, "other"],
+      ]);
+      expect(binds(state).slice(-1)[0]).toEqual([101, "D:/other"]);
+    });
+
+    it("keeps a tab's page when it moves to another workspace its profile serves", async () => {
+      const state = shared();
+      await state.service.open("https://example.org", "D:/other");
+      state.setTabs([{ ...state.tabs()[0], spaceId: "work" }]);
+      state.service.reconcile();
+      await vi.waitFor(() =>
+        expect(binds(state).slice(-1)[0]).toEqual([100, "D:/work"]),
+      );
+      expect(state.tabs()[0].external?.connected).toBe(true);
+      expect(state.calls).not.toHaveBeenCalledWith(
+        "browser_external_unbind",
+        expect.anything(),
+      );
+      await state.service.refresh();
+      expect(state.create).toHaveBeenCalledTimes(1);
+      // A workspace the profile does not serve: the page is let go.
+      state.setTabs([{ ...state.tabs()[0], spaceId: "empty" }]);
+      state.service.reconcile();
+      expect(state.tabs()[0].external).toMatchObject({
+        connected: false,
+        error: expect.stringContaining("destination workspace"),
+      });
+      expect(state.calls).toHaveBeenCalledWith(
+        "browser_external_unbind",
+        expect.objectContaining({ tabId: 100, forget: false }),
+      );
+    });
+
+    it("lets go of a workspace's tabs when the profile leaves it, and makes them nowhere else", async () => {
+      const state = shared();
+      await state.service.open("https://example.org", "D:/other");
+      // The browser still lists the page until the extension lets it go.
+      state.list((current) => ({
+        ...current,
+        workspaces: ["D:/work"],
+        placed: { "lease-30": "D:/other" },
+      }));
+      await state.service.refresh();
+      expect(state.tabs()[0].external?.connected).toBe(false);
+      expect(state.create).toHaveBeenCalledTimes(1);
+      // A new page, with the profile now one workspace's: still nowhere.
+      const fresh = createExternalBrowserSync(
+        {
+          tabs: state.tabs,
+          spaces: () => [{ id: "work", root: "d:\\work" }],
+          create: state.create,
+          update: vi.fn(),
+          warm: vi.fn(),
+        },
+        state.calls as typeof invoke,
+      );
+      await fresh.refresh();
+      expect(state.create).toHaveBeenCalledTimes(1);
+      state.list((current) => ({ ...current, tabs: [] }));
+      await state.service.refresh();
+      expect(state.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("binds each tab of a reloaded page in the workspace it was in", async () => {
+      // A saved tab keeps only its profile; the service remembers where each
+      // selection was bound.
+      const saved = (id: number, spaceId: string, page: number): Tab => ({
+        id,
+        kind: "browser",
+        url: `https://example.com/${page}`,
+        title: "Saved",
+        spaceId,
+        external: savedExternalBrowser(profile),
+      });
+      const state = shared(
+        [remote(5), remote(6), remote(7)],
+        [saved(1, "work", 5), saved(2, "other", 6)],
+      );
+      state.list((current) => ({
+        ...current,
+        placed: {
+          "lease-5": "D:/work",
+          "lease-6": "d:\\other",
+          "lease-7": "D:/gone",
+        },
+      }));
+      await state.service.refresh();
+      expect(state.create).not.toHaveBeenCalled();
+      expect(binds(state)).toEqual([
+        [1, "D:/work"],
+        [2, "D:/other"],
+      ]);
+      // Its workspace no longer uses the profile: the browser keeps it.
+      expect(state.calls).toHaveBeenCalledWith("browser_external_release_tab", {
+        connectionId: "session",
+        tabId: 7,
+      });
+    });
   });
 
   it("publishes every connection list it reads", async () => {
@@ -1149,7 +1394,7 @@ describe("agent opens before the service runs", () => {
   const saved: Tab = { ...plain, id: 2, external: profile };
 
   it("opens in Anbo's browser when no profile is approved for the workspace", async () => {
-    listed.mockResolvedValueOnce([{ ...connection(), workspace: null }]);
+    listed.mockResolvedValueOnce([{ ...connection(), workspaces: [] }]);
     await expect(
       openExternalBrowser("https://example.org/", "D:/work", [plain], "work"),
     ).resolves.toBeNull();

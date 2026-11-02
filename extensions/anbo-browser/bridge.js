@@ -12,7 +12,7 @@ const PROFILE_METHODS = new Set(["anbo.listTabs", "anbo.openTab", "anbo.version"
 const TAB_METHODS = new Set(["anbo.selectTab", "anbo.releaseTab", "anbo.closeTab"]);
 // Commands about the tab's place in its browser, not its page. They never wait
 // behind a page command that is slow to answer.
-const CONTROL_METHODS = new Set(["anbo.focusTab", "anbo.tabState", "anbo.dockPrepare", "anbo.dockCommit", "anbo.dockRelease", "anbo.dockSwap"]);
+const CONTROL_METHODS = new Set(["anbo.focusTab", "anbo.tabState", "anbo.scopeTab", "anbo.dockPrepare", "anbo.dockCommit", "anbo.dockRelease", "anbo.dockSwap"]);
 // A command past its deadline can still finish in the page, so the tab's next
 // command waits for it. One still running this long after its deadline means
 // the tab stopped answering, and the tab is let go, unless the browser still

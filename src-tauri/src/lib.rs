@@ -629,6 +629,7 @@ pub fn run() {
             modules::browser_external::target::browser_external_unbind,
             modules::browser_external::browser_external_approve,
             modules::browser_external::browser_external_disconnect,
+            modules::browser_external::browser_external_leave,
             modules::browser_external::browser_external_list_tabs,
             modules::browser_external::browser_external_select_tab,
             modules::browser_external::browser_external_open_tab,

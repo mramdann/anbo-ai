@@ -673,6 +673,55 @@ describe("tabs a page Anbo drives opens", () => {
     expect(state.api.tabs.update).toHaveBeenCalledWith(11, { active: true });
   });
 
+  // Input a few milliseconds apart, so which came last is clear.
+  const later = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+  it("leaves a page's new tab in the browser when agents of two workspaces sent input in that moment", async () => {
+    // One profile serves two workspaces: 10 is one's, 11 the other's.
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    await state.run("anbo.selectTab", 11, { expectedUrl: "https://other.example/" });
+    expect((await state.run("anbo.scopeTab", 10, { scope: "D:/work" })).error).toContain("Invalid workspace scope");
+    expect((await state.run("anbo.scopeTab", 10, { scope: "aa" })).result).toEqual({});
+    expect((await state.run("anbo.scopeTab", 11, { scope: "bb" })).result).toEqual({});
+    await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter" });
+    await later();
+    await state.run("Input.dispatchKeyEvent", 11, { type: "keyDown", key: "a" });
+    // Named for the user's tab: either workspace's key could have opened it.
+    state.manager.created(openedTab(state, 13, { openerTabId: 99 }));
+    // Named for 10, but the last key went to the other workspace's tab.
+    state.manager.created(openedTab(state, 14));
+    // The named opener had the last input: it holds.
+    await later();
+    await state.run("Input.dispatchMouseEvent", 10, { type: "mousePressed", x: 1, y: 1, button: "left", clickCount: 1 });
+    state.manager.created(openedTab(state, 15));
+    await vi.waitFor(() => expect(state.selected.has(15)).toBe(true));
+    expect(state.selected.get(15).openedFrom).toMatchObject({ selectionId: state.selected.get(10).selectionId, agent: true });
+    expect(state.selected.has(13)).toBe(false);
+    expect(state.selected.has(14)).toBe(false);
+    // Input to tabs of one workspace only: Anbo's guess goes on as before.
+    expect((await state.run("anbo.scopeTab", 11, { scope: "aa" })).result).toEqual({});
+    state.manager.created(openedTab(state, 16, { openerTabId: 99 }));
+    await vi.waitFor(() => expect(state.selected.has(16)).toBe(true));
+    expect(state.selected.get(16).openedFrom.selectionId).toBe(state.selected.get(10).selectionId);
+  });
+
+  it("puts the window back for a tab it leaves to the browser", async () => {
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    await state.run("anbo.selectTab", 11, { expectedUrl: "https://other.example/" });
+    await state.run("anbo.scopeTab", 10, { scope: "aa" });
+    await state.run("anbo.scopeTab", 11, { scope: "bb" });
+    let shown = "minimized";
+    state.api.windows.get.mockImplementation(async (id) => ({ id, type: "normal", incognito: false, state: shown, focused: shown !== "minimized" }));
+    await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter", modifiers: 2 });
+    await state.run("Input.dispatchKeyEvent", 11, { type: "keyDown", key: "a" });
+    shown = "normal";
+    state.manager.created(openedTab(state, 13, { active: false, openerTabId: 99 }));
+    await vi.waitFor(() => expect(state.api.windows.update).toHaveBeenCalledWith(20, { state: "minimized" }));
+    expect(state.selected.has(13)).toBe(false);
+  });
+
   it("puts a minimized window back when an agent's key opens a tab from it", async () => {
     // Round 68 (R68-2): Chrome brought its minimized window over the user's
     // terminal for a tab an agent's Ctrl+Enter opened behind.

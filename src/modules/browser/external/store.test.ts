@@ -20,7 +20,7 @@ const connection = (
     browser,
     name: "Work",
   },
-  workspace,
+  workspaces: workspace === null ? [] : [workspace],
   tabs: [],
 });
 
@@ -59,6 +59,11 @@ describe("external browser store", () => {
     expect(approvedHere(work, "D:/other")).toBe(false);
     expect(approvedHere(work, null)).toBe(false);
     expect(approvedHere(connection("b", null), "D:/work")).toBe(false);
+    // One profile can serve several workspaces.
+    const shared = { ...work, workspaces: ["D:/work", "D:/other"] };
+    expect(approvedHere(shared, "D:/other")).toBe(true);
+    expect(approvedHere(shared, "d:\\work")).toBe(true);
+    expect(approvedHere(shared, "D:/third")).toBe(false);
     expect(profileLabel(connection("a", "D:/work", "edge").profile)).toBe(
       "Edge · Work",
     );

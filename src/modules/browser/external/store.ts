@@ -2,7 +2,7 @@ import { IS_WINDOWS } from "@/lib/platform";
 import {
   type ExternalBrowser,
   type ExternalConnection,
-  sameWorkspace,
+  servesWorkspace,
 } from "@/modules/browser/external/model";
 import { isTauri } from "@tauri-apps/api/core";
 import { create } from "zustand";
@@ -32,8 +32,7 @@ export function externalPageGone(
       (connection) =>
         connection.profile.profileId === external.profileId &&
         connection.profile.browser === external.browser &&
-        connection.workspace !== null &&
-        sameWorkspace(connection.workspace, workspaceRoot),
+        servesWorkspace(connection, workspaceRoot),
     );
 }
 
@@ -84,21 +83,12 @@ export function browserName(browser: "chrome" | "edge"): string {
 export function pendingConnections(
   connections: ExternalConnection[],
 ): ExternalConnection[] {
-  return connections.filter((connection) => !connection.workspace);
+  return connections.filter((connection) => connection.workspaces.length === 0);
 }
 
 /** Whether the profile is approved for this workspace, so a page it opens
- * lands here. */
-export function approvedHere(
-  connection: ExternalConnection,
-  workspaceRoot: string | null,
-): boolean {
-  return (
-    workspaceRoot !== null &&
-    connection.workspace !== null &&
-    sameWorkspace(connection.workspace, workspaceRoot)
-  );
-}
+ * lands here. It can be approved for others too. */
+export const approvedHere = servesWorkspace;
 
 /** "Chrome · Work". */
 export function profileLabel(profile: BrowserProfile): string {

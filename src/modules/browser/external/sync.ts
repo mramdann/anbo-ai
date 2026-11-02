@@ -4,6 +4,7 @@ import {
   type ExternalConnection,
   sameWorkspace,
   selectionKey,
+  servesWorkspace,
 } from "@/modules/browser/external/model";
 import {
   holdDockForOpenRead,
@@ -22,6 +23,8 @@ import { listen } from "@tauri-apps/api/event";
 import { warn } from "@tauri-apps/plugin-log";
 
 type Space = { id: string; root: string | null };
+type RootedSpace = Space & { root: string };
+type RemoteTab = ExternalConnection["tabs"][number];
 type Host = {
   tabs: () => Tab[];
   spaces: () => Space[];
@@ -110,6 +113,12 @@ export function createExternalBrowserSync(
   // change event can make the new tab before the open learns its selection, so
   // the next tab made for that profile is taken as the page the open reads.
   const reading = new Set<string>();
+  // A profile can serve several workspaces, and a new selection alone does not
+  // say which one it is for. While an open or a selection of such a profile
+  // waits for its answer, that profile's new selections Anbo cannot place
+  // wait too; the answer names the workspace its selection goes to.
+  const placing = new Set<string>();
+  const assigned = new Map<string, string>();
   // The newest tab each Anbo tab's page opened, so the next one goes after it
   // the way a browser lines them up.
   const opened = new Map<number, number>();
@@ -134,9 +143,22 @@ export function createExternalBrowserSync(
     connections.find(
       (connection) =>
         connection.connectionId === connectionId &&
-        connection.workspace !== null &&
-        sameWorkspace(connection.workspace, workspace),
+        servesWorkspace(connection, workspace),
     );
+  /** The spaces a profile's tabs can show in: its workspaces'. */
+  const spacesOf = (connection: ExternalConnection) =>
+    host
+      .spaces()
+      .filter(
+        (space): space is RootedSpace =>
+          space.root !== null && servesWorkspace(connection, space.root),
+      );
+  /** The profile's own name for the workspace a space shows, as its binding
+   *  names it. */
+  const workspaceOf = (connection: ExternalConnection, space: RootedSpace) =>
+    connection.workspaces.find((workspace) =>
+      sameWorkspace(workspace, space.root),
+    ) ?? space.root;
   const externalTabs = (tabs: Tab[]) =>
     new Map(
       tabs.flatMap((tab) =>
@@ -146,6 +168,59 @@ export function createExternalBrowserSync(
       ),
     );
   let knownTabs = externalTabs(host.tabs());
+
+  /** Lets go of a bound tab's page. */
+  const letGo = (key: string, binding: Binding, tab: Tab | undefined) => {
+    released.add(key);
+    bindings.delete(key);
+    if (tab?.kind === "browser" && tab.external)
+      host.update(tab.id, {
+        external: {
+          ...tab.external,
+          connected: false,
+          error: "Reconnect this profile for the destination workspace.",
+        },
+        loading: false,
+      });
+    void call("browser_external_unbind", {
+      tabId: binding.id,
+      connectionId: binding.connectionId,
+      selectionId: binding.selectionId,
+      forget: !tab,
+      // Closed on purpose, the browser's tab closes too; moved to another
+      // workspace, or gone with its workspace, it stays open there.
+      close: !tab && takeTabClosed(binding.id),
+    }).catch(() => {});
+  };
+
+  /** A tab moved to another workspace its profile serves keeps its page: the
+   *  binding goes along. Refused there, it lets go as any other move does. */
+  const follow = (
+    key: string,
+    binding: Binding,
+    connection: ExternalConnection,
+    remote: RemoteTab,
+    space: RootedSpace,
+  ) => {
+    binding.spaceId = space.id;
+    binding.seen = true;
+    void call("browser_external_bind", {
+      binding: {
+        connectionId: binding.connectionId,
+        browserTabId: remote.id,
+        selectionId: binding.selectionId,
+        tabId: binding.id,
+        workspace: workspaceOf(connection, space),
+      },
+    }).catch(() => {
+      if (stopped || bindings.get(key) !== binding) return;
+      letGo(
+        key,
+        binding,
+        host.tabs().find((tab) => tab.id === binding.id),
+      );
+    });
+  };
 
   const reconcile = (tabs = host.tabs()) => {
     if (stopped) return;
@@ -158,27 +233,28 @@ export function createExternalBrowserSync(
         continue;
       }
       if (!binding.seen && !tab) continue;
-      released.add(key);
-      bindings.delete(key);
+      const connection = connections.find(
+        (connection) => connection.connectionId === binding.connectionId,
+      );
+      const remote = connection?.tabs.find(
+        (remote) => remote.selectionId === binding.selectionId,
+      );
+      const destination =
+        connection &&
+        spacesOf(connection).find((space) => space.id === tab?.spaceId);
+      // One still binding lets go: its first bind could land after this one.
+      if (
+        tab?.kind === "browser" &&
+        binding.ready &&
+        connection &&
+        remote &&
+        destination
+      ) {
+        follow(key, binding, connection, remote, destination);
+        continue;
+      }
+      letGo(key, binding, tab);
       if (!tab) forgotten.add(binding.id);
-      if (tab?.kind === "browser" && tab.external)
-        host.update(tab.id, {
-          external: {
-            ...tab.external,
-            connected: false,
-            error: "Reconnect this profile for the destination workspace.",
-          },
-          loading: false,
-        });
-      void call("browser_external_unbind", {
-        tabId: binding.id,
-        connectionId: binding.connectionId,
-        selectionId: binding.selectionId,
-        forget: !tab,
-        // Closed on purpose, the browser's tab closes too; moved to another
-        // workspace, or gone with its workspace, it stays open there.
-        close: !tab && takeTabClosed(binding.id),
-      }).catch(() => {});
     }
     for (const [id, external] of knownTabs) {
       if (!nextTabs.has(id) && !forgotten.has(id))
@@ -195,31 +271,65 @@ export function createExternalBrowserSync(
     knownTabs = nextTabs;
   };
 
+  /** Where a selection Anbo has not bound yet goes: undefined while that is
+   *  not known yet, null when none of its profile's workspaces takes it. */
+  const placeOf = (
+    connection: ExternalConnection,
+    remote: RemoteTab,
+    key: string,
+    spaces: RootedSpace[],
+  ): RootedSpace | null | undefined => {
+    const inSpace = (spaceId: string | undefined) =>
+      spaces.find((space) => space.id === spaceId);
+    const claimed = host.tabs().find((tab) => tab.id === claims.get(key));
+    const claimedSpace = inSpace(claimed?.spaceId);
+    if (claimedSpace) return claimedSpace;
+    // Until the claim exists, so the event that announces the selection
+    // cannot create a second tab for it.
+    if (opening.has(connection.connectionId)) return undefined;
+    // The workspace an open or selection asked for, or the one its tab was
+    // last bound in (before this page reloaded, or before the profile left
+    // that workspace).
+    const root = assigned.get(key) ?? connection.placed?.[remote.selectionId];
+    if (root !== undefined)
+      return spaces.find((space) => sameWorkspace(space.root, root)) ?? null;
+    if (connection.workspaces.length === 1) return spaces[0];
+    // A page shown in Anbo opened it: it goes where that page is.
+    const opener =
+      remote.openedFrom &&
+      bindings.get(
+        selectionKey(connection.connectionId, remote.openedFrom.selectionId),
+      );
+    if (opener) return inSpace(opener.spaceId) ?? null;
+    return placing.has(connection.connectionId) ? undefined : null;
+  };
+
   const apply = async () => {
-    const selected = new Set(
-      connections
-        .filter(
-          (connection) =>
-            connection.workspace &&
-            host
-              .spaces()
-              .some(
-                (space) =>
-                  space.root &&
-                  sameWorkspace(space.root, connection.workspace as string),
-              ),
-        )
-        .flatMap((connection) =>
-          connection.tabs
-            .filter((tab) => tab.selectionId)
-            .map((tab) =>
-              selectionKey(connection.connectionId, tab.selectionId),
-            ),
-        ),
+    const present = new Set(
+      connections.flatMap((connection) =>
+        connection.tabs
+          .filter((tab) => tab.selectionId)
+          .map((tab) => selectionKey(connection.connectionId, tab.selectionId)),
+      ),
     );
+    // A binding stays while its selection does and its profile still serves
+    // the workspace its tab is in.
+    const kept = new Set<string>();
+    for (const connection of connections) {
+      const spaces = spacesOf(connection);
+      for (const remote of connection.tabs) {
+        if (!remote.selectionId) continue;
+        const key = selectionKey(connection.connectionId, remote.selectionId);
+        const spaceId = bindings.get(key)?.spaceId;
+        if (spaces.some((space) => space.id === spaceId)) kept.add(key);
+      }
+    }
     for (const [key, binding] of bindings) {
-      if (selected.has(key)) continue;
+      if (kept.has(key)) continue;
       bindings.delete(key);
+      // Its profile left the tab's workspace: while the browser still lists
+      // the page, it is not made again in another one.
+      if (present.has(key)) released.add(key);
       const tab = host.tabs().find((tab) => tab.id === binding.id);
       if (tab?.kind === "browser" && tab.external)
         host.update(tab.id, {
@@ -228,20 +338,27 @@ export function createExternalBrowserSync(
         });
     }
     for (const connection of connections) {
-      if (!connection.workspace) continue;
-      const space = host
-        .spaces()
-        .find(
-          (space) =>
-            space.root !== null &&
-            sameWorkspace(space.root, connection.workspace as string),
-        );
-      if (!space) continue;
+      const spaces = spacesOf(connection);
+      if (!spaces.length) continue;
       for (const remote of connection.tabs) {
         if (!remote.selectionId) continue;
         const key = selectionKey(connection.connectionId, remote.selectionId);
         if (released.has(key)) continue;
         let binding = bindings.get(key);
+        const boundSpace = binding?.spaceId;
+        const space = binding
+          ? spaces.find((space) => space.id === boundSpace)
+          : placeOf(connection, remote, key, spaces);
+        if (space === undefined) continue;
+        if (space === null) {
+          // None of its profile's workspaces takes it: the browser keeps it.
+          released.add(key);
+          void call("browser_external_release_tab", {
+            connectionId: connection.connectionId,
+            tabId: remote.id,
+          }).catch(() => {});
+          continue;
+        }
         const external: ExternalBrowser = {
           ...connection.profile,
           connectionId: connection.connectionId,
@@ -256,7 +373,6 @@ export function createExternalBrowserSync(
             .find(
               (tab) => tab.id === claims.get(key) && tab.spaceId === space.id,
             );
-          if (!claimedTab && opening.has(connection.connectionId)) continue;
           const claimed = new Set(
             [...bindings.values()].map((binding) => binding.id),
           );
@@ -326,7 +442,7 @@ export function createExternalBrowserSync(
                 browserTabId: remote.id,
                 selectionId: remote.selectionId,
                 tabId: id,
-                workspace: connection.workspace,
+                workspace: workspaceOf(connection, space),
               },
             });
             if (stopped) return;
@@ -380,7 +496,7 @@ export function createExternalBrowserSync(
         });
       }
     }
-    for (const key of released) if (!selected.has(key)) released.delete(key);
+    for (const key of released) if (!present.has(key)) released.delete(key);
   };
 
   const refresh = (): Promise<void> => {
@@ -415,9 +531,8 @@ export function createExternalBrowserSync(
     workspace: string,
     profile: string | undefined,
   ): ExternalConnection | null => {
-    const approved = connections.filter(
-      (connection) =>
-        connection.workspace && sameWorkspace(connection.workspace, workspace),
+    const approved = connections.filter((connection) =>
+      servesWorkspace(connection, workspace),
     );
     const profiles =
       profile === undefined
@@ -428,7 +543,7 @@ export function createExternalBrowserSync(
     if (profiles.length > 1)
       throw new Error(
         profile === undefined
-          ? `Several browser profiles are approved here: ${listProfiles(approved)}. Pass one as profile, use a selected tab ID, or disconnect the unused profile before opening a tab.`
+          ? `Several browser profiles are approved here: ${listProfiles(approved)}. Pass one as profile, use a selected tab ID, or remove the unused profile from this workspace before opening a tab.`
           : `Several approved profiles are named "${profile}": ${listProfiles(profiles)}. Pass the profile's id instead.`,
       );
     if (!profiles.length && profile !== undefined)
@@ -482,17 +597,20 @@ export function createExternalBrowserSync(
           "This browser profile is no longer approved for this workspace, so the page was not opened.",
         );
       if (holdDock) reading.add(connectionId);
+      placing.add(connectionId);
+      let key: string | undefined;
       try {
         const remote = await call<{ selectionId: string }>(
           "browser_external_open_tab",
           { connectionId, url, activate: false },
         );
+        key = selectionKey(connectionId, remote.selectionId);
+        assigned.set(key, workspace);
+        placing.delete(connectionId);
         ensureRunning();
         await refresh();
         ensureRunning();
-        const binding = bindings.get(
-          selectionKey(connectionId, remote.selectionId),
-        );
+        const binding = bindings.get(key);
         if (!binding?.ready)
           throw new Error(
             "The browser tab opened but could not bind to Anbo. Check browser connections; the action was not replayed.",
@@ -500,6 +618,8 @@ export function createExternalBrowserSync(
         return binding.id;
       } finally {
         reading.delete(connectionId);
+        placing.delete(connectionId);
+        if (key !== undefined) assigned.delete(key);
       }
     });
   };
@@ -516,8 +636,7 @@ export function createExternalBrowserSync(
     const connected = () =>
       connections.find(
         (connection) =>
-          connection.workspace &&
-          sameWorkspace(connection.workspace, workspace) &&
+          servesWorkspace(connection, workspace) &&
           connection.profile.browser === profile.browser &&
           connection.profile.profileId === profile.profileId,
       );
@@ -564,25 +683,44 @@ export function createExternalBrowserSync(
     });
   };
 
-  /** Brings a tab the profile already has into Anbo. */
-  const select = (connectionId: string, browserTabId: number, url: string) =>
+  /** Brings a tab the profile already has into Anbo, in this workspace. */
+  const select = (
+    connectionId: string,
+    browserTabId: number,
+    url: string,
+    workspace: string,
+  ) =>
     exclusive(connectionId, async () => {
-      ensureRunning();
-      const remote = await call<{ selectionId: string }>(
-        "browser_external_select_tab",
-        { connectionId, tabId: browserTabId, expectedUrl: url },
-      );
       ensureRunning();
       await refresh();
       ensureRunning();
-      const binding = bindings.get(
-        selectionKey(connectionId, remote.selectionId),
-      );
-      if (!binding?.ready)
+      if (!approvedFor(connectionId, workspace))
         throw new Error(
-          "The tab connected but could not open in Anbo. Try again from the browser menu.",
+          "This browser profile is not used in this workspace. Use it here from the browser menu first.",
         );
-      return binding.id;
+      placing.add(connectionId);
+      let key: string | undefined;
+      try {
+        const remote = await call<{ selectionId: string }>(
+          "browser_external_select_tab",
+          { connectionId, tabId: browserTabId, expectedUrl: url },
+        );
+        key = selectionKey(connectionId, remote.selectionId);
+        assigned.set(key, workspace);
+        placing.delete(connectionId);
+        ensureRunning();
+        await refresh();
+        ensureRunning();
+        const binding = bindings.get(key);
+        if (!binding?.ready)
+          throw new Error(
+            "The tab connected but could not open in Anbo. Try again from the browser menu.",
+          );
+        return binding.id;
+      } finally {
+        placing.delete(connectionId);
+        if (key !== undefined) assigned.delete(key);
+      }
     });
 
   return {
@@ -699,11 +837,7 @@ export async function openExternalBrowser(
     "browser_external_connections",
   ).then(
     (connections) =>
-      connections.some(
-        (connection) =>
-          connection.workspace !== null &&
-          sameWorkspace(connection.workspace, workspace),
-      ),
+      connections.some((connection) => servesWorkspace(connection, workspace)),
     () => false,
   );
   if (approvedHere) throw new Error(NOT_READY);
@@ -721,8 +855,9 @@ export async function selectExternalBrowserTab(
   connectionId: string,
   browserTabId: number,
   url: string,
+  workspace: string,
 ) {
-  return running().select(connectionId, browserTabId, url);
+  return running().select(connectionId, browserTabId, url, workspace);
 }
 /** The Anbo tab showing this selection, once it is bound. */
 export function externalBrowserTabId(

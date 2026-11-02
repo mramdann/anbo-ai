@@ -105,14 +105,10 @@ export default function ExternalBrowserMenu({
   const waiting = useExternalBrowsers(
     (state) => pendingConnections(state.connections).length,
   );
-  const connectedHere = useExternalBrowsers(
-    (state) =>
-      workspaceRoot !== null &&
-      state.connections.some(
-        (connection) =>
-          connection.workspace !== null &&
-          sameWorkspace(connection.workspace, workspaceRoot),
-      ),
+  const connectedHere = useExternalBrowsers((state) =>
+    state.connections.some((connection) =>
+      approvedHere(connection, workspaceRoot),
+    ),
   );
   const label = menuLabel(total - waiting, waiting);
   // A new tab takes the focus for its address bar; closing the menu must not
@@ -193,8 +189,10 @@ export function MenuBody({
   onCloseTab,
   onNewTab,
 }: Props & { connections: ExternalConnection[] }) {
-  const pending = connections.filter((connection) => !connection.workspace);
-  const approved = connections.filter((connection) => connection.workspace);
+  const pending = pendingConnections(connections);
+  const approved = connections.filter(
+    (connection) => connection.workspaces.length > 0,
+  );
   const folded = useExternalBrowsers((state) => state.expanded);
   const setFolded = useExternalBrowsers((state) => state.setExpanded);
   const [lists, setLists] = useState<Record<string, TabList>>({});
@@ -304,6 +302,9 @@ export function MenuBody({
           // One profile starts open; with several, each starts folded.
           const expanded =
             folded[connection.profile.profileId] ?? approved.length === 1;
+          // A page opened here lands only in a workspace the profile is
+          // approved for.
+          const here = approvedHere(connection, workspaceRoot);
           return (
             <ProfileSection
               key={connection.connectionId}
@@ -315,14 +316,35 @@ export function MenuBody({
               onToggle={() =>
                 setFolded(connection.profile.profileId, !expanded)
               }
-              // A page opened here lands only in the workspace the profile is
-              // approved for.
               onNewTab={
-                approvedHere(connection, workspaceRoot)
+                here
                   ? () =>
                       useExternalBrowsers
                         .getState()
                         .setNewTabProfile(onNewTab(), connection.profile)
+                  : undefined
+              }
+              onUseHere={
+                !here && workspaceRoot
+                  ? () =>
+                      void act(`use:${connection.connectionId}`, async () => {
+                        await invoke("browser_external_approve", {
+                          connectionId: connection.connectionId,
+                          workspace: workspaceRoot,
+                        });
+                      })
+                  : undefined
+              }
+              // The workspaces after this one keep the profile.
+              onLeave={
+                here && workspaceRoot && connection.workspaces.length > 1
+                  ? () =>
+                      void act(`leave:${connection.connectionId}`, async () => {
+                        await invoke("browser_external_leave", {
+                          connectionId: connection.connectionId,
+                          workspace: workspaceRoot,
+                        });
+                      })
                   : undefined
               }
               onDisconnect={() =>
@@ -358,19 +380,23 @@ export function MenuBody({
                   if (id !== undefined) onCloseTab(id);
                 })
               }
-              onOpen={(tab) =>
-                void act(
-                  `open:${connection.connectionId}:${tab.id}`,
-                  async () => {
-                    onShowTab(
-                      await selectExternalBrowserTab(
-                        connection.connectionId,
-                        tab.id,
-                        tab.url,
-                      ),
-                    );
-                  },
-                )
+              onOpen={
+                here && workspaceRoot
+                  ? (tab) =>
+                      void act(
+                        `open:${connection.connectionId}:${tab.id}`,
+                        async () => {
+                          onShowTab(
+                            await selectExternalBrowserTab(
+                              connection.connectionId,
+                              tab.id,
+                              tab.url,
+                              workspaceRoot,
+                            ),
+                          );
+                        },
+                      )
+                  : undefined
               }
             />
           );
@@ -471,6 +497,8 @@ function ProfileSection({
   expanded,
   onToggle,
   onNewTab,
+  onUseHere,
+  onLeave,
   onDisconnect,
   onShow,
   onReturn,
@@ -482,17 +510,27 @@ function ProfileSection({
   busy: string | null;
   expanded: boolean;
   onToggle: () => void;
-  /** Absent when the profile is approved for another workspace. */
+  /** Absent when the profile is not approved for this workspace. */
   onNewTab?: () => void;
+  /** Present when the profile serves other workspaces but not this one. */
+  onUseHere?: () => void;
+  /** Present when this workspace and others use the profile. */
+  onLeave?: () => void;
   onDisconnect: () => void;
   onShow: (selectionId: string) => void;
   onReturn: (tab: ExternalConnection["tabs"][number]) => void;
-  onOpen: (tab: BrowserTabInfo) => void;
+  /** Absent when the profile is not approved for this workspace. */
+  onOpen?: (tab: BrowserTabInfo) => void;
 }) {
   const browser = browserName(connection.profile.browser);
-  const elsewhere =
-    connection.workspace !== null &&
-    (!workspaceRoot || !sameWorkspace(connection.workspace, workspaceRoot));
+  // The other workspaces that use the profile.
+  const elsewhere = connection.workspaces
+    .filter(
+      (workspace) => !workspaceRoot || !sameWorkspace(workspace, workspaceRoot),
+    )
+    .map(workspaceName)
+    .join(", ");
+  const here = approvedHere(connection, workspaceRoot);
   const others = Array.isArray(list) ? otherTabs(connection, list) : [];
   return (
     <section className="mb-0.5">
@@ -518,20 +556,46 @@ function ProfileSection({
           <span className="min-w-0 truncate text-xs font-medium text-foreground">
             {connection.profile.name}
           </span>
-          {elsewhere && connection.workspace ? (
-            <span className="shrink-0 text-[10.5px] text-muted-foreground">
-              {workspaceName(connection.workspace)}
+          {elsewhere ? (
+            <span
+              title={`Also used in ${elsewhere}`}
+              className="min-w-0 truncate text-[10.5px] text-muted-foreground"
+            >
+              {here ? `also ${elsewhere}` : elsewhere}
             </span>
           ) : null}
         </button>
-        <button
-          type="button"
-          disabled={busy !== null}
-          onClick={onDisconnect}
-          className="mr-1 shrink-0 rounded-md px-1.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:opacity-50"
-        >
-          Disconnect
-        </button>
+        {onUseHere && workspaceRoot ? (
+          <button
+            type="button"
+            title={`Use this profile in ${workspaceName(workspaceRoot)} too. Its logins are shared with ${elsewhere}.`}
+            disabled={busy !== null}
+            onClick={onUseHere}
+            className="shrink-0 rounded-md px-1.5 py-0.5 text-[10.5px] font-medium text-foreground transition-colors hover:bg-background disabled:opacity-50"
+          >
+            Use here
+          </button>
+        ) : null}
+        {onLeave && workspaceRoot ? (
+          <button
+            type="button"
+            title={`Stop using this profile in ${workspaceName(workspaceRoot)}. ${elsewhere} keep it.`}
+            disabled={busy !== null}
+            onClick={onLeave}
+            className="mr-1 shrink-0 rounded-md px-1.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:opacity-50"
+          >
+            Remove
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={busy !== null}
+            onClick={onDisconnect}
+            className="mr-1 shrink-0 rounded-md px-1.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:opacity-50"
+          >
+            Disconnect
+          </button>
+        )}
       </div>
       {connection.extensionOutdated ? (
         <p className="px-1.5 pb-1 pl-6 text-[11px] leading-relaxed text-muted-foreground">
@@ -577,51 +641,67 @@ function ProfileSection({
               />
             ))
           )}
-          <div className="flex items-end justify-between">
-            <Heading>Other tabs</Heading>
-            {onNewTab ? (
-              <button
-                type="button"
-                title={`Open a new tab with ${connection.profile.name}'s logins`}
-                disabled={busy !== null}
-                onClick={onNewTab}
-                className="mr-1 flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-              >
-                <HugeiconsIcon icon={Add01Icon} size={11} strokeWidth={1.75} />
-                New tab
-              </button>
-            ) : null}
-          </div>
-          {list === undefined ? (
-            <p className="px-1.5 pb-1 text-[11px] text-muted-foreground">
-              Loading tabs...
-            </p>
-          ) : !Array.isArray(list) ? (
-            <p className="px-1.5 pb-1 text-[11px] break-words text-destructive">
-              {list.error}
-            </p>
-          ) : others.length === 0 ? (
-            <p className="px-1.5 pb-1 text-[11px] text-muted-foreground">
-              No other web tabs.
-            </p>
+          {onOpen ? (
+            <>
+              <div className="flex items-end justify-between">
+                <Heading>Other tabs</Heading>
+                {onNewTab ? (
+                  <button
+                    type="button"
+                    title={`Open a new tab with ${connection.profile.name}'s logins`}
+                    disabled={busy !== null}
+                    onClick={onNewTab}
+                    className="mr-1 flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                  >
+                    <HugeiconsIcon
+                      icon={Add01Icon}
+                      size={11}
+                      strokeWidth={1.75}
+                    />
+                    New tab
+                  </button>
+                ) : null}
+              </div>
+              {list === undefined ? (
+                <p className="px-1.5 pb-1 text-[11px] text-muted-foreground">
+                  Loading tabs...
+                </p>
+              ) : !Array.isArray(list) ? (
+                <p className="px-1.5 pb-1 text-[11px] break-words text-destructive">
+                  {list.error}
+                </p>
+              ) : others.length === 0 ? (
+                <p className="px-1.5 pb-1 text-[11px] text-muted-foreground">
+                  No other web tabs.
+                </p>
+              ) : (
+                <div className="max-h-44 overflow-y-auto">
+                  {others.map((tab) => (
+                    <TabRow
+                      key={tab.id}
+                      title={tab.title}
+                      url={tab.url}
+                      label={`Open ${tab.title || host(tab.url)} in Anbo`}
+                      disabled={busy !== null}
+                      onClick={() => onOpen(tab)}
+                      hint={
+                        busy === `open:${connection.connectionId}:${tab.id}`
+                          ? "Opening..."
+                          : "Open"
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+            </>
           ) : (
-            <div className="max-h-44 overflow-y-auto">
-              {others.map((tab) => (
-                <TabRow
-                  key={tab.id}
-                  title={tab.title}
-                  url={tab.url}
-                  label={`Open ${tab.title || host(tab.url)} in Anbo`}
-                  disabled={busy !== null}
-                  onClick={() => onOpen(tab)}
-                  hint={
-                    busy === `open:${connection.connectionId}:${tab.id}`
-                      ? "Opening..."
-                      : "Open"
-                  }
-                />
-              ))}
-            </div>
+            // Its tabs would open in another workspace.
+            <p className="px-1.5 pt-1 pb-1 text-[11px] leading-relaxed text-muted-foreground">
+              Used in {elsewhere}.{" "}
+              {workspaceRoot
+                ? `Use it here too to open its tabs in ${workspaceName(workspaceRoot)}; its logins are shared with those workspaces.`
+                : "Open a workspace to use it there too."}
+            </p>
           )}
         </div>
       ) : null}
