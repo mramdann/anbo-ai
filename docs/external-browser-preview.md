@@ -121,8 +121,9 @@ that workspace while the others keep it; for its last workspace Remove is a
 disconnect. The approved workspaces share the profile's logins, but each Anbo tab
 belongs to one of them and agents reach only their own workspace's tabs, as before.
 A tab a page opens goes to its opener's workspace. When agents of two workspaces sent
-input in the 2 s a page takes to open a tab, Anbo cannot tell whose input opened it,
-so the tab stays in the browser (extension 0.5.12).
+input within 0.5 s of each other just before a page opened a tab, Anbo cannot tell
+whose input opened it, so the tab stays in the browser (extension 0.5.12); input
+further apart gives the tab to the workspace whose input came last.
 
 A tab the user opens from the + menu or Ctrl+P is Anbo's own browser. New tab on a
 profile in the header menu starts a new tab page whose first web page opens in that

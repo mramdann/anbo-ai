@@ -11,6 +11,10 @@ const MAX_TABS = 128;
 // A new tab opened this soon after Anbo sent input to the tab it opened from
 // came from an agent's click or key, not the user's.
 const AGENT_INPUT_MS = 2_000;
+// Input to tabs of two workspaces closer together than this leaves Anbo unable
+// to tell which one opened a tab: a page opens one tens of milliseconds after
+// the key or click that opened it.
+const SHARED_INPUT_GAP_MS = 500;
 // How long, after a tab an agent's input opened, its window is watched to put
 // it back the way it was, and how often it is looked at meanwhile: the browser
 // brought it up about 60 ms after the key (Oct 28 2026). Looked at 0, 25, 50,
@@ -368,11 +372,12 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     return { found, workspaces };
   }
 
-  // Whether a tab of another workspace had input at or after this tab's last.
-  function laterElsewhere(selection) {
+  // Whether a tab of another workspace had input after this tab's last, or
+  // too little before it to tell the two apart.
+  function contested(selection) {
     const scope = scopeOf(selection);
-    const at = inputAt.get(selection.id);
-    return [...attached].some(([tabId, other]) => tabId !== selection.id && driven(tabId) && scopeOf(other) !== scope && inputAt.get(tabId) >= at);
+    const from = inputAt.get(selection.id) - SHARED_INPUT_GAP_MS;
+    return [...attached].some(([tabId, other]) => tabId !== selection.id && driven(tabId) && scopeOf(other) !== scope && inputAt.get(tabId) >= from);
   }
 
   function created(tab, fromDock = false) {
@@ -380,11 +385,12 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     const named = Boolean(opener && driven(opener.id));
     const recent = fromDock ? null : lastDriven();
     // Agents of two workspaces sent input in the moment a page takes to open a
-    // tab: the browser's opener could be either one's (below), so the tab could
-    // land in the wrong workspace. It stays the browser's; only its window goes
-    // back. A named opener holds unless another workspace's tab had input at
-    // or after its own, as when that tab's key opened it.
-    if (recent && recent.workspaces.size > 1 && (!named || laterElsewhere(opener))) {
+    // tab. The opener, the one the browser named or else the tab input reached
+    // last, holds when the other workspace's input came well before its own.
+    // Closer than that, the browser's opener could be either one's (below), as
+    // when the other tab's key opened it, so the tab could land in the wrong
+    // workspace: it stays the browser's, and only its window goes back.
+    if (recent && recent.workspaces.size > 1 && contested(named ? opener : recent.found)) {
       const source = [...attached.keys()].find((id) => driven(id) && windowBefore.get(id)?.windowId === tab.windowId);
       if (!disposed && !tab.incognito && source !== undefined) void keepWindow(source, tab.windowId).catch(() => {});
       return;

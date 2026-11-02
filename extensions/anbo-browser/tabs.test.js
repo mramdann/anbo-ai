@@ -673,8 +673,10 @@ describe("tabs a page Anbo drives opens", () => {
     expect(state.api.tabs.update).toHaveBeenCalledWith(11, { active: true });
   });
 
-  // Input a few milliseconds apart, so which came last is clear.
+  // Input a few milliseconds apart, so which came last is clear, and input far
+  // enough apart to tell whose opened a tab.
   const later = () => new Promise((resolve) => setTimeout(resolve, 5));
+  const apart = () => new Promise((resolve) => setTimeout(resolve, 600));
 
   it("leaves a page's new tab in the browser when agents of two workspaces sent input in that moment", async () => {
     // One profile serves two workspaces: 10 is one's, 11 the other's.
@@ -691,19 +693,28 @@ describe("tabs a page Anbo drives opens", () => {
     state.manager.created(openedTab(state, 13, { openerTabId: 99 }));
     // Named for 10, but the last key went to the other workspace's tab.
     state.manager.created(openedTab(state, 14));
-    // The named opener had the last input: it holds.
+    // The named opener's click came last, but right after the other key.
     await later();
     await state.run("Input.dispatchMouseEvent", 10, { type: "mousePressed", x: 1, y: 1, button: "left", clickCount: 1 });
     state.manager.created(openedTab(state, 15));
-    await vi.waitFor(() => expect(state.selected.has(15)).toBe(true));
-    expect(state.selected.get(15).openedFrom).toMatchObject({ selectionId: state.selected.get(10).selectionId, agent: true });
-    expect(state.selected.has(13)).toBe(false);
-    expect(state.selected.has(14)).toBe(false);
+    // Well after the other workspace's key: the last input opened it, named or not.
+    await apart();
+    await state.run("Input.dispatchMouseEvent", 10, { type: "mousePressed", x: 1, y: 1, button: "left", clickCount: 1 });
+    state.manager.created(openedTab(state, 16));
+    await apart();
+    await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter" });
+    state.manager.created(openedTab(state, 17, { openerTabId: 99 }));
+    await vi.waitFor(() => expect(state.selected.has(16) && state.selected.has(17)).toBe(true));
+    const lease = state.selected.get(10).selectionId;
+    expect(state.selected.get(16).openedFrom).toMatchObject({ selectionId: lease, agent: true });
+    expect(state.selected.get(17).openedFrom).toMatchObject({ selectionId: lease, agent: true });
+    for (const id of [13, 14, 15]) expect(state.selected.has(id)).toBe(false);
     // Input to tabs of one workspace only: Anbo's guess goes on as before.
+    await state.run("Input.dispatchKeyEvent", 11, { type: "keyDown", key: "a" });
     expect((await state.run("anbo.scopeTab", 11, { scope: "aa" })).result).toEqual({});
-    state.manager.created(openedTab(state, 16, { openerTabId: 99 }));
-    await vi.waitFor(() => expect(state.selected.has(16)).toBe(true));
-    expect(state.selected.get(16).openedFrom.selectionId).toBe(state.selected.get(10).selectionId);
+    state.manager.created(openedTab(state, 18, { openerTabId: 99 }));
+    await vi.waitFor(() => expect(state.selected.has(18)).toBe(true));
+    expect(state.selected.get(18).openedFrom.selectionId).toBe(state.selected.get(11).selectionId);
   });
 
   it("puts the window back for a tab it leaves to the browser", async () => {
