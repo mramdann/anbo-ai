@@ -301,10 +301,21 @@ describe("shipped input guard", () => {
   }
   it("accepts a matching input and rejects values changed before or during focus", () => {
     expect(guarded("requested")).toEqual({ ok: true });
-    expect(guarded("reset")).toEqual({ ok: false, error: "input_mismatch" });
+    expect(guarded("reset")).toEqual({
+      ok: false,
+      error: "input_mismatch",
+      emptied: false,
+    });
     expect(guarded("requested", true)).toEqual({
       ok: false,
       error: "input_mismatch",
+      emptied: false,
+    });
+    // The page cleared the field after the fill (b87011a).
+    expect(guarded("")).toEqual({
+      ok: false,
+      error: "input_mismatch",
+      emptied: true,
     });
     expect(guarded("requested", false, false)).toEqual({
       ok: false,
