@@ -10,6 +10,8 @@ pub mod fs;
 pub mod browser;
 pub mod browser_external;
 pub mod clipboard;
+#[cfg(all(windows, debug_assertions))]
+pub mod crash_dump;
 pub mod git;
 pub mod global_voice;
 pub mod history;

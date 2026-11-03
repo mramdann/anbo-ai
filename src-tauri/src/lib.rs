@@ -472,6 +472,9 @@ pub fn run() {
             // First, so any panic from here on also lands in Anbo's own log
             // folder, with its place and backtrace, before Anbo goes down.
             if let Ok(log_dir) = _app.path().app_log_dir() {
+                // A native crash leaves no panic; Dev writes its minidump there.
+                #[cfg(all(windows, debug_assertions))]
+                modules::crash_dump::install(&log_dir);
                 modules::panic_log::install(log_dir);
             }
             browser_automation::server::cleanup_stale_descriptor();
