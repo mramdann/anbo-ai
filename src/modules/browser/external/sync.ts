@@ -443,6 +443,13 @@ export function createExternalBrowserSync(
                 selectionId: remote.selectionId,
                 tabId: id,
                 workspace: workspaceOf(connection, space),
+                // A tab an agent's input opened is the agent's (browser_tabs
+                // yours), as one it opened itself is, from the moment the
+                // bind lists it: noted after the bind, an agent reading at
+                // once saw yours:false (round 76).
+                ...(opener && remote.openedFrom?.agent
+                  ? { openedFrom: opener.id }
+                  : {}),
               },
             });
             if (stopped) return;
@@ -451,14 +458,6 @@ export function createExternalBrowserSync(
             binding.ready = true;
             external.connected = true;
             host.warm(id);
-            // A tab an agent's input opened is the agent's (browser_tabs
-            // yours), as one it opened itself is.
-            if (opener && remote.openedFrom?.agent) {
-              void call("browser_note_opened_from", {
-                sourceTabId: opener.id,
-                tabId: id,
-              }).catch(() => {});
-            }
             // In front, as the browser opened it, when the user's own click
             // on the page they see opened it. One an agent's input or a Ctrl
             // or middle click opened stays behind.

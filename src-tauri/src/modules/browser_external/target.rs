@@ -53,6 +53,11 @@ pub struct BindingRequest {
     selection_id: String,
     tab_id: i64,
     workspace: String,
+    /// The Anbo tab whose page an agent's input opened this one from. Noted
+    /// before the binding lands, so browser_tabs lists the tab as that agent's
+    /// from its first moment (round 76, R76-1).
+    #[serde(default)]
+    opened_from: Option<i64>,
 }
 
 /// What a bind did.
@@ -74,6 +79,7 @@ impl Registry {
             selection_id,
             tab_id,
             workspace,
+            opened_from: _,
         } = binding;
         if !protocol::valid_tab_id(tab_id) {
             return Err("invalid Anbo tab identity".into());
@@ -413,6 +419,11 @@ pub async fn browser_external_bind(
     }
     let lock = registry::get_tab_lock(tab_id);
     let _guard = lock.lock().await;
+    // Before the binding lands, when browser_tabs starts listing the tab: an
+    // agent that read the list at once saw its own new tab as yours:false.
+    if let Some(source) = binding.opened_from {
+        activity::note_opened_from(source, tab_id);
+    }
     let (target, bound) = {
         let mut registry = REGISTRY
             .lock()
@@ -729,7 +740,35 @@ mod tests {
             selection_id: LEASE.into(),
             tab_id: 42,
             workspace: "D:/work".into(),
+            opened_from: None,
         }
+    }
+
+    #[test]
+    fn a_bind_may_name_the_tab_that_opened_it() {
+        let request = |extra: serde_json::Value| {
+            let mut value = json!({
+                "connectionId": "profile",
+                "browserTabId": 10,
+                "selectionId": LEASE,
+                "tabId": 42,
+                "workspace": "D:/work",
+            });
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<BindingRequest>(value)
+        };
+        assert_eq!(request(json!({})).unwrap().opened_from, None);
+        assert_eq!(
+            request(json!({"openedFrom": 7})).unwrap().opened_from,
+            Some(7)
+        );
+        assert!(
+            request(json!({"opener": 7})).is_err(),
+            "unknown fields stay refused"
+        );
     }
 
     #[test]

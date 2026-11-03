@@ -650,6 +650,25 @@ describe("external browser workspace synchronization", () => {
     await state.service.refresh();
     expect(state.create).toHaveBeenCalledTimes(3);
     expect(state.activate).not.toHaveBeenCalled();
+    // The agent's tab names its opener in the bind itself, so it is the
+    // agent's from its first listing; the other tab names none.
+    const binds = state.calls.mock.calls
+      .filter(([command]) => command === "browser_external_bind")
+      .map(
+        (call) =>
+          ((call as unknown[])[1] as { binding: Record<string, unknown> })
+            .binding,
+      );
+    expect(binds.find((binding) => binding.browserTabId === 12)).toMatchObject({
+      openedFrom: 100,
+    });
+    expect(
+      binds.find((binding) => binding.browserTabId === 13),
+    ).not.toHaveProperty("openedFrom");
+    expect(state.calls).not.toHaveBeenCalledWith(
+      "browser_note_opened_from",
+      expect.anything(),
+    );
   });
 
   it("disconnects cross-workspace moves instead of inheriting the wrong login", async () => {
