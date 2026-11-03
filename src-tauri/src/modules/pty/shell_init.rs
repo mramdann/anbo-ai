@@ -201,6 +201,11 @@ fn apply_common(cmd: &mut CommandBuilder, cwd: Option<String>, blocks: bool) {
     for key in CLAUDE_CODE_SESSION_MARKERS {
         cmd.env_remove(key);
     }
+    // Anbo's own WebView2 runtime pin (window_open), not the shell's.
+    #[cfg(windows)]
+    if let Some(key) = crate::modules::window_open::runtime_pin_var() {
+        cmd.env_remove(key);
+    }
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("ANBO_TERMINAL", "1");

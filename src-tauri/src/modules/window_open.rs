@@ -53,6 +53,7 @@ pub fn remember_main_environment<R: Runtime>(app: &tauri::AppHandle<R>) {
             if let Ok(mut slot) = MAIN_ENVIRONMENT.lock() {
                 *slot = Some(SharedEnvironment(webview.environment()));
             }
+            pin_runtime(&webview);
         });
         if let Err(error) = kept {
             log::warn!("[windows] the main window's browser environment was not kept: {error}");
@@ -66,6 +67,59 @@ pub fn remember_main_environment<R: Runtime>(app: &tauri::AppHandle<R>) {
 fn main_environment() -> Option<ICoreWebView2Environment> {
     let slot = MAIN_ENVIRONMENT.lock().ok()?;
     slot.as_ref().map(|shared| shared.0.clone())
+}
+
+/// The variable WebView2's loader reads for a new environment's runtime
+/// folder; it wins over the folder a caller passes.
+#[cfg(windows)]
+const RUNTIME_FOLDER_VAR: &str = "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER";
+
+/// Set once Anbo pinned the runtime itself, so its shells do not inherit it.
+#[cfg(windows)]
+static RUNTIME_PINNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Every browser environment built after the main webview's takes the main
+/// webview's runtime. WebView2 updates itself in the background, and an
+/// environment built afterwards loaded the newer runtime beside the one the
+/// main window kept. Anbo's own browser builds its environment again whenever
+/// its browser process has exited (the warm host goes five minutes after the
+/// last tab), so after the round 76 soak's mid-run update (157.0.4341.36 over
+/// the .30 Dev started with) Dev ran two runtimes' client code in one process
+/// until it died at a page reload (R76-2, not reproduced since). The loader
+/// reads the variable for each new environment; one the user or an
+/// administrator set stays as it is.
+#[cfg(windows)]
+fn pin_runtime(webview: &tauri::webview::PlatformWebview) {
+    if std::env::var_os(RUNTIME_FOLDER_VAR).is_some() {
+        return;
+    }
+    let mut pid = 0_u32;
+    let read = unsafe { webview.controller().CoreWebView2() }
+        .and_then(|core| unsafe { core.BrowserProcessId(&mut pid) });
+    let folder = read
+        .ok()
+        .filter(|()| pid != 0)
+        .and_then(|()| crate::modules::browser_external::browser_process::image_path(pid))
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
+    let Some(folder) = folder else {
+        log::warn!("[windows] the main window's WebView2 runtime is unknown; later windows and browser tabs take the newest one");
+        return;
+    };
+    std::env::set_var(RUNTIME_FOLDER_VAR, &folder);
+    RUNTIME_PINNED.store(true, std::sync::atomic::Ordering::Release);
+    log::info!(
+        "[windows] later windows and browser tabs use the main window's WebView2 runtime at {}",
+        folder.display()
+    );
+}
+
+/// The variable the shells Anbo starts must not inherit: the pin is for
+/// Anbo's own webviews, not for the programs a user runs.
+#[cfg(windows)]
+pub fn runtime_pin_var() -> Option<&'static str> {
+    RUNTIME_PINNED
+        .load(std::sync::atomic::Ordering::Acquire)
+        .then_some(RUNTIME_FOLDER_VAR)
 }
 
 /// Creates a window in the main window's browser process, or in a browser of
