@@ -477,6 +477,14 @@ pub fn released(tab_id: i64, token: &str) {
     let _ = (tab_id, token);
 }
 
+/// A new UI instance forgets every binding while the browsers keep their tabs
+/// (`forget_bindings`): a docked page goes back to its own window through the
+/// extension, as a release does.
+pub fn forget() {
+    #[cfg(windows)]
+    native::forget();
+}
+
 pub fn shutdown() {
     #[cfg(windows)]
     native::remove_all();
@@ -1616,6 +1624,52 @@ mod native {
             log::info!("[browser_dock] released: Anbo let go of the tab");
             restore(dock);
         }
+    }
+
+    /// A new UI instance drops every binding before it binds the browsers'
+    /// tabs again, and nothing told the extension, which still counted the
+    /// page as docked: it refused every later dock of the profile ("Release
+    /// the existing dock before docking another tab") and the page stayed in
+    /// the old dock window (round 76, R76-3). Released as `release` does, but
+    /// through the connection, since the binding is gone.
+    pub(super) fn forget() {
+        let Some(dock) = DOCK.lock().ok().and_then(|mut state| state.take()) else {
+            return;
+        };
+        log::info!("[browser_dock] released: a new page let go of the tab");
+        tauri::async_runtime::spawn(async move {
+            // A dock the new page asks for meanwhile waits for this one.
+            let _operation = OPERATIONS.lock().await;
+            let started = Instant::now();
+            detach(&dock);
+            let _ = tokio::time::timeout(Duration::from_secs(2), dock.exited.notified()).await;
+            let connection = dock.target.connection_id.clone();
+            let tab = dock.target.browser_tab_id;
+            let result = crate::modules::browser_external::request_within(
+                &connection,
+                tab,
+                "anbo.dockRelease",
+                json!({"token":dock.lease.token}),
+                Duration::from_secs(5),
+            )
+            .await;
+            match &result {
+                Ok(_) => log::info!(
+                    "[browser_dock] page back in its own window in {} ms",
+                    started.elapsed().as_millis()
+                ),
+                Err(error) => log::warn!("[browser_dock] the browser kept the page: {error}"),
+            }
+            let _ = crate::modules::browser_external::request_within(
+                &connection,
+                tab,
+                "anbo.guardDock",
+                json!({"action":"restore","window":dock.lease}),
+                Duration::from_secs(2),
+            )
+            .await;
+            put_back(&dock.lease).await;
+        });
     }
 
     pub(super) fn released(tab_id: i64, token: &str) {

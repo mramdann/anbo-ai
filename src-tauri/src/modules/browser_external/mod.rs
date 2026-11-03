@@ -951,8 +951,11 @@ pub async fn browser_external_release_tab(
 /// soak, a close of qc-2's tab 93 went to qc-1's Chrome tab bound as 93 and
 /// timed out, and the restored tabs could not bind their pages again
 /// ("already bound to another Anbo tab"). The browsers keep their tabs and
-/// selections; the new page binds them again under its own ids.
+/// selections; the new page binds them again under its own ids. A docked page
+/// is released through the extension first (dock::forget), or the extension
+/// would refuse every later dock of its profile.
 pub fn forget_bindings(app: &AppHandle) {
+    dock::forget();
     if let Ok(mut registry) = REGISTRY.lock() {
         registry.forget_bindings();
     }
