@@ -2457,7 +2457,11 @@ pub async fn browser_embed_begin_session(
     for tab_id in stale_tabs {
         if let Some(webview) = app.get_webview(&embed_label(tab_id)) {
             let _ = webview.hide();
-            webview.close().map_err(|error| error.to_string())?;
+            // One that fails to close must not leave the old page's other tabs
+            // open and tracked.
+            if let Err(error) = webview.close() {
+                log::warn!("could not close the old page's browser tab {tab_id}: {error}");
+            }
         }
         active_embeds()
             .lock()
