@@ -113,6 +113,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   }
 });
 chrome.webNavigation?.onCommitted.addListener((details) => session?.tabs.committed(details));
+chrome.webNavigation?.onCreatedNavigationTarget.addListener((details) => session?.tabs.navigationTarget(details));
 chrome.tabs.onRemoved.addListener((tabId, info) => session?.tabs.removed(tabId, info));
 chrome.tabs.onUpdated.addListener((tabId, change, tab) => session?.tabs.updated(tabId, change, tab));
 chrome.tabs.onCreated.addListener((tab) => {

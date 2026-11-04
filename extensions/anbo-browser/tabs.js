@@ -5,7 +5,7 @@ import { createDockManager } from "./dock.js";
 // The version this code is, kept equal to manifest.json. After an update the
 // browser reads the new manifest but can keep running the old scripts until the
 // extension reloads, so the manifest alone would hide that a reload is due.
-export const EXTENSION_VERSION = "0.5.12";
+export const EXTENSION_VERSION = "0.5.13";
 
 const MAX_TABS = 128;
 // A new tab opened this soon after Anbo sent input to the tab it opened from
@@ -15,6 +15,10 @@ const AGENT_INPUT_MS = 2_000;
 // to tell which one opened a tab: a page opens one tens of milliseconds after
 // the key or click that opened it.
 const SHARED_INPUT_GAP_MS = 500;
+// How long such a tab waits for the browser to name the page its navigation
+// came from (webNavigation.onCreatedNavigationTarget), which it does a moment
+// after the tab, or before.
+const SOURCE_WAIT_MS = 400;
 // How long, after a tab an agent's input opened, its window is watched to put
 // it back the way it was, and how often it is looked at meanwhile: the browser
 // brought it up about 60 ms after the key (Oct 28 2026). Looked at 0, 25, 50,
@@ -56,6 +60,12 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
   // The workspace of each tab Anbo holds, as an opaque name Anbo gives it, with
   // the selection it was given for. One profile can serve several workspaces.
   const scopes = new Map();
+  // The page each new tab's navigation came from, as the browser names it
+  // (onCreatedNavigationTarget's sourceTabId), and the tabs waiting for it.
+  // Unlike openerTabId, which names the tab in front of its window for a tab a
+  // key opened, it names the page the key or click reached.
+  const sources = new Map();
+  const sourceWaits = new Map();
   let keptRenderers = "";
   let disposed = false;
 
@@ -381,7 +391,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
   }
 
   function created(tab, fromDock = false) {
-    let opener = attached.get(tab.openerTabId);
+    const opener = attached.get(tab.openerTabId);
     const named = Boolean(opener && driven(opener.id));
     const recent = fromDock ? null : lastDriven();
     // Agents of two workspaces sent input in the moment a page takes to open a
@@ -393,23 +403,71 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     if (recent && recent.workspaces.size > 1 && contested(named ? opener : recent.found)) {
       const source = [...attached.keys()].find((id) => driven(id) && windowBefore.get(id)?.windowId === tab.windowId);
       if (!disposed && !tab.incognito && source !== undefined) void keepWindow(source, tab.windowId).catch(() => {});
+      // The browser then says which page the navigation came from: the tab
+      // goes to that page's workspace when Anbo drives it. Round 78 in Dev:
+      // without this, 4 of 17 tabs agents' clicks opened stayed in Chrome
+      // while two workspaces' agents worked on one profile.
+      void track(adoptFromSource(tab)).catch(() => {});
       return;
     }
-    // The browser names the tab in front of its window as a new tab's opener.
-    // An agent's key on a page Anbo holds behind the user's tab, as in a
-    // workspace Anbo is not showing, opened it from there: the new tab was
-    // left in the browser, and in front of the user's own.
-    const behind = recent && !named ? recent.found : null;
-    if (behind) opener = behind;
+    // The browser names the tab in front of its window as a new tab's opener,
+    // so one it names for no page Anbo drives may still come from an agent's
+    // key on a page Anbo holds behind the user's tab, as in a workspace Anbo
+    // is not showing. Only the browser's word on the page its navigation came
+    // from tells that apart from the user's own new tab or link while an agent
+    // works: the tab input reached last, the guess before, gave 4 of 10 tabs
+    // the user opened in their own window to agents' workspaces (round 78).
+    if (recent?.found && !named) {
+      if (!disposed && !tab.incognito) void keepWindow(recent.found.id, tab.windowId).catch(() => {});
+      void track(adoptFromSource(tab)).catch(() => {});
+      return;
+    }
     const first = tab.pendingUrl || tab.url;
     if (disposed || !opener || tab.incognito || !Number.isSafeInteger(tab.id) || attached.has(tab.id) || pending.has(tab.id)) return;
     const agent = driven(opener.id);
     if (agent && !fromDock) void keepWindow(opener.id, tab.windowId).catch(() => {});
     if ((first && !/^https?:/i.test(first)) || attached.size + pending.size >= MAX_TABS) return;
     if (!fromDock && !agent) return;
-    const openedFrom = { selectionId: opener.selectionId, background: tab.active !== true || behind !== null, agent };
-    const front = behind && tab.active === true && Number.isSafeInteger(tab.openerTabId) ? tab.openerTabId : null;
-    void track(adopt(tab, openedFrom, front)).catch(() => {});
+    const openedFrom = { selectionId: opener.selectionId, background: tab.active !== true, agent };
+    void track(adopt(tab, openedFrom)).catch(() => {});
+  }
+
+  function navigationTarget(details) {
+    if (disposed || !Number.isSafeInteger(details?.tabId) || !Number.isSafeInteger(details?.sourceTabId)) return;
+    sources.set(details.tabId, details.sourceTabId);
+    if (sources.size > MAX_TABS) sources.delete(sources.keys().next().value);
+    sourceWaits.get(details.tabId)?.();
+  }
+
+  // The page a new tab's navigation came from, once the browser names it.
+  function sourceOf(tabId) {
+    if (sources.has(tabId)) return Promise.resolve(sources.get(tabId));
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        sourceWaits.delete(tabId);
+        resolve(sources.get(tabId));
+      };
+      const timer = setTimeout(done, SOURCE_WAIT_MS);
+      sourceWaits.set(tabId, done);
+    });
+  }
+
+  // A tab whose opener Anbo cannot tell (input to two workspaces' tabs could
+  // have opened it, or the browser named no page Anbo drives) goes to the page
+  // the browser says its navigation came from, when Anbo drives it; without
+  // that word it stays the browser's.
+  async function adoptFromSource(tab) {
+    const source = attached.get(await sourceOf(tab.id));
+    sources.delete(tab.id);
+    if (disposed || !source || !driven(source.id) || tab.incognito || !Number.isSafeInteger(tab.id)) return;
+    if (attached.has(tab.id) || pending.has(tab.id) || attached.size + pending.size >= MAX_TABS) return;
+    const first = tab.pendingUrl || tab.url;
+    if (first && !/^https?:/i.test(first)) return;
+    // It came in front of the tab the browser named: that one gets its place
+    // back, as for a key on a page held behind the user's tab.
+    const front = tab.active === true && Number.isSafeInteger(tab.openerTabId) && tab.openerTabId !== source.id ? tab.openerTabId : null;
+    await adopt(tab, { selectionId: source.selectionId, background: tab.active !== true || front !== null, agent: true }, front);
   }
 
   // The browser brings a minimized window back, and in front of the window the
@@ -499,6 +557,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     inputAt.delete(tabId);
     windowBefore.delete(tabId);
     scopes.delete(tabId);
+    sources.delete(tabId);
     if (attached.delete(tabId)) publish();
   }
 
@@ -562,6 +621,8 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     inputAt.clear();
     windowBefore.clear();
     scopes.clear();
+    sources.clear();
+    for (const done of [...sourceWaits.values()]) done();
     for (const watches of keeping.values()) for (const watch of watches) watch.wake();
     keeping.clear();
     const ids = [...owned];
@@ -612,5 +673,5 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     return transport.command(message.method, message.params);
   }
 
-  return { prepare, removed, detached, updated, committed, created, expire, dispose, publish, event, command, windowChanged, dockTopology: dock.topology };
+  return { prepare, removed, detached, updated, committed, created, navigationTarget, expire, dispose, publish, event, command, windowChanged, dockTopology: dock.topology };
 }

@@ -668,9 +668,26 @@ describe("tabs a page Anbo drives opens", () => {
     const lease = state.selected.get(10).selectionId;
     await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter" });
     state.manager.created(openedTab(state, 13, { openerTabId: 11 }));
+    // The browser's word on the navigation names the page the key reached.
+    state.manager.navigationTarget({ sourceTabId: 10, tabId: 13 });
     await vi.waitFor(() => expect(state.selected.has(13)).toBe(true));
     expect(state.selected.get(13)).toMatchObject({ openedFrom: { selectionId: lease, background: true, agent: true } });
     expect(state.api.tabs.update).toHaveBeenCalledWith(11, { active: true });
+  });
+
+  it("leaves the user's own new tabs and links to the browser while an agent works", async () => {
+    // Round 78 in Dev: with agents busy on one profile, 4 of 10 tabs the user
+    // opened in their own window went to agents' workspaces.
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    await state.run("Input.dispatchMouseEvent", 10, { type: "mousePressed", x: 1, y: 1, button: "left", clickCount: 1 });
+    // A link on the user's own page (99), and a new tab of their own, with
+    // no page behind it.
+    state.manager.created(openedTab(state, 13, { openerTabId: 99 }));
+    state.manager.navigationTarget({ sourceTabId: 99, tabId: 13 });
+    state.manager.created(openedTab(state, 14, { openerTabId: undefined, pendingUrl: "https://example.com/mine" }));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect([...state.selected.keys()]).toEqual([10]);
   });
 
   // Input a few milliseconds apart, so which came last is clear, and input far
@@ -697,24 +714,57 @@ describe("tabs a page Anbo drives opens", () => {
     await later();
     await state.run("Input.dispatchMouseEvent", 10, { type: "mousePressed", x: 1, y: 1, button: "left", clickCount: 1 });
     state.manager.created(openedTab(state, 15));
-    // Well after the other workspace's key: the last input opened it, named or not.
+    // Well after the other workspace's key: the named opener holds, and one
+    // named for no page Anbo drives goes where the browser says it came from.
     await apart();
     await state.run("Input.dispatchMouseEvent", 10, { type: "mousePressed", x: 1, y: 1, button: "left", clickCount: 1 });
     state.manager.created(openedTab(state, 16));
     await apart();
     await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter" });
     state.manager.created(openedTab(state, 17, { openerTabId: 99 }));
+    state.manager.navigationTarget({ sourceTabId: 10, tabId: 17 });
     await vi.waitFor(() => expect(state.selected.has(16) && state.selected.has(17)).toBe(true));
     const lease = state.selected.get(10).selectionId;
     expect(state.selected.get(16).openedFrom).toMatchObject({ selectionId: lease, agent: true });
     expect(state.selected.get(17).openedFrom).toMatchObject({ selectionId: lease, agent: true });
     for (const id of [13, 14, 15]) expect(state.selected.has(id)).toBe(false);
-    // Input to tabs of one workspace only: Anbo's guess goes on as before.
+    // Input to tabs of one workspace only: no contest, the browser's word decides.
     await state.run("Input.dispatchKeyEvent", 11, { type: "keyDown", key: "a" });
     expect((await state.run("anbo.scopeTab", 11, { scope: "aa" })).result).toEqual({});
     state.manager.created(openedTab(state, 18, { openerTabId: 99 }));
+    state.manager.navigationTarget({ sourceTabId: 11, tabId: 18 });
     await vi.waitFor(() => expect(state.selected.has(18)).toBe(true));
     expect(state.selected.get(18).openedFrom.selectionId).toBe(state.selected.get(11).selectionId);
+  });
+
+  it("gives such a tab to the page the browser says its navigation came from", async () => {
+    // Round 78 in Dev: 4 of 17 tabs agents' clicks opened stayed in Chrome
+    // while two workspaces' agents worked on one profile.
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    await state.run("anbo.selectTab", 11, { expectedUrl: "https://other.example/" });
+    expect((await state.run("anbo.scopeTab", 10, { scope: "aa" })).result).toEqual({});
+    expect((await state.run("anbo.scopeTab", 11, { scope: "bb" })).result).toEqual({});
+    await state.run("Input.dispatchMouseEvent", 10, { type: "mousePressed", x: 1, y: 1, button: "left", clickCount: 1 });
+    await later();
+    await state.run("Input.dispatchKeyEvent", 11, { type: "keyDown", key: "Enter" });
+    // Named for 10 and in front of it, but the other workspace's key opened it.
+    state.manager.created(openedTab(state, 13));
+    state.manager.navigationTarget({ sourceTabId: 11, tabId: 13 });
+    // The browser's word before the tab, for 10's click.
+    state.manager.navigationTarget({ sourceTabId: 10, tabId: 14 });
+    state.manager.created(openedTab(state, 14, { active: false }));
+    // A page Anbo does not drive opened it: the browser's.
+    state.manager.created(openedTab(state, 15));
+    state.manager.navigationTarget({ sourceTabId: 99, tabId: 15 });
+    await vi.waitFor(() => expect(state.selected.has(13) && state.selected.has(14)).toBe(true));
+    expect(state.selected.get(13).openedFrom).toEqual({ selectionId: state.selected.get(11).selectionId, background: true, agent: true });
+    expect(state.api.tabs.update).toHaveBeenCalledWith(10, { active: true });
+    expect(state.selected.get(14).openedFrom).toEqual({ selectionId: state.selected.get(10).selectionId, background: true, agent: true });
+    // No word from the browser at all: it stays the browser's, as before.
+    state.manager.created(openedTab(state, 16));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    for (const id of [15, 16]) expect(state.selected.has(id)).toBe(false);
   });
 
   it("puts the window back for a tab it leaves to the browser", async () => {
