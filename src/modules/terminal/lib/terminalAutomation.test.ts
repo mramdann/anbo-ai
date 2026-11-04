@@ -1097,6 +1097,63 @@ describe("shared terminal input", () => {
     });
   });
 
+  it("waits for the shell to start a command before its Ctrl+C", async () => {
+    // Round 78: a Ctrl+C sent before PowerShell took the line waited behind
+    // the command's Enter and reached the prompt only after the command had
+    // run to its end.
+    let buffer = "PS C:\\work\\alpha> ";
+    let running = false;
+    let startedAt = 0;
+    const write = vi.fn((_leafId: number, data: string) => {
+      if (data !== "\x03") {
+        buffer += "ping -n 20 127.0.0.1\n";
+        setTimeout(() => {
+          running = true;
+          startedAt = Date.now();
+        }, 400);
+      }
+      return true;
+    });
+    const service = createTerminalAutomationService(
+      dependencies({
+        getBuffer: () => buffer,
+        getSessionState: () => ({
+          ready: true,
+          shellExited: false,
+          commandRunning: running,
+          blockMode: running ? "running" : "prompt",
+          commandGeneration: 2,
+          commandCompletions: [],
+          shell: "powershell",
+          inputPending: false,
+        }),
+        write,
+      }),
+    );
+    const executed = await service.handle("terminal_execute", {
+      workspace: workspace.root,
+      terminalId: "terminal:10:101",
+      text: "ping -n 20 127.0.0.1",
+    });
+    const executionId = (executed.result as { executionId: string })
+      .executionId;
+    await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+    const interrupted = await service.handle("terminal_interrupt", {
+      workspace: workspace.root,
+      terminalId: "terminal:10:101",
+      executionId,
+    });
+
+    expect(interrupted).toMatchObject({
+      result: { phase: "running", interruptRequested: true },
+    });
+    expect(startedAt).toBeGreaterThan(0);
+    expect(write.mock.calls.map(([, data]) => data)).toEqual([
+      "ping -n 20 127.0.0.1\r",
+      "\x03",
+    ]);
+  });
+
   it("answers a batch question already on screen instead of sending a Ctrl+C that means no", async () => {
     const write = vi.fn(() => true);
     const service = createTerminalAutomationService(
@@ -3041,11 +3098,17 @@ describe("terminals whose output stopped reaching Anbo", () => {
       );
       await vi.advanceTimersByTimeAsync(300);
       expect(write).toHaveBeenCalledWith(101, "echo lost\r");
-      await expect(
-        service.handle("terminal_interrupt", { ...target, executionId }),
-      ).resolves.toMatchObject({
+      // Neither a start mark nor a program: the Ctrl+C waits its 3 s for the
+      // command to start, then goes anyway.
+      const interrupted = service.handle("terminal_interrupt", {
+        ...target,
+        executionId,
+      });
+      await vi.advanceTimersByTimeAsync(3_100);
+      await expect(interrupted).resolves.toMatchObject({
         result: { interrupted: true, phase: "dispatched" },
       });
+      expect(write).toHaveBeenLastCalledWith(101, "\x03");
       const waited = service.handle("terminal_wait", {
         ...target,
         executionId,

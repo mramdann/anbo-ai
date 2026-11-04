@@ -54,6 +54,14 @@ const INTERRUPT_STOP_MS = 3_000;
  *  A terminal whose output stopped reaching Anbo held its execution, and so
  *  the terminal, for good. */
 const INTERRUPT_UNCONFIRMED_MS = 5_000;
+/** How long an interrupt waits for a command the shell has not started yet,
+ *  while no program runs in the terminal either. A Ctrl+C sent before
+ *  PowerShell took the line waited in its input behind the command's Enter and
+ *  reached the prompt only once the command had run to its end: 5 of about
+ *  1,000 interrupts sent 2.5 s after the command went out, on a busy Dev, every
+ *  one to a command not yet running (round 78). */
+const INTERRUPT_START_WAIT_MS = 3_000;
+const INTERRUPT_START_POLL_MS = 50;
 /** How often an interrupted execution waiting for that looks for programs. */
 const FOREGROUND_RECHECK_MS = 1_000;
 /** How long after its Ctrl+C an interrupt looks for cmd's batch question,
@@ -1736,6 +1744,23 @@ export function createTerminalAutomationService(
           );
         }
         if (execution) await refreshExecutionCompletion(execution);
+        // A Ctrl+C before the shell starts the command reaches its prompt
+        // instead (INTERRUPT_START_WAIT_MS): it waits for the start first. A
+        // program already running is the start, marked or not.
+        if (execution?.phase === "dispatched") {
+          const until = Date.now() + INTERRUPT_START_WAIT_MS;
+          while (
+            execution.phase === "dispatched" &&
+            execution.completedAt === undefined &&
+            Date.now() < until &&
+            !(await deps.hasForegroundProcess(target.terminal.leafId))
+          ) {
+            await new Promise((resolveDelay) =>
+              setTimeout(resolveDelay, INTERRUPT_START_POLL_MS),
+            );
+            await refreshExecutionCompletion(execution);
+          }
+        }
         if (execution?.completedAt !== undefined) {
           return {
             result: {
