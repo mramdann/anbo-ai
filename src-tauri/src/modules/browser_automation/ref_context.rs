@@ -312,9 +312,36 @@ async fn evaluate_context_with_promise(
     Err("browser ref context is unavailable".into())
 }
 
+/// Whether a page script failed because the context it was sent to is gone:
+/// the script never ran.
+pub fn context_gone(error: &str) -> bool {
+    error.contains("Cannot find context with specified id")
+}
+
 pub async fn execute_main(webview: &Webview, expression: &str) -> Result<String, String> {
+    execute_in_main(webview, expression, false).await
+}
+
+/// A script in Anbo's world of the main frame. A context kept for an earlier
+/// document is asked again once: in round 78 one from a new tab's first
+/// about:blank, cached as that page's by a page-load step that began before
+/// the page came, failed 1 in 10 of agents' first types right after an open
+/// with two agents at work. Nothing had run, and the world of the document
+/// now in the tab still holds the refs its scan made.
+async fn execute_in_main(
+    webview: &Webview,
+    expression: &str,
+    await_promise: bool,
+) -> Result<String, String> {
     let context_id = main_context(webview).await?;
-    let result = evaluate_context(webview, context_id, expression).await;
+    let mut result =
+        evaluate_context_with_promise(webview, context_id, expression, await_promise).await;
+    if result.as_ref().is_err_and(|error| context_gone(error)) {
+        remove(tab_id(webview)?);
+        let context_id = main_context(webview).await?;
+        result =
+            evaluate_context_with_promise(webview, context_id, expression, await_promise).await;
+    }
     if result.is_err() {
         remove(tab_id(webview)?);
     }
@@ -326,15 +353,13 @@ pub async fn execute_awaited(
     frame_id: Option<&str>,
     expression: &str,
 ) -> Result<String, String> {
-    let context_id = match frame_id {
-        Some(frame_id) => frame_context(webview, frame_id).await?,
-        None => main_context(webview).await?,
-    };
-    let result = evaluate_context_with_promise(webview, context_id, expression, true).await;
-    if result.is_err() && frame_id.is_none() {
-        remove(tab_id(webview)?);
+    match frame_id {
+        Some(frame_id) => {
+            let context_id = frame_context(webview, frame_id).await?;
+            evaluate_context_with_promise(webview, context_id, expression, true).await
+        }
+        None => execute_in_main(webview, expression, true).await,
     }
-    result
 }
 
 #[cfg(test)]

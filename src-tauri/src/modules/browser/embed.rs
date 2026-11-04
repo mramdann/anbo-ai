@@ -737,8 +737,13 @@ async fn spawn_browser_child(
                     crate::modules::browser_automation::ref_context::note_layout_change(
                         &webview.clone().into(),
                     );
-                    // Its clicks say whether a tab it opens shows at once.
-                    super::new_tab::prepare(webview.clone());
+                    // Its clicks say whether a tab it opens shows at once. A new
+                    // tab's first about:blank has none, and the context this
+                    // makes for it, off the tab lock, could be cached as the
+                    // page's that replaced it (round 78).
+                    if payload.url().as_str() != "about:blank" {
+                        super::new_tab::prepare(webview.clone());
+                    }
                     event_loading.store(false, Ordering::Release);
                     if let Ok(mut pending_url) = event_pending_url.lock() {
                         *pending_url = None;

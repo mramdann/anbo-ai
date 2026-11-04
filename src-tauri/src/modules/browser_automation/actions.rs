@@ -5489,6 +5489,19 @@ fn describe_ambiguity(error: (String, String), matches: &[LocatorMatch]) -> (Str
 /// disappointments backs off to. Repeating a miss is cheap only in theory:
 /// every retry is a full document walk on the page's own main thread.
 const LOCATOR_RETRY_MS: u64 = 150;
+/// How often one locator lookup scans again because the page changed under
+/// its scan, before it reports that.
+const MAX_MOVED_RESCANS: usize = 3;
+
+/// Whether a locator scan failed only because the document changed under it:
+/// its scan saw a new navigation, or the context it read is gone.
+fn scan_saw_page_move((code, message): &(String, String)) -> bool {
+    (code == error_codes::STALE_REF
+        && message.starts_with("document changed during reference scan"))
+        || (code == error_codes::CDP_FAILED
+            && super::initial_read::retry_read_error(code, message, false, 0))
+}
+
 /// When the caller set no timeout, a lookup's first scan may end this long
 /// after the lookup began, past the lookup's own deadline: a Chrome or Edge
 /// page its browser is not showing, or one on a busy machine, can take seconds
@@ -6383,6 +6396,7 @@ async fn resolve_target_locator(
     let mut scanned_state: Option<PageScanState> = None;
     let mut scanned_at = tokio::time::Instant::now();
     let mut wait_backoff_ms = LOCATOR_RETRY_MS;
+    let mut moved_rescans = 0;
     // An action or read gives up on a settled miss as browser_find does: a
     // click on TradingView's hidden "BINANCE:BTCUSDT" label waited out 5 to
     // 8 s for the error find gives in one. A wait for a state is asked to
@@ -6434,27 +6448,43 @@ async fn resolve_target_locator(
         }
         scanned_state = current_state;
         scanned_at = tokio::time::Instant::now();
-        let (generation, result) = scan_with_fresh_refs(
+        let scanned = scan_with_fresh_refs(
             tab_id,
             scan_by,
             |generation| collect_locator_matches(&webview, tab_id, generation, &locator),
             |result| !result.matches.is_empty(),
         )
-        .await
-        .map_err(|error| {
-            if error.0 == error_codes::TIMEOUT {
-                target_locator_timeout(
-                    &locator,
-                    state,
-                    timeout_ms,
-                    completed_scans,
-                    Some(&error.1),
-                    last_scan.as_ref(),
+        .await;
+        let (generation, result) = match scanned {
+            // The page moved on while the scan read it: a new tab's own page
+            // coming in under an agent's first call (4 in 105 types right
+            // after an open in round 78), or any navigation. The locator still
+            // says what to look for, so it looks again in the page there now.
+            Err(error) if moved_rescans < MAX_MOVED_RESCANS && scan_saw_page_move(&error) => {
+                moved_rescans += 1;
+                scanned_state = None;
+                tokio::time::sleep_until(
+                    (tokio::time::Instant::now() + Duration::from_millis(LOCATOR_RETRY_MS))
+                        .min(deadline),
                 )
-            } else {
-                error
+                .await;
+                continue;
             }
-        })?;
+            scanned => scanned.map_err(|error| {
+                if error.0 == error_codes::TIMEOUT {
+                    target_locator_timeout(
+                        &locator,
+                        state,
+                        timeout_ms,
+                        completed_scans,
+                        Some(&error.1),
+                        last_scan.as_ref(),
+                    )
+                } else {
+                    error
+                }
+            })?,
+        };
         let complete = !result.node_limit_reached && result.skipped_frames == 0;
         let same_text = reading && state.is_none() && same_text_matches(&result);
         let informative = (reading && state.is_none() && !same_text)
@@ -10563,6 +10593,36 @@ mod tests {
             ),
             start + Duration::from_millis(400)
         );
+    }
+
+    #[test]
+    fn a_locator_scans_again_only_when_the_page_changed_under_its_scan() {
+        let error = |code: &str, message: &str| (code.to_string(), message.to_string());
+        // Round 78: what an agent's first type right after an open met.
+        assert!(scan_saw_page_move(&error(
+            error_codes::STALE_REF,
+            "document changed during reference scan; rediscover the target"
+        )));
+        assert!(scan_saw_page_move(&error(
+            error_codes::CDP_FAILED,
+            "DevTools Runtime.evaluate failed: Cannot find context with specified id (HRESULT 0x80070057)"
+        )));
+        assert!(scan_saw_page_move(&error(
+            error_codes::CDP_FAILED,
+            "Execution context was destroyed."
+        )));
+        // A page that answers, or one that is gone, is the caller's to hear.
+        for (code, message) in [
+            (error_codes::STALE_REF, "element ref 'g3-e1' is stale"),
+            (error_codes::CDP_FAILED, "browser ref script failed"),
+            (
+                error_codes::TIMEOUT,
+                "browser reference scan exceeded its deadline",
+            ),
+            (error_codes::TAB_NOT_FOUND, "browser tab closed"),
+        ] {
+            assert!(!scan_saw_page_move(&error(code, message)), "{message}");
+        }
     }
 
     fn diagnostic_scan(names: Vec<String>) -> CollectedLocatorMatches {

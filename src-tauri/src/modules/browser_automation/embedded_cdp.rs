@@ -22,6 +22,74 @@ mod queue_tests {
     }
 }
 
+/// A DevTools call WebView2 failed, worded with the protocol's own message.
+/// WebView2 answers a protocol error with E_INVALIDARG and puts the protocol's
+/// error in the result, so only the message tells a stale context from a
+/// closed frame. Round 78: Anbo dropped it, an agent's type read as a bare
+/// "DevTools HRESULT error" with another call's error text, and the retries
+/// for "Cannot find context with specified id" never ran on Anbo's own browser.
+#[cfg(any(windows, test))]
+fn devtools_failure(method: &str, code: i32, result_json: &str) -> String {
+    let code = code as u32;
+    // The whole protocol answer, `{"error":{"code","message"},"id"}`, or its
+    // error alone.
+    let message = serde_json::from_str::<serde_json::Value>(result_json)
+        .ok()
+        .and_then(|value| {
+            let error = value.get("error").unwrap_or(&value);
+            error.get("message")?.as_str().map(str::to_owned)
+        });
+    match message {
+        Some(message) => format!("DevTools {method} failed: {message} (HRESULT {code:#010x})"),
+        None if result_json.trim().is_empty() => {
+            format!("DevTools {method} failed (HRESULT {code:#010x})")
+        }
+        None => format!(
+            "DevTools {method} failed (HRESULT {code:#010x}): {}",
+            result_json.chars().take(300).collect::<String>()
+        ),
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::devtools_failure;
+    use crate::modules::browser_automation::{
+        initial_read::retry_read_error, protocol::error_codes, ref_context::context_gone,
+    };
+
+    #[test]
+    fn a_failed_devtools_call_carries_the_protocol_message() {
+        // What WebView2 answered an agent's first type after an open (round 78).
+        let stale = devtools_failure(
+            "Runtime.evaluate",
+            0x8007_0057_u32 as i32,
+            r#"{"error":{"code":-32000,"message":"Cannot find context with specified id"},"id":8}"#,
+        );
+        assert_eq!(
+            stale,
+            "DevTools Runtime.evaluate failed: Cannot find context with specified id (HRESULT 0x80070057)"
+        );
+        // The recoveries that read the message now see it.
+        assert!(retry_read_error(error_codes::CDP_FAILED, &stale, false, 0));
+        assert!(context_gone(&stale));
+        assert_eq!(
+            devtools_failure(
+                "DOM.focus",
+                0x8007_0057_u32 as i32,
+                r#"{"code":-32000,"message":"Element is not focusable"}"#
+            ),
+            "DevTools DOM.focus failed: Element is not focusable (HRESULT 0x80070057)"
+        );
+        assert_eq!(
+            devtools_failure("Page.getFrameTree", 0x8000_4005_u32 as i32, ""),
+            "DevTools Page.getFrameTree failed (HRESULT 0x80004005)"
+        );
+        let raw = devtools_failure("Input.insertText", 0x8007_0057_u32 as i32, "not json");
+        assert!(raw.ends_with("(HRESULT 0x80070057): not json"), "{raw}");
+    }
+}
+
 #[cfg(any(windows, test))]
 fn queued_call_is_live<T>(
     sender: &std::sync::Mutex<Option<tokio::sync::oneshot::Sender<T>>>,
@@ -134,6 +202,7 @@ pub async fn call_devtools_protocol_method(
         .collect();
     let platform_sender = sender.clone();
     let deadline = std::time::Instant::now() + timeout;
+    let failed_method = method.to_string();
 
     webview
         .with_webview(move |platform| {
@@ -147,10 +216,13 @@ pub async fn call_devtools_protocol_method(
                 let callback_sender = platform_sender.clone();
                 let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
                     move |error_code, result_json| {
-                        let result = if error_code.is_ok() {
-                            Ok(result_json)
-                        } else {
-                            Err(format!("DevTools HRESULT error: {error_code:?}"))
+                        let result = match error_code {
+                            Ok(()) => Ok(result_json),
+                            Err(error) => Err(devtools_failure(
+                                &failed_method,
+                                error.code().0,
+                                &result_json,
+                            )),
                         };
                         if let Ok(mut guard) = callback_sender.lock() {
                             if let Some(tx) = guard.take() {
