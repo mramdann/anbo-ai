@@ -1285,14 +1285,15 @@ export async function leafHasForegroundProcess(
   }
 }
 
-/** The programs a leaf's shell runs, by PID and name. */
+/** The programs a leaf's shell runs, by PID and name, with when each started
+ *  (ms since 1970) where the platform tells. */
 export async function leafForegroundProcesses(
   leafId: number,
-): Promise<{ pid: number; name: string }[]> {
+): Promise<{ pid: number; name: string; startedAt?: number }[]> {
   const s = sessions.get(leafId);
   if (!s?.pty || s.shellExited) return [];
   try {
-    return await invoke<{ pid: number; name: string }[]>(
+    return await invoke<{ pid: number; name: string; startedAt?: number }[]>(
       "pty_foreground_processes",
       { id: s.pty.id },
     );

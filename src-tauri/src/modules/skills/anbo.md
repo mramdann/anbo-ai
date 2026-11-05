@@ -298,17 +298,21 @@ around a note of what was left out (under 400 characters, only the latest);
 `terminal_read` from `omittedCursor` reads that part. `durationMs` counts
 from when the command was typed, and `queuedMs` is the wait for the shell
 before that. One call waits at most 50 s; call again for a longer job. `terminal_interrupt` cancels a specific execution, including one still
-queued, or sends Ctrl+C when you omit the `executionId`. A program can catch
+queued, or sends Ctrl+C when you omit the `executionId`. On Windows a program
+the shell starts just as the Ctrl+C arrives can miss it; Anbo then sends one
+more (at most two more, and never to a program that was already running when
+one came), and `terminal_wait` reports `interruptResent`. A program can catch
 Ctrl+C and run on, so `terminal_wait` says `interrupted` only when the command
-ended within 3 s of the Ctrl+C, and otherwise `exited` with
+ended within 3 s of the last Ctrl+C, and otherwise `exited` with
 `endedAfterInterruptMs`. The exit code is the one its shell reported: a
 native program a Ctrl+C reached usually gives its own code, such as
 -1073741510 (0xC000013A) for ping, while a stopped PowerShell command, or the
 same program stopped twice in a row, reads 1. Go by `interrupted`, not the
-code. When none of the command's programs is left and its shell marks no end
-within 5 s of the Ctrl+C, the execution ends interrupted with
-`endUnconfirmed: true` and no exit code, and the terminal is yours again;
-`terminal_read` shows what happened. `outputStalled: true` on a wait means
+code. When none of the command's programs has been left for 2 s and its shell
+has marked no end 5 s after the Ctrl+C, the execution ends with
+`endUnconfirmed: true` and no exit code (`exited` when one of its programs
+still ran 3 s after the Ctrl+C, else `interrupted`), and the terminal is yours
+again; `terminal_read` shows what happened. `outputStalled: true` on a wait means
 Anbo is fetching that terminal's latest output again: wait again. A Windows
 batch file asks "Terminate batch job (Y/N)?" after a
 Ctrl+C, where another Ctrl+C means no and the batch runs its next step;

@@ -10,6 +10,7 @@ import {
   createTerminalAutomationService,
   sanitizeTerminalInput,
   sanitizeTerminalTitle,
+  type ShellProcess,
   type TerminalAutomationDependencies,
 } from "./terminalAutomation";
 import type { TerminalSessionState } from "./useTerminalSession";
@@ -3114,7 +3115,7 @@ describe("terminals whose output stopped reaching Anbo", () => {
         executionId,
         timeout: 10_000,
       });
-      await vi.advanceTimersByTimeAsync(7_000);
+      await vi.advanceTimersByTimeAsync(9_000);
       await expect(waited).resolves.toMatchObject({
         result: {
           completed: true,
@@ -3162,6 +3163,122 @@ describe("terminals whose output stopped reaching Anbo", () => {
       await vi.advanceTimersByTimeAsync(9_000);
       await expect(waited).resolves.toMatchObject({
         result: { completed: false, timedOut: true },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Round 81: a ping that ran on had just ended, before its shell drew the
+  // prompt that marks the end, when one look found it gone; 8 of 10 such runs
+  // read interrupted, with no exit code.
+  it("takes the shell's own end when it comes a moment after a program that ran on", async () => {
+    vi.useFakeTimers();
+    try {
+      let running = false;
+      let completions: { generation: number; exitCode: number; at: number }[] =
+        [];
+      const service = createTerminalAutomationService(
+        dependencies({
+          getBuffer: () => prompt,
+          getSessionState: () =>
+            idleShell({
+              commandRunning: running && completions.length === 0,
+              blockMode:
+                running && completions.length === 0 ? "running" : "prompt",
+              commandGeneration: completions.length > 0 ? 3 : 2,
+              commandCompletions: completions,
+            }),
+          hasForegroundProcess: async () => running,
+          write: () => true,
+        }),
+      );
+      const executionId = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "ping -n 8 127.0.0.1",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      running = true;
+      await service.handle("terminal_interrupt", { ...target, executionId });
+      // ping never saw the Ctrl+C, ends 6.2 s later, and the shell marks the
+      // end 1.2 s after that.
+      setTimeout(() => {
+        running = false;
+      }, 6_200);
+      setTimeout(() => {
+        completions = [{ generation: 3, exitCode: 1, at: Date.now() }];
+      }, 7_400);
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 20_000,
+      });
+      await vi.advanceTimersByTimeAsync(9_000);
+      const result = (await waited).result as Record<string, unknown>;
+      expect(result).toMatchObject({
+        completed: true,
+        completionReason: "exited",
+        interrupted: false,
+        exitCode: 1,
+        note: expect.stringContaining("it ran on or took that long to stop"),
+      });
+      expect(result.endUnconfirmed).toBeUndefined();
+      expect(result.endedAfterInterruptMs).toBe(7_400);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ends it unconfirmed once none of its programs has been left for 2 s, as exited when one ran on", async () => {
+    vi.useFakeTimers();
+    try {
+      let running = false;
+      const service = createTerminalAutomationService(
+        dependencies({
+          getBuffer: () => prompt,
+          getSessionState: () => idleShell(),
+          hasForegroundProcess: async () => running,
+          write: () => true,
+        }),
+      );
+      const executionId = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "node serve.js",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      running = true;
+      await service.handle("terminal_interrupt", { ...target, executionId });
+      // The program runs on 5.5 s, and its shell's output never comes.
+      setTimeout(() => {
+        running = false;
+      }, 5_500);
+      let settled = false;
+      const waited = service
+        .handle("terminal_wait", { ...target, executionId, timeout: 20_000 })
+        .then((response) => {
+          settled = true;
+          return response;
+        });
+      // A look found it gone about 6 s after the Ctrl+C.
+      await vi.advanceTimersByTimeAsync(7_500);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(settled).toBe(true);
+      await expect(waited).resolves.toMatchObject({
+        result: {
+          completed: true,
+          completionReason: "exited",
+          interrupted: false,
+          endUnconfirmed: true,
+          exitCode: null,
+          note: expect.stringMatching(
+            /still ran 5\.\d s after it.*never marked the end/,
+          ),
+        },
       });
     } finally {
       vi.useRealTimers();
@@ -3337,6 +3454,231 @@ describe("terminals whose output stopped reaching Anbo", () => {
         service.handle("terminal_close", { ...opened, force: true }),
       ).resolves.toMatchObject({ result: { closed: true, forced: true } });
       expect(close).toHaveBeenCalledWith(20, 201);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("a program that starts too late for its Ctrl+C", () => {
+  // Round 81 (R79-1): a Ctrl+C that came after PowerShell took the line, but
+  // before ping had joined the console, stopped PowerShell alone, and ping
+  // ran to its end: 10 of 20 times in a new shell.
+  const target = { workspace: workspaceRoot, terminalId: "terminal:10:101" };
+  const idOf = (response: { result?: unknown }) =>
+    (response.result as { executionId: string }).executionId;
+
+  /** A PowerShell running one command, whose programs the test sets; each
+   *  Ctrl+C that comes runs `onCtrlC`. */
+  function commandShell() {
+    const sim = {
+      running: false,
+      programs: [] as ShellProcess[],
+      completions: [] as { generation: number; exitCode: number; at: number }[],
+      ctrlCs: 0,
+      onCtrlC: () => {},
+      end(exitCode: number) {
+        sim.running = false;
+        sim.programs = [];
+        sim.completions = [{ generation: 3, exitCode, at: Date.now() }];
+      },
+    };
+    const service = createTerminalAutomationService(
+      dependencies({
+        getBuffer: () => "PS C:\\work\\alpha> ",
+        getSessionState: () => ({
+          ready: true,
+          shellExited: false,
+          commandRunning: sim.running,
+          blockMode: sim.running ? "running" : "prompt",
+          commandGeneration: sim.completions.length > 0 ? 3 : 2,
+          commandCompletions: sim.completions,
+          shell: "powershell",
+          inputPending: false,
+        }),
+        hasForegroundProcess: async () => sim.programs.length > 0,
+        foregroundProcesses: async () => sim.programs,
+        write: (_leafId, data) => {
+          if (data === "\x03") {
+            sim.ctrlCs += 1;
+            sim.onCtrlC();
+          } else {
+            sim.running = true;
+          }
+          return true;
+        },
+      }),
+    );
+    return { sim, service };
+  }
+
+  /** Runs `text` and interrupts it as soon as the shell has taken it. */
+  async function interrupted(
+    { sim, service }: ReturnType<typeof commandShell>,
+    text: string,
+    before?: () => Promise<void>,
+  ): Promise<string> {
+    const executionId = idOf(
+      await service.handle("terminal_execute", { ...target, text }),
+    );
+    await vi.advanceTimersByTimeAsync(300);
+    expect(sim.running).toBe(true);
+    await before?.();
+    await service.handle("terminal_interrupt", { ...target, executionId });
+    expect(sim.ctrlCs).toBe(1);
+    return executionId;
+  }
+
+  it("sends one more Ctrl+C to a program that started after the first", async () => {
+    vi.useFakeTimers();
+    try {
+      const shell = commandShell();
+      const { sim, service } = shell;
+      // ping stops at a Ctrl+C that reaches it.
+      sim.onCtrlC = () => {
+        if (sim.programs.length > 0) {
+          setTimeout(() => sim.end(-1_073_741_510), 100);
+        }
+      };
+      const executionId = await interrupted(shell, "ping -n 8 127.0.0.1");
+      await vi.advanceTimersByTimeAsync(400);
+      sim.programs = [{ pid: 4242, name: "PING.EXE", startedAt: Date.now() }];
+      // Not while it may not have joined the console, nor within a second
+      // of the last Ctrl+C.
+      await vi.advanceTimersByTimeAsync(400);
+      expect(sim.ctrlCs).toBe(1);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(sim.ctrlCs).toBe(2);
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 2_000,
+      });
+      await vi.advanceTimersByTimeAsync(2_500);
+      await expect(waited).resolves.toMatchObject({
+        result: {
+          completed: true,
+          completionReason: "interrupted",
+          interrupted: true,
+          interruptResent: 1,
+          exitCode: -1_073_741_510,
+          note: expect.stringContaining(
+            "PING.EXE (pid 4242) started too late for Anbo's Ctrl+C",
+          ),
+        },
+      });
+      expect(sim.ctrlCs).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never sends another to a program that was running when the Ctrl+C came", async () => {
+    // terraform and docker compose stop in their own time after a Ctrl+C,
+    // and at a second one quit at once, leaving their work half done.
+    vi.useFakeTimers();
+    try {
+      const shell = commandShell();
+      const { sim, service } = shell;
+      sim.onCtrlC = () => {
+        setTimeout(() => sim.end(1), 8_000);
+      };
+      const executionId = await interrupted(
+        shell,
+        "terraform apply",
+        async () => {
+          sim.programs = [
+            { pid: 5150, name: "terraform.exe", startedAt: Date.now() - 50 },
+          ];
+          await vi.advanceTimersByTimeAsync(2_000);
+        },
+      );
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(sim.ctrlCs).toBe(1);
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 100,
+      });
+      await vi.advanceTimersByTimeAsync(1_500);
+      const result = (await waited).result;
+      expect(result).toMatchObject({ completionReason: "exited", exitCode: 1 });
+      expect(result).not.toHaveProperty("interruptResent");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends a program that ignores it only one more", async () => {
+    vi.useFakeTimers();
+    try {
+      const shell = commandShell();
+      const { sim, service } = shell;
+      const executionId = await interrupted(shell, "node keeps-going.js");
+      await vi.advanceTimersByTimeAsync(400);
+      sim.programs = [{ pid: 4243, name: "node.exe", startedAt: Date.now() }];
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(sim.ctrlCs).toBe(2);
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 100,
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      await expect(waited).resolves.toMatchObject({
+        result: { completed: false, interruptResent: 1 },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends at most two more", async () => {
+    vi.useFakeTimers();
+    try {
+      const shell = commandShell();
+      const { sim, service } = shell;
+      // Each Ctrl+C comes as the next program starts.
+      let pid = 7_000;
+      sim.onCtrlC = () => {
+        sim.programs = [];
+        setTimeout(() => {
+          pid += 1;
+          sim.programs = [{ pid, name: "PING.EXE", startedAt: Date.now() }];
+        }, 400);
+      };
+      const executionId = await interrupted(shell, "ping -n 8 127.0.0.1");
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(sim.ctrlCs).toBe(3);
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 100,
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      await expect(waited).resolves.toMatchObject({
+        result: {
+          interruptResent: 2,
+          note: expect.stringContaining(
+            "PING.EXE (pid 7001) started too late for Anbo's Ctrl+C, which reached only its shell, so Anbo sent Ctrl+C 2 more times",
+          ),
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends none when it cannot tell when a program started", async () => {
+    vi.useFakeTimers();
+    try {
+      const shell = commandShell();
+      const { sim } = shell;
+      await interrupted(shell, "ping -n 8 127.0.0.1");
+      await vi.advanceTimersByTimeAsync(400);
+      sim.programs = [{ pid: 4244, name: "ping" }];
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(sim.ctrlCs).toBe(1);
     } finally {
       vi.useRealTimers();
     }

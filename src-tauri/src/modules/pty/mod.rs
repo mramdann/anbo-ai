@@ -286,12 +286,19 @@ pub fn pty_has_foreground_process(state: tauri::State<PtyState>, id: u32) -> Res
 
 /// A process the shell runs, as the terminal tools name it to an agent.
 #[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ShellChild {
     pub pid: u32,
     pub name: String,
+    /// When it started, in ms since 1970 (Windows only). A Ctrl+C that came
+    /// before a program had joined the console never reached it, and the
+    /// terminal tools tell such a program by when it started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<u64>,
 }
 
-/// The programs a session's shell runs: its own child processes.
+/// The programs a session's shell runs: its own child processes, with when
+/// each started.
 #[tauri::command]
 pub fn pty_foreground_processes(
     state: tauri::State<PtyState>,
@@ -301,7 +308,16 @@ pub fn pty_foreground_processes(
     if session.shell_pid == 0 {
         return Ok(Vec::new());
     }
-    Ok(shell_children(&session))
+    let children = shell_children(&session);
+    #[cfg(windows)]
+    let children = children
+        .into_iter()
+        .map(|child| ShellChild {
+            started_at: process_started_ms(child.pid),
+            ..child
+        })
+        .collect();
+    Ok(children)
 }
 
 // Foreground-only check for the renderer hibernation path: true while a job
@@ -355,6 +371,7 @@ fn shell_children(session: &Session) -> Vec<ShellChild> {
             Some(ShellChild {
                 pid: pid.parse().ok()?,
                 name: name.trim().to_string(),
+                started_at: None,
             })
         })
         .collect()
@@ -381,8 +398,46 @@ fn own_children(
     processes
         .into_iter()
         .filter(|(pid, parent, _)| *parent == shell_pid && *pid != shell_pid && in_job(*pid))
-        .map(|(pid, _, name)| ShellChild { pid, name })
+        .map(|(pid, _, name)| ShellChild {
+            pid,
+            name,
+            started_at: None,
+        })
         .collect()
+}
+
+/// When a running process started, in ms since 1970.
+#[cfg(windows)]
+fn process_started_ms(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FALSE, FILETIME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if process.is_null() {
+            return None;
+        }
+        let read = GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user);
+        CloseHandle(process);
+        (read != 0).then(|| {
+            filetime_unix_ms(
+                (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime),
+            )
+        })
+    }
+}
+
+/// A FILETIME (100 ns ticks since 1601) in ms since 1970.
+#[cfg(any(windows, test))]
+fn filetime_unix_ms(filetime: u64) -> u64 {
+    const UNIX_EPOCH_FILETIME: u64 = 116_444_736_000_000_000;
+    filetime.saturating_sub(UNIX_EPOCH_FILETIME) / 10_000
 }
 
 #[cfg(windows)]
@@ -476,8 +531,59 @@ mod tests {
             own_children(7, processes, in_job),
             vec![ShellChild {
                 pid: 40,
-                name: "node.exe".to_string()
+                name: "node.exe".to_string(),
+                started_at: None,
             }]
+        );
+    }
+
+    #[test]
+    fn gives_a_childs_start_in_ms_since_1970_only_when_known() {
+        assert_eq!(filetime_unix_ms(116_444_736_000_000_000), 0);
+        assert_eq!(filetime_unix_ms(116_444_736_000_010_000), 1);
+        assert_eq!(filetime_unix_ms(0), 0);
+        let known = ShellChild {
+            pid: 40,
+            name: "ping.exe".to_string(),
+            started_at: Some(1_793_836_800_000),
+        };
+        assert_eq!(
+            serde_json::to_value(&known).unwrap(),
+            serde_json::json!({ "pid": 40, "name": "ping.exe", "startedAt": 1_793_836_800_000u64 })
+        );
+        let unknown = ShellChild {
+            started_at: None,
+            ..known
+        };
+        assert_eq!(
+            serde_json::to_value(&unknown).unwrap(),
+            serde_json::json!({ "pid": 40, "name": "ping.exe" })
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reads_when_a_program_started() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = || {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        };
+        let before = now();
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "exit 0"])
+            .spawn()
+            .unwrap();
+        let started = process_started_ms(child.id());
+        let after = now();
+        child.wait().unwrap();
+        // The clocks tick in steps of up to 16 ms.
+        let started = started.expect("start time");
+        assert!(
+            started + 100 >= before && started <= after + 100,
+            "{before} <= {started} <= {after}"
         );
     }
 

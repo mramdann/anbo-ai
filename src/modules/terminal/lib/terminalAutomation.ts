@@ -54,6 +54,11 @@ const INTERRUPT_STOP_MS = 3_000;
  *  A terminal whose output stopped reaching Anbo held its execution, and so
  *  the terminal, for good. */
 const INTERRUPT_UNCONFIRMED_MS = 5_000;
+/** How long none of its programs must have been left before Anbo ends it so.
+ *  A ping that ran on had just ended, before its shell drew the prompt that
+ *  marks the end, when one look found it gone: 8 of 10 such runs in a new
+ *  shell read interrupted, with no exit code (round 81). */
+const UNCONFIRMED_EMPTY_MS = 2_000;
 /** How long an interrupt waits for a command the shell has not started yet,
  *  while no program runs in the terminal either. A Ctrl+C sent before
  *  PowerShell took the line waited in its input behind the command's Enter and
@@ -70,6 +75,25 @@ const BATCH_QUESTION_WATCH_MS = 2_000;
 const BATCH_QUESTION_POLL_MS = 25;
 /** One answer per question: the typed letter takes a moment to echo. */
 const BATCH_ANSWER_GAP_MS = 1_000;
+/** How long after its Ctrl+C an interrupt looks for a program that started
+ *  too late to get it. A Ctrl+C that reached the console after PowerShell
+ *  took the line, but before the program it starts had joined the console,
+ *  stopped PowerShell alone, which then waited for the program to run to its
+ *  end: 10 of 20 pings in a new shell (round 81), and on a busy Dev pings
+ *  that started up to 6.5 s after the Ctrl+C (round 79, R79-1). */
+const LATE_PROGRAM_WATCH_MS = 10_000;
+const LATE_PROGRAM_POLL_MS = 250;
+/** A program that started this long before the Ctrl+C, or later, may not
+ *  have joined the console in time. Less than LATE_PROGRAM_AGE_MS, so a
+ *  program one more Ctrl+C reached never gets another. */
+const LATE_PROGRAM_MARGIN_MS = 200;
+/** How long a late program runs before its Ctrl+C goes out: one sent the
+ *  moment it starts can come before it has joined the console too. */
+const LATE_PROGRAM_AGE_MS = 300;
+/** How long a Ctrl+C has to stop a program before another goes out. A ping
+ *  that got it was gone within 0.2 s. */
+const INTERRUPT_RESEND_GAP_MS = 1_000;
+const MAX_INTERRUPT_RESENDS = 2;
 /** How long a terminal this service opened may take to enter the tab list.
  *  A terminal_execute in the same script as its terminal_open found no
  *  terminal one time in three in Dev. */
@@ -93,8 +117,9 @@ export type SharedTerminalDescriptor = {
   rows?: number;
 };
 
-/** A program running in a terminal's shell. */
-export type ShellProcess = { pid: number; name: string };
+/** A program running in a terminal's shell, with when it started (ms since
+ *  1970) where the platform tells. */
+export type ShellProcess = { pid: number; name: string; startedAt?: number };
 
 export type TerminalAutomationDependencies = {
   getTabs: () => Tab[];
@@ -189,6 +214,17 @@ type ExecutionState = {
   /** Ended after a Ctrl+C without its shell marking the end. */
   endUnconfirmed?: boolean;
   foregroundCheckedAt?: number;
+  /** When a look after the Ctrl+C last found one of the command's programs. */
+  programSeenAt?: number;
+  /** Since when the looks after the Ctrl+C have found none of them left. */
+  noProgramSince?: number;
+  /** How many more Ctrl+Cs Anbo sent, each for a program that started too
+   *  late for the one before, and the programs the first of them was for. */
+  interruptResent?: number;
+  resentTo?: string[];
+  /** The latest watch for such a program: an interrupt sent again starts a
+   *  new one, and the older one stops. */
+  lateProgramWatch?: number;
   answeredBatchQuestion?: boolean;
   waitCount: number;
   dispatchedAt?: number;
@@ -791,16 +827,30 @@ export function createTerminalAutomationService(
       );
       return true;
     }
+    const sentAt = execution.interruptSentAt;
     if (
-      execution.interruptSentAt !== undefined &&
-      Date.now() - execution.interruptSentAt >= INTERRUPT_UNCONFIRMED_MS &&
+      sentAt !== undefined &&
+      Date.now() - sentAt >= INTERRUPT_UNCONFIRMED_MS &&
       Date.now() - (execution.foregroundCheckedAt ?? 0) >= FOREGROUND_RECHECK_MS
     ) {
-      execution.foregroundCheckedAt = Date.now();
-      if (!(await deps.hasForegroundProcess(leafId))) {
-        execution.endUnconfirmed = true;
-        finishExecution(execution, "interrupted", null);
-        return true;
+      const checkedAt = Date.now();
+      execution.foregroundCheckedAt = checkedAt;
+      if (await deps.hasForegroundProcess(leafId)) {
+        execution.programSeenAt = checkedAt;
+        execution.noProgramSince = undefined;
+      } else {
+        execution.noProgramSince ??= checkedAt;
+        if (checkedAt - execution.noProgramSince >= UNCONFIRMED_EMPTY_MS) {
+          execution.endUnconfirmed = true;
+          // The same rule as a marked end: a program still running past
+          // INTERRUPT_STOP_MS ran on.
+          const ranOn =
+            execution.programSeenAt !== undefined &&
+            execution.programSeenAt - (execution.interruptSentAt ?? sentAt) >
+              INTERRUPT_STOP_MS;
+          finishExecution(execution, ranOn ? "exited" : "interrupted", null);
+          return true;
+        }
       }
     }
     const shellBusy = state.commandRunning || state.blockMode !== "prompt";
@@ -1046,6 +1096,69 @@ export function createTerminalAutomationService(
       setTimeout(look, BATCH_QUESTION_POLL_MS);
     };
     setTimeout(look, BATCH_QUESTION_POLL_MS);
+  };
+
+  /** Sends Ctrl+C once more to a program the last one could not reach: one
+   *  that started after it, or so shortly before that it had not joined the
+   *  console yet. A program that was running when a Ctrl+C came never gets
+   *  another, which makes one that stops in its own time (terraform, docker
+   *  compose) quit at once. Without start times, nothing is sent. */
+  const watchForLateProgram = (leafId: number, execution: ExecutionState) => {
+    const programsOf = deps.foregroundProcesses;
+    if (!programsOf) return;
+    const watch = (execution.lateProgramWatch ?? 0) + 1;
+    execution.lateProgramWatch = watch;
+    const until = Date.now() + LATE_PROGRAM_WATCH_MS;
+    /** One look; false once there is nothing left to watch. */
+    const look = async (): Promise<boolean> => {
+      if (execution.lateProgramWatch !== watch || Date.now() >= until) {
+        return false;
+      }
+      if (await refreshExecutionCompletion(execution)) return false;
+      const programs = await programsOf(leafId);
+      const now = Date.now();
+      if (programs.length > 0) {
+        execution.programSeenAt = now;
+        execution.noProgramSince = undefined;
+      }
+      const sentAt = execution.interruptSentAt ?? now;
+      const late = programs.filter(
+        (program) =>
+          program.startedAt !== undefined &&
+          program.startedAt > sentAt - LATE_PROGRAM_MARGIN_MS &&
+          now - program.startedAt >= LATE_PROGRAM_AGE_MS,
+      );
+      if (
+        late.length > 0 &&
+        now - sentAt >= INTERRUPT_RESEND_GAP_MS &&
+        (execution.interruptResent ?? 0) < MAX_INTERRUPT_RESENDS &&
+        execution.lateProgramWatch === watch &&
+        execution.completedAt === undefined &&
+        !pagerOnScreen(deps.getScreen?.(leafId) ?? "") &&
+        !pagerOnScreen(deps.getBuffer(leafId) ?? "") &&
+        !answerBatchQuestion(leafId, execution)
+      ) {
+        if (!deps.write(leafId, "\x03")) return false;
+        execution.interruptSentAt = Date.now();
+        execution.interruptResent = (execution.interruptResent ?? 0) + 1;
+        execution.resentTo ??= late.map(
+          (program) => `${program.name} (pid ${program.pid})`,
+        );
+        watchForBatchQuestion(leafId, execution);
+      }
+      return true;
+    };
+    const tick = () => {
+      look().then(
+        (again) => {
+          if (again) setTimeout(tick, LATE_PROGRAM_POLL_MS);
+        },
+        (cause: unknown) => {
+          console.warn("[anbo] late program watch stopped", cause);
+        },
+      );
+    };
+    setTimeout(tick, LATE_PROGRAM_POLL_MS);
   };
 
   const pendingExecution = async (
@@ -1655,8 +1768,17 @@ export function createTerminalAutomationService(
           endedAfterInterruptMs !== undefined
             ? `The command ended ${(endedAfterInterruptMs / 1000).toFixed(1)} s after the Ctrl+C: it ran on or took that long to stop. exitCode is what its shell reported.`
             : undefined;
+        const ranOnFor =
+          (execution.programSeenAt ?? 0) - (execution.interruptSentAt ?? 0);
+        const unconfirmedWhat =
+          execution.completionReason === "exited"
+            ? `The command ran on after the Ctrl+C: one of its programs still ran ${(ranOnFor / 1000).toFixed(1)} s after it, and none is left now`
+            : "Anbo sent Ctrl+C and none of the command's programs is left";
         const unconfirmedNote = execution.endUnconfirmed
-          ? "Anbo sent Ctrl+C and none of the command's programs is left, but its shell never marked the end, so the exit code is unknown. terminal_read shows the screen."
+          ? `${unconfirmedWhat}, but its shell never marked the end, so the exit code is unknown. terminal_read shows the screen.`
+          : undefined;
+        const resentNote = execution.interruptResent
+          ? `${execution.resentTo?.join(", ") ?? "A program"} started too late for Anbo's Ctrl+C, which reached only its shell, so Anbo sent Ctrl+C ${execution.interruptResent === 1 ? "once more" : `${execution.interruptResent} more times`}.`
           : undefined;
         // The UI stands behind the shell's output and is asking for the rest.
         const outputStalled =
@@ -1664,7 +1786,10 @@ export function createTerminalAutomationService(
         const stalledNote = outputStalled
           ? "Anbo has not received this terminal's latest output yet and is asking for it again; wait again."
           : undefined;
-        const note = ranOnNote ?? unconfirmedNote ?? stalledNote;
+        const note =
+          [resentNote, ranOnNote ?? unconfirmedNote ?? stalledNote]
+            .filter((part) => part !== undefined)
+            .join(" ") || undefined;
         return {
           result: {
             executionId,
@@ -1677,6 +1802,9 @@ export function createTerminalAutomationService(
             }),
             interrupted: execution.completionReason === "interrupted",
             ...(execution.interruptRequested && { interruptRequested: true }),
+            ...(execution.interruptResent !== undefined && {
+              interruptResent: execution.interruptResent,
+            }),
             ...(execution.dispatchedAt === undefined &&
               execution.completionReason === "interrupted" && {
                 cancelledBeforeDispatch: true,
@@ -1859,6 +1987,7 @@ export function createTerminalAutomationService(
               );
             }
             watchForBatchQuestion(target.terminal.leafId, execution);
+            watchForLateProgram(target.terminal.leafId, execution);
           }
           return {
             result: {
