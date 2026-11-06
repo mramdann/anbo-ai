@@ -306,6 +306,7 @@ impl ExternalTarget {
         params: Value,
         budget: Duration,
     ) -> Result<Value, String> {
+        wait_for_slot(&self.connection_id, budget).await;
         let (_guard, receiver) = self.queue_for(method, params, budget)?;
         tokio::time::timeout(budget + REPLY_GRACE, receiver)
             .await
@@ -324,6 +325,7 @@ impl ExternalTarget {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, String> {
+        wait_for_slot(&self.connection_id, timeout).await;
         let (_guard, receiver) = self.queue(method, params)?;
         let wait = listen_window(method, timeout);
         tokio::time::timeout(wait, receiver)
@@ -519,6 +521,15 @@ pub async fn browser_external_unbind(
     ensure_main(&webview)?;
     let lock = registry::get_tab_lock(tab_id);
     let _guard = lock.lock().await;
+    // Anbo lets go of the tab below, so a refused close would leave the page in
+    // its browser with no tab here.
+    let held = REGISTRY
+        .lock()
+        .ok()
+        .and_then(|registry| Some(registry.bindings.get(&tab_id)?.connection_id.clone()));
+    if let Some(held) = held {
+        wait_for_slot(&held, REQUEST_TIMEOUT).await;
+    }
     let queued = {
         let mut registry = REGISTRY
             .lock()
@@ -580,7 +591,7 @@ pub(super) fn restore(app: &AppHandle, connection_id: &str) {
                 .and_then(|target| target.info().ok())
                 .is_some_and(|info| !info.loading)
             {
-                activity::restore(&target);
+                activity::restore_lost(&target);
                 design::restore(&target);
             }
         }
@@ -726,6 +737,7 @@ mod tests {
                 extension: None,
                 sender,
                 pending: Default::default(),
+                limit_logged: None,
                 next_request: 1,
                 stop: None,
             },

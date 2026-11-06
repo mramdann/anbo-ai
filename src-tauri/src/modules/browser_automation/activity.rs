@@ -96,6 +96,8 @@ struct Surface {
     visible: bool,
     disabled: bool,
     installed: bool,
+    /// The page shows the overlay: Anbo drew it there and has not taken it away.
+    painted: bool,
     last: Option<(Activity, Instant)>,
     capturing: usize,
     icon_brand: Option<&'static str>,
@@ -554,6 +556,20 @@ fn session_current(control_id: u64) -> Option<i64> {
         .map(|(id, _)| id)
 }
 
+/// The session's other tabs whose pages still show its overlay.
+fn painted_others(tabs: &HashMap<i64, Surface>, control_id: u64, focused: i64) -> Vec<i64> {
+    tabs.iter()
+        .filter(|(id, surface)| {
+            **id != focused
+                && surface.painted
+                && surface.last.as_ref().is_some_and(|(event, _)| {
+                    event.control_id == control_id && event.phase != "ended"
+                })
+        })
+        .map(|(id, _)| *id)
+        .collect()
+}
+
 /// Take the cursor and card off every other tab this session holds.
 ///
 /// A session spans tabs, but the agent is only ever in one of them at a time.
@@ -562,24 +578,10 @@ fn session_current(control_id: u64) -> Option<i64> {
 /// painted with, so an agent three tabs into a task had left three cursors
 /// scattered behind it, none of which was where the work was happening.
 fn blur_others(app: &AppHandle, control_id: u64, focused: i64) {
-    let others: Vec<i64> = TABS
+    let others = TABS
         .lock()
         .ok()
-        .and_then(|guard| {
-            Some(
-                guard
-                    .as_ref()?
-                    .iter()
-                    .filter(|(id, surface)| {
-                        **id != focused
-                            && surface.last.as_ref().is_some_and(|(event, _)| {
-                                event.control_id == control_id && event.phase != "ended"
-                            })
-                    })
-                    .map(|(id, _)| *id)
-                    .collect(),
-            )
-        })
+        .and_then(|guard| Some(painted_others(guard.as_ref()?, control_id, focused)))
         .unwrap_or_default();
     for tab in others {
         if let Some(webview) = super::registry::find_target(app, tab) {
@@ -841,6 +843,7 @@ fn render(webview: &Webview, tab_id: i64, event: &Activity) {
         }
         let install = !surface.installed;
         surface.installed = true;
+        surface.painted = true;
         (install, surface.needs_icon(event.actor.brand, install))
     };
     let visual = VisualActivity {
@@ -939,6 +942,7 @@ pub fn navigation(webview: &Webview) {
     if let Ok(mut guard) = TABS.lock() {
         if let Some(surface) = guard.as_mut().and_then(|tabs| tabs.get_mut(&id)) {
             surface.installed = false;
+            surface.painted = false;
             if let Some((event, _)) = surface.last.as_mut() {
                 event.point = None;
             }
@@ -946,8 +950,28 @@ pub fn navigation(webview: &Webview) {
     }
 }
 
+/// Takes the overlay off a page that shows it, once. Each step of an agent used
+/// to ask this of every other tab of its session, and on a Chrome or Edge tab
+/// each such request holds one of its connection's 32 until the page answers:
+/// a session with 8 tabs filled them, and agents' calls were refused (R80-2).
 fn hide(webview: &Webview) {
-    let _ = webview.eval("window.dispatchEvent(new CustomEvent('anbo-automation-visual-hide'));");
+    let Some(id) = tab_id(webview) else {
+        return;
+    };
+    let mark = |painted: bool| {
+        TABS.lock().ok().and_then(|mut guard| {
+            let surface = guard.as_mut()?.get_mut(&id)?;
+            Some(std::mem::replace(&mut surface.painted, painted))
+        })
+    };
+    if mark(false) == Some(true)
+        && webview
+            .eval("window.dispatchEvent(new CustomEvent('anbo-automation-visual-hide'));")
+            .is_err()
+    {
+        // The next step asks again.
+        mark(true);
+    }
 }
 
 pub fn restore(webview: &Webview) {
@@ -960,6 +984,22 @@ pub fn restore(webview: &Webview) {
         .and_then(|guard| guard.as_ref()?.get(&id)?.last.clone());
     if let Some((event, _)) = last.filter(|(event, _)| event.phase != "ended") {
         render(webview, id, &event);
+    }
+}
+
+/// `restore` for a page that may have a new document: one that still shows the
+/// overlay is left alone. A browser reports all its tabs at each change of one,
+/// so this runs for every tab each time, and without this check six agents at
+/// work on one profile filled its connection with draws (R80-2).
+pub fn restore_lost(webview: &Webview) {
+    let painted = tab_id(webview).is_some_and(|id| {
+        TABS.lock()
+            .ok()
+            .and_then(|guard| Some(guard.as_ref()?.get(&id)?.painted))
+            .unwrap_or(false)
+    });
+    if !painted {
+        restore(webview);
     }
 }
 
@@ -2079,6 +2119,24 @@ mod tests {
             point: None,
         }
     }
+    #[test]
+    fn only_tabs_that_still_show_the_overlay_are_told_to_hide_it() {
+        let surface = |painted, control_id, phase| Surface {
+            painted,
+            last: Some((event(control_id, phase, 1), Instant::now())),
+            ..Surface::default()
+        };
+        let tabs = HashMap::from([
+            (1, surface(true, 7, "done")),  // the tab the session is in
+            (2, surface(true, 7, "done")),  // left, and it still shows
+            (3, surface(false, 7, "done")), // left, already told
+            (4, surface(true, 8, "done")),  // another session's
+            (5, surface(true, 7, "ended")), // its session ended there
+        ]);
+        assert_eq!(painted_others(&tabs, 7, 1), vec![2]);
+        assert!(painted_others(&tabs, 9, 1).is_empty());
+    }
+
     #[test]
     fn queued_and_late_completion_do_not_steal_another_request() {
         assert!(!accepts(&event(1, "running", 1), &event(2, "queued", 2)));

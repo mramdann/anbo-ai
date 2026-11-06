@@ -39,6 +39,35 @@ const RELOAD_RECONNECT: Duration = Duration::from_secs(60);
 const MAX_WORKSPACES: usize = 32;
 type Reply = oneshot::Sender<Result<Value, String>>;
 
+/// A request the extension has not answered yet.
+struct Pending {
+    reply: Reply,
+    method: String,
+}
+
+/// How often a refused request is logged: a burst refuses many.
+const LIMIT_LOG_EVERY: Duration = Duration::from_secs(5);
+/// How long a request waits for a free slot on a connection that has none, and
+/// how often it looks. All of a profile's workspaces and tabs share its slots,
+/// each agent holds a few, and answers come within moments.
+const SLOT_WAIT: Duration = Duration::from_secs(3);
+const SLOT_POLL: Duration = Duration::from_millis(20);
+
+/// What fills a connection's requests, most common first, for the log.
+fn pending_methods(pending: &BTreeMap<u64, Pending>) -> String {
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for request in pending.values() {
+        *counts.entry(&request.method).or_default() += 1;
+    }
+    let mut counts: Vec<_> = counts.into_iter().collect();
+    counts.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    counts
+        .iter()
+        .map(|(method, count)| format!("{method} x{count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 struct Connection {
     profile: Profile,
     /// The workspaces approved to use this profile, in the order approved.
@@ -53,7 +82,9 @@ struct Connection {
     /// empty when an extension too old to answer refused the question.
     extension: Option<String>,
     sender: mpsc::Sender<Value>,
-    pending: BTreeMap<u64, Reply>,
+    pending: BTreeMap<u64, Pending>,
+    /// When a refused request was last logged.
+    limit_logged: Option<Instant>,
     next_request: u64,
     stop: Option<oneshot::Sender<()>>,
 }
@@ -296,6 +327,16 @@ impl Registry {
         Ok(released)
     }
 
+    /// Whether every request slot of the connection is taken.
+    fn full(&mut self, id: &str) -> bool {
+        self.connections.get_mut(id).is_some_and(|connection| {
+            connection
+                .pending
+                .retain(|_, request| !request.reply.is_closed());
+            connection.pending.len() >= MAX_PENDING
+        })
+    }
+
     fn queue(
         &mut self,
         id: &str,
@@ -315,7 +356,9 @@ impl Registry {
         timeout: Duration,
     ) -> Result<(u64, oneshot::Receiver<Result<Value, String>>), String> {
         let connection = self.connection_mut(id)?;
-        connection.pending.retain(|_, sender| !sender.is_closed());
+        connection
+            .pending
+            .retain(|_, request| !request.reply.is_closed());
         let target_allowed = match method {
             "anbo.listTabs" | "anbo.openTab" | "anbo.version" | "anbo.reloadExtension" => {
                 tab_id == 0
@@ -327,6 +370,16 @@ impl Registry {
             return Err("approve this profile and select a tab inside Anbo first".into());
         }
         if connection.pending.len() >= MAX_PENDING {
+            if connection
+                .limit_logged
+                .is_none_or(|logged| logged.elapsed() >= LIMIT_LOG_EVERY)
+            {
+                connection.limit_logged = Some(Instant::now());
+                log::info!(
+                    "[browser_bridge] request limit reached for {method} on tab {tab_id}: {}",
+                    pending_methods(&connection.pending)
+                );
+            }
             return Err("browser bridge request limit reached".into());
         }
         let request_id = connection.next_request;
@@ -351,12 +404,18 @@ impl Registry {
         {
             return Err("browser command exceeds its size limit".into());
         }
-        let (sender, receiver) = oneshot::channel();
+        let (reply, receiver) = oneshot::channel();
         connection
             .sender
             .try_send(message)
             .map_err(|_| "browser bridge is busy or disconnected")?;
-        connection.pending.insert(request_id, sender);
+        connection.pending.insert(
+            request_id,
+            Pending {
+                reply,
+                method: method.to_owned(),
+            },
+        );
         Ok((request_id, receiver))
     }
 
@@ -409,13 +468,13 @@ impl Registry {
                 Ok(true)
             }
             protocol::Incoming::Reply { id, result, error } => {
-                if let Some(sender) = connection.pending.remove(&id) {
+                if let Some(request) = connection.pending.remove(&id) {
                     let reply = match (result, error) {
                         (Some(result), None) => Ok(result),
                         (None, Some(error)) if error.len() <= 4096 => Err(error),
                         _ => Err("invalid browser bridge response".into()),
                     };
-                    let _ = sender.send(reply);
+                    let _ = request.reply.send(reply);
                 }
                 Ok(false)
             }
@@ -442,8 +501,10 @@ impl Registry {
             if let Some(stop) = connection.stop.take() {
                 let _ = stop.send(());
             }
-            for (_, sender) in connection.pending {
-                let _ = sender.send(Err("browser disconnected; action was not replayed".into()));
+            for (_, request) in connection.pending {
+                let _ = request
+                    .reply
+                    .send(Err("browser disconnected; action was not replayed".into()));
             }
         }
     }
@@ -464,6 +525,19 @@ impl Drop for RequestGuard {
     }
 }
 
+/// Waits at most `patience` for a free request slot, so a moment's crowd on a
+/// profile refuses nobody's call. A request that then finds none is refused.
+async fn wait_for_slot(connection_id: &str, patience: Duration) {
+    let deadline = Instant::now() + patience.min(SLOT_WAIT);
+    while REGISTRY
+        .lock()
+        .is_ok_and(|mut registry| registry.full(connection_id))
+        && Instant::now() < deadline
+    {
+        tokio::time::sleep(SLOT_POLL).await;
+    }
+}
+
 async fn request(
     connection_id: &str,
     tab_id: i64,
@@ -480,6 +554,7 @@ async fn request_within(
     params: Value,
     budget: Duration,
 ) -> Result<Value, String> {
+    wait_for_slot(connection_id, budget).await;
     let (request_id, receiver) = REGISTRY
         .lock()
         .map_err(|_| "browser registry unavailable")?
@@ -563,6 +638,7 @@ where
                 extension: None,
                 sender,
                 pending: BTreeMap::new(),
+                limit_logged: None,
                 next_request: 1,
                 stop: Some(stop),
             },
@@ -616,7 +692,7 @@ where
                         connection
                             .pending
                             .get(&request_id)
-                            .is_some_and(|sender| !sender.is_closed())
+                            .is_some_and(|request| !request.reply.is_closed())
                     })
                 }) == Some(true);
                 if !live {
@@ -992,6 +1068,7 @@ mod tests {
                 extension: None,
                 sender,
                 pending: BTreeMap::new(),
+                limit_logged: None,
                 next_request: 1,
                 stop: None,
             },
@@ -1016,6 +1093,82 @@ mod tests {
                 },
             )
             .unwrap();
+    }
+
+    type Taken = Vec<(u64, oneshot::Receiver<Result<Value, String>>)>;
+
+    /// A connection with every request slot taken for as long as the first
+    /// value lives, and its command queue.
+    fn crowded(registry: &mut Registry, id: &str, profile: &str) -> (Taken, mpsc::Receiver<Value>) {
+        let (first, mut commands) = connection(profile);
+        registry.insert(id.into(), first).unwrap();
+        share(registry, id);
+        // The approval takes a place in the queue a connection's writer empties.
+        commands.try_recv().unwrap();
+        let taken = (0..MAX_PENDING)
+            .map(|_| {
+                registry
+                    .queue(id, 1, "Runtime.evaluate", json!({}))
+                    .unwrap()
+            })
+            .collect();
+        (taken, commands)
+    }
+
+    #[test]
+    fn a_full_connection_refuses_until_a_listener_goes() {
+        let mut registry = Registry::default();
+        let (taken, _commands) = crowded(&mut registry, "first", "profile-one");
+        assert!(registry.full("first"));
+        assert_eq!(
+            registry
+                .queue("first", 1, "Runtime.evaluate", json!({}))
+                .unwrap_err(),
+            "browser bridge request limit reached"
+        );
+        assert_eq!(
+            pending_methods(&registry.connections["first"].pending),
+            "Runtime.evaluate x32"
+        );
+        drop(taken);
+        assert!(!registry.full("first"));
+        assert!(!registry.full("no such connection"));
+    }
+
+    #[test]
+    fn what_fills_a_connection_is_listed_most_common_first() {
+        let request = |method: &str| Pending {
+            reply: oneshot::channel().0,
+            method: method.into(),
+        };
+        let pending = BTreeMap::from([
+            (1, request("Page.navigate")),
+            (2, request("Runtime.evaluate")),
+            (3, request("Runtime.evaluate")),
+        ]);
+        assert_eq!(
+            pending_methods(&pending),
+            "Runtime.evaluate x2, Page.navigate x1"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_waits_for_a_free_slot_only_so_long() {
+        let id = "slot-wait";
+        let (taken, _commands) = crowded(&mut REGISTRY.lock().unwrap(), id, "profile-slot-wait");
+
+        let started = Instant::now();
+        wait_for_slot(id, Duration::from_millis(60)).await;
+        assert!(started.elapsed() >= Duration::from_millis(60));
+
+        let started = Instant::now();
+        let free = async {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            drop(taken);
+        };
+        tokio::join!(free, wait_for_slot(id, Duration::from_secs(30)));
+        assert!(started.elapsed() < SLOT_WAIT, "{:?}", started.elapsed());
+        REGISTRY.lock().unwrap().remove(id);
     }
 
     #[test]
