@@ -146,6 +146,11 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-window-state = "2"
 
+# tao 0.37.1 with one change: its Windows event loop runner is shared through an
+# Arc, not an Rc (vendor/tao/PATCH.md). Drop this once tao does the same.
+[patch.crates-io]
+tao = { path = "vendor/tao" }
+
 [profile.dev]
 incremental = true
 # Full debug info (default) membuat artifact dev raksasa → link gagal di disk sempit

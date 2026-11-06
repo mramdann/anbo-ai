@@ -31,3 +31,14 @@ if (stale.length > 0) {
 }
 
 console.log(`Tao ${taoVersions.join(", ")} contains the Windows input deadlock fix (tauri-apps/tao#1215)`);
+
+// tao shares its Windows event loop runner through an Rc, which tauri clones on
+// every thread: a lost count freed the runner under the running event loop. The
+// vendored copy holds it in an Arc (src-tauri/vendor/tao/PATCH.md).
+const cargoToml = readFileSync("src-tauri/Cargo.toml", "utf8");
+const runner = readFileSync("src-tauri/vendor/tao/src/platform_impl/windows/event_loop/runner.rs", "utf8");
+if (!cargoToml.includes('tao = { path = "vendor/tao" }') || !runner.includes("type EventLoopRunnerShared<T> = Arc<EventLoopRunner<T>>;")) {
+  console.error("Tao's Windows event loop runner must stay in an Arc; see src-tauri/vendor/tao/PATCH.md");
+  process.exit(1);
+}
+console.log("Tao's Windows event loop runner is shared through an Arc");
