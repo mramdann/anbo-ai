@@ -2266,7 +2266,9 @@ describe("terminals that have not started", () => {
     });
   });
 
-  it("starts a dormant tab for a read and says to read again", async () => {
+  it("leaves a dormant tab asleep for a read and says what starts it", async () => {
+    // Measured: one read of each terminal woke 10 restored shells, 80 MB each,
+    // and none of them had anything to read (R80-1).
     const warm = vi.fn();
     const service = createTerminalAutomationService(
       dependencies({
@@ -2284,10 +2286,10 @@ describe("terminals that have not started", () => {
     ).resolves.toMatchObject({
       error: {
         code: "terminal_unavailable",
-        message: expect.stringContaining("Anbo is starting it now"),
+        message: expect.stringContaining("terminal_execute"),
       },
     });
-    expect(warm).toHaveBeenCalledWith(10);
+    expect(warm).not.toHaveBeenCalled();
   });
 
   it("runs a command sent before a just-opened terminal has a session", async () => {

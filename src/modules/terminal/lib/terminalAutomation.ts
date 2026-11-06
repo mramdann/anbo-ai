@@ -531,7 +531,7 @@ function unreadyMessage(
   if (status === "dormant") {
     return started
       ? `${id} had not started (its tab was restored and never shown); Anbo is starting it now. Try again once terminal_list shows it idle.`
-      : `${id} has not started (its tab was restored and never shown); showing its tab starts it.`;
+      : `${id} has not started (its tab was restored and never shown), so it has no output yet; terminal_execute or showing its tab starts it.`;
   }
   if (status === "failed") {
     const reason = spawnError ? `: ${spawnError}` : "";
@@ -1598,16 +1598,13 @@ export function createTerminalAutomationService(
         if (!target.ok) return target.response;
         const raw = deps.getBuffer(target.terminal.leafId);
         if (raw === null) {
-          if (target.terminal.status === "dormant" && deps.warm) {
-            deps.warm(target.terminal.tabId);
-            return automationError(
-              "terminal_unavailable",
-              unreadyMessage(target.terminal.terminalId, "dormant", true),
-            );
-          }
+          // A read starts nothing: one sweep over a workspace's terminals woke
+          // every restored one, a shell and its memory each (R80-1).
           return automationError(
             "terminal_unavailable",
-            "terminal buffer is not available",
+            target.terminal.status === "dormant"
+              ? unreadyMessage(target.terminal.terminalId, "dormant", false)
+              : "terminal buffer is not available",
           );
         }
         return {

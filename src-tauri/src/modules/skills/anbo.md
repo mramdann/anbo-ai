@@ -277,9 +277,11 @@ sitting at a prompt, and free of a foreground job immediately before writing,
 so a busy or exited terminal fails instead of running half a command.
 A new terminal reads `starting` until its shell shows its first prompt. A
 command given to `terminal_execute` then waits for that prompt. A terminal
-restored from the last session reads `dormant` until something uses it, and
+restored from the last session reads `dormant` until something starts it, and
 one whose shell could not start reads `failed` with the reason;
 `terminal_execute` starts either and runs the command once its prompt shows.
+`terminal_read` leaves a dormant terminal asleep and answers
+`terminal_unavailable`, as it has no output yet.
 `terminal_insert` refuses, and `terminal_interrupt` sends no Ctrl+C, since one
 that early can end the shell; try again once `terminal_list` shows it idle.
 A command that never went out ends `dispatch_failed`, and `dispatchError`
