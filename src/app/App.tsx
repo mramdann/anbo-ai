@@ -361,6 +361,12 @@ export default function App() {
   // (e.g. cdInNewTab) read the latest pane state instead of a stale closure.
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+  // Read with `tabs`: a tab takes its id and joins them in one step, so every
+  // id up to here is in this render. An id read later, in the effect below, also
+  // covers a tab that has not joined yet, and the embed reconcile closed a new
+  // tab of an agent as a stray (round 82).
+  const highestRenderedTabIdRef = useRef(0);
+  highestRenderedTabIdRef.current = runtimeTabIdAllocator().current - 1;
   const externalSyncRef = useRef<
     ((currentTabs: typeof tabs) => void) | undefined
   >(undefined);
@@ -929,7 +935,7 @@ export default function App() {
       lastReconcileKeyRef.current = reconcileKey;
       void browserEmbedReconcile(
         [...liveBrowsers],
-        runtimeTabIdAllocator().current - 1,
+        highestRenderedTabIdRef.current,
       ).catch(() => {});
     }
   }, [tabs]);
