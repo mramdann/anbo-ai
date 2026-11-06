@@ -15,7 +15,7 @@ pub struct PtyState {
 
 IDs start at 1 and monotonically increase; they are never reused so the frontend can treat `0` as unset.
 
-`pty_open` spawns a session on a blocking thread, inserts it into the map, and returns the id. Output and, last, the exit code stream through one `Channel<Response>` per session (see below). `pty_write` accepts raw bytes with an `x-pty-id` header to avoid JSON serialization on every keystroke; it also reads the JSON byte array that postMessage IPC sends, because one failed custom-protocol request moves a page's IPC to postMessage for good.
+`pty_open` spawns a session on a blocking thread, inserts it into the map, and returns the id. Output and, last, the exit code stream through one `Channel<Response>` per session (see below). `pty_write` accepts raw bytes with an `x-pty-id` header to avoid JSON serialization on every keystroke; it also reads the JSON byte array that postMessage IPC sends, because one failed custom-protocol request moves a page's IPC to postMessage for good. The UI keeps one `pty_write` of a terminal in flight (`ptyInputQueue.ts`), since two in flight can land either way round; see `ANBO.md`.
 
 ## Reader / flusher / waiter threads
 

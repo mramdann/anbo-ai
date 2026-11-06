@@ -30,7 +30,7 @@ The commands registered in `src-tauri/src/lib.rs` are grouped below by module. N
 Long-lived interactive terminal sessions.
 
 - `pty_open` - create a new PTY session
-- `pty_write` - send input bytes (text or control sequences)
+- `pty_write` - send input bytes (text or control sequences), one write of a terminal in flight at a time (`ptyInputQueue.ts`)
 - `pty_resize` - resize the PTY
 - `pty_close` / `pty_close_all` - destroy one or all sessions
 - `pty_has_foreground_process` / `pty_has_foreground_job` / `pty_foreground_processes` - detect and name what runs in the shell (on Windows only processes in the session's job count)

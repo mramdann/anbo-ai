@@ -3,6 +3,7 @@ import { currentWorkspaceEnv } from "@/modules/workspace";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { warn } from "@tauri-apps/plugin-log";
 import { LatestResizeQueue } from "./latestResizeQueue";
+import { PtyInputQueue } from "./ptyInputQueue";
 import {
   freshWatch,
   lostOutputNotice,
@@ -35,6 +36,9 @@ const WATCH_CALL_TIMEOUT_MS = 5_000;
 /** How long a replaced channel is still heard: what it gets was late, not
  *  lost. */
 const LATE_WINDOW_MS = 5_000;
+/** How long a write may stay unanswered before the next one goes anyway. The
+ *  slowest under a storm of agents took 1.4 s. */
+const WRITE_ANSWER_LIMIT_MS = 5_000;
 
 /**
  * A PTY's output as it reaches the UI: every message carries the stream
@@ -277,21 +281,26 @@ export async function openPty(
   const resizeQueue = new LatestResizeQueue(({ cols: c, rows: r }) =>
     invoke("pty_resize", { id, cols: c, rows: r }),
   );
-
-  return {
-    id,
+  const inputQueue = new PtyInputQueue(
     // Raw bytes + id header: no JSON round-trip on the per-keystroke path.
-    write: (data) =>
+    (data) =>
       invoke(
         "pty_write",
         textEncoder.encode(IS_WINDOWS ? encodeWindowsPtyInput(data) : data),
         { headers },
       ),
+    WRITE_ANSWER_LIMIT_MS,
+  );
+
+  return {
+    id,
+    write: (data) => inputQueue.write(data),
     resize: (c, r) => resizeQueue.request({ cols: c, rows: r }),
     close: async () => {
       if (closed) return;
       closed = true;
       resizeQueue.dispose();
+      inputQueue.close(new Error("the terminal closed"));
       try {
         await invoke("pty_close", { id });
       } finally {
