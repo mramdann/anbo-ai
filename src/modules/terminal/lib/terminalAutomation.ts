@@ -34,6 +34,12 @@ const INPUT_VISIBILITY_POLL_MS = 25;
 /** The longest a foreground-process check may take. One that never answered
  *  held a command queued for good, and every later one read busy. */
 const FOREGROUND_CHECK_TIMEOUT_MS = 3_000;
+/** How long after a command's end a process in its terminal can be the shell's
+ *  own: drawing its prompt, Git Bash forks for the directory and the branch,
+ *  which takes a moment on Windows, and the next command read as refused with
+ *  "it runs bash.exe". */
+const PROMPT_HELPERS_MS = 1_000;
+const PROMPT_HELPERS_POLL_MS = 50;
 /** A line the shell has not started as a command this long after its Enter,
  *  while it shows a continuation prompt, is an unfinished command. */
 const UNFINISHED_COMMAND_MS = 1_500;
@@ -998,7 +1004,7 @@ export function createTerminalAutomationService(
       return;
     }
     const busy = await busyShellReason(state, () =>
-      deps.hasForegroundProcess(execution.terminal.leafId),
+      programRuns(execution.terminal.leafId),
     );
     if (busy) {
       failDispatch(execution, busy);
@@ -1023,7 +1029,7 @@ export function createTerminalAutomationService(
       return;
     }
     const unready = await busyShellReason(latestState, () =>
-      deps.hasForegroundProcess(execution.terminal.leafId),
+      programRuns(execution.terminal.leafId),
     );
     if (unready) {
       failDispatch(execution, unready);
@@ -1302,6 +1308,20 @@ export function createTerminalAutomationService(
     return { ok: true as const, terminal };
   };
 
+  /** Whether a program runs in the terminal, past the helpers of a prompt its
+   *  shell is still drawing. */
+  const programRuns = async (leafId: number) => {
+    while (await deps.hasForegroundProcess(leafId)) {
+      const ends = deps.getSessionState(leafId)?.commandCompletions ?? [];
+      const ended = ends[ends.length - 1]?.at ?? 0;
+      if (Date.now() - ended >= PROMPT_HELPERS_MS) return true;
+      await new Promise((resolveDelay) =>
+        setTimeout(resolveDelay, PROMPT_HELPERS_POLL_MS),
+      );
+    }
+    return false;
+  };
+
   const requireIdle = async (
     params: Record<string, unknown>,
     acceptStarting = false,
@@ -1368,10 +1388,7 @@ export function createTerminalAutomationService(
       latestState.shellExited ||
       latestState.commandRunning ||
       latestState.blockMode !== "prompt";
-    if (
-      shellBusy ||
-      (await deps.hasForegroundProcess(target.terminal.leafId))
-    ) {
+    if (shellBusy || (await programRuns(target.terminal.leafId))) {
       const running = shellBusy ? "" : await runningIn(target.terminal.leafId);
       return {
         ok: false as const,

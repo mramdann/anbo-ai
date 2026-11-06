@@ -389,18 +389,36 @@ fn shell_children(session: &Session) -> Vec<ShellChild> {
 /// hands the PID out again: an older program whose dead parent had a new
 /// shell's PID made that idle shell read busy for good. Every process the shell
 /// really starts is in its session's job.
+///
+/// Git for Windows' bin\bash.exe only starts usr\bin\bash.exe and waits for it,
+/// so the shell is that child, and it never read idle: every command an agent
+/// sent to a Git Bash terminal was refused as busy with "it runs bash.exe".
 #[cfg(any(windows, test))]
 fn own_children(
     shell_pid: u32,
     processes: impl IntoIterator<Item = (u32, u32, String)>,
     in_job: impl Fn(u32) -> bool,
 ) -> Vec<ShellChild> {
-    processes
+    let processes: Vec<_> = processes.into_iter().collect();
+    let children_of = |shell: u32| {
+        processes
+            .iter()
+            .filter(|(pid, parent, _)| *parent == shell && *pid != shell && in_job(*pid))
+            .collect::<Vec<_>>()
+    };
+    let is_bash = |name: &str| name.eq_ignore_ascii_case("bash.exe");
+    let launcher = processes
+        .iter()
+        .any(|(pid, _, name)| *pid == shell_pid && is_bash(name));
+    let shell = children_of(shell_pid)
+        .iter()
+        .find(|(_, _, name)| launcher && is_bash(name))
+        .map_or(shell_pid, |(pid, _, _)| *pid);
+    children_of(shell)
         .into_iter()
-        .filter(|(pid, parent, _)| *parent == shell_pid && *pid != shell_pid && in_job(*pid))
         .map(|(pid, _, name)| ShellChild {
-            pid,
-            name,
+            pid: *pid,
+            name: name.clone(),
             started_at: None,
         })
         .collect()
@@ -535,6 +553,33 @@ mod tests {
                 started_at: None,
             }]
         );
+    }
+
+    #[test]
+    fn takes_git_bash_for_the_shell_its_launcher_starts() {
+        let idle = vec![
+            (7, 1, "bash.exe".to_string()),
+            (8, 7, "bash.exe".to_string()),
+        ];
+        assert_eq!(own_children(7, idle.clone(), |_| true), Vec::new());
+
+        let mut busy = idle;
+        busy.push((9, 8, "PING.EXE".to_string()));
+        assert_eq!(
+            own_children(7, busy, |_| true),
+            vec![ShellChild {
+                pid: 9,
+                name: "PING.EXE".to_string(),
+                started_at: None,
+            }]
+        );
+
+        // A shell that started another of its kind is at work.
+        let nested = vec![
+            (7, 1, "powershell.exe".to_string()),
+            (8, 7, "powershell.exe".to_string()),
+        ];
+        assert_eq!(own_children(7, nested, |_| true).len(), 1);
     }
 
     #[test]

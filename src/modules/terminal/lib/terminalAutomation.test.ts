@@ -192,6 +192,77 @@ describe("shared terminal discovery", () => {
   });
 });
 
+describe("a shell drawing its prompt", () => {
+  const endedAgo = (ms: number): TerminalSessionState => ({
+    ready: true,
+    shellExited: false,
+    commandRunning: false,
+    blockMode: "prompt",
+    commandGeneration: 2,
+    lastExitCode: 0,
+    shell: "bash",
+    columns: 120,
+    rows: 30,
+    inputPending: false,
+    commandCompletions: [{ generation: 2, exitCode: 0, at: Date.now() - ms }],
+  });
+  const execute = (
+    service: ReturnType<typeof createTerminalAutomationService>,
+  ) =>
+    service.handle("terminal_execute", {
+      workspace: workspaceRoot,
+      terminalId: "terminal:10:101",
+      text: "echo hi",
+    });
+
+  it("runs the next command once the prompt's helpers are gone", async () => {
+    // Measured: in Git Bash a command right after another was refused with
+    // "it runs bash.exe", the fork that reads the prompt's directory.
+    const state = endedAgo(0);
+    let looks = 0;
+    const write = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({
+        getSessionState: () => state,
+        hasForegroundProcess: async () => ++looks <= 2,
+        write,
+      }),
+    );
+    await expect(execute(service)).resolves.toMatchObject({
+      result: { executed: true },
+    });
+    await vi.waitFor(
+      () => expect(write).toHaveBeenCalledWith(101, "echo hi\r"),
+      { timeout: 3_000 },
+    );
+  });
+
+  it("gives up on a process still there a second after the command ended", async () => {
+    const state = endedAgo(900);
+    const service = createTerminalAutomationService(
+      dependencies({
+        getSessionState: () => state,
+        hasForegroundProcess: async () => true,
+      }),
+    );
+    await expect(execute(service)).resolves.toMatchObject({
+      error: { code: "terminal_busy" },
+    });
+  });
+
+  it("does not wait on a program in a terminal whose last command ended long ago", async () => {
+    const state = endedAgo(60_000);
+    const hasForegroundProcess = vi.fn(async () => true);
+    const service = createTerminalAutomationService(
+      dependencies({ getSessionState: () => state, hasForegroundProcess }),
+    );
+    await expect(execute(service)).resolves.toMatchObject({
+      error: { code: "terminal_busy" },
+    });
+    expect(hasForegroundProcess).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("shared terminal input", () => {
   it("requires a bounded purpose-specific title when spawning", () => {
     expect(sanitizeTerminalTitle(" Dev Server ")).toEqual({
