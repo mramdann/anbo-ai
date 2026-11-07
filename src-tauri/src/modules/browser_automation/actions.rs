@@ -2776,7 +2776,16 @@ async fn handle_action_attempt(
                         }
                         focused_ancestor = guard.get("focusedAncestor").filter(|value| value.is_object()).cloned();
                     }
-                    dispatch_key(&webview, key, action, modifiers, timings).await.map_err(|error| (error_codes::CDP_FAILED.to_string(), error))
+                    let held_link = action == "press"
+                        && key == "Enter"
+                        && matches!(modifiers, 0 | hidden_input::CTRL)
+                        && hidden_input::window_is_away(&webview, tab_id).await
+                        && hidden_input::guard_key(&webview, modifiers).await;
+                    dispatch_key(&webview, key, action, modifiers, timings).await.map_err(|error| (error_codes::CDP_FAILED.to_string(), error))?;
+                    if held_link {
+                        hidden_input::open_held_link(&webview, None, "").await?;
+                    }
+                    Ok(())
                 }.await;
                 if let Err(error) = dispatched {
                     if should_observe {
@@ -7971,6 +7980,9 @@ async fn click_ref_profiled(
             ),
         )
         .await?;
+    let held_link = count == 1
+        && hidden_input::window_is_away(webview, tab_id).await
+        && hidden_input::guard_click(webview, target.as_ref(), ref_id).await;
     if frame_dom_click {
         timings
             .measure(
@@ -7978,10 +7990,17 @@ async fn click_ref_profiled(
                 dom_click_ref(webview, target.as_ref(), ref_id, count),
             )
             .await?;
-        return Ok("dom-frame");
+    } else {
+        dispatch_mouse_click_profiled(webview, &actionable, ref_id, count, timings).await?;
     }
-    dispatch_mouse_click_profiled(webview, &actionable, ref_id, count, timings).await?;
-    Ok("devtools")
+    if held_link {
+        hidden_input::open_held_link(webview, target.as_ref(), ref_id).await?;
+    }
+    Ok(if frame_dom_click {
+        "dom-frame"
+    } else {
+        "devtools"
+    })
 }
 
 /// browser_wait's own timeout next to waitFor fills in waitFor's when it has

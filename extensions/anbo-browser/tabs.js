@@ -5,7 +5,7 @@ import { createDockManager } from "./dock.js";
 // The version this code is, kept equal to manifest.json. After an update the
 // browser reads the new manifest but can keep running the old scripts until the
 // extension reloads, so the manifest alone would hide that a reload is due.
-export const EXTENSION_VERSION = "0.5.13";
+export const EXTENSION_VERSION = "0.5.14";
 
 const MAX_TABS = 128;
 // A new tab opened this soon after Anbo sent input to the tab it opened from
@@ -472,12 +472,13 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
 
   // The browser brings a minimized window back, and in front of the window the
   // user is in, for a tab a page in it opens, even one it opens behind
-  // (Ctrl+Enter), and Windows lets it once the user has been idle a few
-  // minutes: the user's terminal lost the foreground to Chrome 8 of 8 times,
-  // also over the browser's own CDP without Anbo (round 68, R68-2). The window
-  // an agent's input made a tab in goes back to how it was before that input:
-  // minimized again, or behind the window it came over. Anbo's dock window is
-  // Anbo's to show.
+  // (Ctrl+Enter): the user's terminal lost the foreground to Chrome 8 of 8
+  // times, also over the browser's own CDP without Anbo (round 68, R68-2), and
+  // 18 of 18 in round 85. A link goes through openLink instead; what is left
+  // here is a page's own window.open, a form with a target, and a link a page's
+  // handler kept from Anbo. The window an agent's input made a tab in goes back
+  // to how it was before that input: minimized again, or behind the window it
+  // came over. Anbo's dock window is Anbo's to show.
   async function keepWindow(openerId, windowId) {
     const before = windowBefore.get(openerId);
     if (!before || before.windowId !== windowId || Date.now() - before.at > AGENT_INPUT_MS) return;
@@ -508,6 +509,21 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
       watches.delete(watch);
       if (watches.size === 0 && keeping.get(windowId) === watches) keeping.delete(windowId);
     }
+  }
+
+  // A link an agent followed on a page in a window away from the user: a tab a
+  // page opens brings that window back, 18 of 18 times in round 85, and one
+  // made here leaves it as it is. It is the page's all the same: its window,
+  // the page as its opener, and the page its navigation came from, so it goes
+  // to that page's workspace.
+  async function openLink(message, check) {
+    const url = webUrl(message.params.url);
+    const source = await api.tabs.get(message.tabId);
+    check();
+    inputAt.set(message.tabId, Date.now());
+    const tab = await api.tabs.create({ windowId: source.windowId, url, active: false, openerTabId: source.id });
+    navigationTarget({ tabId: tab.id, sourceTabId: source.id });
+    return { tabId: tab.id };
   }
 
   // The browser says a window took the focus or moved: one being put back is
@@ -659,6 +675,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
       scopes.set(message.tabId, { selectionId: message.selectionId, scope });
       return {};
     }
+    if (message.method === "anbo.openLink") return openLink(message, check);
     const transport = transports.get(message.tabId);
     if (!transport) throw new Error("Browser tab transport unavailable");
     if (message.method.startsWith("Input.")) {

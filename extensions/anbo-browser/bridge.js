@@ -12,7 +12,7 @@ const PROFILE_METHODS = new Set(["anbo.listTabs", "anbo.openTab", "anbo.version"
 const TAB_METHODS = new Set(["anbo.selectTab", "anbo.releaseTab", "anbo.closeTab"]);
 // Commands about the tab's place in its browser, not its page. They never wait
 // behind a page command that is slow to answer.
-const CONTROL_METHODS = new Set(["anbo.focusTab", "anbo.tabState", "anbo.scopeTab", "anbo.dockPrepare", "anbo.dockCommit", "anbo.dockRelease", "anbo.dockSwap"]);
+const CONTROL_METHODS = new Set(["anbo.focusTab", "anbo.tabState", "anbo.scopeTab", "anbo.openLink", "anbo.dockPrepare", "anbo.dockCommit", "anbo.dockRelease", "anbo.dockSwap"]);
 // A command past its deadline can still finish in the page, so the tab's next
 // command waits for it. One still running this long after its deadline means
 // the tab stopped answering, and the tab is let go, unless the browser still
@@ -280,7 +280,7 @@ export function createDispatcher(api, attached, send, active, controls) {
           // visible and draws.
           const tab = await api.tabs.get(message.tabId);
           const window = await api.windows.get(tab.windowId);
-          return { active: tab.active === true, split: tab.splitViewId != null && tab.splitViewId !== -1, minimized: window.state === "minimized" };
+          return { active: tab.active === true, split: tab.splitViewId != null && tab.splitViewId !== -1, minimized: window.state === "minimized", focused: window.focused === true };
         }
         return controls?.command ? await controls.command(message, check) : await api.debugger.sendCommand({ tabId: message.tabId }, message.method, message.params);
       })();

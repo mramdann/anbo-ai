@@ -130,6 +130,13 @@ input came last. A tab the browser names no driven page as the opener of goes by
 same word: the user's own new tabs and links stay theirs while agents work on the
 profile (extension 0.5.12 gave such a tab to the tab agent input reached last).
 
+A tab a page opens brings its minimized window back and takes the foreground for a
+moment, even when it opens behind. From extension 0.5.14 a link an agent follows in a
+window the user is not in opens through the extension instead, behind, and the window
+stays as it is. The page's own handlers still get the click. A page's own
+`window.open`, a form with a target and a `rel=opener` link keep the browser's way:
+the window comes back and Anbo minimizes it again.
+
 A tab the user opens from the + menu or Ctrl+P is Anbo's own browser. New tab on a
 profile in the header menu starts a new tab page whose first web page opens in that
 profile while it stays approved for the workspace; no other profile is substituted.

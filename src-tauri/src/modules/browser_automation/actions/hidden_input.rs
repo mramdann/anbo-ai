@@ -17,6 +17,14 @@ use super::{
     ref_failure_reason, wait_for_checked_state, RefFrameTarget, Webview,
 };
 use serde_json::{json, Value};
+use std::time::Duration;
+
+/// How long a page's link waits for its tab to be made. The browser does it at
+/// once; on a busy machine the extension's queue can take a moment.
+const OPEN_LINK_PATIENCE: Duration = Duration::from_secs(5);
+/// How long a look at a tab's window may take. Past that the input goes on as
+/// it would have.
+const TAB_STATE_PATIENCE: Duration = Duration::from_millis(600);
 
 /// Actions a hidden page can take without being shown.
 pub(super) fn stands_in(method: &str) -> bool {
@@ -44,6 +52,8 @@ fn focus_note(why: &str) -> String {
 fn link_note(why: &str) -> String {
     format!("the page is hidden in its browser ({why}), so Anbo activated the link with Ctrl+Enter, which opens it in a new background tab; check the result before relying on it")
 }
+
+const LINK_GUARD_JS: &str = include_str!("../linkGuard.js");
 
 /// Event helpers every hidden-page script starts with.
 const HIDDEN_INPUT_JS: &str = r#"
@@ -98,6 +108,8 @@ const HIDDEN_INPUT_JS: &str = r#"
             return { tag, type, toggles, native, opensTab };
         };
         const disabled = (node) => node.disabled === true || node.getAttribute('aria-disabled') === 'true';
+        const guardLink = (node, anyLink) =>
+            anboGuardLink(node, (link) => anyLink || kind(link).opensTab);
         const click = (node, count) => {
             const point = center(node, null);
             enter(node, point);
@@ -113,12 +125,15 @@ const HIDDEN_INPUT_JS: &str = r#"
             if (count === 2) fire(node, MouseEvent, 'dblclick', point, { button: 0, detail: 2 });
             return { ok: true, input: 'dom-events' };
         };
-        return { center, fire, pointer, enter, press, release, focusOn, kind, disabled, click };
+        return { center, fire, pointer, enter, press, release, focusOn, kind, disabled, guardLink, click };
     })();
 "#;
 
 fn script(ref_id: &str, body: &str) -> String {
-    deep_ref_expression(ref_id, &format!("{HIDDEN_INPUT_JS}\n{body}"))
+    deep_ref_expression(
+        ref_id,
+        &format!("{LINK_GUARD_JS}\n{HIDDEN_INPUT_JS}\n{body}"),
+    )
 }
 
 async fn run(
@@ -178,7 +193,7 @@ fn answer(tab_id: i64, ref_id: &str, input: &str, why: &str) -> Value {
 }
 
 /// The Ctrl bit of a CDP key event's modifiers.
-const CTRL: u8 = 2;
+pub(super) const CTRL: u8 = 2;
 
 async fn press(webview: &Webview, key: &str, modifiers: u8) -> Result<(), (String, String)> {
     dispatch_key_action(webview, key, "press", modifiers)
@@ -209,10 +224,11 @@ pub(super) async fn click(
             if (!el) return JSON.stringify({{ ok: false, error: 'stale_ref' }});
             if (anboHidden.disabled(el)) return JSON.stringify({{ ok: false, error: 'disabled' }});
             const kind = anboHidden.kind(el);
+            const guarded = {count} === 1 && anboHidden.guardLink(el);
             if ({count} === 1 && kind.native && anboHidden.focusOn(el)) {{
-                return JSON.stringify({{ ok: true, input: 'keyboard', key: kind.toggles ? ' ' : 'Enter', opensTab: kind.opensTab }});
+                return JSON.stringify({{ ok: true, input: 'keyboard', key: kind.toggles ? ' ' : 'Enter', opensTab: kind.opensTab, guarded }});
             }}
-            return JSON.stringify(anboHidden.click(el, {count}));"#
+            return JSON.stringify(Object.assign(anboHidden.click(el, {count}), {{ guarded }}));"#
         ),
     )
     .await?;
@@ -229,8 +245,13 @@ pub(super) async fn click(
         )
         .await?;
     }
+    let opened = if prepared["guarded"].as_bool() == Some(true) {
+        open_held_link(webview, target, ref_id).await?
+    } else {
+        background
+    };
     let mut result = answer(tab_id, ref_id, input, why);
-    if background {
+    if opened {
         result["note"] = json!(link_note(why));
         result["newTab"] = json!("background");
     }
@@ -238,6 +259,110 @@ pub(super) async fn click(
         result["clickCount"] = json!(2);
     }
     Ok(result)
+}
+
+/// Whether a click or key on this page should have its link held back: its
+/// window is not the one the user is in, and Anbo's dock does not hold the page.
+/// A tab a page opens, even behind, brings its minimized window back and takes
+/// the foreground from the window the user is in, 18 of 18 times in round 85
+/// (R72-1). A window that is not minimized only asks for the foreground, which
+/// Windows refuses until the user's last input is older than
+/// ForegroundLockTimeout, so that one comes forward too on an idle machine.
+pub(super) async fn window_is_away(webview: &Webview, tab_id: i64) -> bool {
+    let Webview::External { target, .. } = webview else {
+        return false;
+    };
+    if crate::modules::browser_external::dock::docked(tab_id).is_some() {
+        return false;
+    }
+    target
+        .call("anbo.tabState", json!({}), TAB_STATE_PATIENCE)
+        .await
+        .is_ok_and(|state| state["focused"].as_bool() == Some(false))
+}
+
+/// Before a pointer click on a page in a window away from the user: whether a
+/// link it lands on is held back, for `open_held_link` after the click.
+pub(super) async fn guard_click(
+    webview: &Webview,
+    target: Option<&RefFrameTarget>,
+    ref_id: &str,
+) -> bool {
+    run(
+        webview,
+        target,
+        ref_id,
+        "return JSON.stringify({ ok: true, guarded: !!el && anboHidden.guardLink(el) });",
+    )
+    .await
+    .is_ok_and(|armed| armed["guarded"].as_bool() == Some(true))
+}
+
+/// Before Enter or Ctrl+Enter on such a page: the same for the link that has
+/// the focus, which the key follows. Plain Enter stays in the tab on a link
+/// with no target of its own, and Ctrl+Enter opens any link in another.
+pub(super) async fn guard_key(webview: &Webview, modifiers: u8) -> bool {
+    run(
+        webview,
+        None,
+        "",
+        &format!(
+            r#"
+            let node = document.activeElement;
+            while (node && node.shadowRoot && node.shadowRoot.activeElement) node = node.shadowRoot.activeElement;
+            return JSON.stringify({{ ok: true, guarded: !!node && anboHidden.guardLink(node, {any_link}) }});"#,
+            any_link = modifiers == CTRL,
+        ),
+    )
+    .await
+    .is_ok_and(|armed| armed["guarded"].as_bool() == Some(true))
+}
+
+/// After the key or click the page's handlers saw: a link they left alone opens
+/// here, and its window stays as it is. Answers whether a tab is on its way,
+/// which it is not for a page that took the click itself. A guard that saw no
+/// click leaves that as it was: the page moved on, or a handler kept the click
+/// from the guard and the browser opened the tab.
+pub(super) async fn open_held_link(
+    webview: &Webview,
+    target: Option<&RefFrameTarget>,
+    ref_id: &str,
+) -> Result<bool, (String, String)> {
+    let held = run(
+        webview,
+        target,
+        ref_id,
+        r#"
+        const guard = window.__anboHeldLink;
+        delete window.__anboHeldLink;
+        if (!guard) return JSON.stringify({ ok: true });
+        guard.disarm();
+        return JSON.stringify(Object.assign({ ok: true }, guard.held));"#,
+    )
+    .await
+    .unwrap_or_default();
+    let Some(url) = held["url"].as_str() else {
+        return Ok(held["pageTookIt"].as_bool() != Some(true));
+    };
+    let Webview::External { target: tab, .. } = webview else {
+        return Ok(false);
+    };
+    match tab
+        .call("anbo.openLink", json!({ "url": url }), OPEN_LINK_PATIENCE)
+        .await
+    {
+        Ok(_) => Ok(true),
+        // An extension from before 0.5.14: the browser's own way, now that
+        // nothing holds the link back. Anbo has it reload soon after.
+        Err(error) if error.contains("Unsupported browser command") => {
+            press(webview, "Enter", CTRL).await?;
+            Ok(true)
+        }
+        Err(error) => Err((
+            error_codes::CDP_FAILED.to_string(),
+            format!("the page took the click, but its link did not open: {error}"),
+        )),
+    }
 }
 
 /// Sets a checkbox or radio: Space on it when it takes focus, else its own

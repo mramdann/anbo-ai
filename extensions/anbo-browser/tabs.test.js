@@ -675,6 +675,47 @@ describe("tabs a page Anbo drives opens", () => {
     expect(state.api.tabs.update).toHaveBeenCalledWith(11, { active: true });
   });
 
+  it("opens a held link behind, in the page's window, as that page's tab", async () => {
+    // Round 85 (R72-1): a tab a page opened brought its minimized window back
+    // and took the foreground, 18 of 18 times. One made here leaves it alone.
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    const lease = state.selected.get(10).selectionId;
+    await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter", modifiers: 2 });
+    const reply = await state.run("anbo.openLink", 10, { url: "https://example.com/next" });
+    expect(reply.result).toEqual({ tabId: 12 });
+    expect(state.api.tabs.create).toHaveBeenCalledWith({ windowId: 20, url: "https://example.com/next", active: false, openerTabId: 10 });
+    state.tabs.get(12).status = "complete";
+    state.manager.created({ id: 12, url: "", pendingUrl: "https://example.com/next", windowId: 20, openerTabId: 10, active: false });
+    await vi.waitFor(() => expect(state.selected.has(12)).toBe(true));
+    expect(state.selected.get(12).openedFrom).toMatchObject({ selectionId: lease, background: true, agent: true });
+  });
+
+  it("opens a held link as that page's tab while another workspace's agent is at work", async () => {
+    // The contested case goes by the page the navigation came from, which the
+    // browser names only for a tab a page opened.
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    await state.run("anbo.selectTab", 11, { expectedUrl: "https://other.example/" });
+    await state.run("anbo.scopeTab", 10, { scope: "aa" });
+    await state.run("anbo.scopeTab", 11, { scope: "bb" });
+    await state.run("Input.dispatchKeyEvent", 11, { type: "keyDown", key: "a" });
+    await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter", modifiers: 2 });
+    await state.run("anbo.openLink", 10, { url: "https://example.com/next" });
+    state.tabs.get(12).status = "complete";
+    state.manager.created({ id: 12, url: "", pendingUrl: "https://example.com/next", windowId: 20, openerTabId: 10, active: false });
+    await vi.waitFor(() => expect(state.selected.has(12)).toBe(true));
+    expect(state.selected.get(12).openedFrom).toMatchObject({ selectionId: state.selected.get(10).selectionId, agent: true });
+  });
+
+  it("opens no link but a web page's", async () => {
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    const reply = await state.run("anbo.openLink", 10, { url: "chrome://settings" });
+    expect(reply.error).toBeTruthy();
+    expect(state.api.tabs.create).not.toHaveBeenCalled();
+  });
+
   it("leaves the user's own new tabs and links to the browser while an agent works", async () => {
     // Round 78 in Dev: with agents busy on one profile, 4 of 10 tabs the user
     // opened in their own window went to agents' workspaces.
