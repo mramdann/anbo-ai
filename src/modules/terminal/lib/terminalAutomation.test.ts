@@ -2211,6 +2211,35 @@ describe("shared terminal input", () => {
     expect(write).toHaveBeenCalledWith(101, "\x03");
   });
 
+  it("uses interrupt to clear an unfinished line the shell waits for the rest of", async () => {
+    // Round 79: a line typed with an open quote left PowerShell at ">>", which
+    // reads as idle, so terminal_interrupt answered terminal_idle.
+    const write = vi.fn(() => true);
+    const service = createTerminalAutomationService(
+      dependencies({
+        getBuffer: () => "PS C:\\work\\alpha> Write-Output 'abc\n>> ",
+        getSessionState: () => ({
+          ready: true,
+          shellExited: false,
+          commandRunning: false,
+          blockMode: "prompt",
+        }),
+        hasForegroundProcess: vi.fn(async () => false),
+        write,
+      }),
+    );
+
+    await expect(
+      service.handle("terminal_interrupt", {
+        workspace: workspace.root,
+        terminalId: "terminal:10:101",
+      }),
+    ).resolves.toMatchObject({
+      result: { interrupted: false, clearedInput: true },
+    });
+    expect(write).toHaveBeenCalledWith(101, "\x03");
+  });
+
   it("uses interrupt to safely clear pending prompt input", async () => {
     const write = vi.fn(() => true);
     const hasForegroundProcess = vi.fn(async () => false);

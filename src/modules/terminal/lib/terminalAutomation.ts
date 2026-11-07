@@ -2030,7 +2030,13 @@ export function createTerminalAutomationService(
             },
           };
         }
-        if (state.inputPending) {
+        // An unfinished line someone typed, which the shell waits for the
+        // rest of, reads as idle like a shell at its prompt, and agents could
+        // not clear it (round 79).
+        if (
+          state.inputPending ||
+          continuationPrompt(deps.getBuffer(target.terminal.leafId) ?? "")
+        ) {
           if (!deps.write(target.terminal.leafId, "\x03")) {
             return automationError(
               "terminal_unavailable",
