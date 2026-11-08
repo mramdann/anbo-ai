@@ -2601,30 +2601,67 @@ fn nothing_to_close(has_webview: bool, raw_window: isize) -> bool {
     !has_webview && raw_window == 0
 }
 
+/// How a tab's page ends. A closed tab is gone for good, so no late update
+/// may start its page again. A suspended one stays in its paused space, and
+/// the pane that shows it next starts the page again; only the pane that
+/// showed it until now is shut out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum EmbedEnd {
+    Close,
+    Suspend,
+}
+
+/// What an end leaves behind, before the page is gone: a close remembers the
+/// tab and forgets its owners, a suspend only lets go of the owner that showed
+/// the page, so its late updates cannot bring the page back.
+fn record_embed_end(
+    end: EmbedEnd,
+    key: EmbedKey,
+    owner: Option<String>,
+    closed: &mut HashSet<EmbedKey>,
+    released: &mut HashSet<(i64, String, String)>,
+) {
+    match end {
+        EmbedEnd::Close => {
+            let tab_id = key.0;
+            bounded_insert(closed, key, MAX_CLOSED_EMBEDS);
+            released.retain(|(id, _, _)| *id != tab_id);
+        }
+        EmbedEnd::Suspend => {
+            if let Some(owner) = owner {
+                bounded_insert(released, (key.0, key.1, owner), MAX_RELEASED_OWNERS);
+            }
+        }
+    }
+}
+
 async fn close_embed_locked(
     app: &tauri::AppHandle,
     tab_id: i64,
     instance_id: &str,
+    end: EmbedEnd,
 ) -> Result<bool, String> {
     let host_window = {
         let _lifecycle = LIFECYCLE_LOCK.lock().await;
         ensure_current_instance(instance_id)?;
-        bounded_insert(
-            &mut *closed_embeds()
-                .lock()
-                .map_err(|_| "browser close state is unavailable".to_string())?,
+        let mut closed = closed_embeds()
+            .lock()
+            .map_err(|_| "browser close state is unavailable".to_string())?;
+        let mut released = released_owners()
+            .lock()
+            .map_err(|_| "browser owner state is unavailable".to_string())?;
+        let active = active_embeds()
+            .lock()
+            .map_err(|_| "browser lifecycle state is unavailable".to_string())?;
+        let entry = active.get(&tab_id);
+        record_embed_end(
+            end,
             (tab_id, instance_id.to_string()),
-            MAX_CLOSED_EMBEDS,
+            entry.map(|entry| entry.owner_id.clone()),
+            &mut closed,
+            &mut released,
         );
-        released_owners()
-            .lock()
-            .map_err(|_| "browser owner state is unavailable".to_string())?
-            .retain(|(id, _, _)| *id != tab_id);
-        active_embeds()
-            .lock()
-            .map_err(|_| "browser lifecycle state is unavailable".to_string())?
-            .get(&tab_id)
-            .map(|entry| entry.host_window.clone())
+        entry.map(|entry| entry.host_window.clone())
     };
     let webview = app.get_webview(&embed_label(tab_id));
     let recorded = host_window.as_ref().map(|h| h.load(Ordering::Acquire));
@@ -2673,8 +2710,10 @@ async fn close_embed_locked(
                 .lock()
                 .map_err(|_| "browser lifecycle state is unavailable".to_string())?
                 .remove(&tab_id);
-        } else if let Ok(mut closed) = closed_embeds().lock() {
-            closed.remove(&(tab_id, instance_id.to_string()));
+        } else if end == EmbedEnd::Close {
+            if let Ok(mut closed) = closed_embeds().lock() {
+                closed.remove(&(tab_id, instance_id.to_string()));
+            }
         }
     }
     if outcome.is_ok() {
@@ -2730,7 +2769,7 @@ pub async fn browser_embed_reconcile(
         let tab_lock = get_tab_lock(tab_id);
         let _tab_lock = tab_lock.lock().await;
         // Re-read current ownership and handle after queueing behind close/update.
-        match close_embed_locked(&app, tab_id, &instance_id).await {
+        match close_embed_locked(&app, tab_id, &instance_id, EmbedEnd::Close).await {
             Ok(true) => {
                 reaped += 1;
                 log::info!("reconciled stray browser embed {tab_id}");
@@ -2758,12 +2797,40 @@ pub async fn browser_embed_close(
     let tab_lock = get_tab_lock(tab_id);
     let result = {
         let _tab_lock = tab_lock.lock().await;
-        close_embed_locked(&app, tab_id, &instance_id).await
+        close_embed_locked(&app, tab_id, &instance_id, EmbedEnd::Close).await
     };
     remove_tab_lock(tab_id);
     // The warm host's five minutes start when the last tab goes.
     #[cfg(windows)]
     note_tab_seen();
+    result.map(|_| ())
+}
+
+/// Ends the page of a tab whose space was paused. The tab stays, cold, and
+/// its page starts again once a pane shows it or a browser tool wakes it.
+#[tauri::command]
+pub async fn browser_embed_suspend(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    tab_id: i64,
+    instance_id: String,
+) -> Result<(), String> {
+    ensure_main_window(&window)?;
+    validate_tab_id(tab_id)?;
+    validate_token(&instance_id)?;
+    let tab_lock = get_tab_lock(tab_id);
+    let result = {
+        let _tab_lock = tab_lock.lock().await;
+        close_embed_locked(&app, tab_id, &instance_id, EmbedEnd::Suspend).await
+    };
+    remove_tab_lock(tab_id);
+    #[cfg(windows)]
+    note_tab_seen();
+    match &result {
+        Ok(true) => log::info!("browser embed {tab_id} suspended with its paused space"),
+        Ok(false) => {}
+        Err(error) => log::warn!("could not suspend browser embed {tab_id}: {error}"),
+    }
     result.map(|_| ())
 }
 
@@ -2819,6 +2886,56 @@ mod tests {
         assert!(!super::child_is_absent(false, Some(0)));
         assert!(!super::child_is_absent(false, Some(123)));
         assert!(!super::child_is_absent(true, None));
+    }
+
+    #[test]
+    fn a_suspended_page_lets_only_its_last_pane_go() {
+        // A paused space keeps its tab: the pane that showed the page may not
+        // start it again with a late update, the next pane must.
+        let mut closed = HashSet::new();
+        let mut released = HashSet::new();
+        released.insert((7, "inst".to_string(), "older".to_string()));
+        super::record_embed_end(
+            super::EmbedEnd::Suspend,
+            (7, "inst".to_string()),
+            Some("shown".to_string()),
+            &mut closed,
+            &mut released,
+        );
+        assert!(closed.is_empty());
+        assert!(released.contains(&(7, "inst".to_string(), "shown".to_string())));
+        assert!(released.contains(&(7, "inst".to_string(), "older".to_string())));
+
+        // Without a page there is no owner to shut out.
+        super::record_embed_end(
+            super::EmbedEnd::Suspend,
+            (8, "inst".to_string()),
+            None,
+            &mut closed,
+            &mut released,
+        );
+        assert!(closed.is_empty());
+        assert_eq!(released.len(), 2);
+    }
+
+    #[test]
+    fn a_closed_tab_is_remembered_and_its_owners_forgotten() {
+        let mut closed = HashSet::new();
+        let mut released = HashSet::new();
+        released.insert((7, "inst".to_string(), "older".to_string()));
+        released.insert((9, "inst".to_string(), "other".to_string()));
+        super::record_embed_end(
+            super::EmbedEnd::Close,
+            (7, "inst".to_string()),
+            Some("shown".to_string()),
+            &mut closed,
+            &mut released,
+        );
+        assert!(closed.contains(&(7, "inst".to_string())));
+        assert_eq!(
+            released,
+            HashSet::from([(9, "inst".to_string(), "other".to_string())])
+        );
     }
 
     #[test]

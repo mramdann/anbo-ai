@@ -377,6 +377,13 @@ pub async fn handle_action_as(
         && !method.starts_with("agent_")
         && !method.starts_with("terminal_")
         && !method.starts_with("skills_");
+    let named_root = named_workspace(&params);
+    // A tab whose page is not loaded, restored from the last session or of a
+    // paused workspace, loads first, as showing it would, so a call does not
+    // fail on a tab the user paused.
+    if let Some(id) = tab_id.filter(|_| wakes_cold_tab(method)) {
+        wake_cold_tab(app, id, method, named_root.as_deref(), &actor).await?;
+    }
     if let Some((id, root)) = tab_id.and_then(|id| Some((id, active_local_root(id)?))) {
         if super::activity::foreign_holder(id, &root, &actor).is_some() {
             return Err((
@@ -387,7 +394,6 @@ pub async fn handle_action_as(
             ));
         }
     }
-    let named_root = named_workspace(&params);
     if let Some((id, root)) = tab_id
         .filter(|_| scoped_to_workspace(method) && !actor.is_internal())
         .and_then(|id| Some((id, active_local_root(id)?)))
@@ -400,22 +406,7 @@ pub async fn handle_action_as(
                     super::activity::declare_workspace(&actor, named.clone());
                 }
             }
-            TabScope::OtherWorkspace => {
-                return Err((
-                    error_codes::OTHER_WORKSPACE.to_string(),
-                    format!(
-                        "tab {id} belongs to another workspace; nothing was done. Use a tab of your own workspace: browser_tabs with your workspace lists them, and browser_open opens one there."
-                    ),
-                ));
-            }
-            TabScope::Undeclared => {
-                return Err((
-                    error_codes::INVALID_REQUEST.to_string(),
-                    format!(
-                        "tab {id}: Anbo does not know your workspace yet, and a tab can only be used from its own workspace; nothing was done. Call browser_tabs with your workspace (its root or space id), or open your page with browser_open, and use the tab ids it gives."
-                    ),
-                ));
-            }
+            scope => return Err(tab_scope_refusal(id, scope)),
         }
     }
     let before_navigation = tab_id.and_then(active_navigation_generation);
@@ -1479,7 +1470,7 @@ async fn handle_action_attempt(
                     let mut item = serde_json::to_value(tab).unwrap_or_default();
                     item["titleSource"] = json!("ui");
                     if cold && !gone {
-                        item["note"] = json!("restored from the last session and not loaded yet; Anbo loads its page when the user shows it, and browser_close closes it");
+                        item["note"] = json!("not loaded: restored from the last session, or its workspace was paused. A browser tool on this tab loads its page first, as showing it does, and browser_close closes it");
                     }
                     if gone {
                         item["note"] = json!("not connected to its page (closed or replaced in the browser, or not chosen again since Anbo restarted); browser_close closes this tab");
@@ -4452,6 +4443,119 @@ fn lost_page_answer(tab: i64) -> String {
     format!(
         "tab {tab} lost its connection to its page (the page was closed or replaced in the browser, or the browser let it go after a command there did not finish). Open its URL again with browser_open, or close the tab with browser_close."
     )
+}
+
+/// Why a call may not act on a tab of another workspace.
+fn tab_scope_refusal(id: i64, scope: TabScope) -> (String, String) {
+    match scope {
+        TabScope::Undeclared => (
+            error_codes::INVALID_REQUEST.to_string(),
+            format!(
+                "tab {id}: Anbo does not know your workspace yet, and a tab can only be used from its own workspace; nothing was done. Call browser_tabs with your workspace (its root or space id), or open your page with browser_open, and use the tab ids it gives."
+            ),
+        ),
+        TabScope::Allowed | TabScope::OtherWorkspace => (
+            error_codes::OTHER_WORKSPACE.to_string(),
+            format!(
+                "tab {id} belongs to another workspace; nothing was done. Use a tab of your own workspace: browser_tabs with your workspace lists them, and browser_open opens one there."
+            ),
+        ),
+    }
+}
+
+const BROWSER_WAKE_REQUEST_EVENT: &str = "anbo:browser-wake-request";
+/// How long a call waits for the page of a tab it woke to load. A new page
+/// process can wait for memory on a busy machine (registry.rs unstarted_page);
+/// a page still loading by then is acted on as it is.
+const WAKE_PATIENCE: Duration = Duration::from_secs(30);
+
+#[derive(serde::Deserialize)]
+struct WakeResponse {
+    woken: bool,
+}
+
+/// Calls that load a tab whose page is not loaded. A close takes the tab as it
+/// is, and a call that names no single tab has nothing to load.
+fn wakes_cold_tab(method: &str) -> bool {
+    scoped_to_workspace(method) && method != "close"
+}
+
+/// Loads the page of a tab of Anbo's browser that has none: restored from
+/// the last session and not shown since, or of a paused workspace. Only for a
+/// caller the tab's workspace allows, checked before anything loads, as the
+/// same checks run for a loaded tab. Any other tab is left to the action.
+async fn wake_cold_tab(
+    app: &AppHandle,
+    tab_id: i64,
+    method: &str,
+    named_root: Option<&Path>,
+    actor: &super::caller::Caller,
+) -> Result<(), (String, String)> {
+    if super::registry::find_target(app, tab_id).is_some() {
+        return Ok(());
+    }
+    let Some(tab) = request_browser_tabs_metadata(app)
+        .await
+        .and_then(|response| response.tabs.into_iter().find(|tab| tab.tab_id == tab_id))
+    else {
+        return Ok(());
+    };
+    let Some(workspace) = tab.workspace.filter(|_| tab.cold) else {
+        return Ok(());
+    };
+    if !actor.is_internal() {
+        let root = fs::canonicalize(&workspace).unwrap_or_else(|_| PathBuf::from(&workspace));
+        let declared = super::activity::declared_workspaces(actor);
+        let yours = super::activity::is_yours(tab_id, actor);
+        let scope = tab_scope(&root, named_root, &declared, yours);
+        if scope != TabScope::Allowed {
+            return Err(tab_scope_refusal(tab_id, scope));
+        }
+    }
+    let mut answer = Answer::expect();
+    app.emit(
+        BROWSER_WAKE_REQUEST_EVENT,
+        json!({ "requestId": answer.request_id(), "tabId": tab_id }),
+    )
+    .map_err(|error| (error_codes::INTERNAL.to_string(), error.to_string()))?;
+    let woken = tokio::time::timeout(Duration::from_secs(2), answer.receiver())
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .and_then(|payload| serde_json::from_str::<WakeResponse>(&payload).ok())
+        .is_some_and(|response| response.woken);
+    if !woken {
+        return Ok(());
+    }
+    let started = Instant::now();
+    let deadline = tokio::time::Instant::now() + WAKE_PATIENCE;
+    loop {
+        let page = super::registry::find_target(app, tab_id).is_some();
+        if page && active_loading(tab_id) != Some(true) {
+            log::info!(
+                "browser tab {tab_id} loaded for {method} in {} ms",
+                started.elapsed().as_millis()
+            );
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            if page {
+                log::info!(
+                    "browser tab {tab_id} still loading for {method} after {} s",
+                    WAKE_PATIENCE.as_secs()
+                );
+                return Ok(());
+            }
+            return Err((
+                error_codes::TAB_NOT_FOUND.to_string(),
+                format!(
+                    "tab {tab_id} had no page loaded (restored from the last session, or its workspace was paused). Anbo started loading it, but its page did not start within {} s; nothing was done. Retry, or close it with browser_close.",
+                    WAKE_PATIENCE.as_secs()
+                ),
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// Methods that act on one tab, and so stay inside the caller's workspace.
@@ -12827,6 +12931,28 @@ mod workspace_scope_tests {
         ] {
             assert!(!scoped_to_workspace(method), "{method}");
         }
+    }
+
+    #[test]
+    fn a_call_on_a_tab_loads_its_page_but_a_close_does_not() {
+        // A paused workspace's tab: the agent's read or click loads it, a close
+        // takes the tab without loading a page only to end it.
+        for method in ["click", "get_text", "snapshot", "screenshot", "navigate"] {
+            assert!(wakes_cold_tab(method), "{method}");
+        }
+        for method in ["close", "open", "list_tabs", "agent_send", "terminal_read"] {
+            assert!(!wakes_cold_tab(method), "{method}");
+        }
+    }
+
+    #[test]
+    fn a_woken_tab_is_refused_as_a_loaded_one_would_be() {
+        let (code, message) = tab_scope_refusal(4, TabScope::OtherWorkspace);
+        assert_eq!(code, error_codes::OTHER_WORKSPACE);
+        assert!(message.starts_with("tab 4 belongs to another workspace"));
+        let (code, message) = tab_scope_refusal(4, TabScope::Undeclared);
+        assert_eq!(code, error_codes::INVALID_REQUEST);
+        assert!(message.contains("Anbo does not know your workspace yet"));
     }
 
     #[test]

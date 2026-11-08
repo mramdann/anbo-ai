@@ -22,4 +22,5 @@ export {
   beginBrowserSession,
   browserEmbedClose,
   browserEmbedReconcile,
+  browserEmbedSuspend,
 } from "./native";

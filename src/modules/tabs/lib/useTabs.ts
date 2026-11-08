@@ -13,6 +13,10 @@ import type {
   PersistedAgentResume,
 } from "@/modules/agents/lib/resume";
 import {
+  planSpacePause,
+  spaceResumeTabIds,
+} from "@/modules/spaces/lib/pauseSpace";
+import {
   adoptLeafAgentResume,
   deactivateLeafAgentResume,
   findLeafCwd,
@@ -796,6 +800,28 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [booted],
   );
 
+  // A paused space's tabs go cold again; App ends their processes once the
+  // cold tabs are rendered (planSpacePause).
+  const pauseSpaceTabs = useCallback((spaceId: string): boolean => {
+    if (!planSpacePause(tabsRef.current, spaceId)) return false;
+    setTabs((current) => planSpacePause(current, spaceId) ?? current);
+    return true;
+  }, []);
+
+  const resumeSpaceTabs = useCallback(
+    (spaceId: string) => {
+      if (!booted) return;
+      setTabs((current) => {
+        const ids = new Set(spaceResumeTabIds(current, spaceId));
+        if (ids.size === 0) return current;
+        return current.map((tab) =>
+          ids.has(tab.id) ? { ...tab, cold: false } : tab,
+        );
+      });
+    },
+    [booted],
+  );
+
   const allocId = useCallback(() => nextIdRef.current++, []);
 
   const markBooted = useCallback(() => setBooted(true), []);
@@ -1569,6 +1595,8 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     activeId,
     setActiveId,
     warmTab,
+    pauseSpaceTabs,
+    resumeSpaceTabs,
     allocId,
     replaceTabs,
     moveTabToSpace,

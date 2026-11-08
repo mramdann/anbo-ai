@@ -1,5 +1,6 @@
 import { basename } from "@/lib/path";
 import {
+  type AgentResumeState,
   createAgentRestoreFallback,
   normalizePersistedAgentResume,
   type PersistedAgentResume,
@@ -59,17 +60,64 @@ function titleFromUrl(url: string): string {
   }
 }
 
+/** A leaf's agent resume as it is written to disk. */
+function savedAgentResume(
+  resume: AgentResumeState | undefined,
+): PersistedAgentResume | undefined {
+  const candidate =
+    resume?.armed === false && !resume.relaunchOnRestore
+      ? { agent: resume.agent, command: resume.command }
+      : resume;
+  return normalizePersistedAgentResume(candidate);
+}
+
+/** A saved agent resume as a restore brings it back: one with a session or a
+ *  relaunch starts its CLI again once its tab is warm. */
+function restoredAgentResume(saved: unknown): AgentResumeState | undefined {
+  const agentResume = normalizePersistedAgentResume(saved);
+  if (!agentResume) return undefined;
+  const resumeOnStart = Boolean(
+    agentResume.sessionId || agentResume.relaunchOnRestore,
+  );
+  return {
+    ...agentResume,
+    armed: resumeOnStart,
+    ...(resumeOnStart && { resumeOnStart: true }),
+  };
+}
+
+function reopenedTree(node: PaneNode): PaneNode {
+  if (isLeaf(node)) {
+    const agentResume = restoredAgentResume(savedAgentResume(node.agentResume));
+    const { agentResume: _left, ...leaf } = node;
+    return agentResume ? { ...leaf, agentResume } : leaf;
+  }
+  return { ...node, children: node.children.map(reopenedTree) };
+}
+
+/**
+ * A terminal tab as quitting and starting Anbo again brings it back: cold,
+ * every agent set to resume its session once the tab is warm, and an agent
+ * tab whose CLI was never seen relaunched the way a restore relaunches it.
+ * Same ids, so agents and tools that hold them keep reaching it.
+ */
+export function reopenedTerminalTab(tab: TerminalTab): TerminalTab {
+  const paneTree = reopenedTree(tab.paneTree);
+  const fallback = tab.agent
+    ? createAgentRestoreFallback(tab.agent.launcherId)
+    : undefined;
+  return {
+    ...tab,
+    cold: true,
+    paneTree: fallback
+      ? adoptLeafAgentResume(paneTree, tab.activeLeafId, fallback)
+      : paneTree,
+  };
+}
+
 function serializeNode(node: PaneNode, activeLeafId: number): SerializedNode {
   if (isLeaf(node)) {
-    const persistedCandidate =
-      node.agentResume?.armed === false &&
-      !node.agentResume.relaunchOnRestore
-        ? {
-            agent: node.agentResume.agent,
-            command: node.agentResume.command,
-          }
-        : node.agentResume;
-    const agentResume = normalizePersistedAgentResume(persistedCandidate);
+    const agentResume = savedAgentResume(node.agentResume);
     return {
       kind: "leaf",
       ...(node.cwd !== undefined && { cwd: node.cwd }),
@@ -142,22 +190,13 @@ function hydrateNode(
 ): PaneNode {
   if (node.kind === "leaf") {
     const id = allocId();
-    const agentResume = normalizePersistedAgentResume(node.agentResume);
-    const resumeOnStart = Boolean(
-      agentResume?.sessionId || agentResume?.relaunchOnRestore,
-    );
+    const agentResume = restoredAgentResume(node.agentResume);
     if (node.active && acc.activeLeafId === null) acc.activeLeafId = id;
     return {
       kind: "leaf",
       id,
       ...(node.cwd !== undefined && { cwd: node.cwd }),
-      ...(agentResume && {
-        agentResume: {
-          ...agentResume,
-          armed: resumeOnStart,
-          ...(resumeOnStart && { resumeOnStart: true }),
-        },
-      }),
+      ...(agentResume && { agentResume }),
     };
   }
   const children = node.children.map((c) => hydrateNode(c, allocId, acc));

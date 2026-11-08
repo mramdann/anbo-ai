@@ -74,6 +74,7 @@ import {
   beginBrowserSession,
   browserEmbedClose,
   browserEmbedReconcile,
+  browserEmbedSuspend,
   browserPopupAfter,
   clearBrowserAutomationActivity,
   faviconUrlForPage,
@@ -91,6 +92,7 @@ import {
   setBrowserPopupRequestHandler,
   setBrowserShowRequestHandler,
   setBrowserTabsRequestHandler,
+  setBrowserWakeRequestHandler,
 } from "@/modules/browser/automationOpenBridge";
 import {
   EXTERNAL_BROWSERS_ENABLED,
@@ -151,6 +153,7 @@ import {
 import { StatusBar } from "@/modules/statusbar";
 import {
   flushWorkspaceLayoutNow,
+  labelFor,
   saveWorkspaceLayouts,
   TabSwitcherHud,
   useTabSwitcher,
@@ -159,6 +162,14 @@ import {
   useWorkspaceCwd,
   WorkspaceDockview,
 } from "@/modules/tabs";
+import {
+  newlyColdBrowserTabs,
+  newlyColdLeaves,
+  type SpacePauseWork,
+  spacePauseWorkLines,
+  warmBrowserTabIds,
+  warmTerminalLeaves,
+} from "@/modules/spaces/lib/pauseSpace";
 import { isSerializableTab } from "@/modules/spaces/lib/serialize";
 import { createAutomationTabSelection } from "@/modules/tabs/lib/automationTabPlacement";
 import { showBrowserTabForInput } from "@/modules/tabs/lib/browserTabShow";
@@ -241,6 +252,10 @@ import {
 import { toast } from "sonner";
 import { CloseDialogs } from "./components/CloseDialogs";
 import {
+  type PendingSpacePause,
+  PauseSpaceDialog,
+} from "./components/PauseSpaceDialog";
+import {
   TOGGLE_BLOCK_INPUT_EVENT,
   WorkspaceInputBar,
 } from "./components/WorkspaceInputBar";
@@ -312,6 +327,8 @@ export default function App() {
     activeId,
     setActiveId,
     warmTab,
+    pauseSpaceTabs,
+    resumeSpaceTabs,
     allocId,
     replaceTabs,
     moveTabToSpace,
@@ -1090,6 +1107,44 @@ export default function App() {
       dispose();
     };
   }, []);
+  // A paused space's tabs went cold. Their shells and pages end once the panes
+  // that showed them are gone, and its agents drop whatever would keep them
+  // from resuming: an exit about to turn their resume off, a resume already
+  // sent, a session search under way.
+  const warmTerminalLeavesRef = useRef(new Map<number, number[]>());
+  const warmBrowserTabsRef = useRef(new Set<number>());
+  // How often each leaf was paused: a resume still waiting for memory when its
+  // space paused gives up, or it would type into the shell of the next resume.
+  const leafPausesRef = useRef(new Map<number, number>());
+  useEffect(() => {
+    for (const leafId of newlyColdLeaves(warmTerminalLeavesRef.current, tabs)) {
+      leafPausesRef.current.set(
+        leafId,
+        (leafPausesRef.current.get(leafId) ?? 0) + 1,
+      );
+      disposeSession(leafId);
+      terminalRefs.current.delete(leafId);
+      searchAddons.current.delete(leafId);
+      resumedAgentLeavesRef.current.delete(leafId);
+      agentExitResumeGuardRef.current.cancel(leafId);
+      agentDiscoveryQueueRef.current.cancel(leafId);
+      agentDiscoveryGenerationRef.current.set(
+        leafId,
+        (agentDiscoveryGenerationRef.current.get(leafId) ?? 0) + 1,
+      );
+      useAgentResumeStatus.getState().clear(leafId);
+    }
+    warmTerminalLeavesRef.current = warmTerminalLeaves(tabs);
+    for (const tabId of newlyColdBrowserTabs(
+      warmBrowserTabsRef.current,
+      tabs,
+    )) {
+      clearBrowserAutomationActivity(tabId);
+      browserRefs.current.delete(tabId);
+      void browserEmbedSuspend(tabId).catch(() => {});
+    }
+    warmBrowserTabsRef.current = warmBrowserTabIds(tabs);
+  }, [tabs]);
   const handleAgentStarted = useCallback(
     (leafId: number, agent: string, sessionId?: string) => {
       agentExitResumeGuardRef.current.cancel(leafId);
@@ -1280,6 +1335,9 @@ export default function App() {
         useAgentResumeStatus.getState().setStatus(leaf.id, "resuming");
         const delay = resumeDelay;
         resumeDelay += 4_000;
+        const pausesBefore = leafPausesRef.current.get(leaf.id) ?? 0;
+        const pausedSince = () =>
+          (leafPausesRef.current.get(leaf.id) ?? 0) !== pausesBefore;
         void (async () => {
           if (delay > 0) {
             await new Promise<void>((resolve) => setTimeout(resolve, delay));
@@ -1293,6 +1351,7 @@ export default function App() {
                 count: 1,
               }),
             abandoned: () =>
+              pausedSince() ||
               useAgentStore.getState().sessions[leaf.id] !== undefined ||
               !tabsRef.current.some(
                 (tab) =>
@@ -1316,7 +1375,7 @@ export default function App() {
           });
           if (admission.kind === "abandoned") {
             toast.dismiss(pauseToast);
-            useAgentResumeStatus.getState().clear(leaf.id);
+            if (!pausedSince()) useAgentResumeStatus.getState().clear(leaf.id);
             return;
           }
           if (admission.kind === "refused") {
@@ -1340,7 +1399,9 @@ export default function App() {
                 targetWorkspace.kind === "local",
               )
             : baseResumeCommand;
+          if (pausedSince()) return;
           if (!(await writeToReadySession(leaf.id, `${resumeCommand}\r`))) {
+            if (pausedSince()) return;
             resumedAgentLeavesRef.current.delete(leaf.id);
             useAgentResumeStatus.getState().clear(leaf.id);
             console.error(
@@ -2011,6 +2072,18 @@ export default function App() {
         shown: outcome === "shown",
         reason: outcome === "shown" ? null : outcome,
       });
+    });
+  }, []);
+
+  useEffect(() => {
+    // A tool named a tab of Anbo's browser whose page is not loaded: restored
+    // from the last session, or of a paused space. It loads as on showing.
+    setBrowserWakeRequestHandler(({ requestId, tabId }) => {
+      const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
+      const woken =
+        tab?.kind === "browser" && tab.cold === true && !tab.external;
+      if (woken) warmTabRef.current(tabId);
+      void replyToAnbo(requestId, { woken });
     });
   }, []);
 
@@ -2844,6 +2917,84 @@ export default function App() {
     [removeTabsForSpace, clearTabs],
   );
 
+  const [pendingSpacePause, setPendingSpacePause] =
+    useState<PendingSpacePause | null>(null);
+
+  const collectSpacePauseWork = useCallback(
+    async (spaceId: string): Promise<SpacePauseWork> => {
+      const sessions = useAgentStore.getState().sessions;
+      const agents: string[] = [];
+      const shells: Array<{ tab: string; leafId: number }> = [];
+      const pages: string[] = [];
+      for (const tab of tabsRef.current) {
+        if (tab.spaceId !== spaceId || tab.cold) continue;
+        if (tab.kind === "terminal") {
+          for (const leafId of leafIds(tab.paneTree)) {
+            const session = sessions[leafId];
+            if (!session) shells.push({ tab: labelFor(tab), leafId });
+            else if (session.status === "working") agents.push(labelFor(tab));
+          }
+        } else if (
+          tab.kind === "browser" &&
+          !tab.external &&
+          getBrowserAutomationActivity(tab.id) !== null
+        ) {
+          pages.push(labelFor(tab));
+        }
+      }
+      const programs = (
+        await Promise.all(
+          shells.map(async ({ tab, leafId }) => {
+            const running = await leafForegroundProcesses(leafId);
+            const names = [
+              ...new Set(
+                running.map(({ name }) => name.replace(/\.exe$/i, "")),
+              ),
+            ];
+            return names.length > 0 ? { tab, names } : null;
+          }),
+        )
+      ).filter((entry) => entry !== null);
+      return { agents, programs, pages };
+    },
+    [],
+  );
+
+  // The space in view keeps running: its tabs would only wake one by one.
+  const pauseSpaceNow = useCallback(
+    (spaceId: string) => {
+      if ((useSpaces.getState().activeId ?? DEFAULT_SPACE_ID) === spaceId) {
+        return;
+      }
+      pauseSpaceTabs(spaceId);
+    },
+    [pauseSpaceTabs],
+  );
+
+  const handlePauseSpace = useCallback(
+    async (spaceId: string) => {
+      if ((useSpaces.getState().activeId ?? DEFAULT_SPACE_ID) === spaceId) {
+        return;
+      }
+      const lines = spacePauseWorkLines(await collectSpacePauseWork(spaceId));
+      if (lines.length === 0) {
+        pauseSpaceNow(spaceId);
+        return;
+      }
+      const name =
+        useSpaces.getState().spaces.find((space) => space.id === spaceId)
+          ?.name ?? "this space";
+      setSwitcherOpen(false);
+      setPendingSpacePause({ spaceId, name, lines });
+    },
+    [collectSpacePauseWork, pauseSpaceNow],
+  );
+
+  const confirmSpacePause = useCallback(() => {
+    setPendingSpacePause(null);
+    if (pendingSpacePause) pauseSpaceNow(pendingSpacePause.spaceId);
+  }, [pendingSpacePause, pauseSpaceNow]);
+
   const handleMoveTab = useCallback(
     (tabId: number, targetSpaceId: string) => {
       if (moveTabToSpace(tabId, targetSpaceId)) {
@@ -2914,6 +3065,8 @@ export default function App() {
       tabs={tabs}
       onNewSpace={() => void handleNewSpace()}
       onDeleteSpace={handleDeleteSpace}
+      onPauseSpace={(id) => void handlePauseSpace(id)}
+      onResumeSpace={resumeSpaceTabs}
       onNewTabInSpace={handleNewTabInSpace}
       onJumpTab={jumpToTab}
       onCloseTab={handleClose}
@@ -3509,6 +3662,11 @@ export default function App() {
                 pendingAppClose={pendingAppClose}
                 onCancelAppClose={cancelAppClose}
                 onConfirmAppClose={confirmAppClose}
+              />
+              <PauseSpaceDialog
+                pending={pendingSpacePause}
+                onCancel={() => setPendingSpacePause(null)}
+                onConfirm={confirmSpacePause}
               />
             </>
           )}

@@ -536,8 +536,8 @@ function unreadyMessage(
 ): string {
   if (status === "dormant") {
     return started
-      ? `${id} had not started (its tab was restored and never shown); Anbo is starting it now. Try again once terminal_list shows it idle.`
-      : `${id} has not started (its tab was restored and never shown), so it has no output yet; terminal_execute or showing its tab starts it.`;
+      ? `${id} had not started (its tab was restored, or its workspace paused, and not shown since); Anbo is starting it now. Try again once terminal_list shows it idle.`
+      : `${id} has not started (its tab was restored, or its workspace paused, and not shown since), so it has no output yet; terminal_execute or showing its tab starts it.`;
   }
   if (status === "failed") {
     const reason = spawnError ? `: ${spawnError}` : "";
@@ -1603,7 +1603,7 @@ export function createTerminalAutomationService(
             terminals,
             ...(terminals.some((terminal) => terminal.status === "dormant")
               ? {
-                  note: "A dormant terminal was restored and has not started yet; terminal_execute starts it and runs the command once its prompt shows.",
+                  note: "A dormant terminal was restored, or paused with its workspace, and has not started yet; terminal_execute starts it and runs the command once its prompt shows.",
                 }
               : {}),
           },

@@ -12,13 +12,16 @@ import {
   ArrowRight01Icon,
   Cancel01Icon,
   Delete02Icon,
+  PauseIcon,
   PencilEdit02Icon,
+  PlayIcon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { InlineRename } from "./components/InlineRename";
+import { type SpaceRunState, spaceRunState } from "./lib/pauseSpace";
 import { accentFor } from "./lib/spaceColor";
 import type { SpaceMeta } from "./lib/store";
 import { useSpaces } from "./lib/useSpaces";
@@ -30,6 +33,9 @@ type Props = {
   tabs: Tab[];
   onNewSpace: () => void;
   onDeleteSpace: (id: string) => void;
+  /** Ends a space's shells, agents and pages until it is opened or resumed. */
+  onPauseSpace: (id: string) => void;
+  onResumeSpace: (id: string) => void;
   onNewTabInSpace: (spaceId: string) => void;
   onJumpTab: (id: number) => void;
   onCloseTab: (id: number) => void;
@@ -77,6 +83,8 @@ export function SpaceSwitcher({
   tabs,
   onNewSpace,
   onDeleteSpace,
+  onPauseSpace,
+  onResumeSpace,
   onNewTabInSpace,
   onJumpTab,
   onCloseTab,
@@ -268,6 +276,7 @@ export function SpaceSwitcher({
               space={sp}
               tabs={tabsBySpace.get(sp.id) ?? []}
               isActive={sp.id === activeId}
+              runState={spaceRunState(tabsBySpace.get(sp.id) ?? [], sp.id)}
               expanded={expanded.has(sp.id)}
               editing={editingId === sp.id}
               dragging={dragging}
@@ -291,6 +300,8 @@ export function SpaceSwitcher({
               }}
               onCancelRename={() => setEditingId(null)}
               onDelete={() => onDeleteSpace(sp.id)}
+              onPause={() => onPauseSpace(sp.id)}
+              onResume={() => onResumeSpace(sp.id)}
               onNewTab={() => onNewTabInSpace(sp.id)}
               onJumpTab={onJumpTab}
               onCloseTab={onCloseTab}
@@ -334,6 +345,7 @@ type SpaceRowProps = {
   space: SpaceMeta;
   tabs: Tab[];
   isActive: boolean;
+  runState: SpaceRunState;
   expanded: boolean;
   editing: boolean;
   dragging: { kind: "space" | "tab"; id: string | number } | null;
@@ -352,6 +364,8 @@ type SpaceRowProps = {
   onCommitRename: (name: string) => void;
   onCancelRename: () => void;
   onDelete: () => void;
+  onPause: () => void;
+  onResume: () => void;
   onNewTab: () => void;
   onJumpTab: (id: number) => void;
   onCloseTab: (id: number) => void;
@@ -361,6 +375,7 @@ function SpaceRow({
   space,
   tabs,
   isActive,
+  runState,
   expanded,
   editing,
   dragging,
@@ -375,11 +390,16 @@ function SpaceRow({
   onCommitRename,
   onCancelRename,
   onDelete,
+  onPause,
+  onResume,
   onNewTab,
   onJumpTab,
   onCloseTab,
 }: SpaceRowProps) {
   const isDragging = dragging?.kind === "space" && dragging.id === space.id;
+  // The space in view stays as it is: its tabs warm again as they are shown.
+  const pausable = !isActive && runState === "running";
+  const paused = !isActive && runState === "paused";
   const moveTarget = drop?.kind === "into-space" && drop.spaceId === space.id;
   const reorderEdge =
     drop?.kind === "space" && drop.spaceId === space.id ? drop.edge : null;
@@ -447,12 +467,40 @@ function SpaceRow({
         {!editing && (
           <div
             data-no-drag
-            className="relative flex h-6 w-[4.5rem] shrink-0 items-center justify-end"
+            className={cn(
+              "relative flex h-6 shrink-0 items-center justify-end",
+              pausable || paused ? "w-[6.5rem]" : "w-[4.5rem]",
+            )}
           >
-            <span className="absolute right-1 text-[11px] tabular-nums text-muted-foreground/50 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
-              {tabs.length}
-            </span>
+            {paused ? (
+              <span
+                role="img"
+                aria-label="Paused"
+                title="Paused: nothing runs here until you open or resume it"
+                className="absolute right-1 flex items-center text-muted-foreground/60 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0"
+              >
+                <HugeiconsIcon icon={PauseIcon} size={12} strokeWidth={2} />
+              </span>
+            ) : (
+              <span className="absolute right-1 text-[11px] tabular-nums text-muted-foreground/50 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
+                {tabs.length}
+              </span>
+            )}
             <div className="pointer-events-none absolute right-0 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+              {pausable && (
+                <RowAction
+                  icon={PauseIcon}
+                  label="Pause space"
+                  onClick={onPause}
+                />
+              )}
+              {paused && (
+                <RowAction
+                  icon={PlayIcon}
+                  label="Resume space"
+                  onClick={onResume}
+                />
+              )}
               <RowAction
                 icon={PencilEdit02Icon}
                 label="Rename space"

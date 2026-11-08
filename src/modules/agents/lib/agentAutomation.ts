@@ -52,8 +52,8 @@ export type AgentDescriptor = {
   agentId: string;
   name: string;
   cli: string;
-  /** dormant: restored and not resumed yet (its workspace was not shown);
-   *  resuming: its CLI is starting again on its session. */
+  /** dormant: restored or paused, not resumed yet (its workspace was not
+   *  shown since); resuming: its CLI is starting again on its session. */
   status: AgentStatus | "dormant" | "resuming";
   phase: AgentPhase | "dormant" | "resuming";
   tabId: number;
@@ -901,7 +901,7 @@ export function createAgentAutomationService(deps: ServiceDependencies) {
         ok: false,
         response: automationError(
           "agent_unavailable",
-          `${agent.agentId} ${resuming ? "was restored and had not resumed yet; Anbo is resuming it now" : agent.status === "resuming" ? "is resuming its session" : "was restored and has not resumed yet; showing its tab resumes it"}. Try again once agent_list shows it working or waiting.`,
+          `${agent.agentId} ${resuming ? "was restored or paused and had not resumed yet; Anbo is resuming it now" : agent.status === "resuming" ? "is resuming its session" : "was restored or paused and has not resumed yet; showing its tab resumes it"}. Try again once agent_list shows it working or waiting.`,
         ),
       };
     }

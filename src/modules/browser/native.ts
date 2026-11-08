@@ -557,3 +557,15 @@ export async function browserEmbedClose(tabId: number): Promise<void> {
     }),
   );
 }
+
+/** Ends the page of a tab that stays, cold, in a paused space: unlike a close,
+ *  the tab's next pane opens it again. */
+export async function browserEmbedSuspend(tabId: number): Promise<void> {
+  await ensureBrowserSession();
+  await retry(() =>
+    invoke<void>("browser_embed_suspend", {
+      tabId,
+      instanceId: BROWSER_INSTANCE_ID,
+    }),
+  );
+}

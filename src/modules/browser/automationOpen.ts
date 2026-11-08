@@ -7,6 +7,7 @@ export const BROWSER_CLOSE_REQUEST_EVENT = "anbo:browser-close-request";
 export const BROWSER_TABS_REQUEST_EVENT = "anbo:browser-tabs-request";
 export const BROWSER_POPUP_REQUEST_EVENT = "anbo:browser-popup-request";
 export const BROWSER_SHOW_REQUEST_EVENT = "anbo:browser-show-request";
+export const BROWSER_WAKE_REQUEST_EVENT = "anbo:browser-wake-request";
 
 export type BrowserOpenRequest = {
   requestId: string;
@@ -50,6 +51,12 @@ export type BrowserShowRequest = {
   tabId: number;
 };
 
+/** A cold tab of Anbo's browser a tool names: its page loads, as on showing. */
+export type BrowserWakeRequest = {
+  requestId: string;
+  tabId: number;
+};
+
 export type BrowserPopupStamp = {
   key: string;
   at: number;
@@ -86,7 +93,7 @@ export type BrowserTabMetadata = {
   /** A Chrome or Edge tab not connected to its page while its profile is
    *  connected: closed or replaced there, or not chosen since a restart. */
   pageGone?: boolean;
-  /** Restored from the last session and not loaded yet. */
+  /** Not loaded: restored from the last session, or its space was paused. */
   cold?: boolean;
 };
 
@@ -100,6 +107,8 @@ export const createBrowserPopupListener =
   createRequestListener<BrowserPopupRequest>;
 export const createBrowserShowListener =
   createRequestListener<BrowserShowRequest>;
+export const createBrowserWakeListener =
+  createRequestListener<BrowserWakeRequest>;
 
 export { automationTabPlacement as browserOpenPlacement } from "@/modules/tabs/lib/automationTabPlacement";
 

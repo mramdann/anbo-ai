@@ -56,6 +56,7 @@ function tabInfo(
   tabId: number;
   name: string;
   spaceId: string;
+  cold: boolean;
 } | null {
   for (const t of tabs) {
     if (t.kind === "terminal" && hasLeaf(t.paneTree, leafId)) {
@@ -63,6 +64,7 @@ function tabInfo(
         tabId: t.id,
         name: labelFor(t),
         spaceId: t.spaceId,
+        cold: t.cold === true,
       };
     }
   }
@@ -264,7 +266,9 @@ export function AgentNotificationsBridge({
     const store = useAgentStore.getState();
     for (const session of Object.values(store.sessions)) {
       const info = tabInfo(tabs, session.leafId);
-      if (!info) {
+      // A cold tab runs nothing: its space was paused, and the CLI ended with
+      // its shell, whose exit no longer reaches a session to report it.
+      if (!info || info.cold) {
         codexTurnEvidence.stop(session.leafId);
         browserRef.current.stop(session.leafId);
         observerRef.current.stop(session.leafId);

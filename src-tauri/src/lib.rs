@@ -619,6 +619,7 @@ pub fn run() {
             browser::embed::browser_embed_suspend_all_presentations,
             browser::embed::browser_embed_release,
             browser::embed::browser_embed_close,
+            browser::embed::browser_embed_suspend,
             browser::embed::browser_embed_reconcile,
             browser_automation::browser_automation_start,
             browser_automation::browser_automation_stop,
