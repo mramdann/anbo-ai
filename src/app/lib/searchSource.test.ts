@@ -10,8 +10,11 @@ import {
 } from "./searchSource";
 
 function maps() {
+  // Stands in for the renderer pool: the addon its slot for a leaf has now.
+  const pool = new Map<number, SearchAddon>();
   return {
-    searchAddons: { current: new Map<number, SearchAddon>() },
+    pool,
+    terminalSearch: (leafId: number) => pool.get(leafId) ?? null,
     terminals: { current: new Map<number, TerminalPaneHandle>() },
     editors: { current: new Map<number, EditorPaneHandle>() },
     gitHistory: { current: new Map<number, GitHistorySearchHandle>() },
@@ -40,11 +43,11 @@ describe("createSearchSource", () => {
     const second = {} as SearchAddon;
 
     expect(source.terminal(4)).toBeUndefined();
-    refs.searchAddons.current.set(4, first);
+    refs.pool.set(4, first);
     expect(source.terminal(4)).toBe(first);
-    refs.searchAddons.current.set(4, second);
+    refs.pool.set(4, second);
     expect(source.terminal(4)).toBe(second);
-    refs.searchAddons.current.delete(4);
+    refs.pool.delete(4);
     expect(source.terminal(4)).toBeUndefined();
 
     const editor = { focus: vi.fn() } as unknown as EditorPaneHandle;

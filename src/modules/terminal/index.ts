@@ -9,7 +9,10 @@ export {
   selectBackgroundTerminalTabs,
 } from "./lib/liveTerminals";
 export { findLeafCwd, hasLeaf, leafIds, type PaneBounds } from "./lib/panes";
-export { refitVisibleTerminalSlots } from "./lib/rendererPool";
+export {
+  refitVisibleTerminalSlots,
+  searchAddonForLeaf,
+} from "./lib/rendererPool";
 export {
   type TerminalPathDropTarget,
   useTerminalFileDrop,

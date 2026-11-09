@@ -1496,6 +1496,13 @@ export function getLiveSlotForLeaf(leafId: number): Slot | null {
   );
 }
 
+/** The SearchAddon of the slot that holds the leaf's grid now. Asked at each
+ *  use, so nothing outside the pool keeps an addon whose slot was disposed
+ *  (round 90, R87-2). */
+export function searchAddonForLeaf(leafId: number): SearchAddon | null {
+  return getLiveSlotForLeaf(leafId)?.searchAddon ?? null;
+}
+
 /** How many times the leaf's live grid has been resized, or undefined when
  *  it has none. */
 export function liveGridResizes(leafId: number): number | undefined {

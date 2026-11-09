@@ -24,16 +24,17 @@ export function searchObjectKey(
   return key;
 }
 
-/** Reads App's ref maps when the header search uses them. Made once and
+/** Finds the objects when the header search uses them: a terminal's addon
+ *  from the renderer pool, the handles in App's ref maps. Made once and
  *  outside App's render, so it keeps the maps alive and nothing else. */
 export function createSearchSource(maps: {
-  searchAddons: MapRef<SearchAddon>;
+  terminalSearch: (leafId: number) => SearchAddon | null;
   terminals: MapRef<TerminalPaneHandle>;
   editors: MapRef<EditorPaneHandle>;
   gitHistory: MapRef<GitHistorySearchHandle>;
 }): SearchSource {
   return {
-    terminal: (leafId) => maps.searchAddons.current.get(leafId),
+    terminal: (leafId) => maps.terminalSearch(leafId) ?? undefined,
     editor: (tabId) => maps.editors.current.get(tabId),
     gitHistory: (tabId) => maps.gitHistory.current.get(tabId),
     focus: (target) => {

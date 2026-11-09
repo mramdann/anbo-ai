@@ -14,6 +14,7 @@ import {
 import { quoteShellArg } from "@/lib/shellQuote";
 import { replyToAnbo } from "@/lib/uiReply";
 import { usePresence } from "@/lib/usePresence";
+import { useStableCallback } from "@/lib/useStableCallback";
 import { useZoom } from "@/lib/useZoom";
 import { isMarkdownPath } from "@/lib/utils";
 import {
@@ -208,6 +209,7 @@ import {
   readTerminalScreen,
   refitVisibleTerminalSlots,
   retryShellStart,
+  searchAddonForLeaf,
   selectBackgroundTerminalTabs,
   setTerminalAutomationHandler,
   subscribeTerminalInput,
@@ -446,9 +448,9 @@ export default function App() {
   }, [tabs, activeId]);
   const activeLeafId = activeTerminalTab?.activeLeafId ?? null;
 
-  const searchAddons = useRef<Map<number, SearchAddon>>(new Map());
-  // The header search's objects by key only (searchObjectKey): the objects
-  // stay in the ref maps, out of App's render scope.
+  // The header search's objects by key only (searchObjectKey): a terminal's
+  // addon stays in the renderer pool and the handles in the ref maps, out of
+  // App's render scope.
   const [activeSearchAddonKey, setActiveSearchAddonKey] = useState<
     number | null
   >(null);
@@ -505,7 +507,7 @@ export default function App() {
   };
   const [searchSource] = useState(() =>
     createSearchSource({
-      searchAddons,
+      terminalSearch: searchAddonForLeaf,
       terminals: terminalRefs,
       editors: editorRefs,
       gitHistory: gitHistoryHandles,
@@ -549,11 +551,10 @@ export default function App() {
   const activeSpaceLayout: WorkspaceLayoutMode = useSpaces(
     (s) => s.spaces.find((p) => p.id === s.activeId)?.layout ?? "free",
   );
-  const setActiveSpaceLayout = useCallback(
+  const setActiveSpaceLayout = useStableCallback(
     (mode: WorkspaceLayoutMode) => {
       if (activeSpaceId) useSpaces.getState().setLayout(activeSpaceId, mode);
     },
-    [activeSpaceId],
   );
   const workspaceForSpace = useCallback(
     (spaceId: string) =>
@@ -615,59 +616,54 @@ export default function App() {
     !showLanding &&
     !tabs.some((t) => t.spaceId === (activeSpaceId ?? DEFAULT_SPACE_ID));
 
-  const handleWorkspaceChange = useCallback(
-    async (env: WorkspaceEnv) => {
-      const spaceId = useSpaces.getState().activeId;
-      if (!spaceId) return;
-      const affected = tabsRef.current.filter((tab) => tab.spaceId === spaceId);
-      if (affected.some((tab) => tab.kind === "editor" && tab.dirty)) {
-        window.alert(
-          "Save or close unsaved editor tabs before switching workspace environment.",
-        );
-        return;
-      }
-      const leafIdsToCheck = affected.flatMap((tab) =>
-        tab.kind === "terminal" ? leafIds(tab.paneTree) : [],
+  const handleWorkspaceChange = useStableCallback(async (env: WorkspaceEnv) => {
+    const spaceId = useSpaces.getState().activeId;
+    if (!spaceId) return;
+    const affected = tabsRef.current.filter((tab) => tab.spaceId === spaceId);
+    if (affected.some((tab) => tab.kind === "editor" && tab.dirty)) {
+      window.alert(
+        "Save or close unsaved editor tabs before switching workspace environment.",
       );
-      const busy = (
-        await Promise.all(leafIdsToCheck.map(leafHasForegroundProcess))
-      ).filter(Boolean).length;
-      if (
-        busy > 0 &&
-        !window.confirm(
-          `Switch environment? ${busy} running terminal process(es) in this workspace will be closed. Other workspaces will keep running.`,
-        )
-      ) {
-        return;
-      }
-      if (useSpaces.getState().activeId !== spaceId) return;
-      const nextHome = await adoptWorkspaceEnv(env);
-      if (nextHome === null || useSpaces.getState().activeId !== spaceId)
-        return;
+      return;
+    }
+    const leafIdsToCheck = affected.flatMap((tab) =>
+      tab.kind === "terminal" ? leafIds(tab.paneTree) : [],
+    );
+    const busy = (
+      await Promise.all(leafIdsToCheck.map(leafHasForegroundProcess))
+    ).filter(Boolean).length;
+    if (
+      busy > 0 &&
+      !window.confirm(
+        `Switch environment? ${busy} running terminal process(es) in this workspace will be closed. Other workspaces will keep running.`,
+      )
+    ) {
+      return;
+    }
+    if (useSpaces.getState().activeId !== spaceId) return;
+    const nextHome = await adoptWorkspaceEnv(env);
+    if (nextHome === null || useSpaces.getState().activeId !== spaceId) return;
 
-      for (const tab of affected) {
-        gitHistoryHandles.current.delete(tab.id);
-        gitHistoryHandleCallbacks.current.delete(tab.id);
-        if (tab.kind === "terminal") {
-          for (const leafId of leafIds(tab.paneTree)) {
-            liveLeavesRef.current.delete(leafId);
-            searchAddons.current.delete(leafId);
-            terminalRefs.current.delete(leafId);
-          }
-        } else if (tab.kind === "browser") {
-          liveBrowserIdsRef.current.delete(tab.id);
-          clearBrowserAutomationActivity(tab.id);
-          await browserEmbedClose(tab.id).catch(() => {});
-          browserRefs.current.delete(tab.id);
-        } else if (tab.kind === "editor") {
-          editorRefs.current.delete(tab.id);
+    for (const tab of affected) {
+      gitHistoryHandles.current.delete(tab.id);
+      gitHistoryHandleCallbacks.current.delete(tab.id);
+      if (tab.kind === "terminal") {
+        for (const leafId of leafIds(tab.paneTree)) {
+          liveLeavesRef.current.delete(leafId);
+          terminalRefs.current.delete(leafId);
         }
+      } else if (tab.kind === "browser") {
+        liveBrowserIdsRef.current.delete(tab.id);
+        clearBrowserAutomationActivity(tab.id);
+        await browserEmbedClose(tab.id).catch(() => {});
+        browserRefs.current.delete(tab.id);
+      } else if (tab.kind === "editor") {
+        editorRefs.current.delete(tab.id);
       }
-      useSpaces.getState().setEnv(spaceId, env);
-      resetSpace(spaceId, nextHome);
-    },
-    [adoptWorkspaceEnv, resetSpace],
-  );
+    }
+    useSpaces.getState().setEnv(spaceId, env);
+    resetSpace(spaceId, nextHome);
+  });
 
   useSpacesBoot({
     ready: launchCwdResolved,
@@ -843,7 +839,7 @@ export default function App() {
   // Before voice is set up there is no orb to show, so the toggle says why
   // and points at the one place that fixes it instead of flipping a switch
   // nobody can see.
-  const toggleVoiceOrb = useCallback(() => {
+  const toggleVoiceOrb = useStableCallback(() => {
     if (!voiceConfigured) {
       toast.info("Set up voice input first", {
         description:
@@ -856,7 +852,7 @@ export default function App() {
       return;
     }
     voiceVisibility.toggle();
-  }, [voiceConfigured, voiceVisibility.toggle]);
+  });
 
   const activeTab = tabs.find((t) => t.id === activeId);
   const isTerminalTab = activeTab?.kind === "terminal";
@@ -882,33 +878,28 @@ export default function App() {
   useEffect(() => {
     setActiveSearchAddonKey(
       activeLeafId !== null
-        ? searchObjectKey(searchAddons.current.get(activeLeafId))
+        ? searchObjectKey(searchAddonForLeaf(activeLeafId))
         : null,
     );
     setActiveEditorHandleKey(searchObjectKey(editorRefs.current.get(activeId)));
   }, [activeId, activeLeafId]);
 
-  const handleSearchReady = useCallback(
+  const handleSearchReady = useStableCallback(
     (leafId: number, addon: SearchAddon) => {
-      searchAddons.current.set(leafId, addon);
       if (leafId === activeLeafId) {
         setActiveSearchAddonKey(searchObjectKey(addon));
       }
     },
-    [activeLeafId],
   );
 
-  const disposeTab = useCallback(
-    (id: number) => {
-      // Terminal-leaf-keyed maps (terminalRefs/searchAddons) are pruned by
-      // the effect below as the pane tree changes; only the tab-id-keyed
-      // handles need explicit cleanup here.
-      editorRefs.current.delete(id);
-      browserRefs.current.delete(id);
-      closeTab(id);
-    },
-    [closeTab],
-  );
+  const disposeTab = useStableCallback((id: number) => {
+    // The terminal-leaf-keyed map (terminalRefs) is pruned by the effect
+    // below as the pane tree changes; only the tab-id-keyed handles need
+    // explicit cleanup here.
+    editorRefs.current.delete(id);
+    browserRefs.current.delete(id);
+    closeTab(id);
+  });
 
   const {
     pendingCloseTab,
@@ -950,8 +941,6 @@ export default function App() {
     liveLeavesRef.current = live;
     for (const k of [...terminalRefs.current.keys()])
       if (!live.has(k)) terminalRefs.current.delete(k);
-    for (const k of [...searchAddons.current.keys()])
-      if (!live.has(k)) searchAddons.current.delete(k);
     const liveTabIds = new Set(tabs.map((tab) => tab.id));
     for (const map of [
       gitHistoryHandleCallbacks.current,
@@ -1011,7 +1000,7 @@ export default function App() {
     mruRef.current = mruRef.current.filter((id) => live.has(id));
   }, [tabs]);
 
-  const getSwitcherOrder = useCallback(() => {
+  const getSwitcherOrder = useStableCallback(() => {
     const space = activeSpaceId ?? DEFAULT_SPACE_ID;
     const inSpace = tabsRef.current
       .filter((t) => t.spaceId === space)
@@ -1020,7 +1009,7 @@ export default function App() {
     const ordered = mruRef.current.filter((id) => present.has(id));
     for (const id of inSpace) if (!ordered.includes(id)) ordered.push(id);
     return [activeId, ...ordered.filter((id) => id !== activeId)];
-  }, [activeId, activeSpaceId]);
+  });
 
   const { state: switcherState, step: stepSwitcher } = useTabSwitcher({
     getOrder: getSwitcherOrder,
@@ -1037,7 +1026,7 @@ export default function App() {
     setActive(spaces[next].id);
   }, []);
 
-  const captureActiveSelection = useCallback((): string | null => {
+  const captureActiveSelection = useStableCallback((): string | null => {
     const t = tabs.find((x) => x.id === activeId);
     if (!t) return null;
     if (t.kind === "terminal") {
@@ -1048,9 +1037,9 @@ export default function App() {
       return editorRefs.current.get(activeId)?.getSelection() ?? null;
     }
     return null;
-  }, [tabs, activeId]);
+  });
 
-  const togglePanelAndFocus = useCallback(() => {
+  const togglePanelAndFocus = useStableCallback(() => {
     if (!hasComposer) {
       void openSettingsWindow("models");
       return;
@@ -1061,28 +1050,25 @@ export default function App() {
       openPanel();
       focusInput(null);
     }
-  }, [hasComposer, panelOpen, openPanel, focusInput]);
+  });
 
   const attachSelection = useChatStore((s) => s.attachSelection);
 
-  const handleAttachFileToAgent = useCallback(
-    (path: string) => {
-      if (!hasComposer) {
-        void openSettingsWindow("models");
-        return;
-      }
-      // Dispatch a window event the composer listens for. Same pattern as
-      // selections — keeps file-explorer decoupled from the AI module.
-      window.dispatchEvent(
-        new CustomEvent<string>("anbo:ai-attach-file", { detail: path }),
-      );
-      openPanel();
-      focusInput(null);
-    },
-    [hasComposer, openPanel, focusInput],
-  );
+  const handleAttachFileToAgent = useStableCallback((path: string) => {
+    if (!hasComposer) {
+      void openSettingsWindow("models");
+      return;
+    }
+    // Dispatch a window event the composer listens for. Same pattern as
+    // selections — keeps file-explorer decoupled from the AI module.
+    window.dispatchEvent(
+      new CustomEvent<string>("anbo:ai-attach-file", { detail: path }),
+    );
+    openPanel();
+    focusInput(null);
+  });
 
-  const askFromSelection = useCallback(() => {
+  const askFromSelection = useStableCallback(() => {
     if (!hasComposer) {
       void openSettingsWindow("models");
       return;
@@ -1095,13 +1081,7 @@ export default function App() {
     const source: "terminal" | "editor" =
       activeTab?.kind === "editor" ? "editor" : "terminal";
     attachSelection(selection, source);
-  }, [
-    hasComposer,
-    captureActiveSelection,
-    focusInput,
-    attachSelection,
-    activeTab,
-  ]);
+  });
 
   const { askPopup, setAskPopup, onAskFromSelection } = useSelectionAskAi({
     captureActiveSelection,
@@ -1109,17 +1089,17 @@ export default function App() {
   });
   const askPresence = usePresence(Boolean(askPopup), 120);
 
-  const openNewTab = useCallback(() => {
+  const openNewTab = useStableCallback(() => {
     newTab(inheritedCwdForNewTab());
-  }, [newTab, inheritedCwdForNewTab]);
+  });
 
-  const openNewPrivateTab = useCallback(() => {
+  const openNewPrivateTab = useStableCallback(() => {
     newPrivateTab(inheritedCwdForNewTab());
-  }, [newPrivateTab, inheritedCwdForNewTab]);
+  });
 
-  const openNewBlockTab = useCallback(() => {
+  const openNewBlockTab = useStableCallback(() => {
     newBlockTab(inheritedCwdForNewTab());
-  }, [newBlockTab, inheritedCwdForNewTab]);
+  });
 
   const resumedAgentLeavesRef = useRef(new Set<number>());
   const warnedUnverifiedResumeRef = useRef(false);
@@ -1154,7 +1134,6 @@ export default function App() {
       );
       disposeSession(leafId);
       terminalRefs.current.delete(leafId);
-      searchAddons.current.delete(leafId);
       resumedAgentLeavesRef.current.delete(leafId);
       agentExitResumeGuardRef.current.cancel(leafId);
       agentDiscoveryQueueRef.current.cancel(leafId);
@@ -1175,7 +1154,7 @@ export default function App() {
     }
     warmBrowserTabsRef.current = warmBrowserTabIds(tabs);
   }, [tabs]);
-  const handleAgentStarted = useCallback(
+  const handleAgentStarted = useStableCallback(
     (leafId: number, agent: string, sessionId?: string) => {
       agentExitResumeGuardRef.current.cancel(leafId);
       const target = tabsRef.current.find(
@@ -1243,35 +1222,25 @@ export default function App() {
       agentDiscoveryQueueRef.current.request(leafId);
       setAgentDiscoveryRetry((value) => value + 1);
     },
-    [
-      adoptAgentIdentity,
-      adoptAgentResume,
-      pinAgentResumeSession,
-      rearmAgentResume,
-      replaceAgentResume,
-    ],
   );
   const handleAgentSettled = useCallback((leafId: number) => {
     agentDiscoveryQueueRef.current.request(leafId);
     setAgentDiscoveryRetry((value) => value + 1);
   }, []);
-  const handleAgentExited = useCallback(
-    (leafId: number) => {
-      resumedAgentLeavesRef.current.delete(leafId);
-      useAgentResumeStatus.getState().clear(leafId);
-      agentDiscoveryQueueRef.current.cancel(leafId);
-      agentDiscoveryGenerationRef.current.set(
-        leafId,
-        (agentDiscoveryGenerationRef.current.get(leafId) ?? 0) + 1,
-      );
-      agentExitResumeGuardRef.current.schedule(
-        leafId,
-        () => useAgentStore.getState().sessions[leafId] !== undefined,
-        () => deactivateAgentResume(leafId),
-      );
-    },
-    [deactivateAgentResume],
-  );
+  const handleAgentExited = useStableCallback((leafId: number) => {
+    resumedAgentLeavesRef.current.delete(leafId);
+    useAgentResumeStatus.getState().clear(leafId);
+    agentDiscoveryQueueRef.current.cancel(leafId);
+    agentDiscoveryGenerationRef.current.set(
+      leafId,
+      (agentDiscoveryGenerationRef.current.get(leafId) ?? 0) + 1,
+    );
+    agentExitResumeGuardRef.current.schedule(
+      leafId,
+      () => useAgentStore.getState().sessions[leafId] !== undefined,
+      () => deactivateAgentResume(leafId),
+    );
+  });
   useEffect(() => {
     const mcpPromises = new Map<string, Promise<boolean>>();
     let resumeDelay = 0;
@@ -1524,7 +1493,7 @@ export default function App() {
     }
   }, [agentDiscoveryRetry, pinAgentResumeSession, spaceEnvironments, tabs]);
 
-  const launchAgentGroupAt = useCallback(
+  const launchAgentGroupAt = useStableCallback(
     async (request: AgentLaunchRequest, target: AgentLaunchTarget) => {
       const command = validateAgentLaunchCommand(request.command);
       if (!command.ok) return null;
@@ -1647,27 +1616,17 @@ export default function App() {
       });
       return { tabIds, leafIds: agentLeafIds, activated };
     },
-    [agentMcpEnabled, automationTabSelection, customCliAgents, newAgentTabs],
   );
 
-  const launchAgentGroup = useCallback(
-    (request: AgentLaunchRequest) => {
-      void launchAgentGroupAt(request, {
-        spaceId: activeSpaceId ?? DEFAULT_SPACE_ID,
-        root: activeSpaceRoot,
-        cwd: inheritedCwdForNewTab(),
-        workspace: workspaceForSpace(activeSpaceId ?? DEFAULT_SPACE_ID),
-        activate: true,
-      }).catch(() => {}); // The launch path already displays the actionable error.
-    },
-    [
-      activeSpaceId,
-      activeSpaceRoot,
-      inheritedCwdForNewTab,
-      launchAgentGroupAt,
-      workspaceForSpace,
-    ],
-  );
+  const launchAgentGroup = useStableCallback((request: AgentLaunchRequest) => {
+    void launchAgentGroupAt(request, {
+      spaceId: activeSpaceId ?? DEFAULT_SPACE_ID,
+      root: activeSpaceRoot,
+      cwd: inheritedCwdForNewTab(),
+      workspace: workspaceForSpace(activeSpaceId ?? DEFAULT_SPACE_ID),
+      activate: true,
+    }).catch(() => {}); // The launch path already displays the actionable error.
+  });
 
   const launchAgentGroupAtRef = useRef(launchAgentGroupAt);
   launchAgentGroupAtRef.current = launchAgentGroupAt;
@@ -1675,42 +1634,33 @@ export default function App() {
   const warmTabRef = useRef(warmTab);
   warmTabRef.current = warmTab;
 
-  const sendCd = useCallback(
-    (path: string) => {
-      if (activeLeafId === null) return;
-      const term = terminalRefs.current.get(activeLeafId);
-      if (!term) return;
-      term.write(`cd ${quoteShellArg(path)}\r`);
-      term.focus();
-    },
-    [activeLeafId],
-  );
+  const sendCd = useStableCallback((path: string) => {
+    if (activeLeafId === null) return;
+    const term = terminalRefs.current.get(activeLeafId);
+    if (!term) return;
+    term.write(`cd ${quoteShellArg(path)}\r`);
+    term.focus();
+  });
 
-  const cdInNewTab = useCallback(
-    (path: string) => {
-      const tabId = newTab(path);
-      setTimeout(() => {
-        const tab = tabsRef.current.find((x) => x.id === tabId);
-        if (!tab || tab.kind !== "terminal") return;
-        const t = terminalRefs.current.get(tab.activeLeafId);
-        if (!t) return;
-        t.write(`cd ${quoteShellArg(path)}\r`);
-        t.focus();
-      }, 80);
-    },
-    [newTab],
-  );
+  const cdInNewTab = useStableCallback((path: string) => {
+    const tabId = newTab(path);
+    setTimeout(() => {
+      const tab = tabsRef.current.find((x) => x.id === tabId);
+      if (!tab || tab.kind !== "terminal") return;
+      const t = terminalRefs.current.get(tab.activeLeafId);
+      if (!t) return;
+      t.write(`cd ${quoteShellArg(path)}\r`);
+      t.focus();
+    }, 80);
+  });
 
-  const handleOpenFile = useCallback(
-    (path: string, pin?: boolean) => {
-      // Markdown opens in its rendered view by default; a per-tab toggle flips
-      // it to the raw editor. Other files default to preview (pin=false);
-      // explicit actions like context-menu "Open" pass pin=true to persist.
-      if (isMarkdownPath(path)) newMarkdownTab(path);
-      else openFileTab(path, pin ?? false);
-    },
-    [openFileTab, newMarkdownTab],
-  );
+  const handleOpenFile = useStableCallback((path: string, pin?: boolean) => {
+    // Markdown opens in its rendered view by default; a per-tab toggle flips
+    // it to the raw editor. Other files default to preview (pin=false);
+    // explicit actions like context-menu "Open" pass pin=true to persist.
+    if (isMarkdownPath(path)) newMarkdownTab(path);
+    else openFileTab(path, pin ?? false);
+  });
 
   // "Open With" files arrive via the event (warm start) and get_launch_files
   // (cold start, before this listener attaches). Backend already authorized
@@ -1764,39 +1714,30 @@ export default function App() {
   // app; say so, and offer a retry, instead of leaving it to the log.
   useEffect(() => watchMcpPort(), []);
 
-  const handleBeforePathRename = useCallback(
-    (path: string) => {
-      const scope = workspaceScopeKey(workspaceEnv);
-      const scopedTabs = tabsRef.current.filter(
-        (tab) => workspaceScopeKey(workspaceForSpace(tab.spaceId)) === scope,
-      );
-      assertRenameHasNoUnsavedEditors(path, scopedTabs, "renaming or moving");
-    },
-    [workspaceEnv, workspaceForSpace],
-  );
+  const handleBeforePathRename = useStableCallback((path: string) => {
+    const scope = workspaceScopeKey(workspaceEnv);
+    const scopedTabs = tabsRef.current.filter(
+      (tab) => workspaceScopeKey(workspaceForSpace(tab.spaceId)) === scope,
+    );
+    assertRenameHasNoUnsavedEditors(path, scopedTabs, "renaming or moving");
+  });
 
-  const handleBeforePathDelete = useCallback(
-    (path: string) => {
-      const scope = workspaceScopeKey(workspaceEnv);
-      const scopedTabs = tabsRef.current.filter(
-        (tab) => workspaceScopeKey(workspaceForSpace(tab.spaceId)) === scope,
-      );
-      assertRenameHasNoUnsavedEditors(path, scopedTabs, "moving to trash");
-    },
-    [workspaceEnv, workspaceForSpace],
-  );
+  const handleBeforePathDelete = useStableCallback((path: string) => {
+    const scope = workspaceScopeKey(workspaceEnv);
+    const scopedTabs = tabsRef.current.filter(
+      (tab) => workspaceScopeKey(workspaceForSpace(tab.spaceId)) === scope,
+    );
+    assertRenameHasNoUnsavedEditors(path, scopedTabs, "moving to trash");
+  });
 
-  const handlePathRenamed = useCallback(
-    (from: string, to: string) => {
-      const scope = workspaceScopeKey(workspaceEnv);
-      for (const t of tabsRef.current) {
-        if (workspaceScopeKey(workspaceForSpace(t.spaceId)) !== scope) continue;
-        const patch = renamedDocumentPatch(t, from, to);
-        if (patch) updateTab(t.id, patch);
-      }
-    },
-    [updateTab, workspaceEnv, workspaceForSpace],
-  );
+  const handlePathRenamed = useStableCallback((from: string, to: string) => {
+    const scope = workspaceScopeKey(workspaceEnv);
+    for (const t of tabsRef.current) {
+      if (workspaceScopeKey(workspaceForSpace(t.spaceId)) !== scope) continue;
+      const patch = renamedDocumentPatch(t, from, to);
+      if (patch) updateTab(t.id, patch);
+    }
+  });
 
   const activeTerminalLeafCwd =
     activeTab?.kind === "terminal"
@@ -1834,7 +1775,7 @@ export default function App() {
     (s) => s.explorerGitDecorations,
   );
 
-  const openBrowserTab = useCallback(
+  const openBrowserTab = useStableCallback(
     (url: string, activate = true, spaceId?: string) => {
       const id = newBrowserTab(url, activate, spaceId);
       // Focus the address bar if the URL is empty so the user can type.
@@ -1843,21 +1784,14 @@ export default function App() {
       }
       return id;
     },
-    [newBrowserTab],
   );
 
-  const newBlankBrowserTab = useCallback(
-    () => openBrowserTab(""),
-    [openBrowserTab],
-  );
+  const newBlankBrowserTab = useStableCallback(() => openBrowserTab(""));
 
-  const openFileInAnboBrowser = useCallback(
-    (path: string) => {
-      const url = filePathToBrowserUrl(path);
-      if (url) openBrowserTab(url);
-    },
-    [openBrowserTab],
-  );
+  const openFileInAnboBrowser = useStableCallback((path: string) => {
+    const url = filePathToBrowserUrl(path);
+    if (url) openBrowserTab(url);
+  });
 
   // Content links, and every other link a click can reach, land in a tab here.
   // Windows that own no tabs forward theirs to this one.
@@ -2387,7 +2321,7 @@ export default function App() {
     };
   }, [automationTabSelection, closeTab, newTabInSpace, setActiveId]);
 
-  const splitActiveTabInDockview = useCallback(
+  const splitActiveTabInDockview = useStableCallback(
     (position: "right" | "bottom") => {
       const source = tabsRef.current.find(
         (tab) => tab.id === activeIdRef.current,
@@ -2405,7 +2339,6 @@ export default function App() {
         },
       ]);
     },
-    [inheritedCwdForNewTab, newTab],
   );
 
   const livePaneBounds = useCallback((tabId: number): PaneBounds[] => {
@@ -2423,21 +2356,20 @@ export default function App() {
     );
   }, []);
 
-  const swapActivePane = useCallback(
+  const swapActivePane = useStableCallback(
     (direction: "left" | "right" | "up" | "down") => {
       swapActivePaneInDirection(activeId, direction, livePaneBounds(activeId));
     },
-    [activeId, livePaneBounds, swapActivePaneInDirection],
   );
 
-  const handleCloseTabOrPane = useCallback(() => {
+  const handleCloseTabOrPane = useStableCallback(() => {
     const t = tabsRef.current.find((x) => x.id === activeId);
     if (t?.kind === "terminal" && leafIds(t.paneTree).length > 1) {
       void handleClosePane(activeId, t.activeLeafId);
       return;
     }
     void handleClose(activeId);
-  }, [activeId, handleClose, handleClosePane]);
+  });
 
   const [zenMode, setZenMode] = useState(false);
   // Tabs not visible in the dock render over the content box of the group
@@ -2485,15 +2417,15 @@ export default function App() {
     backgroundBrowserArea,
     zenMode,
   ]);
-  const handleDockLayoutSettled = useCallback(() => {
+  const handleDockLayoutSettled = useStableCallback(() => {
     refitVisibleTerminalSlots();
     measureBackgroundArea();
     setHostSpaceId(useSpaces.getState().activeId ?? DEFAULT_SPACE_ID);
-  }, [measureBackgroundArea]);
+  });
 
   // Focus an agent's tab, switching to its space first so the header and tab
   // strip don't end up showing a different space than the focused pane.
-  const activateAgentTarget = useCallback(
+  const activateAgentTarget = useStableCallback(
     (tabId: number, leafId: number) => {
       const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
       if (tab?.kind !== "terminal" || !hasLeaf(tab.paneTree, leafId)) {
@@ -2514,22 +2446,18 @@ export default function App() {
       }
       focusAgentTerminal(leafId);
     },
-    [setActiveId, warmTab, focusPane, focusAgentTerminal],
   );
 
   // Show a browser tab from the header's browser menu, switching to its space
   // first. The space switch keeps an active tab that already belongs to it.
-  const showBrowserTab = useCallback(
-    (tabId: number) => {
-      const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
-      if (tab?.kind !== "browser") return;
-      warmTab(tabId);
-      setActiveId(tabId);
-      if (tab.spaceId !== useSpaces.getState().activeId)
-        useSpaces.getState().setActive(tab.spaceId);
-    },
-    [setActiveId, warmTab],
-  );
+  const showBrowserTab = useStableCallback((tabId: number) => {
+    const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
+    if (tab?.kind !== "browser") return;
+    warmTab(tabId);
+    setActiveId(tabId);
+    if (tab.spaceId !== useSpaces.getState().activeId)
+      useSpaces.getState().setActive(tab.spaceId);
+  });
 
   const shortcutHandlers = useMemo<ShortcutHandlers>(
     () => ({
@@ -2628,7 +2556,7 @@ export default function App() {
     ],
   );
 
-  const shortcutsDisabled = useCallback(
+  const shortcutsDisabled = useStableCallback(
     (id: ShortcutId, e: KeyboardEvent) => {
       const terminalPaneCount =
         activeTab?.kind === "terminal"
@@ -2682,7 +2610,6 @@ export default function App() {
       }
       return false;
     },
-    [activeTab, captureActiveSelection],
   );
 
   useGlobalShortcuts(shortcutHandlers, { isDisabled: shortcutsDisabled });
@@ -2695,7 +2622,7 @@ export default function App() {
     [],
   );
 
-  const registerEditorHandle = useCallback(
+  const registerEditorHandle = useStableCallback(
     (id: number, h: EditorPaneHandle | null) => {
       if (h) {
         editorRefs.current.set(id, h);
@@ -2709,7 +2636,6 @@ export default function App() {
       }
       if (id === activeId) setActiveEditorHandleKey(searchObjectKey(h));
     },
-    [activeId],
   );
 
   const registerBrowserHandle = useCallback(
@@ -2726,73 +2652,60 @@ export default function App() {
     [],
   );
 
-  const handleBrowserUrl = useCallback(
-    (id: number, url: string) =>
-      updateTab(id, { url, favicon: faviconUrlForPage(url) }),
-    [updateTab],
+  const handleBrowserUrl = useStableCallback((id: number, url: string) =>
+    updateTab(id, { url, favicon: faviconUrlForPage(url) }),
   );
 
-  const handleBrowserTitle = useCallback(
-    (id: number, title: string) => updateTab(id, { title }),
-    [updateTab],
+  const handleBrowserTitle = useStableCallback((id: number, title: string) =>
+    updateTab(id, { title }),
   );
 
-  const handleBrowserLoading = useCallback(
+  const handleBrowserLoading = useStableCallback(
     (id: number, loading: boolean) => updateTab(id, { loading }),
-    [updateTab],
   );
 
   const authorizedCwds = useRef(new Set<string>());
-  const handleTerminalCwd = useCallback(
-    (leafId: number, cwd: string) => {
-      setLeafCwd(leafId, cwd);
-      if (cwd && !authorizedCwds.current.has(cwd)) {
-        authorizedCwds.current.add(cwd);
-        native.workspaceAuthorize(cwd).catch(() => {
-          authorizedCwds.current.delete(cwd);
-        });
-      }
-    },
-    [setLeafCwd],
-  );
+  const handleTerminalCwd = useStableCallback((leafId: number, cwd: string) => {
+    setLeafCwd(leafId, cwd);
+    if (cwd && !authorizedCwds.current.has(cwd)) {
+      authorizedCwds.current.add(cwd);
+      native.workspaceAuthorize(cwd).catch(() => {
+        authorizedCwds.current.delete(cwd);
+      });
+    }
+  });
 
-  const handleFocusLeaf = useCallback(
-    (tabId: number, leafId: number) => focusPane(tabId, leafId),
-    [focusPane],
+  const handleFocusLeaf = useStableCallback((tabId: number, leafId: number) =>
+    focusPane(tabId, leafId),
   );
 
   const onActivateAgent = activateAgentTarget;
 
-  const onActivateLocalAgent = useCallback(() => {
+  const onActivateLocalAgent = useStableCallback(() => {
     openPanel();
     focusInput(null);
-  }, [openPanel, focusInput]);
+  });
 
-  const handleLeafExit = useCallback(
-    (leafId: number, _code: number) => {
-      const all = tabsRef.current;
-      const tab = all.find(
-        (t) => t.kind === "terminal" && hasLeaf(t.paneTree, leafId),
-      );
-      if (!tab || tab.kind !== "terminal") return;
-      if (leafIds(tab.paneTree).length === 1) {
-        if (all.length === 1) clearTabs();
-        else closeTab(tab.id);
-      } else {
-        closePaneByLeaf(leafId);
-      }
-    },
-    [closePaneByLeaf, closeTab, clearTabs],
+  const handleLeafExit = useStableCallback((leafId: number, _code: number) => {
+    const all = tabsRef.current;
+    const tab = all.find(
+      (t) => t.kind === "terminal" && hasLeaf(t.paneTree, leafId),
+    );
+    if (!tab || tab.kind !== "terminal") return;
+    if (leafIds(tab.paneTree).length === 1) {
+      if (all.length === 1) clearTabs();
+      else closeTab(tab.id);
+    } else {
+      closePaneByLeaf(leafId);
+    }
+  });
+
+  const handleEditorDirty = useStableCallback((id: number, dirty: boolean) =>
+    updateTab(id, { dirty }),
   );
 
-  const handleEditorDirty = useCallback(
-    (id: number, dirty: boolean) => updateTab(id, { dirty }),
-    [updateTab],
-  );
-
-  const handleRenameTab = useCallback(
-    (id: number, title: string) => updateTab(id, { customTitle: title.trim() }),
-    [updateTab],
+  const handleRenameTab = useStableCallback((id: number, title: string) =>
+    updateTab(id, { customTitle: title.trim() }),
   );
 
   const searchTarget = useMemo<SearchTarget>(() => {
@@ -2828,16 +2741,16 @@ export default function App() {
 
   const activeCwd = activeTerminalLeafCwd ?? explorerRoot;
 
-  const handleNewSpace = useCallback(() => {
+  const handleNewSpace = useStableCallback(() => {
     const { spaces, create, setActive } = useSpaces.getState();
     const meta = create(newSpaceDefaults(spaces.length + 1, workspaceEnv));
     setActiveSpaceForNewTabs(meta.id);
     setActive(meta.id);
     setSwitcherOpen(false);
     return meta.id;
-  }, [workspaceEnv, setActiveSpaceForNewTabs]);
+  });
 
-  const handlePickFolder = useCallback(
+  const handlePickFolder = useStableCallback(
     async (dir: string, name: string) => {
       try {
         await authorizeWorkspaceRoot({
@@ -2864,14 +2777,13 @@ export default function App() {
         });
       }
     },
-    [workspaceEnv, setActiveSpaceForNewTabs, clearTabs, markBooted],
   );
 
-  const handleUseHome = useCallback(() => {
+  const handleUseHome = useStableCallback(() => {
     if (!home) return;
     const defaultName = home.replace(/\/+$/, "").split("/").pop() || "Home";
     void handlePickFolder(home, defaultName);
-  }, [home, handlePickFolder]);
+  });
 
   const handleConfigureActiveSpace = useCallback(
     async (dir: string, name: string) => {
@@ -2896,57 +2808,52 @@ export default function App() {
     [],
   );
 
-  const handleUseHomeForActiveSpace = useCallback(() => {
+  const handleUseHomeForActiveSpace = useStableCallback(() => {
     if (!home) return;
     const defaultName = home.replace(/\/+$/, "").split("/").pop() || "Home";
     void handleConfigureActiveSpace(home, defaultName);
-  }, [home, handleConfigureActiveSpace]);
+  });
 
-  const handleDeleteSpace = useCallback(
-    async (id: string) => {
-      const spaceTabs = tabsRef.current.filter((tab) => tab.spaceId === id);
-      const terminalLeaves = spaceTabs.flatMap((tab) =>
-        tab.kind === "terminal" ? leafIds(tab.paneTree) : [],
-      );
-      const checkedTabIds = spaceTabs.map((tab) => tab.id).join(",");
-      const checkedLeafIds = terminalLeaves.join(",");
-      const busyChecks = await Promise.all(
-        terminalLeaves.map(leafHasForegroundProcess),
-      );
-      const busyTerminals = busyChecks.filter(Boolean).length;
-      const currentSpaceTabs = tabsRef.current.filter(
-        (tab) => tab.spaceId === id,
-      );
-      const dirtyEditors = currentSpaceTabs.filter(
-        (tab) => tab.kind === "editor" && tab.dirty,
-      ).length;
-      const currentLeafIds = currentSpaceTabs
-        .flatMap((tab) =>
-          tab.kind === "terminal" ? leafIds(tab.paneTree) : [],
-        )
-        .join(",");
-      const stateChanged =
-        currentSpaceTabs.map((tab) => tab.id).join(",") !== checkedTabIds ||
-        currentLeafIds !== checkedLeafIds;
-      if (
-        (dirtyEditors > 0 || busyTerminals > 0 || stateChanged) &&
-        !window.confirm(
-          `Delete this space? ${dirtyEditors} unsaved editor(s) and ${busyTerminals} detected running terminal process(es) will be closed.`,
-        )
-      ) {
-        return;
-      }
-      const nextSpaceId = useSpaces.getState().remove(id);
-      if (nextSpaceId) {
-        removeTabsForSpace(id, nextSpaceId);
-      } else {
-        // That was the last workspace. There is nothing to fall back to, so
-        // every tab goes and the landing page takes the window.
-        clearTabs();
-      }
-    },
-    [removeTabsForSpace, clearTabs],
-  );
+  const handleDeleteSpace = useStableCallback(async (id: string) => {
+    const spaceTabs = tabsRef.current.filter((tab) => tab.spaceId === id);
+    const terminalLeaves = spaceTabs.flatMap((tab) =>
+      tab.kind === "terminal" ? leafIds(tab.paneTree) : [],
+    );
+    const checkedTabIds = spaceTabs.map((tab) => tab.id).join(",");
+    const checkedLeafIds = terminalLeaves.join(",");
+    const busyChecks = await Promise.all(
+      terminalLeaves.map(leafHasForegroundProcess),
+    );
+    const busyTerminals = busyChecks.filter(Boolean).length;
+    const currentSpaceTabs = tabsRef.current.filter(
+      (tab) => tab.spaceId === id,
+    );
+    const dirtyEditors = currentSpaceTabs.filter(
+      (tab) => tab.kind === "editor" && tab.dirty,
+    ).length;
+    const currentLeafIds = currentSpaceTabs
+      .flatMap((tab) => (tab.kind === "terminal" ? leafIds(tab.paneTree) : []))
+      .join(",");
+    const stateChanged =
+      currentSpaceTabs.map((tab) => tab.id).join(",") !== checkedTabIds ||
+      currentLeafIds !== checkedLeafIds;
+    if (
+      (dirtyEditors > 0 || busyTerminals > 0 || stateChanged) &&
+      !window.confirm(
+        `Delete this space? ${dirtyEditors} unsaved editor(s) and ${busyTerminals} detected running terminal process(es) will be closed.`,
+      )
+    ) {
+      return;
+    }
+    const nextSpaceId = useSpaces.getState().remove(id);
+    if (nextSpaceId) {
+      removeTabsForSpace(id, nextSpaceId);
+    } else {
+      // That was the last workspace. There is nothing to fall back to, so
+      // every tab goes and the landing page takes the window.
+      clearTabs();
+    }
+  });
 
   const [pendingSpacePause, setPendingSpacePause] =
     useState<PendingSpacePause | null>(null);
@@ -2992,50 +2899,43 @@ export default function App() {
   );
 
   // The space in view keeps running: its tabs would only wake one by one.
-  const pauseSpaceNow = useCallback(
-    (spaceId: string) => {
-      if ((useSpaces.getState().activeId ?? DEFAULT_SPACE_ID) === spaceId) {
-        return;
-      }
-      pauseSpaceTabs(spaceId);
-    },
-    [pauseSpaceTabs],
-  );
+  const pauseSpaceNow = useStableCallback((spaceId: string) => {
+    if ((useSpaces.getState().activeId ?? DEFAULT_SPACE_ID) === spaceId) {
+      return;
+    }
+    pauseSpaceTabs(spaceId);
+  });
 
-  const handlePauseSpace = useCallback(
-    async (spaceId: string) => {
-      if ((useSpaces.getState().activeId ?? DEFAULT_SPACE_ID) === spaceId) {
-        return;
-      }
-      const lines = spacePauseWorkLines(await collectSpacePauseWork(spaceId));
-      if (lines.length === 0) {
-        pauseSpaceNow(spaceId);
-        return;
-      }
-      const name =
-        useSpaces.getState().spaces.find((space) => space.id === spaceId)
-          ?.name ?? "this space";
-      setSwitcherOpen(false);
-      setPendingSpacePause({ spaceId, name, lines });
-    },
-    [collectSpacePauseWork, pauseSpaceNow],
-  );
+  const handlePauseSpace = useStableCallback(async (spaceId: string) => {
+    if ((useSpaces.getState().activeId ?? DEFAULT_SPACE_ID) === spaceId) {
+      return;
+    }
+    const lines = spacePauseWorkLines(await collectSpacePauseWork(spaceId));
+    if (lines.length === 0) {
+      pauseSpaceNow(spaceId);
+      return;
+    }
+    const name =
+      useSpaces.getState().spaces.find((space) => space.id === spaceId)?.name ??
+      "this space";
+    setSwitcherOpen(false);
+    setPendingSpacePause({ spaceId, name, lines });
+  });
 
-  const confirmSpacePause = useCallback(() => {
+  const confirmSpacePause = useStableCallback(() => {
     setPendingSpacePause(null);
     if (pendingSpacePause) pauseSpaceNow(pendingSpacePause.spaceId);
-  }, [pendingSpacePause, pauseSpaceNow]);
+  });
 
-  const handleMoveTab = useCallback(
+  const handleMoveTab = useStableCallback(
     (tabId: number, targetSpaceId: string) => {
       if (moveTabToSpace(tabId, targetSpaceId)) {
         useSpaces.getState().setActive(targetSpaceId);
       }
     },
-    [moveTabToSpace],
   );
 
-  const handleReorderTab = useCallback(
+  const handleReorderTab = useStableCallback(
     (tabId: number, targetTabId: number, edge: "top" | "bottom") => {
       const target = tabsRef.current.find((tab) => tab.id === targetTabId);
       if (!target) return;
@@ -3054,40 +2954,30 @@ export default function App() {
         useSpaces.getState().setActive(target.spaceId);
       }
     },
-    [reorderTab],
   );
 
-  const handleNewTabInSpace = useCallback(
-    (spaceId: string) => {
-      const root = useSpaces
-        .getState()
-        .spaces.find((s) => s.id === spaceId)?.root;
-      newTabInSpace(spaceId, root ?? undefined);
-    },
-    [newTabInSpace],
-  );
+  const handleNewTabInSpace = useStableCallback((spaceId: string) => {
+    const root = useSpaces
+      .getState()
+      .spaces.find((s) => s.id === spaceId)?.root;
+    newTabInSpace(spaceId, root ?? undefined);
+  });
 
   // A browser page took focus. Make its tab the active one so the group it
   // sits in is marked as the one being used; nothing else about the layout
   // changes.
-  const handleBrowserActivate = useCallback(
-    (tabId: number) => {
-      if (activeIdRef.current === tabId) return;
-      setActiveId(tabId);
-    },
-    [setActiveId],
-  );
+  const handleBrowserActivate = useStableCallback((tabId: number) => {
+    if (activeIdRef.current === tabId) return;
+    setActiveId(tabId);
+  });
 
-  const jumpToTab = useCallback(
-    (tabId: number) => {
-      const t = tabsRef.current.find((x) => x.id === tabId);
-      if (!t) return;
-      setActiveId(tabId);
-      useSpaces.getState().setActive(t.spaceId);
-      setSwitcherOpen(false);
-    },
-    [setActiveId],
-  );
+  const jumpToTab = useStableCallback((tabId: number) => {
+    const t = tabsRef.current.find((x) => x.id === tabId);
+    if (!t) return;
+    setActiveId(tabId);
+    useSpaces.getState().setActive(t.spaceId);
+    setSwitcherOpen(false);
+  });
 
   const spaceSwitcher = (
     <SpaceSwitcher
@@ -3168,16 +3058,13 @@ export default function App() {
   );
 
   const pendingGotoLine = useRef<Map<number, number>>(new Map());
-  const openContentHit = useCallback(
-    (path: string, line: number) => {
-      const id = openFileTab(path, true);
-      if (id == null) return;
-      const h = editorRefs.current.get(id);
-      if (h) h.gotoLine(line);
-      else pendingGotoLine.current.set(id, line);
-    },
-    [openFileTab],
-  );
+  const openContentHit = useStableCallback((path: string, line: number) => {
+    const id = openFileTab(path, true);
+    if (id == null) return;
+    const h = editorRefs.current.get(id);
+    if (h) h.gotoLine(line);
+    else pendingGotoLine.current.set(id, line);
+  });
 
   useEffect(() => {
     setLspNavigator({ openFile: openContentHit });

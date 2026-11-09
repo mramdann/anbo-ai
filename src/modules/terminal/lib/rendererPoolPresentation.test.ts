@@ -123,6 +123,16 @@ describe("terminal window restore", () => {
     ).not.toContain("scheduleWebglFrameRepair");
   });
 
+  it("hands out a leaf's SearchAddon from its live slot at each use", () => {
+    // A copy kept outside the pool held each disposed xterm (R87-2).
+    expect(
+      sourceBetween(
+        "export function searchAddonForLeaf",
+        "/** How many times the leaf's live grid",
+      ),
+    ).toContain("getLiveSlotForLeaf(leafId)?.searchAddon ?? null");
+  });
+
   it("registers OSC handlers before replaying dormant terminal bytes", () => {
     const bind = sourceBetween("function bindSlot", "function scheduleUnhide");
     expect(
