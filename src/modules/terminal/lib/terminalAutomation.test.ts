@@ -608,7 +608,12 @@ describe("shared terminal input", () => {
     // Round 66 (R66-1): a spawned Codex sat at its update prompt and never took
     // '/exit'; terminal_close answered "not available", and the spawner killed
     // codex.exe by its PID.
-    const session = (tabId: number, leafId: number, agent: string, name: string) => ({
+    const session = (
+      tabId: number,
+      leafId: number,
+      agent: string,
+      name: string,
+    ) => ({
       leafId,
       tabId,
       agent,
@@ -622,14 +627,24 @@ describe("shared terminal input", () => {
     const spawnedTab = terminal({
       id: 30,
       title: "Codex",
-      agent: { launcherId: "codex", icon: "codex", label: "Codex", name: "Altair" },
+      agent: {
+        launcherId: "codex",
+        icon: "codex",
+        label: "Codex",
+        name: "Altair",
+      },
       paneTree: { kind: "leaf", id: 301, cwd: workspaceRoot },
       activeLeafId: 301,
     });
     const userAgentTab = terminal({
       id: 40,
       title: "Claude",
-      agent: { launcherId: "claude", icon: "claude", label: "Claude", name: "Vega" },
+      agent: {
+        launcherId: "claude",
+        icon: "claude",
+        label: "Claude",
+        name: "Vega",
+      },
       paneTree: { kind: "leaf", id: 401, cwd: workspaceRoot },
       activeLeafId: 401,
     });
@@ -665,7 +680,9 @@ describe("shared terminal input", () => {
       terminalId: "terminal:30:301",
     });
     expect(busy).toMatchObject({ error: { code: "terminal_busy" } });
-    expect(message(busy)).toContain("terminal_close with force: true closes it");
+    expect(message(busy)).toContain(
+      "terminal_close with force: true closes it",
+    );
     expect(close).not.toHaveBeenCalled();
 
     await expect(
@@ -3782,6 +3799,85 @@ describe("a program that starts too late for its Ctrl+C", () => {
       await vi.advanceTimersByTimeAsync(12_000);
       expect(sim.ctrlCs).toBe(1);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("logs what ran when an interrupted command ran on (R86-1)", async () => {
+    // A ping ran 20 of 20 after the Ctrl+C and nothing said whether it had
+    // started too late for it or was already running and missed it.
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const shell = commandShell();
+      const { sim, service } = shell;
+      const executionId = await interrupted(
+        shell,
+        "ping -n 20 127.0.0.1",
+        async () => {
+          sim.programs = [
+            { pid: 4300, name: "PING.EXE", startedAt: Date.now() - 2_000 },
+          ];
+        },
+      );
+      setTimeout(() => sim.end(1), 20_000);
+      await vi.advanceTimersByTimeAsync(21_000);
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 100,
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      await waited;
+      // A program running at the Ctrl+C never gets another.
+      expect(sim.ctrlCs).toBe(1);
+      const lines = warn.mock.calls.map((call) => String(call[0]));
+      const line = lines.find((text) => text.includes("ran on"));
+      expect(line).toContain("terminal:10:101");
+      expect(line).toContain("after the first Ctrl+C");
+      expect(line).toContain("PING.EXE (pid 4300) started 2.0 s before it");
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("goes on noting programs after its watch, without sending Ctrl+C", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const shell = commandShell();
+      const { sim, service } = shell;
+      // A program of the command's that predates the Ctrl+C keeps it open.
+      const executionId = await interrupted(
+        shell,
+        "cmd /c slow.bat",
+        async () => {
+          sim.programs = [
+            { pid: 4310, name: "cmd.exe", startedAt: Date.now() - 5_000 },
+          ];
+        },
+      );
+      await vi.advanceTimersByTimeAsync(12_000);
+      sim.programs = [{ pid: 4311, name: "PING.EXE", startedAt: Date.now() }];
+      await vi.advanceTimersByTimeAsync(6_000);
+      sim.end(1);
+      await vi.advanceTimersByTimeAsync(3_000);
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 100,
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      await waited;
+      expect(sim.ctrlCs).toBe(1);
+      const line = warn.mock.calls
+        .map((call) => String(call[0]))
+        .find((text) => text.includes("ran on"));
+      expect(line).toContain("cmd.exe (pid 4310) started 5.0 s before it");
+      expect(line).toMatch(/PING\.EXE \(pid 4311\) started 12\.\d s after it/);
+    } finally {
+      warn.mockRestore();
       vi.useRealTimers();
     }
   });

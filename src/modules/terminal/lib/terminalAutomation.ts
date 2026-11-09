@@ -100,6 +100,12 @@ const LATE_PROGRAM_AGE_MS = 300;
  *  that got it was gone within 0.2 s. */
 const INTERRUPT_RESEND_GAP_MS = 1_000;
 const MAX_INTERRUPT_RESENDS = 2;
+/** After the watch, how long and how often it goes on looking, only to note
+ *  what runs, for the line an interrupted command that ran on logs. A ping
+ *  ran 20 of 20 after a Ctrl+C with no second one sent, and nothing told
+ *  whether it started too late or the Ctrl+C missed it running (R86-1). */
+const LATE_PROGRAM_TRACE_MS = 60_000;
+const LATE_PROGRAM_TRACE_POLL_MS = 2_000;
 /** How long a terminal this service opened may take to enter the tab list.
  *  A terminal_execute in the same script as its terminal_open found no
  *  terminal one time in three in Dev. */
@@ -200,6 +206,16 @@ type ExecutionPhase =
 
 type CompletionReason = "exited" | "interrupted" | "closed" | "dispatch_failed";
 
+/** What the looks after an execution's first Ctrl+C saw. */
+type LateWatchTrace = {
+  firstCtrlCAt: number;
+  looks: number;
+  slowestLookMs: number;
+  /** By pid: the name, and when it started from the first Ctrl+C (null where
+   *  the platform does not tell). */
+  programs: Map<number, { name: string; fromCtrlCMs: number | null }>;
+};
+
 type ExecutionState = {
   executionId: string;
   terminalId: string;
@@ -231,6 +247,7 @@ type ExecutionState = {
   /** The latest watch for such a program: an interrupt sent again starts a
    *  new one, and the older one stops. */
   lateProgramWatch?: number;
+  lateWatchTrace?: LateWatchTrace;
   answeredBatchQuestion?: boolean;
   waitCount: number;
   dispatchedAt?: number;
@@ -671,6 +688,26 @@ export function sanitizeTerminalTitle(
   return { ok: true, title };
 }
 
+/** One line on an interrupted command that ran on: when it ended, and each
+ *  program the late-program watch saw with its start from the first Ctrl+C. */
+function describeRanOn(execution: ExecutionState): string {
+  const trace = execution.lateWatchTrace;
+  const sentAt = trace?.firstCtrlCAt ?? execution.interruptSentAt ?? 0;
+  const endedAt = execution.completedAt ?? Date.now();
+  const seconds = (ms: number) => `${(Math.abs(ms) / 1000).toFixed(1)} s`;
+  const programs = [...(trace?.programs ?? [])].map(([pid, program]) =>
+    program.fromCtrlCMs === null
+      ? `${program.name} (pid ${pid}, start not known)`
+      : `${program.name} (pid ${pid}) started ${seconds(program.fromCtrlCMs)} ${program.fromCtrlCMs < 0 ? "before" : "after"} it`,
+  );
+  return [
+    `${execution.terminalId} ${execution.executionId} ended ${seconds(endedAt - sentAt)} after the first Ctrl+C${execution.endUnconfirmed ? " (end not marked)" : ""}`,
+    `Ctrl+C sent again ${execution.interruptResent ?? 0} times`,
+    `${trace?.looks ?? 0} looks, slowest ${trace?.slowestLookMs ?? 0} ms`,
+    `programs seen: ${programs.join(", ") || "none"}`,
+  ].join("; ");
+}
+
 /** `ask`, answered with `fallback` when it fails or takes longer than `ms`. */
 function answerWithin<T>(
   ask: (leafId: number) => Promise<T>,
@@ -758,6 +795,11 @@ export function createTerminalAutomationService(
     execution.endMarked = endedAt !== undefined;
     if (reason === "closed") {
       execution.terminal = { ...execution.terminal, status: "exited" };
+    }
+    if (reason === "exited" && execution.interruptSentAt !== undefined) {
+      console.warn(
+        `[anbo] an interrupted command ran on: ${describeRanOn(execution)}`,
+      );
     }
   };
 
@@ -1115,14 +1157,37 @@ export function createTerminalAutomationService(
     const watch = (execution.lateProgramWatch ?? 0) + 1;
     execution.lateProgramWatch = watch;
     const until = Date.now() + LATE_PROGRAM_WATCH_MS;
+    const traceUntil = Date.now() + LATE_PROGRAM_TRACE_MS;
+    execution.lateWatchTrace ??= {
+      firstCtrlCAt: execution.interruptSentAt ?? Date.now(),
+      looks: 0,
+      slowestLookMs: 0,
+      programs: new Map(),
+    };
+    const trace = execution.lateWatchTrace;
     /** One look; false once there is nothing left to watch. */
     const look = async (): Promise<boolean> => {
-      if (execution.lateProgramWatch !== watch || Date.now() >= until) {
+      if (execution.lateProgramWatch !== watch || Date.now() >= traceUntil) {
         return false;
       }
       if (await refreshExecutionCompletion(execution)) return false;
+      const askedAt = Date.now();
       const programs = await programsOf(leafId);
       const now = Date.now();
+      trace.looks += 1;
+      trace.slowestLookMs = Math.max(trace.slowestLookMs, now - askedAt);
+      for (const program of programs) {
+        if (trace.programs.has(program.pid)) continue;
+        trace.programs.set(program.pid, {
+          name: program.name,
+          fromCtrlCMs:
+            program.startedAt === undefined
+              ? null
+              : program.startedAt - trace.firstCtrlCAt,
+        });
+      }
+      // Past the watch it only notes what runs.
+      if (now >= until) return true;
       if (programs.length > 0) {
         execution.programSeenAt = now;
         execution.noProgramSince = undefined;
@@ -1157,7 +1222,12 @@ export function createTerminalAutomationService(
     const tick = () => {
       look().then(
         (again) => {
-          if (again) setTimeout(tick, LATE_PROGRAM_POLL_MS);
+          if (!again) return;
+          const traceOnly = Date.now() >= until;
+          setTimeout(
+            tick,
+            traceOnly ? LATE_PROGRAM_TRACE_POLL_MS : LATE_PROGRAM_POLL_MS,
+          );
         },
         (cause: unknown) => {
           console.warn("[anbo] late program watch stopped", cause);
