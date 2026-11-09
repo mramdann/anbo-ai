@@ -260,6 +260,11 @@ import {
   WorkspaceInputBar,
 } from "./components/WorkspaceInputBar";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
+import {
+  createSearchSource,
+  gitHistoryHandleCallback,
+  searchObjectKey,
+} from "./lib/searchSource";
 
 // The launch deck and the landing page are what an empty workspace or a first
 // run shows. A workspace with tabs never needs either, so they stay out of the
@@ -442,8 +447,11 @@ export default function App() {
   const activeLeafId = activeTerminalTab?.activeLeafId ?? null;
 
   const searchAddons = useRef<Map<number, SearchAddon>>(new Map());
-  const [activeSearchAddon, setActiveSearchAddon] =
-    useState<SearchAddon | null>(null);
+  // The header search's objects by key only (searchObjectKey): the objects
+  // stay in the ref maps, out of App's render scope.
+  const [activeSearchAddonKey, setActiveSearchAddonKey] = useState<
+    number | null
+  >(null);
   const searchInlineRef = useRef<SearchInlineHandle | null>(null);
   const terminalRefs = useRef<Map<number, TerminalPaneHandle>>(new Map());
   const pendingAgentTargetRef = useRef<{
@@ -472,10 +480,12 @@ export default function App() {
   } | null>(null);
   // The tab each page of Anbo's browser opened last, so the next goes after it.
   const browserPopupOpenedRef = useRef<Map<number, number>>(new Map());
-  const [activeEditorHandle, setActiveEditorHandle] =
-    useState<EditorPaneHandle | null>(null);
-  const [gitHistoryHandle, setGitHistoryHandle] =
-    useState<GitHistorySearchHandle | null>(null);
+  const [activeEditorHandleKey, setActiveEditorHandleKey] = useState<
+    number | null
+  >(null);
+  const [gitHistoryHandleKey, setGitHistoryHandleKey] = useState<number | null>(
+    null,
+  );
   const gitHistoryHandles = useRef(new Map<number, GitHistorySearchHandle>());
   const gitHistoryHandleCallbacks = useRef(
     new Map<number, (handle: GitHistorySearchHandle | null) => void>(),
@@ -483,17 +493,28 @@ export default function App() {
   const getGitHistoryHandleCallback = (tabId: number) => {
     let callback = gitHistoryHandleCallbacks.current.get(tabId);
     if (!callback) {
-      callback = (handle) => {
-        if (handle) gitHistoryHandles.current.set(tabId, handle);
-        else gitHistoryHandles.current.delete(tabId);
-        if (activeIdRef.current === tabId) setGitHistoryHandle(handle);
-      };
+      callback = gitHistoryHandleCallback(
+        tabId,
+        gitHistoryHandles.current,
+        activeIdRef,
+        setGitHistoryHandleKey,
+      );
       gitHistoryHandleCallbacks.current.set(tabId, callback);
     }
     return callback;
   };
+  const [searchSource] = useState(() =>
+    createSearchSource({
+      searchAddons,
+      terminals: terminalRefs,
+      editors: editorRefs,
+      gitHistory: gitHistoryHandles,
+    }),
+  );
   useEffect(() => {
-    setGitHistoryHandle(gitHistoryHandles.current.get(activeId) ?? null);
+    setGitHistoryHandleKey(
+      searchObjectKey(gitHistoryHandles.current.get(activeId)),
+    );
   }, [activeId]);
   const { zoomIn, zoomOut, zoomReset } = useZoom();
   useApplyEditorFontSize();
@@ -859,18 +880,20 @@ export default function App() {
   );
 
   useEffect(() => {
-    setActiveSearchAddon(
+    setActiveSearchAddonKey(
       activeLeafId !== null
-        ? (searchAddons.current.get(activeLeafId) ?? null)
+        ? searchObjectKey(searchAddons.current.get(activeLeafId))
         : null,
     );
-    setActiveEditorHandle(editorRefs.current.get(activeId) ?? null);
+    setActiveEditorHandleKey(searchObjectKey(editorRefs.current.get(activeId)));
   }, [activeId, activeLeafId]);
 
   const handleSearchReady = useCallback(
     (leafId: number, addon: SearchAddon) => {
       searchAddons.current.set(leafId, addon);
-      if (leafId === activeLeafId) setActiveSearchAddon(addon);
+      if (leafId === activeLeafId) {
+        setActiveSearchAddonKey(searchObjectKey(addon));
+      }
     },
     [activeLeafId],
   );
@@ -929,6 +952,13 @@ export default function App() {
       if (!live.has(k)) terminalRefs.current.delete(k);
     for (const k of [...searchAddons.current.keys()])
       if (!live.has(k)) searchAddons.current.delete(k);
+    const liveTabIds = new Set(tabs.map((tab) => tab.id));
+    for (const map of [
+      gitHistoryHandleCallbacks.current,
+      gitHistoryHandles.current,
+    ]) {
+      for (const id of [...map.keys()]) if (!liveTabIds.has(id)) map.delete(id);
+    }
 
     // `tabs` spans every space, so this is the authoritative browser tab set:
     // inactive spaces, background-hosted and cold tabs included.
@@ -2677,7 +2707,7 @@ export default function App() {
       } else {
         editorRefs.current.delete(id);
       }
-      if (id === activeId) setActiveEditorHandle(h);
+      if (id === activeId) setActiveEditorHandleKey(searchObjectKey(h));
     },
     [activeId],
   );
@@ -2766,33 +2796,34 @@ export default function App() {
   );
 
   const searchTarget = useMemo<SearchTarget>(() => {
-    if (isTerminalTab && activeLeafId !== null && activeSearchAddon)
+    if (isTerminalTab && activeLeafId !== null && activeSearchAddonKey !== null)
       return {
         kind: "terminal",
-        addon: activeSearchAddon,
-        focus: () => terminalRefs.current.get(activeLeafId)?.focus(),
+        leafId: activeLeafId,
+        objectKey: activeSearchAddonKey,
       };
-    if (isEditorTab && activeEditorHandle)
+    if (isEditorTab && activeEditorHandleKey !== null)
       return {
         kind: "editor",
-        handle: activeEditorHandle,
-        focus: () => activeEditorHandle.focus(),
+        tabId: activeId,
+        objectKey: activeEditorHandleKey,
       };
-    if (isGitHistoryTab && gitHistoryHandle)
+    if (isGitHistoryTab && gitHistoryHandleKey !== null)
       return {
         kind: "git-history",
-        handle: gitHistoryHandle,
-        focus: () => {},
+        tabId: activeId,
+        objectKey: gitHistoryHandleKey,
       };
     return null;
   }, [
     isTerminalTab,
     isEditorTab,
     isGitHistoryTab,
+    activeId,
     activeLeafId,
-    activeSearchAddon,
-    activeEditorHandle,
-    gitHistoryHandle,
+    activeSearchAddonKey,
+    activeEditorHandleKey,
+    gitHistoryHandleKey,
   ]);
 
   const activeCwd = activeTerminalLeafCwd ?? explorerRoot;
@@ -3317,6 +3348,7 @@ export default function App() {
                   onToggleVoice={toggleVoiceOrb}
                   spaceSwitcher={spaceSwitcher}
                   searchTarget={searchTarget}
+                  searchSource={searchSource}
                   searchRef={searchInlineRef}
                   workspaceRoot={activeSpaceRoot}
                   workspace={workspaceForSpace(

@@ -29,26 +29,66 @@ const TERM_DECORATIONS = {
   activeMatchColorOverviewRuler: "#d18616",
 };
 
+// A target names its object by id, and SearchSource looks it up at each use:
+// old renders that memoized callbacks keep reachable hold targets, and a held
+// SearchAddon kept its terminal alive after disposal (round 88, R87-2).
 export type SearchTarget =
-  | { kind: "terminal"; addon: SearchAddon; focus: () => void }
-  | { kind: "editor"; handle: EditorPaneHandle; focus: () => void }
-  | {
-      kind: "git-history";
-      handle: { setQuery: (q: string) => void; clearQuery: () => void };
-      focus: () => void;
-    }
+  | { kind: "terminal"; leafId: number; objectKey: number }
+  | { kind: "editor"; tabId: number; objectKey: number }
+  | { kind: "git-history"; tabId: number; objectKey: number }
   | null;
+
+type GitHistoryFilter = {
+  setQuery: (q: string) => void;
+  clearQuery: () => void;
+};
+
+export type SearchSource = {
+  terminal: (leafId: number) => SearchAddon | undefined;
+  editor: (tabId: number) => EditorPaneHandle | undefined;
+  gitHistory: (tabId: number) => GitHistoryFilter | undefined;
+  focus: (target: NonNullable<SearchTarget>) => void;
+};
+
+type SearchObject =
+  | { kind: "terminal"; addon: SearchAddon }
+  | { kind: "editor"; handle: EditorPaneHandle }
+  | { kind: "git-history"; handle: GitHistoryFilter };
+
+function findSearchObject(
+  target: SearchTarget,
+  source: SearchSource,
+): SearchObject | null {
+  if (!target) return null;
+  if (target.kind === "terminal") {
+    const addon = source.terminal(target.leafId);
+    return addon ? { kind: "terminal", addon } : null;
+  }
+  if (target.kind === "editor") {
+    const handle = source.editor(target.tabId);
+    return handle ? { kind: "editor", handle } : null;
+  }
+  const handle = source.gitHistory(target.tabId);
+  return handle ? { kind: "git-history", handle } : null;
+}
+
+function clearSearchObject(object: SearchObject | null): void {
+  if (!object) return;
+  if (object.kind === "terminal") object.addon.clearDecorations();
+  else object.handle.clearQuery();
+}
 
 export type SearchInlineHandle = { focus: () => void };
 
 type Props = {
   target: SearchTarget;
+  source: SearchSource;
   /** When true, collapse to an icon-only button until the user opens it. */
   compact?: boolean;
 };
 
 export const SearchInline = forwardRef<SearchInlineHandle, Props>(
-  function SearchInline({ target, compact }, ref) {
+  function SearchInline({ target, source, compact }, ref) {
     const [q, setQ] = useState("");
     const [focused, setFocused] = useState(false);
     // Where the terminal's active match sits among all matches. Only the
@@ -106,55 +146,61 @@ export const SearchInline = forwardRef<SearchInlineHandle, Props>(
 
     useImperativeHandle(ref, () => ({ focus }), [focus]);
 
-    const clearTarget = useCallback(() => {
-      if (!target) return;
-      if (target.kind === "terminal") target.addon.clearDecorations();
-      else target.handle.clearQuery();
-    }, [target]);
+    const clearTarget = useCallback(
+      () => clearSearchObject(findSearchObject(target, source)),
+      [target, source],
+    );
 
     const restoreTargetFocus = useCallback(() => {
-      if (!target) return;
-      target.focus();
-    }, [target]);
+      if (target) source.focus(target);
+    }, [target, source]);
 
-    // Target switched (terminal ↔ editor) or removed → drop highlights.
-    useEffect(() => clearTarget, [clearTarget]);
+    // Target switched (terminal ↔ editor, another object behind it) or
+    // removed → drop the highlights of the object it had.
+    useEffect(() => {
+      const object = findSearchObject(target, source);
+      return () => clearSearchObject(object);
+    }, [target, source]);
 
     useEffect(() => {
       setResults(null);
       if (target?.kind !== "terminal") return;
-      const sub = target.addon.onDidChangeResults((e) =>
-        setResults({ index: e.resultIndex, count: e.resultCount }),
-      );
-      return () => sub.dispose();
-    }, [target]);
+      const sub = source
+        .terminal(target.leafId)
+        ?.onDidChangeResults((e) =>
+          setResults({ index: e.resultIndex, count: e.resultCount }),
+        );
+      return () => sub?.dispose();
+    }, [target, source]);
 
     const applyIncremental = (next: string) => {
-      if (!target) return;
-      if (target.kind === "terminal") {
+      const object = findSearchObject(target, source);
+      if (!object) return;
+      if (object.kind === "terminal") {
         if (next) {
-          target.addon.findNext(next, {
+          object.addon.findNext(next, {
             incremental: true,
             decorations: TERM_DECORATIONS,
           });
         } else {
-          target.addon.clearDecorations();
+          object.addon.clearDecorations();
           setResults(null);
         }
       } else {
-        target.handle.setQuery(next);
+        object.handle.setQuery(next);
       }
     };
 
     const findDirection = (forward: boolean) => {
-      if (!target || !q) return;
-      if (target.kind === "terminal") {
+      if (!q) return;
+      const object = findSearchObject(target, source);
+      if (object?.kind === "terminal") {
         const opts = { decorations: TERM_DECORATIONS };
-        if (forward) target.addon.findNext(q, opts);
-        else target.addon.findPrevious(q, opts);
-      } else if (target.kind === "editor") {
-        if (forward) target.handle.findNext();
-        else target.handle.findPrevious();
+        if (forward) object.addon.findNext(q, opts);
+        else object.addon.findPrevious(q, opts);
+      } else if (object?.kind === "editor") {
+        if (forward) object.handle.findNext();
+        else object.handle.findPrevious();
       }
       // git-history: the list filters live; Enter has no next/prev semantics.
     };

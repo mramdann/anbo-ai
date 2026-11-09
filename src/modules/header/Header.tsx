@@ -33,6 +33,7 @@ import {
 import {
   SearchInline,
   type SearchInlineHandle,
+  type SearchSource,
   type SearchTarget,
 } from "./SearchInline";
 
@@ -46,6 +47,7 @@ type Props = {
   onToggleVoice: () => void;
   spaceSwitcher: ReactNode;
   searchTarget: SearchTarget;
+  searchSource: SearchSource;
   searchRef: RefObject<SearchInlineHandle | null>;
   workspaceRoot: string | null;
   workspace: WorkspaceEnv;
@@ -66,6 +68,7 @@ export function Header({
   onToggleVoice,
   spaceSwitcher,
   searchTarget,
+  searchSource,
   searchRef,
   workspaceRoot,
   workspace,
@@ -134,7 +137,12 @@ export function Header({
   );
 
   const search = (
-    <SearchInline ref={searchRef} target={searchTarget} compact={compact} />
+    <SearchInline
+      ref={searchRef}
+      target={searchTarget}
+      source={searchSource}
+      compact={compact}
+    />
   );
 
   return (
