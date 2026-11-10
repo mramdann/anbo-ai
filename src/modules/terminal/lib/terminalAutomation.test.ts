@@ -66,6 +66,7 @@ function dependencies(
     open: () => ({ tabId: 20, leafId: 201 }),
     close: () => true,
     write: () => true,
+    logWarning: () => {},
     ...overrides,
   };
 }
@@ -3589,12 +3590,16 @@ describe("a program that starts too late for its Ctrl+C", () => {
 
   /** A PowerShell running one command, whose programs the test sets; each
    *  Ctrl+C that comes runs `onCtrlC`. */
-  function commandShell() {
+  function commandShell(
+    overrides: Partial<TerminalAutomationDependencies> = {},
+  ) {
     const sim = {
       running: false,
       programs: [] as ShellProcess[],
       completions: [] as { generation: number; exitCode: number; at: number }[],
       ctrlCs: 0,
+      /** What went to Anbo's own log. */
+      logged: [] as string[],
       onCtrlC: () => {},
       end(exitCode: number) {
         sim.running = false;
@@ -3626,6 +3631,10 @@ describe("a program that starts too late for its Ctrl+C", () => {
           }
           return true;
         },
+        logWarning: (message) => {
+          sim.logged.push(message);
+        },
+        ...overrides,
       }),
     );
     return { sim, service };
@@ -3805,9 +3814,9 @@ describe("a program that starts too late for its Ctrl+C", () => {
 
   it("logs what ran when an interrupted command ran on (R86-1)", async () => {
     // A ping ran 20 of 20 after the Ctrl+C and nothing said whether it had
-    // started too late for it or was already running and missed it.
+    // started too late for it or was already running and missed it. The line
+    // goes to Anbo's own log: console output reached no log in prod.
     vi.useFakeTimers();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const shell = commandShell();
       const { sim, service } = shell;
@@ -3831,20 +3840,20 @@ describe("a program that starts too late for its Ctrl+C", () => {
       await waited;
       // A program running at the Ctrl+C never gets another.
       expect(sim.ctrlCs).toBe(1);
-      const lines = warn.mock.calls.map((call) => String(call[0]));
-      const line = lines.find((text) => text.includes("ran on"));
+      const line = sim.logged.find((text) => text.includes("ran on"));
       expect(line).toContain("terminal:10:101");
       expect(line).toContain("after the first Ctrl+C");
+      // Exit code 1 with every reply: PowerShell had the Ctrl+C, ping not.
+      expect(line).toContain("exit code 1");
+      expect(line).toMatch(/command sent \d+\.\d s before it/);
       expect(line).toContain("PING.EXE (pid 4300) started 2.0 s before it");
     } finally {
-      warn.mockRestore();
       vi.useRealTimers();
     }
   });
 
   it("goes on noting programs after its watch, without sending Ctrl+C", async () => {
     vi.useFakeTimers();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const shell = commandShell();
       const { sim, service } = shell;
@@ -3871,13 +3880,34 @@ describe("a program that starts too late for its Ctrl+C", () => {
       await vi.advanceTimersByTimeAsync(500);
       await waited;
       expect(sim.ctrlCs).toBe(1);
-      const line = warn.mock.calls
-        .map((call) => String(call[0]))
-        .find((text) => text.includes("ran on"));
+      const line = sim.logged.find((text) => text.includes("ran on"));
       expect(line).toContain("cmd.exe (pid 4310) started 5.0 s before it");
       expect(line).toMatch(/PING\.EXE \(pid 4311\) started 12\.\d s after it/);
     } finally {
-      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("logs why its watch stopped when a look fails", async () => {
+    vi.useFakeTimers();
+    try {
+      let screenGone = false;
+      const shell = commandShell({
+        getScreen: () => {
+          if (screenGone) throw new Error("screen gone");
+          return "PS C:\\work\\alpha> ";
+        },
+      });
+      const { sim } = shell;
+      await interrupted(shell, "ping -n 20 127.0.0.1");
+      screenGone = true;
+      sim.programs = [{ pid: 4320, name: "PING.EXE", startedAt: Date.now() }];
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(sim.ctrlCs).toBe(1);
+      expect(sim.logged).toContainEqual(
+        "the late-program watch stopped: Error: screen gone",
+      );
+    } finally {
       vi.useRealTimers();
     }
   });

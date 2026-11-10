@@ -240,6 +240,7 @@ import {
 } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { warn } from "@tauri-apps/plugin-log";
 import type { SearchAddon } from "@xterm/addon-search";
 import {
   type CSSProperties,
@@ -2229,6 +2230,9 @@ export default function App() {
             unpreparedReason: terminalAutomationRefusal,
             warm: (tabId) => warmTabRef.current(tabId),
             retryStart: retryShellStart,
+            logWarning: (message) => {
+              void warn(message).catch(() => {});
+            },
             open: (workspace, title) => {
               const placement = automationTabSelection.placement(
                 workspace.id,

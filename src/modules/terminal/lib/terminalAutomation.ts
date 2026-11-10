@@ -166,6 +166,8 @@ export type TerminalAutomationDependencies = {
   warm?: (tabId: number) => void;
   /** Starts again a shell that could not start. */
   retryStart?: (leafId: number) => boolean;
+  /** A line for Anbo's own log, which prod keeps too, unlike the console. */
+  logWarning: (message: string) => void;
   /** The caller's own terminals, shared with the agent tools, which add the
    *  terminal of an agent they spawned. */
   openedTerminals?: Set<string>;
@@ -702,6 +704,8 @@ function describeRanOn(execution: ExecutionState): string {
   );
   return [
     `${execution.terminalId} ${execution.executionId} ended ${seconds(endedAt - sentAt)} after the first Ctrl+C${execution.endUnconfirmed ? " (end not marked)" : ""}`,
+    `exit code ${execution.exitCode ?? "none"}`,
+    `command sent ${seconds(sentAt - (execution.dispatchedAt ?? sentAt))} before it`,
     `Ctrl+C sent again ${execution.interruptResent ?? 0} times`,
     `${trace?.looks ?? 0} looks, slowest ${trace?.slowestLookMs ?? 0} ms`,
     `programs seen: ${programs.join(", ") || "none"}`,
@@ -797,8 +801,8 @@ export function createTerminalAutomationService(
       execution.terminal = { ...execution.terminal, status: "exited" };
     }
     if (reason === "exited" && execution.interruptSentAt !== undefined) {
-      console.warn(
-        `[anbo] an interrupted command ran on: ${describeRanOn(execution)}`,
+      deps.logWarning(
+        `an interrupted command ran on: ${describeRanOn(execution)}`,
       );
     }
   };
@@ -1230,7 +1234,7 @@ export function createTerminalAutomationService(
           );
         },
         (cause: unknown) => {
-          console.warn("[anbo] late program watch stopped", cause);
+          deps.logWarning(`the late-program watch stopped: ${String(cause)}`);
         },
       );
     };
