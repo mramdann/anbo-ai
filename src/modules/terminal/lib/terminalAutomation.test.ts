@@ -3812,6 +3812,86 @@ describe("a program that starts too late for its Ctrl+C", () => {
     }
   });
 
+  it("sends one more to a program made just before the Ctrl+C that missed it (R86-1)", async () => {
+    // Round 92, on a busy machine: a ping made 0.3 s before the Ctrl+C had
+    // not joined the console, its shell took the Ctrl+C alone, and with a
+    // 200 ms margin no second one went out: 20 of 20 replies.
+    vi.useFakeTimers();
+    try {
+      const shell = commandShell();
+      const { sim, service } = shell;
+      // The first Ctrl+C misses it; one that comes later stops it.
+      sim.onCtrlC = () => {
+        if (sim.ctrlCs > 1) setTimeout(() => sim.end(-1_073_741_510), 100);
+      };
+      const executionId = await interrupted(
+        shell,
+        "ping -n 20 127.0.0.1",
+        async () => {
+          sim.programs = [
+            { pid: 5040, name: "PING.EXE", startedAt: Date.now() - 300 },
+          ];
+        },
+      );
+      await vi.advanceTimersByTimeAsync(900);
+      expect(sim.ctrlCs).toBe(1);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(sim.ctrlCs).toBe(2);
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 2_000,
+      });
+      await vi.advanceTimersByTimeAsync(2_500);
+      await expect(waited).resolves.toMatchObject({
+        result: {
+          completed: true,
+          completionReason: "interrupted",
+          interruptResent: 1,
+          exitCode: -1_073_741_510,
+        },
+      });
+      expect(sim.ctrlCs).toBe(2);
+      expect(sim.logged).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends such a program only one more, however long it runs", async () => {
+    vi.useFakeTimers();
+    try {
+      const shell = commandShell();
+      const { sim } = shell;
+      await interrupted(shell, "node keeps-going.js", async () => {
+        sim.programs = [
+          { pid: 5041, name: "node.exe", startedAt: Date.now() - 900 },
+        ];
+      });
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(sim.ctrlCs).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends none to a program that had run over a second when the Ctrl+C came", async () => {
+    vi.useFakeTimers();
+    try {
+      const shell = commandShell();
+      const { sim } = shell;
+      await interrupted(shell, "docker compose up", async () => {
+        sim.programs = [
+          { pid: 5042, name: "docker.exe", startedAt: Date.now() - 1_100 },
+        ];
+      });
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(sim.ctrlCs).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("logs what ran when an interrupted command ran on (R86-1)", async () => {
     // A ping ran 20 of 20 after the Ctrl+C and nothing said whether it had
     // started too late for it or was already running and missed it. The line

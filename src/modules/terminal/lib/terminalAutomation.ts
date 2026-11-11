@@ -90,9 +90,12 @@ const BATCH_ANSWER_GAP_MS = 1_000;
 const LATE_PROGRAM_WATCH_MS = 10_000;
 const LATE_PROGRAM_POLL_MS = 250;
 /** A program that started this long before the Ctrl+C, or later, may not
- *  have joined the console in time. Less than LATE_PROGRAM_AGE_MS, so a
- *  program one more Ctrl+C reached never gets another. */
-const LATE_PROGRAM_MARGIN_MS = 200;
+ *  have joined the console in time. At 200 ms, a ping made 0.3 s before the
+ *  Ctrl+C on a busy machine got none and ran all 20 replies, while its shell
+ *  took the Ctrl+C: 1 of 8,263 pings under load (round 92, R86-1). The cost: a
+ *  program that stops in its own time, interrupted in its first second, gets a
+ *  second Ctrl+C. */
+const LATE_PROGRAM_MARGIN_MS = 1_000;
 /** How long a late program runs before its Ctrl+C goes out: one sent the
  *  moment it starts can come before it has joined the console too. */
 const LATE_PROGRAM_AGE_MS = 300;
@@ -246,6 +249,8 @@ type ExecutionState = {
    *  late for the one before, and the programs the first of them was for. */
   interruptResent?: number;
   resentTo?: string[];
+  /** The programs those were for, by pid and start: each gets one at most. */
+  resentPrograms?: Set<string>;
   /** The latest watch for such a program: an interrupt sent again starts a
    *  new one, and the older one stops. */
   lateProgramWatch?: number;
@@ -1151,10 +1156,11 @@ export function createTerminalAutomationService(
   };
 
   /** Sends Ctrl+C once more to a program the last one could not reach: one
-   *  that started after it, or so shortly before that it had not joined the
-   *  console yet. A program that was running when a Ctrl+C came never gets
-   *  another, which makes one that stops in its own time (terraform, docker
-   *  compose) quit at once. Without start times, nothing is sent. */
+   *  that started after it, or so shortly before that it may not have joined
+   *  the console yet. A program that had run longer when a Ctrl+C came never
+   *  gets another, and none gets more than one: another makes a program that
+   *  stops in its own time (terraform, docker compose) quit at once. Without
+   *  start times, nothing is sent. */
   const watchForLateProgram = (leafId: number, execution: ExecutionState) => {
     const programsOf = deps.foregroundProcesses;
     if (!programsOf) return;
@@ -1197,11 +1203,14 @@ export function createTerminalAutomationService(
         execution.noProgramSince = undefined;
       }
       const sentAt = execution.interruptSentAt ?? now;
+      const key = (program: ShellProcess) =>
+        `${program.pid}:${program.startedAt}`;
       const late = programs.filter(
         (program) =>
           program.startedAt !== undefined &&
           program.startedAt > sentAt - LATE_PROGRAM_MARGIN_MS &&
-          now - program.startedAt >= LATE_PROGRAM_AGE_MS,
+          now - program.startedAt >= LATE_PROGRAM_AGE_MS &&
+          !execution.resentPrograms?.has(key(program)),
       );
       if (
         late.length > 0 &&
@@ -1215,6 +1224,8 @@ export function createTerminalAutomationService(
       ) {
         if (!deps.write(leafId, "\x03")) return false;
         execution.interruptSentAt = Date.now();
+        execution.resentPrograms ??= new Set();
+        for (const program of late) execution.resentPrograms.add(key(program));
         execution.interruptResent = (execution.interruptResent ?? 0) + 1;
         execution.resentTo ??= late.map(
           (program) => `${program.name} (pid ${program.pid})`,
