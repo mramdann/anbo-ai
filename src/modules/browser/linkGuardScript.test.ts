@@ -61,7 +61,7 @@ function page() {
   const expired: (() => void)[] = [];
   const window = new FakeNode() as FakeNode & {
     __anboHeldLink?: {
-      held: { url: string | null; pageTookIt: boolean };
+      held: { url: string | null; pageTookIt: boolean; stoodDown: boolean };
       disarm: () => void;
     };
   };
@@ -121,9 +121,10 @@ describe("link guard", () => {
     const anchor = link();
     expect(guard(anchor, everyLink)).toBe(true);
     expect(click(anchor).defaultPrevented).toBe(true);
-    expect(held()).toEqual({
+    expect(held()).toMatchObject({
       url: "https://example.com/next",
       pageTookIt: false,
+      stoodDown: false,
     });
   });
 
@@ -144,7 +145,7 @@ describe("link guard", () => {
     anchor.pageHandler = (event) => event.preventDefault();
     guard(anchor, everyLink);
     click(anchor);
-    expect(held()).toEqual({ url: null, pageTookIt: true });
+    expect(held()).toMatchObject({ url: null, pageTookIt: true });
   });
 
   it("holds a click a handler kept from going further up", () => {
@@ -197,6 +198,8 @@ describe("link guard", () => {
     expect(listeners()).toBe(0);
     expect(click(anchor).defaultPrevented).toBe(false);
     expect(held()?.url).toBeNull();
+    // For the log: a click that came after says the guard had stood down.
+    expect(held()?.stoodDown).toBe(true);
   });
 
   it("holds one click only", () => {
@@ -213,9 +216,10 @@ describe("link guard", () => {
     guard(anchor, everyLink);
     guard(anchor, everyLink);
     click(anchor);
-    expect(held()).toEqual({
+    expect(held()).toMatchObject({
       url: "https://example.com/next",
       pageTookIt: false,
+      stoodDown: false,
     });
   });
 });

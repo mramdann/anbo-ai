@@ -17,7 +17,7 @@ use super::{
     ref_failure_reason, wait_for_checked_state, RefFrameTarget, Webview,
 };
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long a page's link waits for its tab to be made. The browser does it at
 /// once; on a busy machine the extension's queue can take a moment.
@@ -25,6 +25,14 @@ const OPEN_LINK_PATIENCE: Duration = Duration::from_secs(5);
 /// How long a look at a tab's window may take. Past that the input goes on as
 /// it would have.
 const TAB_STATE_PATIENCE: Duration = Duration::from_millis(600);
+
+/// Anbo's id of a Chrome or Edge tab, for the log.
+fn tab_of(webview: &Webview) -> i64 {
+    match webview {
+        Webview::External { target, .. } => target.tab_id,
+        Webview::Embedded(_) => 0,
+    }
+}
 
 /// Actions a hidden page can take without being shown.
 pub(super) fn stands_in(method: &str) -> bool {
@@ -248,6 +256,9 @@ pub(super) async fn click(
     let opened = if prepared["guarded"].as_bool() == Some(true) {
         open_held_link(webview, target, ref_id).await?
     } else {
+        if background {
+            log::info!("[browser_link] tab {tab_id}: a link to another tab was not held back; its browser opens the tab");
+        }
         background
     };
     let mut result = answer(tab_id, ref_id, input, why);
@@ -275,10 +286,38 @@ pub(super) async fn window_is_away(webview: &Webview, tab_id: i64) -> bool {
     if crate::modules::browser_external::dock::docked(tab_id).is_some() {
         return false;
     }
-    target
+    let asked = Instant::now();
+    match target
         .call("anbo.tabState", json!({}), TAB_STATE_PATIENCE)
         .await
-        .is_ok_and(|state| state["focused"].as_bool() == Some(false))
+    {
+        Ok(state) => state["focused"].as_bool() == Some(false),
+        // On a busy machine a minimized window came up for a link an agent
+        // followed, twice in 890, and nothing told which step let it through
+        // (round 92, R92-1): each one that gives up says so in the log.
+        Err(error) => {
+            log::warn!(
+                "[browser_link] tab {tab_id}: its window's state did not come in {} ms ({error}), so a link it opens is not held back",
+                asked.elapsed().as_millis()
+            );
+            false
+        }
+    }
+}
+
+/// Whether the guard a script set is in place; one that could not be set is
+/// logged.
+fn armed(webview: &Webview, set: Result<Value, (String, String)>) -> bool {
+    match set {
+        Ok(armed) => armed["guarded"].as_bool() == Some(true),
+        Err((_, error)) => {
+            log::warn!(
+                "[browser_link] tab {}: the link guard could not be set ({error}), so a link it opens is not held back",
+                tab_of(webview)
+            );
+            false
+        }
+    }
 }
 
 /// Before a pointer click on a page in a window away from the user: whether a
@@ -288,21 +327,21 @@ pub(super) async fn guard_click(
     target: Option<&RefFrameTarget>,
     ref_id: &str,
 ) -> bool {
-    run(
+    let set = run(
         webview,
         target,
         ref_id,
         "return JSON.stringify({ ok: true, guarded: !!el && anboHidden.guardLink(el) });",
     )
-    .await
-    .is_ok_and(|armed| armed["guarded"].as_bool() == Some(true))
+    .await;
+    armed(webview, set)
 }
 
 /// Before Enter or Ctrl+Enter on such a page: the same for the link that has
 /// the focus, which the key follows. Plain Enter stays in the tab on a link
 /// with no target of its own, and Ctrl+Enter opens any link in another.
 pub(super) async fn guard_key(webview: &Webview, modifiers: u8) -> bool {
-    run(
+    let set = run(
         webview,
         None,
         "",
@@ -314,8 +353,8 @@ pub(super) async fn guard_key(webview: &Webview, modifiers: u8) -> bool {
             any_link = modifiers == CTRL,
         ),
     )
-    .await
-    .is_ok_and(|armed| armed["guarded"].as_bool() == Some(true))
+    .await;
+    armed(webview, set)
 }
 
 /// After the key or click the page's handlers saw: a link they left alone opens
@@ -335,22 +374,52 @@ pub(super) async fn open_held_link(
         r#"
         const guard = window.__anboHeldLink;
         delete window.__anboHeldLink;
-        if (!guard) return JSON.stringify({ ok: true });
+        if (!guard) return JSON.stringify({ ok: true, noGuard: true });
         guard.disarm();
-        return JSON.stringify(Object.assign({ ok: true }, guard.held));"#,
+        return JSON.stringify(Object.assign({ ok: true, waitedMs: Date.now() - guard.held.armedAt }, guard.held));"#,
     )
     .await
-    .unwrap_or_default();
+    .unwrap_or_else(|(_, error)| json!({ "unread": error }));
+    let tab_id = tab_of(webview);
+    let waited = held["waitedMs"].as_i64().unwrap_or(-1);
     let Some(url) = held["url"].as_str() else {
-        return Ok(held["pageTookIt"].as_bool() != Some(true));
+        let took = held["pageTookIt"].as_bool() == Some(true);
+        if !took {
+            let what = if let Some(error) = held["unread"].as_str() {
+                format!("the link guard could not be read ({error})")
+            } else if held["noGuard"].as_bool() == Some(true) {
+                "no link guard was left on the page".to_string()
+            } else if held["stoodDown"].as_bool() == Some(true) {
+                format!(
+                    "the link guard had stood down, {waited} ms after it was set, without a click"
+                )
+            } else {
+                format!("the link guard saw no click in the {waited} ms since it was set")
+            };
+            log::warn!(
+                "[browser_link] tab {tab_id}: {what}; a tab the click still opens is its browser's"
+            );
+        }
+        return Ok(!took);
     };
     let Webview::External { target: tab, .. } = webview else {
         return Ok(false);
     };
-    match tab
+    let asked = Instant::now();
+    let opened = tab
         .call("anbo.openLink", json!({ "url": url }), OPEN_LINK_PATIENCE)
-        .await
-    {
+        .await;
+    match &opened {
+        Ok(_) => log::info!(
+            "[browser_link] tab {tab_id}: held link opened behind, {waited} ms after its guard was set ({} ms for the tab)",
+            asked.elapsed().as_millis()
+        ),
+        Err(error) => log::warn!(
+            "[browser_link] tab {tab_id}: held link not opened {waited} ms after its guard was set ({} ms): {error}",
+            asked.elapsed().as_millis()
+        ),
+    }
+    match opened {
         Ok(_) => Ok(true),
         // An extension from before 0.5.14: the browser's own way, now that
         // nothing holds the link back. Anbo has it reload soon after.

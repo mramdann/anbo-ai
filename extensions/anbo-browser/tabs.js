@@ -5,7 +5,7 @@ import { createDockManager } from "./dock.js";
 // The version this code is, kept equal to manifest.json. After an update the
 // browser reads the new manifest but can keep running the old scripts until the
 // extension reloads, so the manifest alone would hide that a reload is due.
-export const EXTENSION_VERSION = "0.5.14";
+export const EXTENSION_VERSION = "0.5.15";
 
 const MAX_TABS = 128;
 // A new tab opened this soon after Anbo sent input to the tab it opened from
@@ -31,8 +31,14 @@ const KEEP_WINDOW_LOOK_MS = 25;
 // How long a tab a page opened may take to reach a web page before it is left
 // to the browser.
 const ADOPT_WAIT_MS = 15_000;
+// For Anbo's log only. On a busy machine a minimized window came up in front
+// of the user's and stayed, twice in 890 links agents followed, and nothing
+// told where it got past (round 92, R92-1). How long after an agent's input a
+// tab that came too late to be its is still noted, and how long after a watch
+// that saw nothing its window is noted coming up.
+const LATE_NOTE_MS = 15_000;
 
-export function createTabManager(api, attached, publishTabs, dockChanged, reload = () => {}, keepRenderers = () => {}, closedInBrowser = () => {}) {
+export function createTabManager(api, attached, publishTabs, dockChanged, reload = () => {}, keepRenderers = () => {}, closedInBrowser = () => {}, note = () => {}) {
   const dock = createDockManager(api, dockChanged);
   const pending = new Map();
   const attaching = new Map();
@@ -57,6 +63,8 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
   const windowBefore = new Map();
   // The windows being put back (keepWindow), each with its watches' wake-ups.
   const keeping = new Map();
+  // The windows a watch left as they were, for a note if they come up after.
+  const watched = new Map();
   // The workspace of each tab Anbo holds, as an opaque name Anbo gives it, with
   // the selection it was given for. One profile can serve several workspaces.
   const scopes = new Map();
@@ -394,6 +402,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     const opener = attached.get(tab.openerTabId);
     const named = Boolean(opener && driven(opener.id));
     const recent = fromDock ? null : lastDriven();
+    if (recent && !recent.found) noteLate(tab);
     // Agents of two workspaces sent input in the moment a page takes to open a
     // tab. The opener, the one the browser named or else the tab input reached
     // last, holds when the other workspace's input came well before its own.
@@ -430,6 +439,17 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     if (!fromDock && !agent) return;
     const openedFrom = { selectionId: opener.selectionId, background: tab.active !== true, agent };
     void track(adopt(tab, openedFrom)).catch(() => {});
+  }
+
+  // A tab that came after the moment input counts as an agent's: nothing
+  // watches its window.
+  function noteLate(tab) {
+    let last = null;
+    for (const [tabId, at] of inputAt) {
+      if (attached.has(tabId) && windowBefore.get(tabId)?.windowId === tab.windowId && (!last || at > last.at)) last = { tabId, at };
+    }
+    const age = last ? Date.now() - last.at : LATE_NOTE_MS;
+    if (age < LATE_NOTE_MS) note(last.tabId, `a tab came ${age} ms after the last input to this page, past the ${AGENT_INPUT_MS} ms an agent's tab has: its window is not put back`);
   }
 
   function navigationTarget(details) {
@@ -481,8 +501,14 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
   // came over. Anbo's dock window is Anbo's to show.
   async function keepWindow(openerId, windowId) {
     const before = windowBefore.get(openerId);
-    if (!before || before.windowId !== windowId || Date.now() - before.at > AGENT_INPUT_MS) return;
+    const since = Date.now();
+    if (!before || before.windowId !== windowId || since - before.at > AGENT_INPUT_MS) {
+      const why = !before ? "no window was noted before the input" : before.windowId !== windowId ? "it came in another window" : `its window was noted ${since - before.at} ms before, past ${AGENT_INPUT_MS} ms`;
+      note(openerId, `a tab came and its window is not put back: ${why}`);
+      return;
+    }
     if (dock.ownsWindow(windowId) || (before.state !== "minimized" && before.focused)) return;
+    watched.delete(windowId);
     const watch = { wake: () => {} };
     const watches = keeping.get(windowId) ?? new Set();
     keeping.set(windowId, watches.add(watch));
@@ -492,14 +518,19 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
         if (!window || disposed) return;
         if (before.state === "minimized" && window.state !== "minimized") {
           await api.windows.update(windowId, { state: "minimized" });
+          note(openerId, `its window came up for a new tab and was minimized again ${Date.now() - since} ms after the tab`);
           return;
         }
         if (before.state !== "minimized" && window.focused === true) {
           await api.windows.update(windowId, { focused: false });
+          note(openerId, `its window took the focus for a new tab and was sent behind ${Date.now() - since} ms after the tab`);
           return;
         }
         const left = until - Date.now();
-        if (left <= 0) return;
+        if (left <= 0) {
+          watched.set(windowId, { openerId, before, since });
+          return;
+        }
         await new Promise((resolve) => {
           const timer = setTimeout(resolve, Math.min(KEEP_WINDOW_LOOK_MS, left));
           watch.wake = () => { clearTimeout(timer); resolve(); };
@@ -530,6 +561,21 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
   // looked at now, not at its next look.
   function windowChanged(windowId) {
     for (const watch of keeping.get(windowId) ?? []) watch.wake();
+    if (watched.has(windowId)) void lateLook(windowId).catch(() => {});
+  }
+
+  // A window that comes up once its watch is over stays there. Only noted.
+  async function lateLook(windowId) {
+    const late = watched.get(windowId);
+    if (Date.now() - late.since > LATE_NOTE_MS) {
+      watched.delete(windowId);
+      return;
+    }
+    const window = await api.windows.get(windowId).catch(() => null);
+    if (!window || disposed || watched.get(windowId) !== late) return;
+    if (late.before.state === "minimized" ? window.state === "minimized" : window.focused !== true) return;
+    watched.delete(windowId);
+    note(late.openerId, `its window came up ${Date.now() - late.since} ms after a new tab, past the ${KEEP_WINDOW_MS} ms it is watched, and stays there`);
   }
 
   async function adopt(tab, openedFrom, front = null) {
@@ -641,6 +687,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     for (const done of [...sourceWaits.values()]) done();
     for (const watches of keeping.values()) for (const watch of watches) watch.wake();
     keeping.clear();
+    watched.clear();
     const ids = [...owned];
     attached.clear();
     await Promise.allSettled([...running, ...ids.map((tabId) => detach(tabId))]);

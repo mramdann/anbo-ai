@@ -48,6 +48,10 @@ async function connect(name) {
       post({ type: "host", method: "keepRenderers", params: { ids } }, current);
     }, (tabId, selectionId) => {
       if (active()) post({ type: "event", tabId, selectionId, method: "anbo.closedInBrowser", params: {} }, current);
+    }, (tabId, text) => {
+      // For Anbo's log: what became of the window a new tab came in.
+      const tab = attached.get(tabId);
+      if (active() && tab) post({ type: "event", tabId, selectionId: tab.selectionId, method: "anbo.note", params: { text } }, current);
     });
     session = current;
     const dispatch = createDispatcher(chrome, attached, (message) => post(message, current), active, current.tabs);

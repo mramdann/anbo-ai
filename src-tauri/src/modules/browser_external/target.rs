@@ -642,6 +642,15 @@ pub(super) fn event(
         "anbo.closedInBrowser" => {
             let _ = app.emit(CLOSED_EVENT, json!({ "tabId": tab_id }));
         }
+        // What became of the window a new tab came in (extension 0.5.15):
+        // put back, left alone and why, or up after its watch (R92-1).
+        "anbo.note" => {
+            if let Some(text) = params["text"].as_str().filter(|text| {
+                text.len() <= 300 && text.chars().all(|c| c == ' ' || c.is_ascii_graphic())
+            }) {
+                log::info!("[browser_link] tab {tab_id}: {text}");
+            }
+        }
         "anbo.console" => {
             if params["level"]
                 .as_str()

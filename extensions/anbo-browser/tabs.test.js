@@ -60,14 +60,15 @@ function harness(reload, { renderers } = {}) {
   };
   const kept = [];
   const closed = [];
-  const manager = createTabManager(api, selected, () => publications.push([...selected.values()].map((tab) => ({ ...tab }))), undefined, reload, (ids) => kept.push(ids), (tabId, selectionId) => closed.push([tabId, selectionId]));
+  const notes = [];
+  const manager = createTabManager(api, selected, () => publications.push([...selected.values()].map((tab) => ({ ...tab }))), undefined, reload, (ids) => kept.push(ids), (tabId, selectionId) => closed.push([tabId, selectionId]), (tabId, text) => notes.push([tabId, text]));
   const dispatch = createDispatcher(api, selected, (reply) => replies.push(reply), () => active, manager);
   const run = async (method, tabId = 0, params = {}) => {
     const id = ++nextId;
     await dispatch({ type: "command", id, tabId, selectionId: selected.get(tabId)?.selectionId, method, params, expiresAt: Date.now() + 10_000 });
     return replies.find((reply) => reply.id === id);
   };
-  return { api, tabs, selected, publications, kept, closed, manager, run, revoke: () => { active = false; } };
+  return { api, tabs, selected, publications, kept, closed, notes, manager, run, revoke: () => { active = false; } };
 }
 
 describe("tabs selected directly from Anbo", () => {
@@ -879,6 +880,7 @@ describe("tabs a page Anbo drives opens", () => {
       shown = "normal";
       await vi.advanceTimersByTimeAsync(30);
       expect(state.api.windows.update).toHaveBeenCalledWith(20, { state: "minimized" });
+      expect(state.notes).toEqual([[10, expect.stringMatching(/^its window came up for a new tab and was minimized again \d+ ms after the tab$/)]]);
       // A window that stays down is looked at for 1.5 s, then left alone.
       shown = "minimized";
       state.api.windows.update.mockClear();
@@ -887,9 +889,48 @@ describe("tabs a page Anbo drives opens", () => {
       await vi.advanceTimersByTimeAsync(1_600);
       const looks = state.api.windows.get.mock.calls.length;
       await vi.advanceTimersByTimeAsync(1_000);
+      // Round 92 (R92-1): on a busy machine a window came up after its watch
+      // and stayed. It is looked at once more at the browser's word, only to
+      // note it in Anbo's log.
+      shown = "normal";
       state.manager.windowChanged(20);
       await vi.advanceTimersByTimeAsync(100);
-      expect(state.api.windows.get.mock.calls.length).toBe(looks);
+      expect(state.api.windows.get.mock.calls.length).toBe(looks + 1);
+      expect(state.api.windows.update).not.toHaveBeenCalledWith(20, { state: "minimized" });
+      expect(state.notes.at(-1)).toEqual([10, expect.stringMatching(/^its window came up 2\d\d\d ms after a new tab, past the 1500 ms it is watched, and stays there$/)]);
+      // Noted once.
+      state.manager.windowChanged(20);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(state.api.windows.get.mock.calls.length).toBe(looks + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("notes a tab that came too late to be an agent's, and a window noted too long before the tab", async () => {
+    // Round 92 (R92-1): a minimized window came up and stayed, twice in 890
+    // links agents followed on a busy machine. Neither case puts it back, as
+    // before; each now says so in Anbo's log.
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    state.api.windows.get.mockImplementation(async (id) => ({ id, type: "normal", incognito: false, state: "minimized", focused: false }));
+    vi.useFakeTimers();
+    try {
+      await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter", modifiers: 2 });
+      await vi.advanceTimersByTimeAsync(2_500);
+      state.manager.created(openedTab(state, 13, { active: false, openerTabId: 99 }));
+      await vi.advanceTimersByTimeAsync(100);
+      expect(state.notes).toEqual([[10, expect.stringMatching(/^a tab came 2\d\d\d ms after the last input to this page, past the 2000 ms an agent's tab has: its window is not put back$/)]]);
+      expect(state.selected.has(13)).toBe(false);
+      // The key went down 2.5 s before the tab and up 1 s before it.
+      state.notes.length = 0;
+      await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter", modifiers: 2 });
+      await vi.advanceTimersByTimeAsync(1_500);
+      await state.run("Input.dispatchKeyEvent", 10, { type: "keyUp", key: "Enter", modifiers: 2 });
+      await vi.advanceTimersByTimeAsync(1_000);
+      state.manager.created(openedTab(state, 14, { active: false }));
+      await vi.advanceTimersByTimeAsync(100);
+      expect(state.notes).toEqual([[10, expect.stringMatching(/^a tab came and its window is not put back: its window was noted 2\d\d\d ms before, past 2000 ms$/)]]);
       expect(state.api.windows.update).not.toHaveBeenCalledWith(20, { state: "minimized" });
     } finally {
       vi.useRealTimers();

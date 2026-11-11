@@ -9,7 +9,8 @@ const anboGuardLink = (node, opensTab) => {
     if (!(link instanceof HTMLAnchorElement) || !opensTab(link) ||
         !/^https?:$/.test(link.protocol) || link.hasAttribute('download') ||
         link.relList.contains('opener')) return false;
-    const held = { url: null, pageTookIt: false };
+    // armedAt and stoodDown are for Anbo's log (R92-1).
+    const held = { url: null, pageTookIt: false, armedAt: Date.now(), stoodDown: false };
     // The hold comes last, on the window or on the node whose handler kept the
     // click from going further, as one on a link in a clickable row does.
     const path = [window];
@@ -29,7 +30,10 @@ const anboGuardLink = (node, opensTab) => {
         event.preventDefault();
         held.url = link.href;
     };
-    const timer = setTimeout(disarm, 2000);
+    const timer = setTimeout(() => {
+        held.stoodDown = true;
+        disarm();
+    }, 2000);
     for (const at of path) at.addEventListener('click', hold);
     window.__anboHeldLink = { held, disarm };
     return true;
