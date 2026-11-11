@@ -3892,6 +3892,84 @@ describe("a program that starts too late for its Ctrl+C", () => {
     }
   });
 
+  it("reads a command its Ctrl+C stopped as interrupted when its end is read late (R92-2)", async () => {
+    // Round 92: the UI stalled about 3 s at a space switch on a busy machine,
+    // so the end of a ping that stopped at once was read 3.9 s after its
+    // Ctrl+C and logged as a command that ran on.
+    vi.useFakeTimers();
+    try {
+      const shell = commandShell();
+      const { sim, service } = shell;
+      sim.onCtrlC = () => {
+        setTimeout(() => {
+          sim.programs = [];
+        }, 200);
+        setTimeout(() => sim.end(-1_073_741_510), 3_900);
+      };
+      const executionId = await interrupted(
+        shell,
+        "ping -n 20 127.0.0.1",
+        async () => {
+          sim.programs = [
+            { pid: 11228, name: "PING.EXE", startedAt: Date.now() - 1_200 },
+          ];
+        },
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 100,
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      await expect(waited).resolves.toMatchObject({
+        result: {
+          completed: true,
+          completionReason: "interrupted",
+          interrupted: true,
+          exitCode: -1_073_741_510,
+        },
+      });
+      expect(sim.ctrlCs).toBe(1);
+      expect(sim.logged).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still reads one that ran on as exited when its shell kept the Ctrl+C exit code", async () => {
+    // PowerShell, which took the Ctrl+C itself, reports the exit code of the
+    // command before: -1073741510 again after an interrupted ping.
+    vi.useFakeTimers();
+    try {
+      const shell = commandShell();
+      const { sim, service } = shell;
+      const executionId = await interrupted(
+        shell,
+        "ping -n 20 127.0.0.1",
+        async () => {
+          sim.programs = [
+            { pid: 4301, name: "PING.EXE", startedAt: Date.now() - 2_000 },
+          ];
+        },
+      );
+      setTimeout(() => sim.end(-1_073_741_510), 20_000);
+      await vi.advanceTimersByTimeAsync(21_000);
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 100,
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      await expect(waited).resolves.toMatchObject({
+        result: { completed: true, completionReason: "exited" },
+      });
+      expect(sim.logged.some((text) => text.includes("ran on"))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("logs what ran when an interrupted command ran on (R86-1)", async () => {
     // A ping ran 20 of 20 after the Ctrl+C and nothing said whether it had
     // started too late for it or was already running and missed it. The line

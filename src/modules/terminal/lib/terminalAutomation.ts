@@ -55,6 +55,8 @@ const SPLIT_OUTPUT_MIN_CHARS = 400;
  *  Dev the commands a Ctrl+C stopped ended within half a second of it; a
  *  program that catches Ctrl+C runs on and ends whenever it would have. */
 const INTERRUPT_STOP_MS = 3_000;
+/** What Windows reports for a program a Ctrl+C ended (STATUS_CONTROL_C_EXIT). */
+const CTRL_C_EXIT_CODE = -1_073_741_510;
 /** How long after its Ctrl+C an execution may go without its shell marking
  *  the end, once none of its programs is left, before Anbo ends it unconfirmed.
  *  A terminal whose output stopped reaching Anbo held its execution, and so
@@ -251,6 +253,9 @@ type ExecutionState = {
   resentTo?: string[];
   /** The programs those were for, by pid and start: each gets one at most. */
   resentPrograms?: Set<string>;
+  /** A look found one of its programs still running more than
+   *  INTERRUPT_STOP_MS after the last Ctrl+C. */
+  ranPastStop?: boolean;
   /** The latest watch for such a program: an interrupt sent again starts a
    *  new one, and the older one stops. */
   lateProgramWatch?: number;
@@ -818,11 +823,20 @@ export function createTerminalAutomationService(
   const endReason = (
     execution: ExecutionState,
     endedAt?: number,
+    exitCode?: number | null,
   ): CompletionReason => {
     const sentAt = execution.interruptSentAt;
     if (sentAt === undefined) return "exited";
     if (endedAt === undefined) return "interrupted";
-    return endedAt - sentAt <= INTERRUPT_STOP_MS ? "interrupted" : "exited";
+    if (endedAt - sentAt <= INTERRUPT_STOP_MS) return "interrupted";
+    // A UI that stalled for 3 s on a busy machine read the end of a ping its
+    // Ctrl+C had stopped 3.9 s after it, and called it one that ran on (round
+    // 92, R92-2). The exit code alone can be the one before's, which
+    // PowerShell keeps when it took the Ctrl+C itself, so no look may have
+    // found a program past the limit either.
+    return exitCode === CTRL_C_EXIT_CODE && !execution.ranPastStop
+      ? "interrupted"
+      : "exited";
   };
 
   // A dispatch failure with no reason sent a prod agent off blaming the
@@ -878,7 +892,7 @@ export function createTerminalAutomationService(
     if (completion || (state.commandGeneration ?? 0) >= targetGeneration) {
       finishExecution(
         execution,
-        endReason(execution, completion?.at),
+        endReason(execution, completion?.at, completion?.exitCode),
         completion?.exitCode ?? null,
         completion?.at,
       );
@@ -1196,13 +1210,17 @@ export function createTerminalAutomationService(
               : program.startedAt - trace.firstCtrlCAt,
         });
       }
+      const sentAt = execution.interruptSentAt ?? now;
+      // By when the look was asked: its answer can come seconds later.
+      if (programs.length > 0 && askedAt - sentAt > INTERRUPT_STOP_MS) {
+        execution.ranPastStop = true;
+      }
       // Past the watch it only notes what runs.
       if (now >= until) return true;
       if (programs.length > 0) {
         execution.programSeenAt = now;
         execution.noProgramSince = undefined;
       }
-      const sentAt = execution.interruptSentAt ?? now;
       const key = (program: ShellProcess) =>
         `${program.pid}:${program.startedAt}`;
       const late = programs.filter(
@@ -1224,6 +1242,7 @@ export function createTerminalAutomationService(
       ) {
         if (!deps.write(leafId, "\x03")) return false;
         execution.interruptSentAt = Date.now();
+        execution.ranPastStop = undefined;
         execution.resentPrograms ??= new Set();
         for (const program of late) execution.resentPrograms.add(key(program));
         execution.interruptResent = (execution.interruptResent ?? 0) + 1;
