@@ -117,6 +117,9 @@ type Session = {
   // OSC 133 C..D window (or blocks running mode): a foreground process owns
   // the terminal, so the leaf must keep its live grid while hidden.
   commandRunning: boolean;
+  // Until when (performance.now()) the buffer stays this leaf's for a command
+  // that was sent, or is about to be, and has not marked its start yet.
+  startHeldUntil: number;
   commandGeneration: number;
   lastExitCode: number | null;
   commandCompletions: TerminalCommandCompletion[];
@@ -145,6 +148,24 @@ type TerminalCommandCompletion = {
 };
 
 const sessions = new Map<number, Session>();
+
+// A line was sent to the shell, or an agent's command is about to be, and the
+// shell has not marked its start. Until it does, nothing else says the
+// terminal is in use: when its workspace was shown, its pane was put up again
+// and let the buffer go for a moment, the terminal shown on top took it, and
+// the command's start and end were never read (round 93, R93-1). The buffer
+// stays the leaf's own this long, or until the start mark comes. It ends by
+// itself, so a shell that marks no start does not keep a buffer for good.
+const START_HOLD_MS = 10_000;
+
+function holdForStart(s: Session): void {
+  s.startHeldUntil = performance.now() + START_HOLD_MS;
+}
+
+function awaitsStart(s: Session): boolean {
+  return performance.now() < s.startHeldUntil;
+}
+
 let defaultShellNamePromise: Promise<string> | null = null;
 
 function shellName(value: string): string {
@@ -185,6 +206,7 @@ function notifyTerminalInput(leafId: number, data: string): void {
         character === "\x15"
       ) {
         session.inputPending = false;
+        if (character === "\r" || character === "\n") holdForStart(session);
       } else {
         const code = character.charCodeAt(0);
         if (code >= 0x20 && code !== 0x7f) session.inputPending = true;
@@ -373,6 +395,8 @@ export function prepareTerminalAutomationSession(leafId: number): boolean {
     bindLeafToSlot(leafId, session);
     if (!session.visibleNow) parkLeafSlot(leafId);
   }
+  // The command is typed a moment from now: the buffer stays until then.
+  if (session.hasSlot) holdForStart(session);
   return session.hasSlot;
 }
 
@@ -702,6 +726,8 @@ function onLeafCommandState(
   const s = sessions.get(leafId);
   if (!s) return;
   if (change.completed) recordCommandCompletion(leafId, change.exitCode);
+  // The start mark came: commandRunning keeps the buffer from here.
+  if (change.running) s.startHeldUntil = 0;
   if (s.commandRunning === change.running) return;
   s.commandRunning = change.running;
   if (!change.running) {
@@ -777,7 +803,7 @@ configureRendererPool({
   },
   isLeafBusy(leafId) {
     const s = sessions.get(leafId);
-    return !!s && leafBusy(s);
+    return !!s && (leafBusy(s) || awaitsStart(s));
   },
   isLeafVisible(leafId) {
     return sessions.get(leafId)?.visibleNow ?? false;
@@ -831,6 +857,7 @@ function ensureSession(
     everSubmitted: false,
     altScreenAtRelease: false,
     commandRunning: false,
+    startHeldUntil: 0,
     commandGeneration: 0,
     lastExitCode: null,
     commandCompletions: [],
@@ -997,6 +1024,7 @@ function applyBlockMode(leafId: number, mode: BlockMode): void {
   if (!s) return;
   s.blockMode = mode;
   s.commandRunning = mode !== "prompt";
+  if (s.commandRunning) s.startHeldUntil = 0;
   const slot = getSlotForLeaf(leafId);
   if (slot) {
     const prompt = mode === "prompt";
@@ -1240,6 +1268,7 @@ async function respawnSession(leafId: number, cwd?: string): Promise<void> {
   s.pendingInput = "";
   s.altScreenAtRelease = false;
   s.commandRunning = false;
+  s.startHeldUntil = 0;
   s.lastExitCode = null;
   s.commandCompletions = [];
   s.inputPending = false;

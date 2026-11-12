@@ -155,6 +155,52 @@ describe("terminal window restore", () => {
     );
   });
 
+  it("keeps a terminal's buffer from when a command is sent until its start mark", () => {
+    // Round 93 (R93-1), proved in Dev in round 94: showing a workspace puts
+    // its terminal panes up again, and each lets its buffer go for a moment.
+    // With five buffers held elsewhere, the terminal shown on top had none of
+    // its own and took the one a hidden terminal had just let go, whose
+    // command an agent had typed and whose start mark was not read yet: 13
+    // of 13 such commands never ended for terminal_wait, 0 of 10 with four
+    // terminals.
+    const between = (start: string, end: string) =>
+      sessionSource.slice(
+        sessionSource.indexOf(start),
+        sessionSource.indexOf(end),
+      );
+    // A line sent to the shell starts the hold, on every way in.
+    expect(
+      between("function notifyTerminalInput", "const dormantReads"),
+    ).toContain(
+      'if (character === "\\r" || character === "\\n") holdForStart(session);',
+    );
+    // So does an agent's command about to be typed, once its buffer is bound.
+    const prepare = between(
+      "export function prepareTerminalAutomationSession",
+      "export function terminalHasLiveBuffer",
+    );
+    expect(prepare).toContain("if (session.hasSlot) holdForStart(session);");
+    expect(prepare.indexOf("bindLeafToSlot(leafId, session)")).toBeLessThan(
+      prepare.indexOf("holdForStart(session)"),
+    );
+    // The pool asks this: a buffer let go is not taken while its leaf waits.
+    expect(
+      between("configureRendererPool({", "function ensureSession"),
+    ).toContain("return !!s && (leafBusy(s) || awaitsStart(s));");
+    // The start mark ends the hold; without one it ends by itself.
+    expect(
+      between("function onLeafCommandState", "ensureAgentActivityListener("),
+    ).toContain("if (change.running) s.startHeldUntil = 0;");
+    expect(
+      between("function awaitsStart", "let defaultShellNamePromise"),
+    ).toContain("return performance.now() < s.startHeldUntil;");
+    // Only the pool's protection reads the hold: a hidden terminal still
+    // lets go of its buffer when its command ends.
+    expect(
+      between("function leafBusy", "const HIDDEN_RELEASE_DELAY_MS"),
+    ).not.toContain("awaitsStart");
+  });
+
   it("gates rewire repair on an actual frame geometry change", () => {
     expect(
       sourceBetween("function rewireSlot", "function setupResizeObserver"),
