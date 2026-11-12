@@ -955,7 +955,22 @@ export function createTerminalAutomationService(
         execution.noProgramSince = undefined;
       } else {
         execution.noProgramSince ??= checkedAt;
-        if (checkedAt - execution.noProgramSince >= UNCONFIRMED_EMPTY_MS) {
+        // A command its shell had not started when the Ctrl+C went out may
+        // start yet: the shell takes the typed line when it gets to it, and
+        // the Ctrl+C found nothing to stop. On a busy machine PowerShell
+        // started a ping 8 s after such a Ctrl+C; its execution had ended
+        // "interrupted" a moment before, the late-program watch with it,
+        // and the ping ran its 20 replies (round 94, R94-1). Such a command
+        // stays open while that watch still looks, which sends the program
+        // its Ctrl+C.
+        const mayStillStart =
+          execution.phase === "dispatched" &&
+          execution.programSeenAt === undefined &&
+          checkedAt - sentAt < LATE_PROGRAM_WATCH_MS;
+        if (
+          !mayStillStart &&
+          checkedAt - execution.noProgramSince >= UNCONFIRMED_EMPTY_MS
+        ) {
           execution.endUnconfirmed = true;
           // The same rule as a marked end: a program still running past
           // INTERRUPT_STOP_MS ran on.
