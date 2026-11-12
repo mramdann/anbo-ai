@@ -116,6 +116,9 @@ const LATE_PROGRAM_TRACE_POLL_MS = 2_000;
  *  terminal one time in three in Dev. */
 const OPENED_TERMINAL_SETTLE_MS = 1_000;
 const OPENED_TERMINAL_POLL_MS = 25;
+/** How often a command that is out asks for a live buffer again while its
+ *  terminal has none. */
+const BUFFER_RETRY_MS = 1_000;
 
 export type SharedTerminalDescriptor = {
   terminalId: string;
@@ -159,6 +162,9 @@ export type TerminalAutomationDependencies = {
   prepare: (leafId: number) => boolean;
   /** Why prepare refused a leaf, for the agent whose command it holds back. */
   unpreparedReason: (leafId: number) => string;
+  /** Whether a live buffer reads the terminal's output now. Without one the
+   *  shell's marks wait unread; prepare binds one again. */
+  hasLiveBuffer?: (leafId: number) => boolean;
   open: (
     workspace: { id: string; root: string },
     title: string,
@@ -243,6 +249,9 @@ type ExecutionState = {
   /** Ended after a Ctrl+C without its shell marking the end. */
   endUnconfirmed?: boolean;
   foregroundCheckedAt?: number;
+  /** When this command last asked for a live buffer for a terminal that had
+   *  none. */
+  bufferAskedAt?: number;
   /** When a look after the Ctrl+C last found one of the command's programs. */
   programSeenAt?: number;
   /** Since when the looks after the Ctrl+C have found none of them left. */
@@ -897,6 +906,22 @@ export function createTerminalAutomationService(
         completion?.at,
       );
       return true;
+    }
+    // Nothing reads this terminal's output: it has no live buffer (another
+    // terminal took it while this one's pane was put up again), so the
+    // command's end would never be seen and the terminal stayed busy (round
+    // 93, R93-1). Bind one again: what the shell wrote meanwhile waited.
+    if (
+      deps.hasLiveBuffer &&
+      !deps.hasLiveBuffer(leafId) &&
+      Date.now() - (execution.bufferAskedAt ?? 0) >= BUFFER_RETRY_MS
+    ) {
+      execution.bufferAskedAt = Date.now();
+      if (deps.prepare(leafId)) {
+        deps.logWarning(
+          `${execution.terminalId} had no live buffer while ${execution.executionId} was out; bound one again`,
+        );
+      }
     }
     const sentAt = execution.interruptSentAt;
     if (

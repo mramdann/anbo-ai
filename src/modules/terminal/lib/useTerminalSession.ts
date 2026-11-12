@@ -376,6 +376,13 @@ export function prepareTerminalAutomationSession(leafId: number): boolean {
   return session.hasSlot;
 }
 
+/** Whether a live buffer reads the terminal's output now: one bound to it, or
+ *  one it let go of and still holds. Without one the shell's marks wait
+ *  unread, and a command's end is not seen. */
+export function terminalHasLiveBuffer(leafId: number): boolean {
+  return getLiveSlotForLeaf(leafId) !== null;
+}
+
 /** Why prepareTerminalAutomationSession refused a leaf, in words an agent can
  *  act on. Nothing reached the shell. */
 export function terminalAutomationRefusal(leafId: number): string {

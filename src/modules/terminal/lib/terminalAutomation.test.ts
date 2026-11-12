@@ -2539,6 +2539,129 @@ describe("terminal_wait answers and executions that never end", () => {
     expect(continuationPrompt("build done\n")).toBe(false);
   });
 
+  it("binds a live buffer again for a command whose terminal lost its own", async () => {
+    // Round 93 (R93-1), in Dev: the terminal shown on top of a workspace
+    // took the buffer of a hidden one whose command had just been typed.
+    // The shell's marks then waited unread: terminal_wait never saw the
+    // end, and the terminal read busy to every later command.
+    vi.useFakeTimers();
+    try {
+      const rig = shellRig();
+      let live = true;
+      let unread: (() => void) | null = null;
+      const prepare = vi.fn(() => {
+        // A buffer bound again reads what waited.
+        live = true;
+        unread?.();
+        unread = null;
+        return true;
+      });
+      const logWarning = vi.fn();
+      const write = vi.fn((_leafId: number, data: string) => {
+        if (data === "cmd /c exit 4\r") {
+          live = false;
+          unread = () => rig.finish("", 4);
+        }
+        return true;
+      });
+      const service = createTerminalAutomationService(
+        dependencies({
+          getBuffer: () => rig.buffer,
+          getSessionState: rig.state,
+          hasLiveBuffer: () => live,
+          prepare,
+          logWarning,
+          write,
+        }),
+      );
+      const executionId = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "cmd /c exit 4",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      expect(write).toHaveBeenCalledWith(101, "cmd /c exit 4\r");
+      expect(prepare).toHaveBeenCalledTimes(1);
+
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 5_000,
+      });
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expect(waited).resolves.toMatchObject({
+        result: { completed: true, completionReason: "exited", exitCode: 4 },
+      });
+      expect(prepare).toHaveBeenCalledTimes(2);
+      expect(logWarning).toHaveBeenCalledWith(
+        `terminal:10:101 had no live buffer while ${executionId} was out; bound one again`,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("asks for a buffer only for a terminal without one, and once a second at most", async () => {
+    vi.useFakeTimers();
+    try {
+      const rig = shellRig();
+      let live = true;
+      let bindable = true;
+      const prepare = vi.fn(() => bindable);
+      const logWarning = vi.fn();
+      const write = vi.fn((_leafId: number, data: string) => {
+        if (data === "pnpm build\r") rig.running = true;
+        return true;
+      });
+      const service = createTerminalAutomationService(
+        dependencies({
+          getBuffer: () => rig.buffer,
+          getSessionState: rig.state,
+          hasLiveBuffer: () => live,
+          prepare,
+          logWarning,
+          write,
+        }),
+      );
+      const executionId = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "pnpm build",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      const wait = async (timeout: number) => {
+        const waited = service.handle("terminal_wait", {
+          ...target,
+          executionId,
+          timeout,
+        });
+        await vi.advanceTimersByTimeAsync(timeout + 100);
+        return waited;
+      };
+      // Its buffer reads the output: nothing is asked for.
+      await expect(wait(2_000)).resolves.toMatchObject({
+        result: { completed: false, timedOut: true },
+      });
+      expect(prepare).toHaveBeenCalledTimes(1);
+
+      // No buffer and no pane to bind one in: asked again, about once a
+      // second, with nothing to log.
+      live = false;
+      bindable = false;
+      await expect(wait(3_200)).resolves.toMatchObject({
+        result: { completed: false, timedOut: true },
+      });
+      const asked = prepare.mock.calls.length - 1;
+      expect(asked).toBeGreaterThanOrEqual(3);
+      expect(asked).toBeLessThanOrEqual(5);
+      expect(logWarning).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("cancels a command the shell took as unfinished, and names a held terminal's execution", async () => {
     // Measured: a one-liner with an open quote left PowerShell at ">>"; the
     // execution never ended and every later command read "still observing

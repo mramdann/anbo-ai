@@ -216,6 +216,7 @@ import {
   type TerminalPaneHandle,
   TerminalStack,
   terminalAutomationRefusal,
+  terminalHasLiveBuffer,
   useAgentActivityStore,
   useTerminalFileDrop,
   writeToReadySession,
@@ -2228,6 +2229,7 @@ export default function App() {
             foregroundProcesses: leafForegroundProcesses,
             prepare: prepareTerminalAutomationSession,
             unpreparedReason: terminalAutomationRefusal,
+            hasLiveBuffer: terminalHasLiveBuffer,
             warm: (tabId) => warmTabRef.current(tabId),
             retryStart: retryShellStart,
             logWarning: (message) => {

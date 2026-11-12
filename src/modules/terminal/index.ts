@@ -36,6 +36,7 @@ export {
   subscribeTerminalInput,
   type TerminalCapacityReport,
   terminalAutomationRefusal,
+  terminalHasLiveBuffer,
   writeToReadySession,
   writeToSession,
 } from "./lib/useTerminalSession";
