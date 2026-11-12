@@ -59,6 +59,7 @@ class FakeAnchor extends FakeNode {
 
 function page() {
   const expired: (() => void)[] = [];
+  const delays: number[] = [];
   const window = new FakeNode() as FakeNode & {
     __anboHeldLink?: {
       held: { url: string | null; pageTookIt: boolean; stoodDown: boolean };
@@ -69,7 +70,10 @@ function page() {
   const guard = vm.runInNewContext(`${source}\nanboGuardLink`, {
     window,
     HTMLAnchorElement: FakeAnchor,
-    setTimeout: (run: () => void) => expired.push(run),
+    setTimeout: (run: () => void, ms: number) => {
+      delays.push(ms);
+      return expired.push(run);
+    },
     clearTimeout: () => {},
   }) as (node: object, opensTab: (link: object) => boolean) => boolean;
   const link = (anchor = new FakeAnchor()) => {
@@ -110,6 +114,7 @@ function page() {
     },
     held: () => window.__anboHeldLink?.held,
     listeners: () => window.holds.size + row.holds.size,
+    delays,
   };
 }
 
@@ -200,6 +205,22 @@ describe("link guard", () => {
     expect(held()?.url).toBeNull();
     // For the log: a click that came after says the guard had stood down.
     expect(held()?.stoodDown).toBe(true);
+  });
+
+  it("waits as long as Anbo's own key or click may take to reach the page", () => {
+    // Round 94 (R92-1), caught twice in 196 links on a busy machine: Anbo's
+    // key reached the page 2.7 and 3.1 s after the guard was set. It had
+    // stood down at 2 s, so the browser opened the tab and brought its
+    // minimized window up in front of the user's. Anbo takes the guard away
+    // when it reads it, right after its input; only one left unread waits
+    // this out.
+    const { guard, click, link, delays, held } = page();
+    const anchor = link();
+    guard(anchor, everyLink);
+    expect(delays).toEqual([30_000]);
+    // Until then a click that comes late is still held.
+    expect(click(anchor).defaultPrevented).toBe(true);
+    expect(held()).toMatchObject({ url: anchor.href, stoodDown: false });
   });
 
   it("holds one click only", () => {

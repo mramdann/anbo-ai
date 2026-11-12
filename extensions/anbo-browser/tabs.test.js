@@ -907,30 +907,100 @@ describe("tabs a page Anbo drives opens", () => {
     }
   });
 
-  it("notes a tab that came too late to be an agent's, and a window noted too long before the tab", async () => {
-    // Round 92 (R92-1): a minimized window came up and stayed, twice in 890
-    // links agents followed on a busy machine. Neither case puts it back, as
-    // before; each now says so in Anbo's log.
+  it("puts a minimized window back for a tab its page opened late, as on a busy machine", async () => {
+    // Round 94 (R92-1), caught in the soak with round 93's log lines: on a
+    // loaded machine a page opened its tab 2.4 s after an agent's key, past
+    // the 2 s such a tab has, and its minimized window stayed in front of the
+    // user's until another agent's tab happened to put it back. The browser
+    // names the page the tab's navigation came from; with input that recent
+    // its window goes back. The tab stays the browser's.
     const state = harness();
     await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
-    state.api.windows.get.mockImplementation(async (id) => ({ id, type: "normal", incognito: false, state: "minimized", focused: false }));
+    let shown = "minimized";
+    state.api.windows.get.mockImplementation(async (id) => ({ id, type: "normal", incognito: false, state: shown, focused: shown !== "minimized" }));
     vi.useFakeTimers();
     try {
       await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter", modifiers: 2 });
       await vi.advanceTimersByTimeAsync(2_500);
+      shown = "normal";
       state.manager.created(openedTab(state, 13, { active: false, openerTabId: 99 }));
+      state.manager.navigationTarget({ tabId: 13, sourceTabId: 10 });
       await vi.advanceTimersByTimeAsync(100);
-      expect(state.notes).toEqual([[10, expect.stringMatching(/^a tab came 2\d\d\d ms after the last input to this page, past the 2000 ms an agent's tab has: its window is not put back$/)]]);
+      expect(state.api.windows.update).toHaveBeenCalledWith(20, { state: "minimized" });
+      expect(state.notes).toEqual([
+        [10, expect.stringMatching(/^a tab came 2\d\d\d ms after the last input to this page, past the 2000 ms an agent's tab has: it stays the browser's, and its window is put back$/)],
+        [10, expect.stringMatching(/^its window came up for a new tab and was minimized again \d+ ms after the tab$/)],
+      ]);
       expect(state.selected.has(13)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves the window to the user for a late tab no page Anbo drives opened, and for one that comes later still", async () => {
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    let shown = "minimized";
+    state.api.windows.get.mockImplementation(async (id) => ({ id, type: "normal", incognito: false, state: shown, focused: shown !== "minimized" }));
+    vi.useFakeTimers();
+    try {
+      // The user brings the window up and opens a tab of their own moments
+      // after an agent's key on a page in it: the browser names no page as
+      // that tab's source, whatever tab it names as its opener.
+      await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter", modifiers: 2 });
+      await vi.advanceTimersByTimeAsync(2_500);
+      shown = "normal";
+      state.manager.created(openedTab(state, 13));
+      await vi.advanceTimersByTimeAsync(600);
+      expect(state.api.windows.update).not.toHaveBeenCalledWith(20, { state: "minimized" });
+      expect(state.notes).toEqual([]);
+      // A tab the page opens 10 s and more after its last input.
+      shown = "minimized";
+      await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter", modifiers: 2 });
+      await vi.advanceTimersByTimeAsync(10_500);
+      shown = "normal";
+      state.manager.created(openedTab(state, 14, { active: false, openerTabId: 99 }));
+      state.manager.navigationTarget({ tabId: 14, sourceTabId: 10 });
+      await vi.advanceTimersByTimeAsync(600);
+      expect(state.api.windows.update).not.toHaveBeenCalledWith(20, { state: "minimized" });
+      expect(state.notes).toEqual([]);
+      expect(state.selected.has(13) || state.selected.has(14)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("puts the window back when the key that opened the tab went down longer ago than its last input", async () => {
+    // The window is noted when a key or press goes down. A key held, or a
+    // page slow to act on it, left that note over 2 s old while later input
+    // still counted the tab as the agent's: the window was not put back.
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    let shown = "minimized";
+    state.api.windows.get.mockImplementation(async (id) => ({ id, type: "normal", incognito: false, state: shown, focused: shown !== "minimized" }));
+    vi.useFakeTimers();
+    try {
       // The key went down 2.5 s before the tab and up 1 s before it.
-      state.notes.length = 0;
       await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter", modifiers: 2 });
       await vi.advanceTimersByTimeAsync(1_500);
       await state.run("Input.dispatchKeyEvent", 10, { type: "keyUp", key: "Enter", modifiers: 2 });
       await vi.advanceTimersByTimeAsync(1_000);
+      shown = "normal";
+      state.manager.created(openedTab(state, 13, { active: false }));
+      await vi.advanceTimersByTimeAsync(100);
+      expect(state.api.windows.update).toHaveBeenCalledWith(20, { state: "minimized" });
+      // Down 10.5 s before the tab: too long ago to say how the window was.
+      shown = "minimized";
+      state.api.windows.update.mockClear();
+      state.notes.length = 0;
+      await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter", modifiers: 2 });
+      await vi.advanceTimersByTimeAsync(9_500);
+      await state.run("Input.dispatchKeyEvent", 10, { type: "keyUp", key: "Enter", modifiers: 2 });
+      await vi.advanceTimersByTimeAsync(1_000);
+      shown = "normal";
       state.manager.created(openedTab(state, 14, { active: false }));
       await vi.advanceTimersByTimeAsync(100);
-      expect(state.notes).toEqual([[10, expect.stringMatching(/^a tab came and its window is not put back: its window was noted 2\d\d\d ms before, past 2000 ms$/)]]);
+      expect(state.notes).toEqual([[10, expect.stringMatching(/^a tab came and its window is not put back: its window was noted 10\d\d\d ms before, past 10000 ms$/)]]);
       expect(state.api.windows.update).not.toHaveBeenCalledWith(20, { state: "minimized" });
     } finally {
       vi.useRealTimers();
