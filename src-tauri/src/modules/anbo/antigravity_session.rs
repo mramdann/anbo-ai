@@ -86,6 +86,28 @@ fn find_among(
     owns(&root.join(format!("{id}.lock"))).ok()?.then_some(id)
 }
 
+/// Whether a running process's file is agy's: `agy.exe`, or the name agy's own
+/// updater leaves a running one under. Windows cannot replace a file that is
+/// running, so an agy that updates itself renames its file to
+/// `agy.exe.<nanoseconds>.old` and puts the new `agy.exe` next to it, and from
+/// then on Windows reports the running process under the new name. Asking for
+/// `agy.exe` alone, as this did, an agy that had updated itself was nobody's
+/// session for as long as it ran: its tab came back from a pause, a restart
+/// or a reopen as a new conversation (round 96, R96-3: seen when agy went
+/// from 1.5.6 to 1.5.7 seven seconds after its start).
+#[cfg(any(windows, test))]
+fn is_agy_image(image: &Path) -> bool {
+    let Some(name) = image.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    match name.strip_prefix("agy.exe") {
+        Some("") => true,
+        Some(renamed) => renamed.starts_with('.') && renamed.ends_with(".old"),
+        None => false,
+    }
+}
+
 #[cfg(not(windows))]
 fn owned_by(_path: &Path, _state: &PtyState, _pty_id: u32) -> Result<bool, ()> {
     // No timestamp/cwd fallback when exact process ownership is unavailable.
@@ -187,11 +209,7 @@ mod windows {
             return Err(());
         }
         let name = String::from_utf16(&name[..length as usize]).map_err(|_| ())?;
-        if !Path::new(&name)
-            .file_name()
-            .is_some_and(|name| name.eq_ignore_ascii_case("agy.exe"))
-            || state.owner_of_process(*pid) != Some(pty_id)
-        {
+        if !is_agy_image(Path::new(&name)) || state.owner_of_process(*pid) != Some(pty_id) {
             return Ok(false);
         }
         let mut exit_code = 0;
@@ -347,6 +365,34 @@ mod tests {
             find_among(root.path(), &HashSet::new(), owned_oldest, 5, 64),
             Some(oldest.clone())
         );
+    }
+
+    #[test]
+    fn an_agy_that_updated_itself_while_running_is_still_agy() {
+        // Round 96 (R96-3): what its updater renamed the running 1.5.6 to.
+        for image in [
+            "C:/Users/someone/AppData/Local/agy/bin/agy.exe",
+            "C:/Users/someone/AppData/Local/agy/bin/AGY.EXE",
+            "C:/Users/someone/AppData/Local/agy/bin/agy.exe.1794506160744373800.old",
+            "C:/Users/someone/AppData/Local/agy/bin/Agy.exe.1794506160744373800.OLD",
+            "C:/Users/someone/AppData/Local/agy/bin/agy.exe.old",
+        ] {
+            assert!(is_agy_image(Path::new(image)), "{image}");
+        }
+        for image in [
+            "C:/tools/notagy.exe",
+            "C:/tools/agy.exe.1794506160744373800",
+            "C:/tools/agy.exe.1794506160744373800.new",
+            "C:/tools/agy.exeold",
+            "C:/tools/agy.exe2.old",
+            "C:/tools/agy.exe.old.exe",
+            "C:/tools/agy-helper.exe",
+            "C:/tools/agy",
+            "C:/tools/agy.exe.old/node.exe",
+            "C:/tools/",
+        ] {
+            assert!(!is_agy_image(Path::new(image)), "{image}");
+        }
     }
 
     #[test]
