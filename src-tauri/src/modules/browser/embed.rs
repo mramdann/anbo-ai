@@ -17,9 +17,9 @@ use base64::Engine;
 use webview2_com::{
     BrowserProcessExitedEventHandler, CapturePreviewCompletedHandler, FocusChangedEventHandler,
     Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2Environment, ICoreWebView2Environment5, ICoreWebView2_22,
-        COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
-        COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+        ICoreWebView2Controller4, ICoreWebView2Environment, ICoreWebView2Environment5,
+        ICoreWebView2_22, COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG,
+        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
     },
     SourceChangedEventHandler,
 };
@@ -654,6 +654,14 @@ async fn spawn_browser_child(
         // a solid color instead of a transparent hole through to the desktop.
         .background_color(Color(255, 255, 255, 255))
         .initialization_script(include_str!("consoleCapture.js"));
+    // Tauri's drop handler is for the shell's own page; nothing listens to a
+    // tab's. With it on, wry registers a drop target with OLE for each of the
+    // four windows WebView2 gives a webview and revokes none, so every one of
+    // those windows that went (all four at a close, the page's own at a move
+    // to another origin) left its target and the COM stub that serves it in
+    // this process for good: about 4 KB a tab (round 95, R94-3).
+    #[cfg(windows)]
+    let builder = builder.disable_drag_drop_handler();
     // Joins the browser that already holds the profile (see ProfileEnvironment).
     // The environment goes straight into the builder: held on its own it is
     // not Send, and this future waits after the tab exists.
@@ -842,6 +850,8 @@ async fn spawn_browser_child(
         register_source_handler(&webview, tab_id, app_url, local_root);
         #[cfg(windows)]
         drop_app_protocol_filters(&webview);
+        #[cfg(windows)]
+        refuse_outside_drops(&webview);
         set_embed_presentation(&webview, visible)?;
         #[cfg(windows)]
         {
@@ -1007,6 +1017,8 @@ fn keep_host_warm(window: &tauri::Window) {
         let joined_profile = shared_environment.is_some();
         let builder = WebviewBuilder::new(WARM_HOST_LABEL, WebviewUrl::External(blank))
             .focused(false)
+            // As for a tab: its drop targets would stay when it goes.
+            .disable_drag_drop_handler()
             .data_directory(profile.clone());
         let builder = match shared_environment {
             Some(environment) => builder.with_environment(environment),
@@ -1163,6 +1175,26 @@ fn drop_app_protocol_filters(webview: &tauri::Webview) {
             if let Err(error) = removed {
                 log::warn!("browser tab kept the {protocol} protocol filter: {error}");
             }
+        }
+    });
+}
+
+/// A tab takes no drop, as while it had Tauri's drop handler: wry turns
+/// `AllowExternalDrop` off together with that handler, and what was dragged
+/// over a tab went to the handler and nowhere from there. With this off
+/// WebView2 registers no drop target for the tab's windows either. Letting a
+/// page take drops is a product decision of its own, not a side effect to
+/// pick up with the handler's removal.
+#[cfg(windows)]
+fn refuse_outside_drops(webview: &tauri::Webview) {
+    let _ = webview.with_webview(|platform| {
+        use windows::core::Interface;
+        let refused = platform
+            .controller()
+            .cast::<ICoreWebView2Controller4>()
+            .and_then(|controller| unsafe { controller.SetAllowExternalDrop(false) });
+        if let Err(error) = refused {
+            log::warn!("browser tab still takes drops: {error}");
         }
     });
 }
