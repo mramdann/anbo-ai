@@ -792,12 +792,31 @@ export function createTerminalAutomationService(
     return `; it runs ${named}${programs.length > 3 ? " and more" : ""}`;
   };
 
+  /** Whether nothing waits for this execution's end any more: it ended, or
+   *  its terminal is gone. */
+  const over = (execution: ExecutionState): boolean => {
+    if (execution.completedAt !== undefined) return true;
+    if (execution.phase === "queued") return false;
+    const state = deps.getSessionState(execution.terminal.leafId);
+    return !state || state.shellExited;
+  };
+
+  // The oldest one that is over goes first. Dropped by age alone, a build
+  // still running after a hundred newer commands could no longer be waited
+  // for or stopped by its id. A terminal holds one execution that is out,
+  // so those never fill the hundred.
   const rememberExecution = (execution: ExecutionState) => {
     executions.set(execution.executionId, execution);
     while (executions.size > MAX_EXECUTIONS) {
-      const oldest = executions.keys().next().value;
-      if (oldest === undefined) break;
-      executions.delete(oldest);
+      let drop: string | undefined;
+      for (const [id, candidate] of executions) {
+        if (!over(candidate)) continue;
+        drop = id;
+        break;
+      }
+      drop ??= executions.keys().next().value;
+      if (drop === undefined) break;
+      executions.delete(drop);
     }
   };
 

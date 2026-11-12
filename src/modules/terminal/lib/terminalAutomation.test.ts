@@ -2662,6 +2662,91 @@ describe("terminal_wait answers and executions that never end", () => {
     }
   });
 
+  it("keeps the record of a command still out when a hundred newer ones came", async () => {
+    // Dropped by age alone, a build that outlasted a hundred commands of
+    // other terminals could no longer be waited for by its id.
+    vi.useFakeTimers();
+    try {
+      const rigs: Record<number, ReturnType<typeof shellRig>> = {
+        101: shellRig(),
+        201: shellRig(),
+        301: shellRig(),
+      };
+      let closed = false;
+      const other = { workspace: workspaceRoot, terminalId: "terminal:20:201" };
+      const gone = { workspace: workspaceRoot, terminalId: "terminal:30:301" };
+      const service = createTerminalAutomationService(
+        dependencies({
+          getTabs: () => [
+            terminal(),
+            terminal({
+              id: 20,
+              paneTree: { kind: "leaf", id: 201 },
+              activeLeafId: 201,
+            }),
+            ...(closed
+              ? []
+              : [
+                  terminal({
+                    id: 30,
+                    paneTree: { kind: "leaf", id: 301 },
+                    activeLeafId: 301,
+                  }),
+                ]),
+          ],
+          getBuffer: (leafId) => rigs[leafId].buffer,
+          getSessionState: (leafId) =>
+            leafId === 301 && closed ? null : rigs[leafId].state(),
+          write: (leafId, data) => {
+            if (leafId === 201 && data.endsWith("\r")) rigs[201].finish("ok");
+            else rigs[leafId].running = true;
+            return true;
+          },
+        }),
+      );
+      const building = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "pnpm build",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      // A second one still out, whose terminal the user then closes: no one
+      // can wait for it any more, so it does not take a place either.
+      const lost = idOf(
+        await service.handle("terminal_execute", { ...gone, text: "pnpm dev" }),
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      closed = true;
+      for (let n = 0; n < 110; n += 1) {
+        const next = await service.handle("terminal_execute", {
+          ...other,
+          text: `echo ${n}`,
+        });
+        expect(next.error).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(300);
+      }
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId: building,
+        timeout: 200,
+      });
+      await vi.advanceTimersByTimeAsync(400);
+      await expect(waited).resolves.toMatchObject({
+        result: { executionId: building, completed: false, timedOut: true },
+      });
+      await expect(
+        service.handle("terminal_wait", {
+          ...gone,
+          executionId: lost,
+          timeout: 200,
+        }),
+      ).resolves.toMatchObject({ error: { code: "execution_not_found" } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("cancels a command the shell took as unfinished, and names a held terminal's execution", async () => {
     // Measured: a one-liner with an open quote left PowerShell at ">>"; the
     // execution never ended and every later command read "still observing
