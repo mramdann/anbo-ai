@@ -17,9 +17,9 @@ use base64::Engine;
 use webview2_com::{
     BrowserProcessExitedEventHandler, CapturePreviewCompletedHandler, FocusChangedEventHandler,
     Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2Controller4, ICoreWebView2Environment, ICoreWebView2Environment5,
-        ICoreWebView2_22, COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG,
-        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+        ICoreWebView2Environment, ICoreWebView2Environment5, ICoreWebView2_22,
+        COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+        COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
     },
     SourceChangedEventHandler,
 };
@@ -659,7 +659,11 @@ async fn spawn_browser_child(
     // four windows WebView2 gives a webview and revokes none, so every one of
     // those windows that went (all four at a close, the page's own at a move
     // to another origin) left its target and the COM stub that serves it in
-    // this process for good: about 4 KB a tab (round 95, R94-3).
+    // this process for good: about 4 KB a tab (round 95, R94-3). Those targets
+    // also took every drag away from the page: a file dropped on an upload
+    // field went nowhere, and a page's own drag and drop never got its drop.
+    // Without the handler WebView2 handles drops itself, as any browser does
+    // (round 96, tried with the real mouse).
     #[cfg(windows)]
     let builder = builder.disable_drag_drop_handler();
     // Joins the browser that already holds the profile (see ProfileEnvironment).
@@ -850,8 +854,6 @@ async fn spawn_browser_child(
         register_source_handler(&webview, tab_id, app_url, local_root);
         #[cfg(windows)]
         drop_app_protocol_filters(&webview);
-        #[cfg(windows)]
-        refuse_outside_drops(&webview);
         set_embed_presentation(&webview, visible)?;
         #[cfg(windows)]
         {
@@ -1175,26 +1177,6 @@ fn drop_app_protocol_filters(webview: &tauri::Webview) {
             if let Err(error) = removed {
                 log::warn!("browser tab kept the {protocol} protocol filter: {error}");
             }
-        }
-    });
-}
-
-/// A tab takes no drop, as while it had Tauri's drop handler: wry turns
-/// `AllowExternalDrop` off together with that handler, and what was dragged
-/// over a tab went to the handler and nowhere from there. With this off
-/// WebView2 registers no drop target for the tab's windows either. Letting a
-/// page take drops is a product decision of its own, not a side effect to
-/// pick up with the handler's removal.
-#[cfg(windows)]
-fn refuse_outside_drops(webview: &tauri::Webview) {
-    let _ = webview.with_webview(|platform| {
-        use windows::core::Interface;
-        let refused = platform
-            .controller()
-            .cast::<ICoreWebView2Controller4>()
-            .and_then(|controller| unsafe { controller.SetAllowExternalDrop(false) });
-        if let Err(error) = refused {
-            log::warn!("browser tab still takes drops: {error}");
         }
     });
 }
