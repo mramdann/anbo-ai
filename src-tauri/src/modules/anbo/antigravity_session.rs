@@ -3,7 +3,18 @@ use std::path::Path;
 
 use crate::modules::pty::PtyState;
 
+/// How many lock files are looked at: the newest. agy makes one for every
+/// conversation and removes none (140 on one machine in two months), so the
+/// folder only grows. Giving up past 512 entries, as this did, would have
+/// ended session discovery for good on a machine that had seen that many
+/// conversations: every reopened or resumed agy tab a new conversation (round
+/// 96, R96-2). A lock keeps the time it was made, so the newest are the ones
+/// that can be live; a conversation from far back that a user resumes by hand
+/// is not found, as none was before.
 const ENTRY_LIMIT: usize = 512;
+/// A folder with more entries than this is not agy's own any more: nothing in
+/// it is trusted.
+const SCAN_LIMIT: usize = 65_536;
 
 pub(super) fn find(state: &PtyState, pty_id: u32, claimed: &HashSet<String>) -> Option<String> {
     if !state.is_live(pty_id) {
@@ -16,12 +27,22 @@ pub(super) fn find(state: &PtyState, pty_id: u32, claimed: &HashSet<String>) -> 
 fn find_owned(
     root: &Path,
     claimed: &HashSet<String>,
+    owns: impl FnMut(&Path) -> Result<bool, ()>,
+) -> Option<String> {
+    find_among(root, claimed, owns, ENTRY_LIMIT, SCAN_LIMIT)
+}
+
+fn find_among(
+    root: &Path,
+    claimed: &HashSet<String>,
     mut owns: impl FnMut(&Path) -> Result<bool, ()>,
+    newest: usize,
+    scan_limit: usize,
 ) -> Option<String> {
     let root = std::fs::canonicalize(root).ok()?;
-    let mut found = None;
+    let mut locks = Vec::new();
     for (index, entry) in std::fs::read_dir(&root).ok()?.enumerate() {
-        if index >= ENTRY_LIMIT {
+        if index >= scan_limit {
             return None;
         }
         let entry = entry.ok()?;
@@ -33,15 +54,28 @@ fn find_owned(
         if !super::resume::is_uuid(id) {
             continue;
         }
-        let metadata = std::fs::symlink_metadata(&path).ok()?;
+        // The folder's own listing has the time: no call per file.
+        let modified = entry
+            .metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok());
+        locks.push((modified, path));
+    }
+    // Newest first; one whose time cannot be read counts as the oldest.
+    locks.sort_by_key(|lock| std::cmp::Reverse(lock.0));
+    locks.truncate(newest);
+    let mut found = None;
+    for (_, path) in &locks {
+        let id = path.file_stem()?.to_str()?;
+        let metadata = std::fs::symlink_metadata(path).ok()?;
         if !metadata.is_file()
             || metadata.file_type().is_symlink()
             || metadata.len() > 4096
-            || std::fs::canonicalize(&path).ok()?.parent() != Some(root.as_path())
+            || std::fs::canonicalize(path).ok()?.parent() != Some(root.as_path())
         {
             return None;
         }
-        if owns(&path).ok()? {
+        if owns(path).ok()? {
             if found.is_some() {
                 return None;
             }
@@ -246,15 +280,72 @@ mod tests {
         presence(root.path(), FIRST);
         presence(root.path(), SECOND);
         assert_eq!(find_owned(root.path(), &HashSet::new(), |_| Ok(true)), None);
-        for index in 0..ENTRY_LIMIT {
+        let owned_first = |path: &Path| Ok(path.file_stem().unwrap() == FIRST);
+        for index in 0..6 {
             std::fs::write(root.path().join(format!("other-{index}")), []).unwrap();
         }
+        // Eight entries: within a scan limit of eight, past one of seven.
         assert_eq!(
-            find_owned(root.path(), &HashSet::new(), |path| Ok(path
-                .file_stem()
-                .unwrap()
-                == FIRST)),
+            find_among(root.path(), &HashSet::new(), owned_first, 512, 8),
+            Some(FIRST.into())
+        );
+        assert_eq!(
+            find_among(root.path(), &HashSet::new(), owned_first, 512, 7),
             None
+        );
+    }
+
+    /// A lock named like a session, made `days` ago.
+    fn old_presence(root: &Path, index: usize, days: u64) -> String {
+        let id = format!("{index:08x}-2222-4333-8444-555555555555");
+        let path = root.join(format!("{id}.lock"));
+        std::fs::write(&path, []).unwrap();
+        let made = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(made)
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn more_stale_locks_than_are_looked_at_do_not_hide_the_live_session() {
+        // Round 96 (R96-2): agy leaves a lock behind for every conversation.
+        // Past 512 of them no session was found any more.
+        let root = tempfile::tempdir().unwrap();
+        for index in 0..ENTRY_LIMIT + 8 {
+            old_presence(root.path(), index, 30 + index as u64);
+        }
+        presence(root.path(), FIRST);
+        let mut asked = 0;
+        assert_eq!(
+            find_owned(root.path(), &HashSet::new(), |path| {
+                asked += 1;
+                Ok(path.file_stem().unwrap() == FIRST)
+            }),
+            Some(FIRST.into())
+        );
+        // The newest 512 and the one found, once more.
+        assert_eq!(asked, ENTRY_LIMIT + 1);
+    }
+
+    #[test]
+    fn a_lock_older_than_the_newest_looked_at_is_not_asked_about() {
+        let root = tempfile::tempdir().unwrap();
+        let oldest = old_presence(root.path(), 1, 400);
+        for index in 2..6 {
+            old_presence(root.path(), index, index as u64);
+        }
+        let owned_oldest = |path: &Path| Ok(path.file_stem().unwrap() == oldest.as_str());
+        assert_eq!(
+            find_among(root.path(), &HashSet::new(), owned_oldest, 4, 64),
+            None
+        );
+        assert_eq!(
+            find_among(root.path(), &HashSet::new(), owned_oldest, 5, 64),
+            Some(oldest.clone())
         );
     }
 
