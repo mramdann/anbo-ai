@@ -3448,13 +3448,36 @@ async fn handle_action_attempt(
             let _design_layer = super::design::hide_for_capture(&webview).await;
             // Such a page draws for the capture only while something on it
             // changes (`cdp.rs` CAPTURE_PAINT_JS).
-            let painting = !shown && super::cdp::begin_capture_paint(&webview).await;
+            let paint_started = Instant::now();
+            let paint = if shown {
+                Err("shown".to_string())
+            } else {
+                super::cdp::begin_capture_paint(&webview).await
+            };
+            let painting = paint.is_ok();
+            let paint_ms = paint_started.elapsed().as_millis();
+            let capture_started = Instant::now();
+            let mut pending_retries = 0;
             let captured = if shown {
                 super::cdp::capture_screenshot_within(&webview, encoding, SHOWN_CAPTURE_TIMEOUT)
                     .await
             } else {
-                unshown_capture(&webview, encoding).await
+                unshown_capture(&webview, encoding, &mut pending_retries).await
             };
+            if !shown && webview.embedded().is_err() {
+                log_hidden_capture(
+                    &webview,
+                    tab_id,
+                    HiddenCapture {
+                        result: captured.as_ref().map(|_| ()),
+                        ms: capture_started.elapsed().as_millis(),
+                        pending_retries,
+                        paint: paint.as_ref().map(|_| ()),
+                        paint_ms,
+                    },
+                )
+                .await;
+            }
             if painting {
                 super::cdp::end_capture_paint(&webview).await;
             }
@@ -4409,17 +4432,86 @@ const PENDING_CAPTURE_RETRY: Duration = Duration::from_millis(250);
 async fn unshown_capture(
     webview: &Webview,
     encoding: super::cdp::ScreenshotEncoding,
+    pending_retries: &mut u32,
 ) -> Result<String, String> {
     let deadline = tokio::time::Instant::now() + UNSHOWN_CAPTURE_TIMEOUT;
     loop {
         let left = deadline.saturating_duration_since(tokio::time::Instant::now());
         match super::cdp::capture_screenshot_within(webview, encoding, left).await {
             Err(error) if error.contains("still pending") && left > 2 * PENDING_CAPTURE_RETRY => {
+                *pending_retries += 1;
                 tokio::time::sleep(PENDING_CAPTURE_RETRY).await;
             }
             answer => return answer,
         }
     }
+}
+
+/// One capture of a Chrome or Edge page its browser did not show.
+struct HiddenCapture<'a> {
+    result: Result<(), &'a String>,
+    ms: u128,
+    pending_retries: u32,
+    paint: Result<(), &'a String>,
+    paint_ms: u128,
+}
+
+/// What a page reports of its own drawing: whether it reads as visible and
+/// focused, whether the capture's paint is on it, and how soon a frame came
+/// (null when none came in 700 ms) or a timer ran.
+const HIDDEN_CAPTURE_PROBE_JS: &str = r#"new Promise((resolve) => {
+    const started = performance.now();
+    const state = { visibility: document.visibilityState, focus: document.hasFocus(), paint: !!document.querySelector('anbo-capture-paint') };
+    let done = false;
+    const finish = (extra) => { if (!done) { done = true; resolve(JSON.stringify({ ...state, ...extra })); } };
+    requestAnimationFrame(() => finish({ frameMs: Math.round(performance.now() - started) }));
+    setTimeout(() => finish({ frameMs: null, timerMs: Math.round(performance.now() - started) }), 700);
+})"#;
+
+/// Logs a capture of a page its browser did not show (R86-2: in five spells of
+/// a night soak every such capture ran out of time, both lanes together, and
+/// nothing said whether the paint was placed or the browser drew). A failed
+/// one also logs its window and what the page said of its drawing, read
+/// before the paint goes.
+async fn log_hidden_capture(webview: &Webview, tab_id: i64, capture: HiddenCapture<'_>) {
+    let outcome = match capture.result {
+        Ok(()) => "ok".to_string(),
+        Err(error) => format!("failed ({})", error.chars().take(120).collect::<String>()),
+    };
+    let paint = match capture.paint {
+        Ok(()) => "placed".to_string(),
+        Err(error) => format!(
+            "not placed ({})",
+            error.chars().take(120).collect::<String>()
+        ),
+    };
+    let emulated = ref_context::focus_emulated(tab_id);
+    if capture.result.is_ok() {
+        log::info!(
+            "[capture] tab {tab_id} hidden capture {outcome} in {} ms, {} pending retries; paint {paint} in {} ms; focus emulated {emulated}",
+            capture.ms,
+            capture.pending_retries,
+            capture.paint_ms
+        );
+        return;
+    }
+    let window = super::external_front::tab_state(webview).await;
+    let page = match tokio::time::timeout(
+        Duration::from_millis(1_500),
+        ref_context::execute_awaited(webview, None, HIDDEN_CAPTURE_PROBE_JS),
+    )
+    .await
+    {
+        Ok(Ok(raw)) => page_json::from_str::<String>(&raw).unwrap_or(raw),
+        Ok(Err(error)) => format!("probe failed: {error}"),
+        Err(_) => "probe timed out after 1500 ms".to_string(),
+    };
+    log::info!(
+        "[capture] tab {tab_id} hidden capture {outcome} in {} ms, {} pending retries; paint {paint} in {} ms; focus emulated {emulated}; window {window}; page {page}",
+        capture.ms,
+        capture.pending_retries,
+        capture.paint_ms
+    );
 }
 
 /// A capture of a page its browser did not show that ran out of time, or

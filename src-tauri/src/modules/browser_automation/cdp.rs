@@ -132,7 +132,7 @@ pub async fn draw_frame(target: &BrowserTarget, timeout: Duration) -> Result<(),
         quality: Some(1),
         clip: None,
     };
-    let painting = begin_capture_paint(target).await;
+    let painting = begin_capture_paint(target).await.is_ok();
     let drawn = external
         .call_within("Page.captureScreenshot", cheap.protocol_params(), timeout)
         .await
@@ -164,10 +164,16 @@ const CAPTURE_PAINT_END_JS: &str =
 const CAPTURE_PAINT_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Puts CAPTURE_PAINT_JS's pixel on a Chrome or Edge page for a capture its
-/// browser does not show; true once it is there, for `end_capture_paint`.
-pub async fn begin_capture_paint(target: &BrowserTarget) -> bool {
-    matches!(target, BrowserTarget::External { .. })
-        && run_capture_paint(target, CAPTURE_PAINT_JS).await == Ok(true)
+/// browser does not show; Ok once it is there, for `end_capture_paint`, or
+/// why it is not.
+pub async fn begin_capture_paint(target: &BrowserTarget) -> Result<(), String> {
+    if !matches!(target, BrowserTarget::External { .. }) {
+        return Err("not a Chrome or Edge page".into());
+    }
+    match run_capture_paint(target, CAPTURE_PAINT_JS).await? {
+        true => Ok(()),
+        false => Err("the page had no root element".into()),
+    }
 }
 
 pub async fn end_capture_paint(target: &BrowserTarget) {

@@ -242,6 +242,18 @@ async fn in_front(target: &BrowserTarget) -> bool {
         .map_or(true, |state| shown_in_window(&state))
 }
 
+/// The tab and window state the extension reports, or why there is none: for
+/// the log of a capture its browser did not draw.
+pub async fn tab_state(target: &BrowserTarget) -> Value {
+    let BrowserTarget::External { target, .. } = target else {
+        return Value::Null;
+    };
+    target
+        .call("anbo.tabState", json!({}), Duration::from_millis(600))
+        .await
+        .unwrap_or_else(|error| json!({ "error": error }))
+}
+
 /// A tab shares the front of its window with the other half of a split view.
 fn shown_in_window(state: &serde_json::Value) -> bool {
     let flag = |name: &str, otherwise: bool| state[name].as_bool().unwrap_or(otherwise);

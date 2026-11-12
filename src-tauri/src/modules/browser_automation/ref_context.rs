@@ -102,6 +102,15 @@ fn note_focus_emulated(tab: i64) {
     }
 }
 
+/// Whether an agent's input left the tab's focus emulated.
+pub fn focus_emulated(tab: i64) -> bool {
+    FOCUS_EMULATED
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|tabs| tabs.contains(&tab)))
+        .unwrap_or(false)
+}
+
 /// Forgets that the tab's focus is emulated, so the next input turns it on
 /// again; true when it was.
 fn take_focus_emulated(tab: i64) -> bool {
