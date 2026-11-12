@@ -5,7 +5,7 @@ import { createDockManager } from "./dock.js";
 // The version this code is, kept equal to manifest.json. After an update the
 // browser reads the new manifest but can keep running the old scripts until the
 // extension reloads, so the manifest alone would hide that a reload is due.
-export const EXTENSION_VERSION = "0.5.16";
+export const EXTENSION_VERSION = "0.5.17";
 
 const MAX_TABS = 128;
 // A new tab opened this soon after Anbo sent input to the tab it opened from
@@ -79,6 +79,10 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
   // key opened, it names the page the key or click reached.
   const sources = new Map();
   const sourceWaits = new Map();
+  // The tabs anbo.openTab is making, each { windowId, url, tabId } until its
+  // open is over: the browser tells of a new tab around the time it answers
+  // the call that made it.
+  const opening = new Set();
   let keptRenderers = "";
   let disposed = false;
 
@@ -302,7 +306,16 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
         const window = regular.find((candidate) => candidate.focused) ?? regular[0];
         if (!window) throw new Error("Open a regular window in this connected browser profile first");
         const activate = message.params.activate !== false;
-        const tab = await api.tabs.create({ windowId: window.id, url, active: activate });
+        const own = { windowId: window.id, url, tabId: undefined };
+        opening.add(own);
+        let tab;
+        try {
+          tab = await api.tabs.create({ windowId: window.id, url, active: activate });
+          own.tabId = tab.id;
+        } catch (error) {
+          opening.delete(own);
+          throw error;
+        }
         let result;
         let timer;
         // The answer goes out at the deadline even while the browser is still
@@ -326,6 +339,7 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
           throw new Error("Opening the tab took longer than Anbo waits, so the tab was closed again. Nothing was replayed; try again.");
         } finally {
           clearTimeout(timer);
+          opening.delete(own);
         }
         if (activate) await api.windows.update(window.id, { focused: true });
         return result;
@@ -403,7 +417,23 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     return [...attached].some(([tabId, other]) => tabId !== selection.id && driven(tabId) && scopeOf(other) !== scope && inputAt.get(tabId) >= from);
   }
 
+  // Whether a new tab is one anbo.openTab is making: by its id once the browser
+  // answered that call, before that by its window and address.
+  function ownOpen(tab) {
+    for (const own of opening) {
+      if (own.tabId === undefined ? own.windowId === tab.windowId && !Number.isSafeInteger(tab.openerTabId) && own.url === (tab.pendingUrl || tab.url) : own.tabId === tab.id) return true;
+    }
+    return false;
+  }
+
   function created(tab, fromDock = false) {
+    // Anbo's own new tab is no page's. One made for an agent while another
+    // agent's tab had input was taken for a tab that input opened: its window
+    // was watched for 1.5 s to be put back (an open that brings the window up,
+    // as with activate, would have it put away again), and "a tab came and its
+    // window is not put back" was noted with no page opening anything (round
+    // 94, R94-2: three times in 1,662 loops of two agents).
+    if (ownOpen(tab)) return;
     const opener = attached.get(tab.openerTabId);
     const named = Boolean(opener && driven(opener.id));
     const recent = fromDock ? null : lastDriven();

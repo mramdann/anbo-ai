@@ -1042,6 +1042,62 @@ describe("tabs a page Anbo drives opens", () => {
     expect(state.api.debugger.attach).toHaveBeenCalledTimes(1);
   });
 
+  it("takes a tab Anbo itself is opening for no page's, while another agent's tab has input", async () => {
+    // Round 94 (R94-2), soak B: Anbo opened a tab for one agent 0.1 s after
+    // another agent typed into its own page, and the new tab was taken for
+    // one that typing opened: "a tab came and its window is not put back"
+    // in Anbo's log, with no page opening anything.
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    // Typed text is input, with no key or press to note the window by.
+    await state.run("Input.insertText", 10, { text: "a" });
+    state.api.tabs.create.mockImplementationOnce(async ({ url, windowId }) => {
+      const tab = { id: 12, url, windowId, title: "New" };
+      state.tabs.set(12, tab);
+      // As the browser does: it tells of the tab, then answers the call.
+      state.manager.created({ id: 12, url: "", pendingUrl: url, windowId, active: false });
+      return tab;
+    });
+    const opened = await state.run("anbo.openTab", 0, { url: "https://example.com/new", activate: false });
+    expect(opened.result).toMatchObject({ id: 12, createdByAnbo: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(state.notes).toEqual([]);
+    // A page's own tab in that moment is still put back and noted.
+    state.manager.created(openedTab(state, 13, { active: false, openerTabId: 99 }));
+    await vi.waitFor(() => expect(state.notes).toEqual([[10, "a tab came and its window is not put back: no window was noted before the input"]]));
+  });
+
+  it("leaves the window an open of Anbo's brings up where it is, though another agent's key came just before", async () => {
+    // The watch that puts a window back after an agent's key took Anbo's own
+    // new tab for that key's, and would minimize the window again when the
+    // open brought it up within the 1.5 s it looks (round 94, R94-2). Anbo
+    // opens its tabs behind today; the call brings the window up by default.
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    let shown = "minimized";
+    state.api.windows.get.mockImplementation(async (id) => ({ id, type: "normal", incognito: false, state: shown, focused: shown !== "minimized" }));
+    await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "a" });
+    state.api.tabs.create.mockImplementationOnce(async ({ url, windowId }) => {
+      const tab = { id: 12, url: "", pendingUrl: url, windowId };
+      state.tabs.set(12, tab);
+      return tab;
+    });
+    const opening = state.run("anbo.openTab", 0, { url: "https://example.com/new" });
+    await vi.waitFor(() => expect(state.api.tabs.onUpdated.listeners.size).toBe(1));
+    // The browser tells of the tab after it answered the call: known by its id.
+    state.manager.created({ id: 12, url: "", pendingUrl: "https://example.com/new", windowId: 20, active: true });
+    const loaded = { id: 12, url: "https://example.com/new", windowId: 20 };
+    state.tabs.set(12, loaded);
+    state.api.tabs.onUpdated.emit(12, { url: loaded.url }, loaded);
+    expect((await opening).result.id).toBe(12);
+    expect(state.api.windows.update).toHaveBeenCalledWith(20, { focused: true });
+    // The open brought the window up.
+    shown = "normal";
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(state.api.windows.update).not.toHaveBeenCalledWith(20, { state: "minimized" });
+    expect(state.notes).toEqual([]);
+  });
+
   it("leaves to the browser what no driven page opened, what is no web page, and popup windows", async () => {
     const state = harness();
     await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
