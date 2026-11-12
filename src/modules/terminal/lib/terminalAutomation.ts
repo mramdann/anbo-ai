@@ -105,6 +105,22 @@ const LATE_PROGRAM_AGE_MS = 300;
  *  that got it was gone within 0.2 s. */
 const INTERRUPT_RESEND_GAP_MS = 1_000;
 const MAX_INTERRUPT_RESENDS = 2;
+/** How long a command its shell has not started stays open after its Ctrl+C
+ *  while the terminal has shown nothing since the command was typed, not even
+ *  the command's echo: a shell that has not read the line yet may still run
+ *  it. With the watch's 10 s alone, a shell that came back 12 s after the
+ *  Ctrl+C ran a ping to its end after Anbo had answered "interrupted" (round
+ *  96: 2 of 2). A terminal whose output no longer reaches Anbo reads the same
+ *  and ends unconfirmed this much later. */
+const SILENT_SHELL_WATCH_MS = 60_000;
+/** How long after the last look that found the shell still silent the
+ *  late-program watch goes on sending: a shell that takes the line at last
+ *  starts its program within this. */
+const SILENT_SHELL_GRACE_MS = 5_000;
+/** How long a command its shell started after Anbo's Ctrl+C runs before the
+ *  Ctrl+C goes out again: one sent with the start mark can come before the
+ *  shell has handed its console to the command. */
+const LATE_COMMAND_AGE_MS = 300;
 /** After the watch, how long and how often it goes on looking, only to note
  *  what runs, for the line an interrupted command that ran on logs. A ping
  *  ran 20 of 20 after a Ctrl+C with no second one sent, and nothing told
@@ -262,6 +278,12 @@ type ExecutionState = {
   resentTo?: string[];
   /** The programs those were for, by pid and start: each gets one at most. */
   resentPrograms?: Set<string>;
+  /** One of them went to the command itself, which its shell had started
+   *  only after the Ctrl+C before. */
+  resentToCommand?: boolean;
+  /** When a look past the late-program watch last found the terminal with
+   *  nothing new since the command was typed (SILENT_SHELL_WATCH_MS). */
+  silentShellAt?: number;
   /** A look found one of its programs still running more than
    *  INTERRUPT_STOP_MS after the last Ctrl+C. */
   ranPastStop?: boolean;
@@ -963,10 +985,27 @@ export function createTerminalAutomationService(
         // and the ping ran its 20 replies (round 94, R94-1). Such a command
         // stays open while that watch still looks, which sends the program
         // its Ctrl+C.
-        const mayStillStart =
+        const neverStarted =
           execution.phase === "dispatched" &&
-          execution.programSeenAt === undefined &&
-          checkedAt - sentAt < LATE_PROGRAM_WATCH_MS;
+          execution.programSeenAt === undefined;
+        // A shell that has drawn nothing since the command was typed, not
+        // even its echo, has not read the line.
+        if (
+          neverStarted &&
+          checkedAt - sentAt < SILENT_SHELL_WATCH_MS &&
+          bufferFingerprint(deps.getBuffer(leafId) ?? "") ===
+            execution.initialFingerprint
+        ) {
+          execution.silentShellAt = checkedAt;
+        }
+        // Past the watch only such a shell may still start the command, and
+        // one that drew its first lines a moment ago: the echo comes before
+        // the start mark, and a look between the two ended the execution
+        // while its Start-Sleep was about to run (round 96: 1 of 2).
+        const mayStillStart =
+          neverStarted &&
+          (checkedAt - sentAt < LATE_PROGRAM_WATCH_MS ||
+            heldForSilentShell(execution, checkedAt));
         if (
           !mayStillStart &&
           checkedAt - execution.noProgramSince >= UNCONFIRMED_EMPTY_MS
@@ -1003,6 +1042,12 @@ export function createTerminalAutomationService(
     if (shellBusy && execution.phase === "dispatched") {
       execution.phase = "running";
       execution.runningAt = Date.now();
+      if (execution.interruptSentAt !== undefined) {
+        // The looks that found none of its programs were from before it
+        // had any: one more of them, before its Ctrl+C went out, ended it.
+        execution.noProgramSince = undefined;
+        interruptLateCommand(leafId, execution);
+      }
     }
     let completed = false;
     if (!completed && !execution.usesOsc) {
@@ -1228,6 +1273,56 @@ export function createTerminalAutomationService(
     setTimeout(look, BATCH_QUESTION_POLL_MS);
   };
 
+  /** Sends Ctrl+C again to a command its shell started only after the one
+   *  Anbo sent. That one waits as a key behind the command's Enter and reaches
+   *  the prompt once the command is over (INTERRUPT_START_WAIT_MS), so the
+   *  command ran to its end: a Start-Sleep 20 whose shell came back 5 s after
+   *  the Ctrl+C slept on for 17 s after Anbo had answered "interrupted" (round
+   *  96, R96-1: 2 of 2). A program the command starts is the late-program
+   *  watch's, which knows when the program started; this is for a command
+   *  that runs in the shell itself, a cmdlet or a loop, which that watch never
+   *  sees. */
+  const interruptLateCommand = (leafId: number, execution: ExecutionState) => {
+    const startedAt = execution.runningAt;
+    setTimeout(() => {
+      void (async () => {
+        if (execution.runningAt !== startedAt) return;
+        if (await refreshExecutionCompletion(execution)) return;
+        if ((execution.interruptResent ?? 0) >= MAX_INTERRUPT_RESENDS) return;
+        const state = deps.getSessionState(leafId);
+        if (
+          !state ||
+          state.shellExited ||
+          !(state.commandRunning || state.blockMode !== "prompt")
+        ) {
+          return;
+        }
+        if (await deps.hasForegroundProcess(leafId)) return;
+        if (
+          execution.completedAt !== undefined ||
+          pagerOnScreen(deps.getScreen?.(leafId) ?? "") ||
+          pagerOnScreen(deps.getBuffer(leafId) ?? "") ||
+          answerBatchQuestion(leafId, execution)
+        ) {
+          return;
+        }
+        if (!deps.write(leafId, "\x03")) return;
+        execution.interruptSentAt = Date.now();
+        execution.ranPastStop = undefined;
+        execution.interruptResent = (execution.interruptResent ?? 0) + 1;
+        execution.resentToCommand = true;
+      })().catch((cause: unknown) => {
+        deps.logWarning(`the late-command interrupt stopped: ${String(cause)}`);
+      });
+    }, LATE_COMMAND_AGE_MS);
+  };
+
+  /** Whether a look past the late-program watch found, a moment ago, the
+   *  terminal with nothing new since the command was typed. */
+  const heldForSilentShell = (execution: ExecutionState, now: number) =>
+    execution.silentShellAt !== undefined &&
+    now - execution.silentShellAt < SILENT_SHELL_GRACE_MS;
+
   /** Sends Ctrl+C once more to a program the last one could not reach: one
    *  that started after it, or so shortly before that it may not have joined
    *  the console yet. A program that had run longer when a Ctrl+C came never
@@ -1274,8 +1369,9 @@ export function createTerminalAutomationService(
       if (programs.length > 0 && askedAt - sentAt > INTERRUPT_STOP_MS) {
         execution.ranPastStop = true;
       }
-      // Past the watch it only notes what runs.
-      if (now >= until) return true;
+      // Past the watch it only notes what runs, unless the command is one
+      // its silent shell may still start: that one's program is yet to come.
+      if (now >= until && !heldForSilentShell(execution, now)) return true;
       if (programs.length > 0) {
         execution.programSeenAt = now;
         execution.noProgramSince = undefined;
@@ -1316,7 +1412,8 @@ export function createTerminalAutomationService(
       look().then(
         (again) => {
           if (!again) return;
-          const traceOnly = Date.now() >= until;
+          const traceOnly =
+            Date.now() >= until && !heldForSilentShell(execution, Date.now());
           setTimeout(
             tick,
             traceOnly ? LATE_PROGRAM_TRACE_POLL_MS : LATE_PROGRAM_POLL_MS,
@@ -1954,8 +2051,12 @@ export function createTerminalAutomationService(
         const unconfirmedNote = execution.endUnconfirmed
           ? `${unconfirmedWhat}, but its shell never marked the end, so the exit code is unknown. terminal_read shows the screen.`
           : undefined;
+        const resentWhy =
+          execution.resentToCommand && !execution.resentTo
+            ? "Its shell started the command only after Anbo's Ctrl+C, which waited behind it"
+            : `${execution.resentTo?.join(", ") ?? "A program"} started too late for Anbo's Ctrl+C, which reached only its shell`;
         const resentNote = execution.interruptResent
-          ? `${execution.resentTo?.join(", ") ?? "A program"} started too late for Anbo's Ctrl+C, which reached only its shell, so Anbo sent Ctrl+C ${execution.interruptResent === 1 ? "once more" : `${execution.interruptResent} more times`}.`
+          ? `${resentWhy}, so Anbo sent Ctrl+C ${execution.interruptResent === 1 ? "once more" : `${execution.interruptResent} more times`}.`
           : undefined;
         // The UI stands behind the shell's output and is asking for the rest.
         const outputStalled =

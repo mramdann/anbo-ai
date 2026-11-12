@@ -3411,10 +3411,16 @@ describe("terminals whose output stopped reaching Anbo", () => {
   it("ends an interrupted execution its shell never marked, once none of its programs is left", async () => {
     vi.useFakeTimers();
     try {
-      const write = vi.fn(() => true);
+      // The shell drew the typed line, so it has read it; only its marks are
+      // lost.
+      let typed = false;
+      const write = vi.fn((_leafId: number, data: string) => {
+        if (data !== "\x03") typed = true;
+        return true;
+      });
       const service = createTerminalAutomationService(
         dependencies({
-          getBuffer: () => prompt,
+          getBuffer: () => (typed ? `${prompt}echo lost\n${prompt}` : prompt),
           getSessionState: () => idleShell(),
           write,
         }),
@@ -3463,6 +3469,67 @@ describe("terminals whose output stopped reaching Anbo", () => {
       await expect(
         service.handle("terminal_execute", { ...target, text: "echo next" }),
       ).resolves.toMatchObject({ result: { executed: true } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ends one whose terminal has shown nothing since the command was typed only after the minute a silent shell is given", async () => {
+    // Round 96: a shell that has not drawn the typed line has not read it
+    // and may still run it (one that came back 12 s after the Ctrl+C ran its
+    // ping to the end after Anbo had answered "interrupted"). A terminal
+    // whose output is lost reads the same, so it is held as long.
+    vi.useFakeTimers();
+    try {
+      const service = createTerminalAutomationService(
+        dependencies({
+          getBuffer: () => prompt,
+          getSessionState: () => idleShell(),
+          write: () => true,
+        }),
+      );
+      const executionId = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "echo lost",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      const interrupted = service.handle("terminal_interrupt", {
+        ...target,
+        executionId,
+      });
+      await vi.advanceTimersByTimeAsync(3_100);
+      await expect(interrupted).resolves.toMatchObject({
+        result: { interrupted: true, phase: "dispatched" },
+      });
+      // A wait that looks all along does not see it end in its 45 s.
+      const first = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 45_000,
+      });
+      await vi.advanceTimersByTimeAsync(46_000);
+      await expect(first).resolves.toMatchObject({
+        result: { completed: false, timedOut: true },
+      });
+      await expect(
+        service.handle("terminal_execute", { ...target, text: "echo next" }),
+      ).resolves.toMatchObject({ error: { code: "terminal_busy" } });
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 25_000,
+      });
+      await vi.advanceTimersByTimeAsync(21_000);
+      await expect(waited).resolves.toMatchObject({
+        result: {
+          completed: true,
+          completionReason: "interrupted",
+          endUnconfirmed: true,
+          exitCode: null,
+        },
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -4037,6 +4104,342 @@ describe("a program that starts too late for its Ctrl+C", () => {
         exitCode: -1_073_741_510,
       });
       expect(result.endUnconfirmed).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends it to a command its silent shell started 12 s after the first, past the watch's 10 s", async () => {
+    // Round 96, the limit round 94 left: with the shell suspended until 12 s
+    // after the Ctrl+C, the execution ended "interrupted" at 10.5 s and the
+    // ping ran its 20 replies (2 of 2). The terminal had shown nothing since
+    // the command was typed, which is how Anbo tells such a shell.
+    vi.useFakeTimers();
+    try {
+      const shell = commandShell({
+        write: (_leafId, data) => {
+          if (data === "\x03") {
+            shell.sim.ctrlCs += 1;
+            shell.sim.onCtrlC();
+          }
+          return true;
+        },
+      });
+      const { sim, service } = shell;
+      sim.onCtrlC = () => {
+        if (sim.programs.length > 0) {
+          setTimeout(() => sim.end(-1_073_741_510), 100);
+        }
+      };
+      const executionId = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "ping -n 20 127.0.0.1",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      const interrupt = service.handle("terminal_interrupt", {
+        ...target,
+        executionId,
+      });
+      await vi.advanceTimersByTimeAsync(3_100);
+      await interrupt;
+      expect(sim.ctrlCs).toBe(1);
+      let settled = false;
+      const waited = service
+        .handle("terminal_wait", { ...target, executionId, timeout: 30_000 })
+        .then((response) => {
+          settled = true;
+          return response;
+        });
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(settled).toBe(false);
+      sim.running = true;
+      sim.programs = [{ pid: 4444, name: "PING.EXE", startedAt: Date.now() }];
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(sim.ctrlCs).toBe(2);
+      await vi.advanceTimersByTimeAsync(1_000);
+      const result = (await waited).result as Record<string, unknown>;
+      expect(result).toMatchObject({
+        completed: true,
+        completionReason: "interrupted",
+        interruptResent: 1,
+        exitCode: -1_073_741_510,
+      });
+      expect(result.endUnconfirmed).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends it to a command of the shell's own that started after the first", async () => {
+    // Round 96 (R96-1): Start-Sleep 20 typed into a shell that came back 5 s
+    // after the Ctrl+C. No program ever shows for a cmdlet, so the watch sent
+    // nothing, the execution ended "interrupted" 8 s after the Ctrl+C, and
+    // the sleep went on for 17 s more (2 of 2).
+    vi.useFakeTimers();
+    try {
+      const shell = commandShell({
+        write: (_leafId, data) => {
+          if (data === "\x03") {
+            shell.sim.ctrlCs += 1;
+            shell.sim.onCtrlC();
+          }
+          return true;
+        },
+      });
+      const { sim, service } = shell;
+      // A Ctrl+C that comes while the cmdlet runs stops it; one that came
+      // before waits behind it.
+      sim.onCtrlC = () => {
+        if (sim.running) setTimeout(() => sim.end(1), 100);
+      };
+      const executionId = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "Start-Sleep 20",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      const interrupt = service.handle("terminal_interrupt", {
+        ...target,
+        executionId,
+      });
+      await vi.advanceTimersByTimeAsync(3_100);
+      await interrupt;
+      expect(sim.ctrlCs).toBe(1);
+      let settled = false;
+      const waited = service
+        .handle("terminal_wait", { ...target, executionId, timeout: 20_000 })
+        .then((response) => {
+          settled = true;
+          return response;
+        });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(settled).toBe(false);
+      // The shell takes the line and marks the command's start.
+      sim.running = true;
+      await vi.advanceTimersByTimeAsync(250);
+      expect(sim.ctrlCs).toBe(1);
+      await vi.advanceTimersByTimeAsync(450);
+      expect(sim.ctrlCs).toBe(2);
+      await vi.advanceTimersByTimeAsync(600);
+      const result = (await waited).result as Record<string, unknown>;
+      expect(result).toMatchObject({
+        completed: true,
+        completionReason: "interrupted",
+        interruptResent: 1,
+        exitCode: 1,
+        note: expect.stringContaining(
+          "started the command only after Anbo's Ctrl+C",
+        ),
+      });
+      expect(result.endUnconfirmed).toBeUndefined();
+      expect(sim.ctrlCs).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still sends it when a look for programs falls between the late start and its Ctrl+C", async () => {
+    // The looks from 5 s after the Ctrl+C had found no program, because the
+    // command had not started. One more, in the 0.3 s between its start and
+    // its Ctrl+C, ended it "interrupted" on that old count.
+    vi.useFakeTimers();
+    try {
+      const shell = commandShell({
+        write: (_leafId, data) => {
+          if (data === "\x03") {
+            shell.sim.ctrlCs += 1;
+            shell.sim.onCtrlC();
+          }
+          return true;
+        },
+      });
+      const { sim, service } = shell;
+      sim.onCtrlC = () => {
+        if (sim.running) setTimeout(() => sim.end(1), 100);
+      };
+      const executionId = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "Start-Sleep 20",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      const interrupt = service.handle("terminal_interrupt", {
+        ...target,
+        executionId,
+      });
+      await vi.advanceTimersByTimeAsync(3_100);
+      await interrupt;
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 20_000,
+      });
+      // The start is seen 7.825 s after the Ctrl+C and its own Ctrl+C is due
+      // 0.3 s later; the look for programs at 8.0 s falls between the two.
+      await vi.advanceTimersByTimeAsync(7_700);
+      sim.running = true;
+      await vi.advanceTimersByTimeAsync(300);
+      expect(sim.ctrlCs).toBe(1);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(sim.ctrlCs).toBe(2);
+      await vi.advanceTimersByTimeAsync(600);
+      const result = (await waited).result as Record<string, unknown>;
+      expect(result).toMatchObject({
+        completed: true,
+        completionReason: "interrupted",
+        interruptResent: 1,
+        exitCode: 1,
+      });
+      expect(result.endUnconfirmed).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("holds a command whose silent shell has just drawn its echo until the start mark comes", async () => {
+    // Round 96: the shell came back 12 s after the Ctrl+C and drew the typed
+    // line before it marked the command's start. A look between the two
+    // found a terminal that was no longer silent and a command not started,
+    // and ended it; the Start-Sleep then ran its 19 s (1 of 2).
+    vi.useFakeTimers();
+    try {
+      let echoed = false;
+      const shell = commandShell({
+        getBuffer: () =>
+          echoed
+            ? "PS C:\\work\\alpha> Start-Sleep 20\n"
+            : "PS C:\\work\\alpha> ",
+        write: (_leafId, data) => {
+          if (data === "\x03") {
+            shell.sim.ctrlCs += 1;
+            shell.sim.onCtrlC();
+          }
+          return true;
+        },
+      });
+      const { sim, service } = shell;
+      sim.onCtrlC = () => {
+        if (sim.running) setTimeout(() => sim.end(1), 100);
+      };
+      const executionId = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "Start-Sleep 20",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      const interrupt = service.handle("terminal_interrupt", {
+        ...target,
+        executionId,
+      });
+      await vi.advanceTimersByTimeAsync(3_100);
+      await interrupt;
+      let settled = false;
+      const waited = service
+        .handle("terminal_wait", { ...target, executionId, timeout: 30_000 })
+        .then((response) => {
+          settled = true;
+          return response;
+        });
+      // The echo 11.7 s after the Ctrl+C, the start mark 0.4 s later, and a
+      // look for programs on the full second between them.
+      await vi.advanceTimersByTimeAsync(11_600);
+      echoed = true;
+      await vi.advanceTimersByTimeAsync(400);
+      expect(settled).toBe(false);
+      sim.running = true;
+      await vi.advanceTimersByTimeAsync(700);
+      expect(sim.ctrlCs).toBe(2);
+      await vi.advanceTimersByTimeAsync(600);
+      const result = (await waited).result as Record<string, unknown>;
+      expect(result).toMatchObject({
+        completed: true,
+        completionReason: "interrupted",
+        interruptResent: 1,
+        exitCode: 1,
+      });
+      expect(result.endUnconfirmed).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never sends another to a program that ran before the Ctrl+C, though its shell's start mark came after it", async () => {
+    // On a busy machine the start mark can reach Anbo after the Ctrl+C went
+    // out to a program that was running by then. The program's own start
+    // time tells, so the command is left to the watch, which sends nothing.
+    vi.useFakeTimers();
+    try {
+      const shell = commandShell({
+        write: (_leafId, data) => {
+          if (data === "\x03") {
+            shell.sim.ctrlCs += 1;
+            shell.sim.onCtrlC();
+          }
+          return true;
+        },
+      });
+      const { sim, service } = shell;
+      // terraform stops in its own time, and at a second Ctrl+C at once.
+      sim.onCtrlC = () => {
+        setTimeout(() => sim.end(1), 4_000);
+      };
+      const executionId = idOf(
+        await service.handle("terminal_execute", {
+          ...target,
+          text: "terraform apply",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(2_500);
+      sim.programs = [
+        { pid: 5151, name: "terraform.exe", startedAt: Date.now() - 2_000 },
+      ];
+      await service.handle("terminal_interrupt", { ...target, executionId });
+      expect(sim.ctrlCs).toBe(1);
+      await vi.advanceTimersByTimeAsync(200);
+      // The mark arrives.
+      sim.running = true;
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(sim.ctrlCs).toBe(1);
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 3_000,
+      });
+      await vi.advanceTimersByTimeAsync(1_500);
+      await expect(waited).resolves.toMatchObject({
+        result: { completed: true },
+      });
+      expect(sim.ctrlCs).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves a command that had started when the Ctrl+C went out its one Ctrl+C, program or not", async () => {
+    vi.useFakeTimers();
+    try {
+      const shell = commandShell();
+      const { sim, service } = shell;
+      // A cmdlet that takes 2 s to stop.
+      sim.onCtrlC = () => {
+        setTimeout(() => sim.end(1), 2_000);
+      };
+      const executionId = await interrupted(shell, "Start-Sleep 20");
+      const waited = service.handle("terminal_wait", {
+        ...target,
+        executionId,
+        timeout: 5_000,
+      });
+      await vi.advanceTimersByTimeAsync(2_500);
+      await expect(waited).resolves.toMatchObject({
+        result: { completed: true, completionReason: "interrupted" },
+      });
+      expect(sim.ctrlCs).toBe(1);
     } finally {
       vi.useRealTimers();
     }
