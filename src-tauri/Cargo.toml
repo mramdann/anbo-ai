@@ -91,7 +91,9 @@ tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-trash = { version = "=5.3.0", default-features = false }
+# 5.3.0 put its Linux backend behind the default feature "freedesktop"; without
+# it the crate does not compile there. The other defaults stay off as before.
+trash = { version = "=5.3.0", default-features = false, features = ["freedesktop"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = "4.2"
