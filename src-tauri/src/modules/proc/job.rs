@@ -7,10 +7,13 @@
 use std::io;
 use std::mem::{size_of, zeroed};
 
-use windows_sys::Win32::Foundation::{CloseHandle, FALSE, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_MORE_DATA, FALSE, HANDLE, INVALID_HANDLE_VALUE,
+};
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JobObjectBasicProcessIdList,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{
@@ -32,10 +35,63 @@ impl ProcessJob {
             if process.is_null() {
                 return false;
             }
-            let mut member = FALSE;
-            let ok = IsProcessInJob(process, self.handle, &mut member);
+            let member = self.contains_process(process);
             CloseHandle(process);
-            ok != 0 && member != FALSE
+            member
+        }
+    }
+
+    /// The same, for a process the caller holds open: what it learns is
+    /// about that very process, whoever has its pid by now.
+    ///
+    /// # Safety
+    ///
+    /// `process` must be a valid process handle with
+    /// PROCESS_QUERY_LIMITED_INFORMATION.
+    pub unsafe fn contains_process(&self, process: HANDLE) -> bool {
+        let mut member = FALSE;
+        IsProcessInJob(process, self.handle, &mut member) != 0 && member != FALSE
+    }
+
+    /// The pids of the processes in the job right now. A process that was
+    /// ended and is not gone yet is still among them; one that was started
+    /// before its parent joined the job never is.
+    pub fn process_ids(&self) -> Vec<u32> {
+        let mut capacity = 128_usize;
+        loop {
+            let bytes =
+                size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() + (capacity - 1) * size_of::<usize>();
+            // Whole usize units keep the list aligned.
+            let mut buffer = vec![0_usize; bytes.div_ceil(size_of::<usize>())];
+            let read = unsafe {
+                QueryInformationJobObject(
+                    self.handle,
+                    JobObjectBasicProcessIdList,
+                    buffer.as_mut_ptr().cast(),
+                    bytes as u32,
+                    std::ptr::null_mut(),
+                )
+            } != 0;
+            let more = !read && unsafe { GetLastError() } == ERROR_MORE_DATA;
+            if !read && !more {
+                return Vec::new();
+            }
+            let list = buffer.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+            let (assigned, listed) = unsafe {
+                (
+                    (*list).NumberOfAssignedProcesses as usize,
+                    (*list).NumberOfProcessIdsInList as usize,
+                )
+            };
+            if more && assigned > capacity && capacity < 1 << 16 {
+                capacity = assigned + 32;
+                continue;
+            }
+            let first = unsafe { std::ptr::addr_of!((*list).ProcessIdList).cast::<usize>() };
+            return unsafe { std::slice::from_raw_parts(first, listed.min(capacity)) }
+                .iter()
+                .map(|pid| *pid as u32)
+                .collect();
         }
     }
 
@@ -130,6 +186,9 @@ mod tests {
         assert!(job.contains(child.id()));
         assert!(!job.contains(std::process::id()));
         assert!(!job.contains(0xFFFFFFFE));
+        let listed = job.process_ids();
+        assert!(listed.contains(&child.id()), "{listed:?}");
+        assert!(!listed.contains(&std::process::id()), "{listed:?}");
         drop(job);
 
         let deadline = Instant::now() + Duration::from_secs(3);

@@ -6,25 +6,59 @@
 //!
 //! Both halves of the guard live here: the running host joins a job object that
 //! dies with us, and a host recorded by an older build gets reaped at startup.
+//!
+//! The host's own children need a hand as well, once they are told to go. A
+//! tab's renderer keeps one worker thread at background priority (4). When
+//! the tab closes the host ends the renderer, and every thread of a process
+//! that was ended has to run once more to leave. While every core is taken by
+//! work at normal priority (8) that one thread gets no turn, and the process
+//! stays, with about 20 MB of commit and its handles, until Windows' own
+//! starvation boost reaches it seconds later, one process at a time. Sixty
+//! tabs closed back to back on a busy machine left 43 such processes; in the
+//! 0.39.1 release test 124 of them took the machine's commit down to where
+//! the resource guard refused every new tab (round 98, R98-1). So after a tab
+//! closes or moves to another page, the host's children are watched for a
+//! while. Where a core is free an ended one is gone within tens of
+//! milliseconds (705 of 711 in under 200 ms, the slowest in 424 ms). One that
+//! is still there half a second after it was first seen ended gets its
+//! priority class raised: on the busy machine every such process was then
+//! gone 0.5 to 1.1 s after it was ended, where the ones left alone took 20 s
+//! and longer (round 99).
 
 #![cfg(windows)]
 
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use tauri::Manager;
-use windows_sys::Win32::Foundation::{CloseHandle, FALSE, FILETIME, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, FALSE, FILETIME, HANDLE, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    GetExitCodeProcess, GetPriorityClass, GetProcessTimes, OpenProcess, QueryFullProcessImageNameW,
+    SetPriorityClass, WaitForSingleObject, HIGH_PRIORITY_CLASS, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, SYNCHRONIZATION_SYNCHRONIZE,
 };
 
 use crate::modules::proc::job::ProcessJob;
 
 const HOST_PID_FILE: &str = "browser-host.pid";
 const HOST_IMAGE: &str = "msedgewebview2.exe";
+/// GetExitCodeProcess's answer for a process that still runs.
+const STILL_ACTIVE: u32 = 259;
+/// How long after a tab's page ended its process is looked for: the host ends
+/// the process itself, on a busy machine seconds after the tab went.
+const LEAVING_WATCH: Duration = Duration::from_secs(10);
+/// How often meanwhile.
+const LEAVING_STEP: Duration = Duration::from_millis(500);
+/// How long after a look first found a process ended it counts as stuck: just
+/// under a step, so the next look decides, half a second on. A process that
+/// leaves by itself is long gone by then (see the top of this file).
+const LEAVING_GRACE: Duration = Duration::from_millis(400);
+/// How often at most the log says how many processes were helped out.
+const LEAVING_LOG_EVERY: Duration = Duration::from_secs(30);
 
 /// A process handle that closes itself.
 struct Process(HANDLE);
@@ -55,6 +89,27 @@ impl Process {
         (ok != 0)
             .then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
     }
+
+    /// The exit code of a process that was ended, whether or not it is gone
+    /// yet; `None` while it runs.
+    fn exit_code(&self) -> Option<u32> {
+        let mut code = 0_u32;
+        let read = unsafe { GetExitCodeProcess(self.0, &mut code) } != 0;
+        (read && code != STILL_ACTIVE).then_some(code)
+    }
+
+    /// Whether the process is gone for good, its last thread too.
+    fn gone(&self) -> bool {
+        unsafe { WaitForSingleObject(self.0, 0) == WAIT_OBJECT_0 }
+    }
+
+    /// Raises the priority class to high, once. Whether this call did.
+    fn raise(&self) -> bool {
+        unsafe {
+            GetPriorityClass(self.0) != HIGH_PRIORITY_CLASS
+                && SetPriorityClass(self.0, HIGH_PRIORITY_CLASS) != 0
+        }
+    }
 }
 
 impl Drop for Process {
@@ -62,6 +117,9 @@ impl Drop for Process {
         unsafe { CloseHandle(self.0) };
     }
 }
+
+// A process handle belongs to the process, not to the thread that opened it.
+unsafe impl Send for Process {}
 
 /// The host a run leaves in `browser-host.pid`: its pid and the moment it
 /// started. Builds before this one wrote the pid alone.
@@ -170,9 +228,16 @@ fn reap_record(path: &Path) -> (Option<HostRecord>, Reap) {
 // one for the next tab, so a single adopt-once slot would only ever protect the
 // first generation. Scraping, which closes every tab and opens more, is exactly
 // the workload that produces new generations.
-static HOST_JOBS: OnceLock<Mutex<Vec<(u32, ProcessJob)>>> = OnceLock::new();
+static HOST_JOBS: OnceLock<Mutex<Vec<Adopted>>> = OnceLock::new();
 
-fn host_jobs() -> &'static Mutex<Vec<(u32, ProcessJob)>> {
+/// A host this run adopted, and the job that ends it with Anbo. Every
+/// process the host starts from then on is in that job too.
+struct Adopted {
+    pid: u32,
+    job: ProcessJob,
+}
+
+fn host_jobs() -> &'static Mutex<Vec<Adopted>> {
     HOST_JOBS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
@@ -227,17 +292,17 @@ pub fn adopt_host(app: &tauri::AppHandle, pid: u32) {
     };
     // Dropping a job terminates its tree, so only release the ones whose host is
     // already gone. That is also what clears the handles a long session leaks.
-    jobs.retain(|(adopted, _)| is_webview_host(*adopted));
-    if jobs.iter().any(|(adopted, _)| *adopted == pid) {
+    jobs.retain(|adopted| is_webview_host(adopted.pid));
+    if jobs.iter().any(|adopted| adopted.pid == pid) {
         return;
     }
     match ProcessJob::create_for(pid) {
         Ok(job) => {
-            jobs.push((pid, job));
             // The start time is what lets the next run tell this host from a
             // newer process that reuses its pid; without it, no record.
             let created = Process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION)
                 .and_then(|process| process.created());
+            jobs.push(Adopted { pid, job });
             match (pid_path(app), created) {
                 (Ok(path), Some(created)) => {
                     let record = HostRecord {
@@ -274,11 +339,211 @@ pub fn adopt_from_webview(webview: &tauri::Webview) {
     });
 }
 
+/// What one look at the hosts' children found.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Leaving {
+    /// Processes that were ended and are still there.
+    pub seen: usize,
+    /// Those first seen ended a moment ago: the next look decides.
+    pub fresh: usize,
+    /// Those whose priority this look raised.
+    pub helped: usize,
+}
+
+/// A process of an adopted host's job, held open while pages end.
+struct Held {
+    pid: u32,
+    process: Process,
+    /// When a look first found it ended.
+    ended: Option<Instant>,
+}
+
+/// The hosts' children while pages end. The job a host was put in names
+/// them, and nothing else: no pid or name is guessed. A child the host
+/// started before it joined the job is not in it (its GPU and service
+/// processes, which go with the host, and the renderer of the first tab), so
+/// that one renderer gets no help.
+#[derive(Default)]
+struct LeavingWatch {
+    held: Vec<Held>,
+}
+
+impl LeavingWatch {
+    /// Takes in the processes of `job` that are not held yet, `host` itself
+    /// left out.
+    fn refresh(&mut self, host: u32, job: &ProcessJob) {
+        for pid in job.process_ids() {
+            // A pid that is held cannot have changed hands.
+            if pid == host || self.held.iter().any(|held| held.pid == pid) {
+                continue;
+            }
+            let Some(process) = Process::open(
+                pid,
+                PROCESS_QUERY_LIMITED_INFORMATION
+                    | PROCESS_SET_INFORMATION
+                    | SYNCHRONIZATION_SYNCHRONIZE,
+            ) else {
+                continue;
+            };
+            // One that is not: the job listed it a moment before it was opened.
+            if unsafe { job.contains_process(process.0) } {
+                self.held.push(Held {
+                    pid,
+                    process,
+                    ended: None,
+                });
+            }
+        }
+    }
+
+    /// Raises the priority of a child that an earlier look found ended `grace`
+    /// ago or longer and that is still there, so its last threads get the
+    /// turn they need to leave. A process that runs is never touched: only
+    /// one with an exit code is, and all that is left of it is its way out.
+    /// The children that are gone are handed back, for `close_elsewhere`.
+    fn look(&mut self, now: Instant, grace: Duration) -> (Leaving, Vec<Held>) {
+        let mut found = Leaving::default();
+        let mut gone = Vec::new();
+        let mut index = 0;
+        while index < self.held.len() {
+            if self.held[index].process.gone() {
+                gone.push(self.held.swap_remove(index));
+                continue;
+            }
+            let child = &mut self.held[index];
+            index += 1;
+            if child.process.exit_code().is_none() {
+                continue;
+            }
+            found.seen += 1;
+            let ended = *child.ended.get_or_insert(now);
+            if now.saturating_duration_since(ended) < grace {
+                found.fresh += 1;
+            } else if child.process.raise() {
+                found.helped += 1;
+            }
+        }
+        (found, gone)
+    }
+}
+
+/// Closes the handles on a thread of their own. The last handle of a process
+/// that is gone takes what is left of the process with it, and on a busy
+/// machine that close took 5.8 and 6.5 s (twice in 2,400 tabs, round 99): the
+/// watch stood still meanwhile, and up to 26 ended processes waited for it.
+fn close_elsewhere(handles: Vec<Held>) {
+    if handles.is_empty() {
+        return;
+    }
+    // Should no thread start, they close right here instead.
+    let _ = std::thread::Builder::new()
+        .name("anbo-browser-leaving-close".into())
+        .spawn(move || drop(handles));
+}
+
+static LEAVING: Mutex<LeavingWatch> = Mutex::new(LeavingWatch { held: Vec::new() });
+
+/// One look at the children of the hosts this run adopted.
+fn look_leaving() -> Leaving {
+    let (found, gone) = {
+        let Ok(mut watch) = LEAVING.lock() else {
+            return Leaving::default();
+        };
+        if let Ok(jobs) = host_jobs().lock() {
+            for adopted in jobs.iter() {
+                watch.refresh(adopted.pid, &adopted.job);
+            }
+        }
+        watch.look(Instant::now(), LEAVING_GRACE)
+    };
+    close_elsewhere(gone);
+    found
+}
+
+/// For a start that found memory short: whether closed pages' processes are
+/// still on their way out. The watch is woken to see them out, so what they
+/// hold is on its way back.
+pub fn help_leaving() -> Leaving {
+    note_leaving();
+    look_leaving()
+}
+
+static LEAVING_NOTES: OnceLock<Option<mpsc::Sender<()>>> = OnceLock::new();
+
+/// A tab's page just ended (the tab closed, was suspended, or moved to
+/// another page), so the host is about to end a process: look for it for a
+/// while. Costs a channel send; the looking happens on a thread of its own
+/// that sleeps whenever no page ended lately.
+pub fn note_leaving() {
+    let notes = LEAVING_NOTES.get_or_init(|| {
+        let (sender, notes) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("anbo-browser-leaving".into())
+            .spawn(move || watch_leaving(notes))
+            .map_err(|error| log::warn!("closed browser tabs get no help to exit: {error}"))
+            .ok()
+            .map(|_| sender)
+    });
+    if let Some(notes) = notes {
+        let _ = notes.send(());
+    }
+}
+
+fn watch_leaving(notes: mpsc::Receiver<()>) {
+    // Asleep until a page ends.
+    while notes.recv().is_ok() {
+        let mut until = Instant::now() + LEAVING_WATCH;
+        let mut helped = 0_usize;
+        let mut log_at = Instant::now() + LEAVING_LOG_EVERY;
+        loop {
+            // A whole step between two looks, however many pages end
+            // meanwhile: each of those only keeps the watch up longer.
+            let step_ends = Instant::now() + LEAVING_STEP;
+            loop {
+                let left = step_ends.saturating_duration_since(Instant::now());
+                match notes.recv_timeout(left) {
+                    Ok(()) => until = Instant::now() + LEAVING_WATCH,
+                    Err(RecvTimeoutError::Timeout) => break,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            let found = look_leaving();
+            helped += found.helped;
+            let now = Instant::now();
+            // One that was only just seen ended gets its second look, also
+            // when no page ended since.
+            if found.fresh > 0 {
+                until = until.max(now + LEAVING_STEP);
+            }
+            if helped > 0 && (now >= log_at || now >= until) {
+                log::info!(
+                    "{helped} process(es) of closed browser pages had no CPU to exit on this busy machine; raised their priority so they could"
+                );
+                helped = 0;
+                log_at = now + LEAVING_LOG_EVERY;
+            }
+            if now >= until {
+                break;
+            }
+        }
+        // Nothing is held while no page ends.
+        let held = LEAVING
+            .lock()
+            .map(|mut watch| std::mem::take(&mut watch.held))
+            .unwrap_or_default();
+        close_elsewhere(held);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::process::CommandExt;
     use std::process::{Child, Command, Stdio};
-    use std::time::{Duration, Instant};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use windows_sys::Win32::System::Threading::IDLE_PRIORITY_CLASS;
 
     #[test]
     fn host_record_reads_both_formats_and_rejects_the_rest() {
@@ -402,5 +667,134 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// A child of this test at idle priority, as a hidden tab's renderer runs.
+    fn idle_ping() -> Child {
+        let system = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        Command::new(Path::new(&system).join(r"System32\PING.EXE"))
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .creation_flags(IDLE_PRIORITY_CLASS)
+            .spawn()
+            .expect("start ping")
+    }
+
+    fn class_of(child: &Child) -> u32 {
+        unsafe { GetPriorityClass(child.as_raw_handle() as HANDLE) }
+    }
+
+    #[test]
+    fn a_process_that_runs_is_never_raised() {
+        let mut child = idle_ping();
+        let job = ProcessJob::create_for(child.id()).expect("a job for the child");
+        let mut watch = LeavingWatch::default();
+        watch.refresh(0, &job);
+        assert_eq!(watch.held.len(), 1);
+        assert_eq!(watch.held[0].pid, child.id());
+        let (found, gone) = watch.look(Instant::now(), Duration::ZERO);
+        assert_eq!(found, Leaving::default());
+        assert!(gone.is_empty());
+        assert_eq!(class_of(&child), IDLE_PRIORITY_CLASS);
+        // The host itself is left out, and nothing is taken in twice.
+        let mut other = LeavingWatch::default();
+        other.refresh(child.id(), &job);
+        assert!(other.held.is_empty());
+        watch.refresh(0, &job);
+        assert_eq!(watch.held.len(), 1);
+        // Gone: handed back at the next look, to be closed elsewhere.
+        let _ = child.kill();
+        let _ = child.wait();
+        let (found, gone) = watch.look(Instant::now(), Duration::ZERO);
+        assert_eq!(found, Leaving::default());
+        assert_eq!(gone.len(), 1);
+        assert_eq!(gone[0].pid, child.id());
+        assert!(watch.held.is_empty());
+    }
+
+    /// Work at normal priority on every core, for as long as this lives and
+    /// `limit` at most.
+    struct BusyCores {
+        stop: Arc<AtomicBool>,
+        threads: Vec<std::thread::JoinHandle<()>>,
+    }
+
+    impl BusyCores {
+        fn start(limit: Duration) -> Self {
+            let stop = Arc::new(AtomicBool::new(false));
+            let until = Instant::now() + limit;
+            let cores = std::thread::available_parallelism().map_or(4, |cores| cores.get());
+            let threads = (0..cores)
+                .map(|_| {
+                    let stop = stop.clone();
+                    std::thread::spawn(move || {
+                        while !stop.load(Ordering::Relaxed) && Instant::now() < until {
+                            std::hint::spin_loop();
+                        }
+                    })
+                })
+                .collect();
+            Self { stop, threads }
+        }
+    }
+
+    impl Drop for BusyCores {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            for thread in self.threads.drain(..) {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    /// R98-1 itself: a process that was ended stays while its threads get no
+    /// CPU, and leaves at once when its priority is raised, the cores still
+    /// busy. The first look only notes it; the one a grace later raises it.
+    #[test]
+    #[ignore = "Keeps every core busy for a moment; run it alone"]
+    fn an_ended_child_with_no_cpu_leaves_once_its_priority_is_raised() {
+        let grace = Duration::from_millis(100);
+        for _ in 0..5 {
+            let mut child = idle_ping();
+            let job = ProcessJob::create_for(child.id()).expect("a job for the child");
+            // Into its wait between two pings.
+            std::thread::sleep(Duration::from_millis(300));
+            let busy = BusyCores::start(Duration::from_secs(8));
+            std::thread::sleep(Duration::from_millis(30));
+            child.kill().expect("end the child");
+            // Ended, and its job still lists it: found although nobody held
+            // it while it ran.
+            let mut watch = LeavingWatch::default();
+            watch.refresh(0, &job);
+            let (first, _) = watch.look(Instant::now(), grace);
+            std::thread::sleep(Duration::from_millis(150));
+            if first.seen == 0 || child.try_wait().expect("try_wait").is_some() {
+                // It got a turn all the same: nothing to show this time.
+                drop(busy);
+                continue;
+            }
+            assert_eq!((first.fresh, first.helped), (first.seen, 0), "{first:?}");
+            assert_eq!(class_of(&child), IDLE_PRIORITY_CLASS);
+            let (second, _) = watch.look(Instant::now(), grace);
+            assert!(second.helped >= 1 && second.fresh == 0, "{second:?}");
+            assert_eq!(class_of(&child), HIGH_PRIORITY_CLASS);
+            let raised = Instant::now();
+            while child.try_wait().expect("try_wait").is_none() {
+                assert!(
+                    raised.elapsed() < Duration::from_secs(3),
+                    "the ended child stayed although its priority was raised"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            // Gone: nothing is left to see or to raise, and its handle comes
+            // back to be closed.
+            let (third, gone) = watch.look(Instant::now(), grace);
+            assert_eq!(third, Leaving::default());
+            assert!(gone.iter().any(|held| held.pid == child.id()));
+            assert!(watch.held.is_empty());
+            drop(busy);
+            return;
+        }
+        panic!("the ended child left by itself five times: the cores were not kept busy");
     }
 }

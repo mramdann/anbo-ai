@@ -194,13 +194,17 @@ pub(crate) fn admit(workload: Workload) -> Result<(), String> {
 /// the first seven returned seconds later; a real shortage is refused at once.
 /// A Chrome or Edge tab, which no child of Anbo's reserves for later, is
 /// admitted here, its headroom held while its renderer starts.
+/// A shortage also waits while tabs that were closed are still on their way
+/// out: on a busy machine their processes kept their memory until the guard
+/// refused every new tab (R98-1), and it is back moments after they are
+/// helped out.
 pub(crate) async fn preflight_patiently(
     workload: Workload,
     patience: Duration,
 ) -> Result<(), String> {
     let deadline = Instant::now() + patience;
     loop {
-        let waiting = {
+        let (waiting, for_pending) = {
             let mut admissions = ADMISSIONS
                 .get_or_init(Default::default)
                 .lock()
@@ -219,18 +223,33 @@ pub(crate) async fn preflight_patiently(
                     }
                     return Ok(());
                 }
-                Err(message)
-                    if !admissions.fits_without_pending(memory, reserve, workload.bytes()) =>
-                {
-                    return Err(message)
-                }
-                Err(message) => message,
+                Err(message) => (
+                    message,
+                    admissions.fits_without_pending(memory, reserve, workload.bytes()),
+                ),
             }
         };
+        if !for_pending && !closed_tabs_leaving() {
+            return Err(waiting);
+        }
         if Instant::now() >= deadline {
             return Err(waiting);
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Whether processes of closed browser tabs are still on their way out. The
+/// look wakes the watch that sees them out, so what they hold is about to
+/// come back.
+fn closed_tabs_leaving() -> bool {
+    #[cfg(windows)]
+    {
+        crate::modules::browser::host::help_leaving().seen > 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
 

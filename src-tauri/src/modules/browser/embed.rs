@@ -680,6 +680,10 @@ async fn spawn_browser_child(
     let builder = builder;
     let builder = builder
         .on_navigation(move |target| {
+            // A move to another site ends the old page's process, and on a
+            // busy machine that one needs help to leave (R98-1, host.rs).
+            #[cfg(windows)]
+            super::host::note_leaving();
             let root = navigation_local_root
                 .lock()
                 .ok()
@@ -1061,6 +1065,7 @@ fn keep_host_warm(window: &tauri::Window) {
             if warm_host_expired(last, std::time::Instant::now(), tabs_open, WARM_HOST_IDLE) {
                 if let Some(webview) = app.get_webview(WARM_HOST_LABEL) {
                     let _ = webview.close();
+                    super::host::note_leaving();
                 }
             }
         }
@@ -2481,6 +2486,8 @@ pub async fn browser_embed_begin_session(
             if let Err(error) = webview.close() {
                 log::warn!("could not close the old page's browser tab {tab_id}: {error}");
             }
+            #[cfg(windows)]
+            super::host::note_leaving();
         }
         active_embeds()
             .lock()
@@ -2704,6 +2711,10 @@ async fn close_embed_locked(
         if let Some(webview) = webview {
             webview.close().map_err(|error| error.to_string())?;
         }
+        // The host ends the tab's process next; on a busy machine that one
+        // cannot leave by itself (R98-1, host.rs).
+        #[cfg(windows)]
+        super::host::note_leaving();
         if child_window_destroyed(raw, std::time::Duration::from_secs(3)).await
             || force_destroy_child(app, raw, host_window.clone()).await
         {
