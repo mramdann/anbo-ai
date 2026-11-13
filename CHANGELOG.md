@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.1](https://github.com/mramdann/anbo-ai/compare/v0.39.0...v0.39.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **deps:** the libraries Anbo is built on are up to date: the Tauri plugins (updater 2.14.1, notification 2.8.0, clipboard 2.5.0, dialog 2.8.4), React 19.3.1, the AI SDK, and the Rust crates under the terminals and the network (tokio 1.54.1, rustls 0.23.46, zip 9.5.0). Nothing changes in how Anbo works ([fbbb72d](https://github.com/mramdann/anbo-ai/commit/fbbb72d8343e9fed692ba80ee88cc6b7abfaae97))
+
 ## [0.39.0](https://github.com/mramdann/anbo-ai/compare/v0.38.0...v0.39.0) (2026-11-13)
 
 
