@@ -90,16 +90,24 @@ try {
     check(mode + ' one bounded pre-press guard', result.result?.timings?.filter(t => t.phase === 'pointerGuard').length === 1, result);
     await close(tabId);
   });
-  for (const mode of ['move','cover','disable','hide']) await scenario(mode, async () => {
+  // A target that moved once between the pointer's arrival and mouse-down is
+  // no refusal any more (b87011a): nothing had reached the page, so the click
+  // runs once more from the start and lands on the moved target, with one press.
+  await scenario('move', async () => {
+    const tabId = await open('move');
+    const result = await call('browser_click', { tabId, ref: await find(tabId), diagnostics: true });
+    const data = await state(tabId);
+    const phases = result.result?.timings?.map(t => t.phase) ?? [];
+    check('move clicks the moved target on its second pass', !result.error && data.down === 1 && data.clicks === 1 && data.last === 'target' && data.changed === 'move' && data.trusted, { result, data });
+    check('move runs once more without repeating a press', phases.filter(p => p === 'pointerGuard').length === 2 && phases.filter(p => p === 'mouseDown').length === 1, result);
+    await close(tabId);
+  });
+  for (const mode of ['cover','disable','hide']) await scenario(mode, async () => {
     const tabId = await open(mode);
     const result = await call('browser_click', { tabId, ref: await find(tabId), diagnostics: true });
     const data = await state(tabId);
     check(mode + ' rejects changed target before mouse down', /input_not_ready/.test(JSON.stringify(result.error)) && data.down === 0 && data.clicks === 0 && data.changed === mode, { result, data });
     check(mode + ' never retries mouse input', !result.result?.timings?.some(t => t.phase === 'mouseDown') && data.down === 0, result);
-    if (mode === 'move') {
-      await ok('browser_click', { tabId, ref: await find(tabId) });
-      const fresh = await state(tabId); check('explicit recovery reaches moved target exactly once', fresh.clicks === 1 && fresh.down === 1 && fresh.last === 'target', fresh);
-    }
     await close(tabId);
   });
   await scenario('double', async () => {

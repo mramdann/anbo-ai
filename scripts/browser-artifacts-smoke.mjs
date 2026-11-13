@@ -116,6 +116,8 @@ try {
   }
   check("repeated captures append exactly once with unique sequence", manifest(first.result).length === 21 && new Set(manifest(first.result).map(record => record.sequence)).size === 21);
   await initialize();
+  // A caller names its workspace before it may use a tab there (3684a6f).
+  await ok("browser_tabs", { workspace }, sessions[1]);
   const foreign = await capture({ context, label: "Second owner", endSession: true }, sessions[1]);
   check("same-brand independent MCP owner gets a separate run", foreign.result.groupId !== first.result.groupId && foreign.result.controlId !== first.result.controlId);
   const ended = await capture({ context, label: "Task complete", endSession: true });

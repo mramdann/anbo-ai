@@ -129,8 +129,8 @@ try {
     }
     benchmark=Object.fromEntries(Object.entries(groups).map(([name,rows])=>[name,{native:stats(rows.map(r=>r.result.durationMs)),wall:stats(rows.map(r=>r.wallMs))}]));
     const total=await read(f);check('one move per successful hover, no mouse down',total.moves===51&&total.downs===0&&total.trusted,{total,benchmark});
-    // A ref outlives the next eight scans (0.30.0); the ninth leaves it stale.
-    for(let i=0;i<9;i++)await ok('browser_find',{tabId,by:'css',value:'#surface',limit:1});
+    // A ref outlives the next 32 scans (d153748; eight before); the 33rd leaves it stale.
+    for(let i=0;i<33;i++)await ok('browser_find',{tabId,by:'css',value:'#surface',limit:1});
     const stale=await call('browser_hover',{tabId,ref:f.surface,position:{x:.6,y:.5}});
     check('positions retain stale-ref rejection',/stale_ref/.test(JSON.stringify(stale.error)),stale.error);
   });

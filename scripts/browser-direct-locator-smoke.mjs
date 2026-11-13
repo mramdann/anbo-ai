@@ -96,6 +96,9 @@ try {
   check("missing CSS never falls back to a different target", missing.error && /timeout/.test(missing.result.message) && await count() === "clicks:1");
   const both = await call("browser_type", { tabId, ref: email.ref, locator: { by: "label", value: "Email", exact: true }, text: "wrong" });
   check("ref plus locator is rejected", both.error && /invalid_request/.test(both.result.message));
+  // A ref outlives the next 32 scans (d153748; eight before), so the calls
+  // above no longer age it out by themselves.
+  for (let scan = 0; scan < 33; scan++) await count();
   const expired = await call("browser_get_property", { tabId, ref: email.ref, properties: ["value"] });
   check("ref older than the retained scans is rejected rather than guessed", expired.error && /stale_ref/.test(expired.result.message));
   const protectedValue = await ok("browser_get_property", { tabId, locator: { by: "label", value: "Email", exact: true }, properties: ["value"] });

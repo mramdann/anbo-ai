@@ -59,7 +59,8 @@ try {
       ({ tabId } = await call("browser_open", { workspace, url: `${origin}/${kind}` })); owned.add(tabId);
       await invoke("browser_wait", { condition: "load", loadState: "complete", timeout: 5000 });
       let excluded = false;
-      try { const found = await find("#target"); excluded = found.matches.length === 0; } catch (cause) { excluded = /timeout/.test(String(cause)); }
+      // A settled miss answers not_found before the deadline (c0b1517, 3511591); a timeout before.
+      try { const found = await find("#target"); excluded = found.matches.length === 0; } catch (cause) { excluded = /not_found|timeout/.test(String(cause)); }
       check(`${kind}: default find excludes transparent descendant`, excluded);
       const hidden = (await find("#target", { includeHidden: true })).matches[0];
       check(`${kind}: explicit hidden find reports invisible`, hidden?.visible === false, { actual: hidden?.visible });
