@@ -25,7 +25,7 @@ import { getOrCreateChat } from "../store/chatRuntime";
  *  - Persists messages of the active session on every change.
  */
 
-export type DiffOpenInput = {
+type DiffOpenInput = {
   path: string;
   originalContent: string;
   proposedContent: string;

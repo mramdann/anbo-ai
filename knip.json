@@ -10,6 +10,5 @@
     "src/components/ui/**": ["exports", "types"],
     "src/components/ai-elements/**": ["exports", "types"]
   },
-  "ignoreBinaries": ["rustc"],
-  "ignoreDependencies": ["@fontsource/jetbrains-mono", "@fontsource-variable/inter"]
+  "ignoreBinaries": ["rustc"]
 }
