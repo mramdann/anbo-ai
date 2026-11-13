@@ -393,6 +393,7 @@ pub fn is_idle(tab_id: i64) -> Result<bool, String> {
 
 /// A filter holds a URL substring, or with `*` a pattern over the URL without
 /// its query: ".js" as a substring also took "data.json", "*.js" does not.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn url_matches(url: &str, filter: &str) -> bool {
     let url = url.to_lowercase();
     if !filter.contains('*') {

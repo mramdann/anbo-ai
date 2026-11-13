@@ -68,6 +68,7 @@ pub(super) fn for_brand(brand: &str) -> Option<Icon> {
 }
 
 /// Every icon source the activity overlay draws in a page.
+#[cfg_attr(not(windows), allow(dead_code))]
 static SOURCES: LazyLock<std::collections::HashSet<String>> = LazyLock::new(|| {
     ASSETS
         .keys()
@@ -80,6 +81,7 @@ static SOURCES: LazyLock<std::collections::HashSet<String>> = LazyLock::new(|| {
 
 /// Whether a page's request is the overlay's own agent icon, which the page's
 /// network list showed as an image the app never loads.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn is_overlay_icon(url: &str) -> bool {
     url.starts_with("data:image/") && SOURCES.contains(url)
 }
