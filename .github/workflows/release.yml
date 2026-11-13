@@ -307,8 +307,14 @@ jobs:
 
           # tauri-action leaves notes empty, and the updater dialog shows this
           # field as the changelog. Without it the release lands with nothing
-          # to read but a version number.
-          NOTES=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"             --json body --jq '.body // ""' | head -c 8000)
+          # to read but a version number. The dialog gets the lines without
+          # their commit links, and whole lines only: 0.39.0's notes were
+          # 21,767 bytes with the links, and a cut at 8,000 bytes ended in the
+          # middle of a line. awk reads to the end on purpose: an early exit
+          # could fail the step through pipefail.
+          NOTES=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""' \
+            | sed -E 's/ \(\[[0-9a-f]{7,}\]\([^)]*\)(, \[[0-9a-f]{7,}\]\([^)]*\))*\)[[:space:]]*$//' \
+            | awk -v max=8000 '{ n += length($0) + 1 } n <= max { print }')
           test -n "$NOTES"             || { echo "Release body is empty; the updater would show no changelog"; exit 1; }
 
           jq -e 'has("version") and has("platforms")' latest.json >/dev/null
