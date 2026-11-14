@@ -1,5 +1,6 @@
 import { createDispatcher, NETWORK_EVENTS, networkSummary, profileLabel, reconnectsAfterReload } from "./bridge.js";
 import { NATIVE_HOST } from "./host.js";
+import { createProcessMark, MARKS } from "./mark.js";
 import { createTabManager } from "./tabs.js";
 
 let session = null;
@@ -22,6 +23,7 @@ async function disconnect() {
   session = null;
   if (!previous) return;
   try { previous.port.disconnect(); } catch {}
+  previous.mark.clear();
   closing = previous.tabs.dispose();
   try { await closing; } finally { closing = null; }
 }
@@ -37,7 +39,7 @@ async function connect(name) {
     await chrome.storage.local.set({ profileId, profileName: name });
     const port = chrome.runtime.connectNative(NATIVE_HOST);
     const attached = new Map();
-    const current = { port, attached, approved: false, tabs: null, label: name };
+    const current = { port, attached, approved: false, tabs: null, label: name, mark: createProcessMark() };
     const active = () => session === current && current.approved;
     current.tabs = createTabManager(chrome, attached, () => {
       if (active()) post({ type: "tabs", tabs: [...attached.values()] }, current);
@@ -61,6 +63,7 @@ async function connect(name) {
       else if (message.type === "profile") current.label = String(message.name ?? "").slice(0, 64);
       else if (message.type === "command") void dispatch(message);
       else if (message.type === "error") { error = String(message.message); void disconnect(); }
+      else if (message.type === "host") hostAsked(message, current);
     });
     port.onDisconnect.addListener(() => {
       const reason = chrome.runtime.lastError?.message;
@@ -71,12 +74,26 @@ async function connect(name) {
     port.postMessage({ version: 3, profileId, browser: navigator.userAgent.includes("Edg/") ? "edge" : "chrome", name });
     // For the native host itself: when this worker started tells its process
     // apart from the profile's others, as after a reload, with no popup open.
-    port.postMessage({ type: "host", method: "worker", params: { started: Math.round(performance.timeOrigin) } });
+    // Where that tells nothing, the host may ask for a mark (hostAsked).
+    port.postMessage({ type: "host", method: "worker", params: { started: Math.round(performance.timeOrigin), marks: MARKS } });
   } catch (cause) {
     await disconnect();
     throw cause;
   } finally {
     connecting = false;
+  }
+}
+
+// The native host itself asks, not Anbo: to hold some memory for a moment, so
+// that it can tell this extension's process from the profile's others
+// (mark.js), and to let it go again.
+function hostAsked(message, current) {
+  const round = message.params?.round;
+  if (!Number.isSafeInteger(round)) return;
+  if (message.method === "mark") {
+    if (current.mark.set(message.params.megabytes)) post({ type: "host", method: "marked", params: { round } }, current);
+  } else if (message.method === "unmark") {
+    current.mark.clear();
   }
 }
 

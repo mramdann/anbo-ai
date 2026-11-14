@@ -42,6 +42,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../../../../extensions/anbo-browser/bridge.js"),
     ),
     (
+        "mark.js",
+        include_bytes!("../../../../../extensions/anbo-browser/mark.js"),
+    ),
+    (
         "tabs.js",
         include_bytes!("../../../../../extensions/anbo-browser/tabs.js"),
     ),

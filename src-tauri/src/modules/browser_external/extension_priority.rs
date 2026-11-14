@@ -35,6 +35,33 @@
 //! there and passed 10 of 10 once the process was kept by hand. The other
 //! processes are gone a little later, so the host no longer stops: it looks
 //! again at a slower pace until one process is clearly this extension's.
+//!
+//! Where the other processes stay (other extensions the user runs) nothing a
+//! look can see tells them apart, and the extension went unkept for as long
+//! as no Connect popup was opened. So the host asks the extension itself
+//! (`Ask`): hold this many megabytes for a moment. The one process whose
+//! private bytes grow by that much, and shrink again when the extension lets
+//! go, is this extension's (measured Nov 14 2026: 32 MB held read as +31.6 MB
+//! from outside, 48 MB as +48.1 MB, and both as gone 0.3 s after the let-go).
+//! It costs the worker a few milliseconds of CPU, so an extension that waits
+//! seconds for the CPU still answers, which a burst of work to be measured
+//! from outside would not: with all four cores busy from before its worker
+//! started, it was kept 5.9 s after the host asked (Nov 15 2026). Only an
+//! extension that says it knows the question is asked (0.5.19 on, with its
+//! worker's start).
+//!
+//! The same answer settles what a look can only guess. "The only one in the
+//! foreground" is this extension's while its Connect popup is open, and
+//! another extension's whenever that one shows a page of its own: with one
+//! shown in a window and this extension reconnecting by itself, the host
+//! kept the other extension's process (Edge, Nov 15 2026), as it had since
+//! the looks began. So a process a look took is kept for the time being, the
+//! extension is asked all the same, and the process that shows itself is kept
+//! from then on: the same one in nearly every case, this extension's own in
+//! the others. It is looked for among every renderer of the browser, not only
+//! the ones the looks list (those the browser started with
+//! `--extension-process`): which process answers does not depend on what the
+//! browser wrote on its command line.
 
 use super::{browser_process, host_log};
 use std::collections::{BTreeSet, HashMap};
@@ -42,6 +69,9 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, SetLastError, ERROR_ALREADY_EXISTS, FILETIME, HANDLE,
+};
+use windows_sys::Win32::System::ProcessStatus::{
+    K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX,
 };
 use windows_sys::Win32::System::Threading::{
     CreateMutexW, GetExitCodeProcess, GetPriorityClass, GetProcessInformation, GetProcessTimes,
@@ -77,6 +107,31 @@ const WORKER_EARLY_MS: u64 = 15_000;
 const WORKER_LATE_MS: u64 = 2_000;
 /// 1970-01-01 in FILETIME units (100 ns since 1601-01-01).
 const UNIX_EPOCH_FILETIME: u64 = 116_444_736_000_000_000;
+/// The megabytes the extension is asked to hold so that its process shows:
+/// one of these each time, so that two profiles' hosts that ask in the same
+/// moment mostly ask for different amounts.
+const MARK_SIZES: [u32; 5] = [16, 24, 32, 40, 48];
+/// How far from the amount asked for a process's growth may be, in megabytes:
+/// less than half the step between two amounts.
+const MARK_SLACK_MB: u64 = 3;
+/// How long the extension has to say that it holds them. Its worker may be
+/// waiting seconds for the CPU, which is what the host is there to end.
+const MARK_PATIENCE: Duration = Duration::from_secs(30);
+/// How long its process then has to shrink again: the extension lets go by
+/// itself 10 s after it took hold, should it never hear that it may.
+const UNMARK_PATIENCE: Duration = Duration::from_secs(20);
+/// How long after a round that showed nothing the next one begins, and the
+/// longest between two: each wait is twice the one before.
+const MARK_AGAIN_FIRST: Duration = Duration::from_secs(2);
+const MARK_AGAIN_MAX: Duration = Duration::from_secs(30);
+/// An answer this soon comes from an extension that is not waiting for the
+/// CPU: measured, it comes within a few milliseconds.
+const MARK_QUICK: Duration = Duration::from_secs(5);
+/// After this many quick answers that showed no process, or more than one,
+/// the host stops asking: this browser does not count the memory the way it
+/// was measured.
+const MARK_UNCLEAR: u32 = 8;
+const MEGABYTE: u64 = 1_048_576;
 
 /// A renderer of the browser that hosts extensions: whether the browser runs
 /// it in the foreground right now, and when it started (FILETIME units).
@@ -110,10 +165,23 @@ fn now_ms() -> u64 {
 enum Order {
     /// The renderers of the tabs Anbo drives.
     Renderers(Vec<u32>),
-    /// When the extension's worker started, in ms since 1970.
-    Worker(u64),
+    /// When the extension's worker started, in ms since 1970, and whether
+    /// the extension shows its process when asked (`Ask`).
+    Worker(u64, bool),
     /// The id of the profile that connected.
     Profile(String),
+    /// The extension holds the memory it was asked for in this round.
+    Marked(u32),
+}
+
+/// What the host asks the extension itself, to tell its process from the
+/// profile's other extension processes. `round` comes back in the answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ask {
+    /// Hold this many megabytes, and say so.
+    Mark { round: u32, megabytes: u32 },
+    /// Let them go.
+    Unmark { round: u32 },
 }
 
 /// Stops keeping the processes scheduled when dropped.
@@ -148,9 +216,10 @@ impl Keeper {
 
     /// When the extension's worker started, in ms since 1970, which tells its
     /// process apart from the profile's others when no popup is open, as when
-    /// a reload connects again on its own.
-    pub fn worker_started(&self, started: u64) {
-        self.send(Order::Worker(started));
+    /// a reload connects again on its own. `marks`: the extension shows its
+    /// process when asked (`Ask`), for where that start tells nothing.
+    pub fn worker_started(&self, started: u64, marks: bool) {
+        self.send(Order::Worker(started, marks));
     }
 
     /// The profile that connected, whose last host may have noted the process
@@ -158,13 +227,20 @@ impl Keeper {
     pub fn profile(&self, id: &str) {
         self.send(Order::Profile(id.to_owned()));
     }
+
+    /// The extension answered `Ask::Mark`: it holds that round's memory.
+    pub fn marked(&self, round: u32) {
+        self.send(Order::Marked(round));
+    }
 }
 
-pub fn keep() -> Keeper {
+/// `ask` sends a question to the extension itself, which answers through
+/// `Keeper::marked`.
+pub fn keep(ask: impl Fn(Ask) + Send + 'static) -> Keeper {
     let (orders, received) = mpsc::channel();
     let thread = std::thread::Builder::new()
         .name("extension-priority".into())
-        .spawn(move || run(&received))
+        .spawn(move || run(&received, &ask))
         .ok();
     Keeper {
         orders: Some(orders),
@@ -172,7 +248,7 @@ pub fn keep() -> Keeper {
     }
 }
 
-fn run(orders: &mpsc::Receiver<Order>) {
+fn run(orders: &mpsc::Receiver<Order>, ask: &dyn Fn(Ask)) {
     let began = Instant::now();
     let Some(browser) = browser_process::browser_ancestor(std::process::id()) else {
         host_log::line("found no Chrome or Edge among this host's parents, so it keeps no process");
@@ -189,6 +265,7 @@ fn run(orders: &mpsc::Receiver<Order>) {
     let mut renderers = Renderers::default();
     let mut log = Log::default();
     let mut slow = SlowLooks::default();
+    let mut marking = Marking::default();
     loop {
         if extension.is_none() {
             let now = Instant::now();
@@ -206,9 +283,63 @@ fn run(orders: &mpsc::Receiver<Order>) {
                         if let Some(id) = &profile {
                             note(id, claim.process);
                         }
+                        // What a look could tell: the extension says below
+                        // whether it is right, when it can.
                         extension = Some((process, claim));
                     }
                     Err(miss) => log.missed(&look, &miss, worker, noted),
+                }
+            }
+        }
+        let now = Instant::now();
+        if marking.due(now) {
+            let kept = extension.as_ref().map(|(_, claim)| claim.process);
+            let own = own_candidates(browser, kept);
+            if alone(&own, kept) {
+                marking.sure = true;
+            } else {
+                // Another amount each time, and mostly another than a second
+                // profile's host asks for in the same moment.
+                let pick = now_ms().wrapping_add(u64::from(std::process::id()).wrapping_mul(7919));
+                if let Some(line) = marking.begin(&own, now, pick, &held_bytes, ask) {
+                    host_log::line(&line);
+                }
+            }
+        }
+        let (shown, line) = marking.tick(Instant::now(), &held_bytes, ask);
+        if let Some(line) = line {
+            host_log::line(&line);
+        }
+        if let Some((candidate, megabytes)) = shown {
+            let kept = extension.as_ref().map(|(_, claim)| claim.process);
+            let shown = shown_as(kept, &candidate);
+            if shown == Shown::Kept {
+                marking.sure = true;
+                host_log::line(&shown_line(&candidate, megabytes, shown, now_ms()));
+            } else {
+                // The one a look took, if any, was another extension's. Its
+                // mark goes with it; its priority is the browser's again from
+                // the next time the browser sets it.
+                match keep_shown(&candidate) {
+                    Ok((process, claim)) => {
+                        host_log::line(&shown_line(&candidate, megabytes, shown, now_ms()));
+                        if let Some(id) = &profile {
+                            note(id, claim.process);
+                        }
+                        marking.sure = true;
+                        extension = Some((process, claim));
+                    }
+                    Err(miss) => {
+                        let line = format!(
+                            "process {} showed itself to be this extension's, but: {}",
+                            candidate.pid,
+                            miss.words()
+                        );
+                        let turn = format!("unkept {}", candidate.pid);
+                        if let Some(line) = marking.say(turn, line) {
+                            host_log::line(&line);
+                        }
+                    }
                 }
             }
         }
@@ -218,12 +349,13 @@ fn run(orders: &mpsc::Receiver<Order>) {
         renderers.keep(browser);
         match orders.recv_timeout(INTERVAL) {
             Ok(Order::Renderers(ids)) => renderers.want(ids),
-            Ok(Order::Worker(started)) => {
+            Ok(Order::Worker(started, marks)) => {
                 host_log::line(&format!(
                     "the extension's worker started {} ago",
                     ago(now_ms().saturating_sub(started))
                 ));
                 worker = Some(started);
+                marking.known = marks;
                 search_until = search_until.max(Instant::now() + INTERVAL * SEARCH_ATTEMPTS);
                 log.searching();
             }
@@ -237,6 +369,11 @@ fn run(orders: &mpsc::Receiver<Order>) {
                 search_until = search_until.max(Instant::now() + INTERVAL * SEARCH_ATTEMPTS);
                 log.searching();
             }
+            Ok(Order::Marked(round)) => {
+                if let Some(line) = marking.marked(round, Instant::now(), &held_bytes, ask) {
+                    host_log::line(&line);
+                }
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 let kept = extension.as_ref().map(|(_, claim)| claim.process.0);
@@ -244,6 +381,361 @@ fn run(orders: &mpsc::Receiver<Order>) {
                 return;
             }
         }
+    }
+}
+
+/// The browser's renderers that can be this extension's process when it is
+/// asked to show itself: those no host keeps, and the one this host keeps.
+/// Every renderer, not only the ones the browser started as extension
+/// processes: the process that grows by what was asked is the extension's,
+/// whatever its command line says.
+fn own_candidates(browser: u32, kept: Option<(u32, u64)>) -> Vec<Candidate> {
+    let mut own: Vec<Candidate> = renderer_candidates(browser, true)
+        .into_iter()
+        .filter(|candidate| {
+            kept == Some((candidate.pid, candidate.started)) || !Claim::held(candidate)
+        })
+        .collect();
+    own.sort_unstable_by_key(|candidate| candidate.pid);
+    own
+}
+
+/// Whether the kept process is the only one that can be this extension's,
+/// which leaves nothing to ask.
+fn alone(own: &[Candidate], kept: Option<(u32, u64)>) -> bool {
+    matches!((own, kept), ([only], Some(kept)) if (only.pid, only.started) == kept)
+}
+
+/// The private bytes a process holds now, when it is still the same process.
+fn held_bytes(candidate: &Candidate) -> Option<u64> {
+    let process = Process::query(candidate.pid)?;
+    (process.started()? == candidate.started)
+        .then(|| process.private_bytes())
+        .flatten()
+}
+
+/// Opens and marks the process that showed itself to be this extension's.
+fn keep_shown(candidate: &Candidate) -> Result<(Process, Claim), Miss> {
+    let pid = candidate.pid;
+    let process = Process::open(pid).map_err(|error| Miss::Unopened { pid, error })?;
+    let claim = Claim::take(candidate).map_err(|error| Miss::Unmarked { pid, error })?;
+    Ok((process, claim))
+}
+
+/// What the host kept when a process showed itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shown {
+    /// That very process: a look had taken the right one.
+    Kept,
+    /// None: no look could tell.
+    New,
+    /// Another extension's, which a look had taken for this one.
+    Instead(u32),
+}
+
+/// What a process that showed itself means for the one kept so far.
+fn shown_as(kept: Option<(u32, u64)>, candidate: &Candidate) -> Shown {
+    match kept {
+        Some(kept) if kept == (candidate.pid, candidate.started) => Shown::Kept,
+        Some((other, _)) => Shown::Instead(other),
+        None => Shown::New,
+    }
+}
+
+fn shown_line(candidate: &Candidate, megabytes: u32, shown: Shown, now: u64) -> String {
+    let pid = candidate.pid;
+    let how = format!(
+        "it grew by {megabytes} MB when the host asked this extension to hold that much, and shrank when it let go"
+    );
+    let started = ago(now.saturating_sub(candidate.started_ms()));
+    match shown {
+        Shown::Kept => format!("process {pid} is this extension's for sure: {how}"),
+        Shown::New => format!("keeping process {pid} (started {started} ago): {how}"),
+        Shown::Instead(other) => format!(
+            "keeping process {pid} (started {started} ago) and no longer process {other}, which is another extension's: {how}"
+        ),
+    }
+}
+
+/// The megabytes to ask for in a round: one of `MARK_SIZES`, by `pick`.
+fn mark_megabytes(pick: u64) -> u32 {
+    MARK_SIZES[(pick % MARK_SIZES.len() as u64) as usize]
+}
+
+/// The processes that hold `megabytes` more than they did before, give or
+/// take `MARK_SLACK_MB`. Measured: 32 MB held read as 31.6 MB more, 48 MB as
+/// 48.1 MB more.
+fn grew(
+    before: &[(Candidate, u64)],
+    held: &dyn Fn(&Candidate) -> Option<u64>,
+    megabytes: u32,
+) -> Vec<Candidate> {
+    let wanted = u64::from(megabytes) * MEGABYTE;
+    let slack = MARK_SLACK_MB * MEGABYTE;
+    before
+        .iter()
+        .filter(|(candidate, earlier)| {
+            held(candidate).is_some_and(|now| {
+                let more = now.saturating_sub(*earlier);
+                more + slack >= wanted && more <= wanted + slack
+            })
+        })
+        .map(|(candidate, _)| *candidate)
+        .collect()
+}
+
+/// Whether a process that held `with_mark` bytes let most of `megabytes` go.
+fn shrank(with_mark: u64, now: u64, megabytes: u32) -> bool {
+    with_mark.saturating_sub(now) * 100 >= u64::from(megabytes) * MEGABYTE * 70
+}
+
+/// The asking of the extension to show its process (`Ask`), one round at a
+/// time, until the kept process is this extension's for sure. A round ends
+/// with one process that grew by what was asked and shrank again, or with
+/// nothing, and then the next round asks again.
+#[derive(Default)]
+struct Marking {
+    /// The extension said that it answers (0.5.19 on).
+    known: bool,
+    /// The kept process is this extension's for sure: it showed itself, or
+    /// no other can be it.
+    sure: bool,
+    state: MarkState,
+    /// When the next round may begin, and how long after that the one after
+    /// it: `due`.
+    next: Option<Instant>,
+    wait: Duration,
+    rounds: u32,
+    /// Quick answers that showed no process: see `MARK_UNCLEAR`.
+    unclear: u32,
+    /// The host stopped asking.
+    over: bool,
+    /// What the log last said of a round, so that it says each turn once: an
+    /// extension that waits for the CPU may leave many rounds unanswered.
+    said: Option<String>,
+}
+
+#[derive(Default)]
+enum MarkState {
+    #[default]
+    Idle,
+    /// The extension was asked to hold `megabytes`; what each renderer that
+    /// can be its process held before.
+    Asked {
+        round: u32,
+        megabytes: u32,
+        before: Vec<(Candidate, u64)>,
+        at: Instant,
+    },
+    /// One process grew by that much, and has to shrink again. `quick`: the
+    /// extension answered at once, so it is not waiting for the CPU.
+    LettingGo {
+        megabytes: u32,
+        candidate: Candidate,
+        with_mark: u64,
+        at: Instant,
+        quick: bool,
+    },
+}
+
+impl Marking {
+    /// Whether a round is to begin at `now`: the extension answers such
+    /// questions, its process is not known for sure, and no round is under
+    /// way. The first is due at once, each one after it twice as long after
+    /// the one before, from `MARK_AGAIN_FIRST` up to `MARK_AGAIN_MAX`.
+    fn due(&mut self, now: Instant) -> bool {
+        if !self.known || self.sure || self.over || !matches!(self.state, MarkState::Idle) {
+            return false;
+        }
+        if self.next.is_some_and(|at| now < at) {
+            return false;
+        }
+        self.wait = match self.next {
+            None => MARK_AGAIN_FIRST,
+            Some(_) => (self.wait * 2).min(MARK_AGAIN_MAX),
+        };
+        self.next = Some(now + self.wait);
+        true
+    }
+
+    /// Asks the extension to show which of `own` is its process, when it
+    /// answers such questions, no round is under way and more than one can
+    /// be it. The line is for the log.
+    fn begin(
+        &mut self,
+        own: &[Candidate],
+        now: Instant,
+        pick: u64,
+        held: &dyn Fn(&Candidate) -> Option<u64>,
+        ask: &dyn Fn(Ask),
+    ) -> Option<String> {
+        if !self.known || self.sure || self.over || !matches!(self.state, MarkState::Idle) {
+            return None;
+        }
+        let before: Vec<(Candidate, u64)> = own
+            .iter()
+            .filter_map(|candidate| Some((*candidate, held(candidate)?)))
+            .collect();
+        if before.len() < 2 {
+            return None;
+        }
+        self.rounds = self.rounds.wrapping_add(1).max(1);
+        let (round, megabytes) = (self.rounds, mark_megabytes(pick));
+        ask(Ask::Mark { round, megabytes });
+        let count = before.len();
+        self.state = MarkState::Asked {
+            round,
+            megabytes,
+            before,
+            at: now,
+        };
+        // Said for the first round; the rounds after it say how they ended.
+        (round == 1).then(|| {
+            format!(
+                "asked the extension to hold {megabytes} MB for a moment, which shows its process among the browser's {count} renderers"
+            )
+        })
+    }
+
+    /// The extension says that it holds the memory of round `answered`.
+    fn marked(
+        &mut self,
+        answered: u32,
+        now: Instant,
+        held: &dyn Fn(&Candidate) -> Option<u64>,
+        ask: &dyn Fn(Ask),
+    ) -> Option<String> {
+        if !matches!(&self.state, MarkState::Asked { round, .. } if *round == answered) {
+            return None;
+        }
+        let MarkState::Asked {
+            round,
+            megabytes,
+            before,
+            at,
+        } = std::mem::take(&mut self.state)
+        else {
+            return None;
+        };
+        let quick = now.saturating_duration_since(at) < MARK_QUICK;
+        let grown = grew(&before, held, megabytes);
+        // Whatever showed, the memory goes back.
+        ask(Ask::Unmark { round });
+        if let [candidate] = grown[..] {
+            if let Some(with_mark) = held(&candidate) {
+                self.state = MarkState::LettingGo {
+                    megabytes,
+                    candidate,
+                    with_mark,
+                    at: now,
+                    quick,
+                };
+                return None;
+            }
+        }
+        self.showed_nothing(
+            quick,
+            format!("grew {}", grown.len()),
+            format!(
+                "the extension held {megabytes} MB and {} of the browser's {} renderers grew by that much: none is clearly this one yet",
+                grown.len(),
+                before.len()
+            ),
+        )
+    }
+
+    /// What became of the round under way: the process that showed itself,
+    /// with the megabytes it held, and a line for the log.
+    fn tick(
+        &mut self,
+        now: Instant,
+        held: &dyn Fn(&Candidate) -> Option<u64>,
+        ask: &dyn Fn(Ask),
+    ) -> (Option<(Candidate, u32)>, Option<String>) {
+        match &self.state {
+            MarkState::Idle => (None, None),
+            MarkState::Asked { round, at, .. } => {
+                if now.saturating_duration_since(*at) < MARK_PATIENCE {
+                    return (None, None);
+                }
+                // An answer that comes after all holds nothing for long.
+                ask(Ask::Unmark { round: *round });
+                self.state = MarkState::Idle;
+                if self.sure {
+                    // A look settled it meanwhile: nothing was left to answer.
+                    return (None, None);
+                }
+                let line = self.say(
+                    "unanswered".to_owned(),
+                    format!(
+                        "the extension did not say within {} s that it holds the memory; the host goes on asking",
+                        MARK_PATIENCE.as_secs()
+                    ),
+                );
+                (None, line)
+            }
+            MarkState::LettingGo {
+                megabytes,
+                candidate,
+                with_mark,
+                at,
+                quick,
+            } => {
+                let (megabytes, candidate, quick) = (*megabytes, *candidate, *quick);
+                let (turn, line) = match held(&candidate) {
+                    Some(bytes) if shrank(*with_mark, bytes, megabytes) => {
+                        self.state = MarkState::Idle;
+                        return (Some((candidate, megabytes)), None);
+                    }
+                    Some(_) if now.saturating_duration_since(*at) < UNMARK_PATIENCE => {
+                        return (None, None);
+                    }
+                    Some(_) => (
+                        "kept its size",
+                        format!(
+                            "process {} grew by {megabytes} MB but did not shrink again within {} s: not taken for this extension's",
+                            candidate.pid,
+                            UNMARK_PATIENCE.as_secs()
+                        ),
+                    ),
+                    None => (
+                        "gone",
+                        format!(
+                            "process {} grew by {megabytes} MB and was gone before it shrank again",
+                            candidate.pid
+                        ),
+                    ),
+                };
+                self.state = MarkState::Idle;
+                (None, self.showed_nothing(quick, turn.to_owned(), line))
+            }
+        }
+    }
+
+    /// A round the extension answered ended with no process shown. One it
+    /// answered at once counts: after `MARK_UNCLEAR` of those the host stops
+    /// asking. A slow answer is a busy machine's, and says nothing of the
+    /// measure.
+    fn showed_nothing(&mut self, quick: bool, turn: String, line: String) -> Option<String> {
+        if quick {
+            self.unclear += 1;
+        }
+        if self.unclear >= MARK_UNCLEAR {
+            self.over = true;
+            return Some(format!(
+                "{line}; {MARK_UNCLEAR} quick answers showed no process, so the host stops asking"
+            ));
+        }
+        self.say(turn, line)
+    }
+
+    /// A line the log did not just say.
+    fn say(&mut self, turn: String, line: String) -> Option<String> {
+        if self.said.as_ref() == Some(&turn) {
+            return None;
+        }
+        self.said = Some(turn);
+        Some(line)
     }
 }
 
@@ -554,8 +1046,15 @@ fn renderer_id(command: &str) -> Option<u32> {
     digits[..end].parse().ok()
 }
 
-/// The browser's renderers that host extensions.
+/// The browser's renderers that host extensions, by the browser's own word.
 fn candidates(browser: u32) -> Vec<Candidate> {
+    renderer_candidates(browser, false)
+}
+
+/// The browser's renderers: the ones it started as extension processes
+/// (`--extension-process` on the command line), which is what a look goes by,
+/// or `every` one, for the extension's own answer, which needs no such word.
+fn renderer_candidates(browser: u32, every: bool) -> Vec<Candidate> {
     let Some(processes) = browser_process::processes() else {
         return Vec::new();
     };
@@ -564,7 +1063,9 @@ fn candidates(browser: u32) -> Vec<Candidate> {
         .filter(|(_, (parent, _))| *parent == browser)
         .filter_map(|(pid, _)| {
             let command = browser_process::command_line(*pid)?;
-            if !command.contains("--type=renderer") || !command.contains("--extension-process") {
+            if !command.contains("--type=renderer")
+                || !(every || command.contains("--extension-process"))
+            {
                 return None;
             }
             let process = Process::query(*pid)?;
@@ -817,6 +1318,15 @@ impl Process {
             unsafe { GetProcessTimes(self.0, &mut created, &mut exited, &mut kernel, &mut user) };
         (read != 0)
             .then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+    }
+
+    /// The private bytes (commit) the process holds.
+    fn private_bytes(&self) -> Option<u64> {
+        let mut counters: PROCESS_MEMORY_COUNTERS_EX = unsafe { std::mem::zeroed() };
+        counters.cb = size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+        let read =
+            unsafe { K32GetProcessMemoryInfo(self.0, (&raw mut counters).cast(), counters.cb) };
+        (read != 0).then_some(counters.PrivateUsage as u64)
     }
 
     fn open(pid: u32) -> Result<Self, u32> {
@@ -1114,6 +1624,391 @@ mod tests {
         let mut again = SlowLooks::default();
         assert!(!again.due(at(100_000)));
         assert!(again.due(at(102_000)));
+    }
+
+    /// What the processes hold, in bytes by process id, and what the
+    /// extension was asked.
+    struct Marks {
+        held: std::cell::RefCell<HashMap<u32, u64>>,
+        asked: std::cell::RefCell<Vec<Ask>>,
+        free: Vec<Candidate>,
+        start: Instant,
+    }
+
+    const MB: u64 = MEGABYTE;
+
+    impl Marks {
+        /// Three free processes, as other extensions of the user's leave them:
+        /// all in the background, none started with the worker.
+        fn new() -> Self {
+            Self {
+                held: std::cell::RefCell::new(HashMap::from([
+                    (7, 20 * MB),
+                    (8, 60 * MB),
+                    (9, 35 * MB),
+                ])),
+                asked: std::cell::RefCell::default(),
+                free: vec![
+                    candidate(7, false, 3_600_000),
+                    candidate(8, false, 3_600_000),
+                    candidate(9, false, 3_600_000),
+                ],
+                start: Instant::now(),
+            }
+        }
+
+        fn at(&self, ms: u64) -> Instant {
+            self.start + Duration::from_millis(ms)
+        }
+
+        fn hold(&self, pid: u32, bytes: u64) {
+            self.held.borrow_mut().insert(pid, bytes);
+        }
+
+        fn begin(&self, marking: &mut Marking, ms: u64, pick: u64) -> Option<String> {
+            marking.begin(
+                &self.free,
+                self.at(ms),
+                pick,
+                &|candidate| self.held.borrow().get(&candidate.pid).copied(),
+                &|ask| self.asked.borrow_mut().push(ask),
+            )
+        }
+
+        fn marked(&self, marking: &mut Marking, round: u32, ms: u64) -> Option<String> {
+            marking.marked(
+                round,
+                self.at(ms),
+                &|candidate| self.held.borrow().get(&candidate.pid).copied(),
+                &|ask| self.asked.borrow_mut().push(ask),
+            )
+        }
+
+        fn tick(&self, marking: &mut Marking, ms: u64) -> (Option<(u32, u32)>, Option<String>) {
+            let (shown, line) = marking.tick(
+                self.at(ms),
+                &|candidate| self.held.borrow().get(&candidate.pid).copied(),
+                &|ask| self.asked.borrow_mut().push(ask),
+            );
+            (
+                shown.map(|(candidate, megabytes)| (candidate.pid, megabytes)),
+                line,
+            )
+        }
+
+        fn asked(&self) -> Vec<Ask> {
+            self.asked.borrow().clone()
+        }
+    }
+
+    fn knowing() -> Marking {
+        Marking {
+            known: true,
+            ..Marking::default()
+        }
+    }
+
+    #[test]
+    fn the_extension_shows_its_process_by_holding_memory_for_a_moment() {
+        // R101-1's rest: with other extensions' processes around and no popup
+        // open, nothing a look sees tells this extension's process apart.
+        let marks = Marks::new();
+        assert!(decide(&marks.free, Some(NOW_MS), None).is_err());
+        let mut marking = knowing();
+        // pick 2 is the third amount, 32 MB.
+        let line = marks.begin(&mut marking, 0, 2).unwrap();
+        assert_eq!(
+            line,
+            "asked the extension to hold 32 MB for a moment, which shows its process among the browser's 3 renderers"
+        );
+        assert_eq!(
+            marks.asked(),
+            [Ask::Mark {
+                round: 1,
+                megabytes: 32
+            }]
+        );
+        // A round under way is not asked over, and nothing shows yet.
+        assert_eq!(marks.begin(&mut marking, 100, 4), None);
+        assert_eq!(marks.tick(&mut marking, 200), (None, None));
+        // As measured: 32 MB held read as 31.6 MB more from outside.
+        marks.hold(8, 60 * MB + 316 * MB / 10);
+        assert_eq!(marks.marked(&mut marking, 1, 300), None);
+        assert_eq!(marks.asked().last(), Some(&Ask::Unmark { round: 1 }));
+        // It has to shrink again before it is taken.
+        assert_eq!(marks.tick(&mut marking, 400), (None, None));
+        marks.hold(8, 60 * MB + MB / 5);
+        assert_eq!(marks.tick(&mut marking, 600), (Some((8, 32)), None));
+        assert!(matches!(marking.state, MarkState::Idle));
+        assert_eq!(marks.asked().len(), 2);
+        // The log says what that meant for the process kept so far: none, as
+        // here; the very one; or another extension's that a look had taken,
+        // as the page of another extension open in a tab is "the only one in
+        // the foreground" to every look.
+        let shown = |kept| shown_line(&marks.free[1], 32, kept, NOW_MS);
+        assert_eq!(
+            shown(Shown::New),
+            "keeping process 8 (started 3600 s ago): it grew by 32 MB when the host asked this extension to hold that much, and shrank when it let go"
+        );
+        assert_eq!(
+            shown(Shown::Kept),
+            "process 8 is this extension's for sure: it grew by 32 MB when the host asked this extension to hold that much, and shrank when it let go"
+        );
+        assert_eq!(
+            shown(Shown::Instead(9)),
+            "keeping process 8 (started 3600 s ago) and no longer process 9, which is another extension's: it grew by 32 MB when the host asked this extension to hold that much, and shrank when it let go"
+        );
+    }
+
+    #[test]
+    fn the_host_asks_until_the_kept_process_is_this_extensions_for_sure() {
+        let marks = Marks::new();
+        let at = |ms: u64| marks.at(ms);
+        // An extension before 0.5.19 is never asked.
+        assert!(!Marking::default().due(at(0)));
+        let mut marking = knowing();
+        // The first round is due at once, whether a look kept a process or
+        // none: what a look took is a guess until the extension answers.
+        assert!(marking.due(at(0)));
+        // Then 2 s, 4 s, 8 s after the round before, as long as none shows.
+        assert!(!marking.due(at(1_999)));
+        assert!(marking.due(at(2_000)));
+        assert!(!marking.due(at(5_999)));
+        assert!(marking.due(at(6_000)));
+        assert!(marking.due(at(14_000)));
+        assert!(marking.due(at(30_000)));
+        // And never more than MARK_AGAIN_MAX apart.
+        assert!(!marking.due(at(59_999)));
+        assert!(marking.due(at(60_000)));
+        assert!(!marking.due(at(89_999)));
+        assert!(marking.due(at(90_000)));
+        // No round begins while one is under way.
+        marks.begin(&mut marking, 120_000, 2);
+        assert!(!marking.due(at(200_000)));
+        marking.state = MarkState::Idle;
+        assert!(marking.due(at(200_000)));
+        // Nor once the process is known for sure, or the host stopped asking.
+        marking.sure = true;
+        assert!(!marking.due(at(300_000)));
+        assert_eq!(marks.begin(&mut marking, 300_000, 2), None);
+        marking.sure = false;
+        marking.over = true;
+        assert!(!marking.due(at(300_000)));
+        // The browser's only renderer, kept already, needs no asking.
+        let kept = Some((8, marks.free[1].started));
+        assert!(alone(&marks.free[1..2], kept));
+        assert!(!alone(&marks.free, kept));
+        assert!(!alone(&marks.free[1..2], None));
+        assert!(!alone(&marks.free[..1], kept));
+        assert!(!alone(&[], kept));
+        // A reused process id is another process.
+        assert!(!alone(&[candidate(8, false, 5)], kept));
+    }
+
+    #[test]
+    fn only_an_extension_that_knows_the_question_is_asked() {
+        let marks = Marks::new();
+        // One before 0.5.19 says nothing of marks with its worker's start.
+        let mut old = Marking::default();
+        assert_eq!(marks.begin(&mut old, 0, 2), None);
+        assert!(marks.asked().is_empty());
+        // One renderer alone leaves nothing to tell apart, and one whose
+        // memory cannot be read cannot show.
+        let mut marking = knowing();
+        let one = Marks {
+            free: vec![candidate(7, false, 60_000)],
+            ..Marks::new()
+        };
+        assert_eq!(one.begin(&mut marking, 0, 2), None);
+        let unread = Marks::new();
+        unread.held.borrow_mut().remove(&8);
+        unread.held.borrow_mut().remove(&9);
+        assert_eq!(unread.begin(&mut marking, 0, 2), None);
+        assert!(one.asked().is_empty() && unread.asked().is_empty());
+        assert_eq!(marking.rounds, 0);
+    }
+
+    #[test]
+    fn the_amounts_asked_for_cannot_be_taken_for_one_another() {
+        let picked: BTreeSet<u32> = (0..50).map(mark_megabytes).collect();
+        assert_eq!(picked, BTreeSet::from(MARK_SIZES));
+        for pair in MARK_SIZES.windows(2) {
+            assert!(u64::from(pair[0]) + MARK_SLACK_MB < u64::from(pair[1]) - MARK_SLACK_MB);
+        }
+        // What the extension may hold at most (mark.js MARK_MAX_MB).
+        assert!(MARK_SIZES
+            .iter()
+            .all(|megabytes| (1..=64).contains(megabytes)));
+        let before = [(candidate(7, false, 60_000), 50 * MB)];
+        let grown = |more: u64, megabytes: u32| {
+            grew(&before, &|_| Some(50 * MB + more), megabytes).len() == 1
+        };
+        assert!(grown(32 * MB, 32) && grown(29 * MB, 32) && grown(35 * MB, 32));
+        assert!(!grown(29 * MB - 1, 32) && !grown(35 * MB + 1, 32));
+        // Another profile's host asked for the next amount in the same moment.
+        assert!(!grown(24 * MB, 32) && !grown(40 * MB, 32) && !grown(0, 32));
+        // A process that shrank meanwhile grew by nothing.
+        assert!(grew(&before, &|_| Some(10 * MB), 16).is_empty());
+        assert!(grew(&before, &|_| None, 16).is_empty());
+        assert!(shrank(92 * MB, 60 * MB, 32) && shrank(92 * MB, 69 * MB, 32));
+        assert!(!shrank(92 * MB, 71 * MB, 32) && !shrank(92 * MB, 99 * MB, 32));
+    }
+
+    #[test]
+    fn an_answer_that_shows_no_process_or_two_keeps_none() {
+        let marks = Marks::new();
+        let mut marking = knowing();
+        marks.begin(&mut marking, 0, 2);
+        // Two profiles' hosts asked for the same amount in the same moment.
+        marks.hold(8, 92 * MB);
+        marks.hold(9, 67 * MB);
+        assert_eq!(
+            marks.marked(&mut marking, 1, 50).unwrap(),
+            "the extension held 32 MB and 2 of the browser's 3 renderers grew by that much: none is clearly this one yet"
+        );
+        assert!(matches!(marking.state, MarkState::Idle));
+        assert_eq!(marks.asked().last(), Some(&Ask::Unmark { round: 1 }));
+        assert_eq!(marking.unclear, 1);
+        // The next look asks again, with another round's number.
+        marks.hold(8, 60 * MB);
+        marks.hold(9, 35 * MB);
+        assert_eq!(marks.begin(&mut marking, 2_000, 0), None);
+        assert_eq!(
+            marks.asked().last(),
+            Some(&Ask::Mark {
+                round: 2,
+                megabytes: 16
+            })
+        );
+        // An answer to the round before is not this round's.
+        assert_eq!(marks.marked(&mut marking, 1, 2_050), None);
+        assert!(matches!(marking.state, MarkState::Asked { round: 2, .. }));
+        // No process grew: said, as it differs from the last line.
+        assert_eq!(
+            marks.marked(&mut marking, 2, 2_100).unwrap(),
+            "the extension held 16 MB and 0 of the browser's 3 renderers grew by that much: none is clearly this one yet"
+        );
+        // The same again is not said twice.
+        marks.begin(&mut marking, 4_000, 0);
+        assert_eq!(marks.marked(&mut marking, 3, 4_100), None);
+        assert_eq!(marking.unclear, 3);
+    }
+
+    #[test]
+    fn a_process_that_does_not_shrink_again_is_not_taken() {
+        let marks = Marks::new();
+        let mut marking = knowing();
+        marks.begin(&mut marking, 0, 2);
+        marks.hold(9, 67 * MB);
+        assert_eq!(marks.marked(&mut marking, 1, 100), None);
+        assert_eq!(marks.tick(&mut marking, 20_099), (None, None));
+        assert_eq!(
+            marks.tick(&mut marking, 20_100),
+            (
+                None,
+                Some("process 9 grew by 32 MB but did not shrink again within 20 s: not taken for this extension's".to_owned())
+            )
+        );
+        assert!(matches!(marking.state, MarkState::Idle));
+        // Or it is gone, or another process by then.
+        marks.hold(9, 35 * MB);
+        marks.begin(&mut marking, 30_000, 2);
+        marks.hold(9, 67 * MB);
+        assert_eq!(marks.marked(&mut marking, 2, 30_100), None);
+        marks.held.borrow_mut().remove(&9);
+        assert_eq!(
+            marks.tick(&mut marking, 30_400),
+            (
+                None,
+                Some("process 9 grew by 32 MB and was gone before it shrank again".to_owned())
+            )
+        );
+        assert_eq!(marking.unclear, 2);
+    }
+
+    #[test]
+    fn a_busy_extension_is_asked_again_for_as_long_as_it_takes() {
+        // The extension this is for waits seconds for the CPU: an answer that
+        // is late, or none within the time, says nothing against asking.
+        let marks = Marks::new();
+        let mut marking = knowing();
+        marks.begin(&mut marking, 0, 2);
+        assert_eq!(marks.tick(&mut marking, 29_999), (None, None));
+        assert_eq!(
+            marks.tick(&mut marking, 30_000),
+            (
+                None,
+                Some("the extension did not say within 30 s that it holds the memory; the host goes on asking".to_owned())
+            )
+        );
+        // Told to let go all the same: a late answer holds nothing for long.
+        assert_eq!(marks.asked().last(), Some(&Ask::Unmark { round: 1 }));
+        for round in 2..40_u32 {
+            let ms = u64::from(round) * 60_000;
+            assert_eq!(marks.begin(&mut marking, ms, 2), None);
+            // Said once, not at every round.
+            assert_eq!(marks.tick(&mut marking, ms + 30_000), (None, None));
+        }
+        assert!(!marking.over);
+        // A late answer that shows nothing does not count against asking.
+        for round in 40..60 {
+            let ms = u64::from(round) * 60_000;
+            marks.begin(&mut marking, ms, 2);
+            marks.marked(&mut marking, round, ms + 5_000);
+        }
+        assert_eq!(marking.unclear, 0);
+        assert!(!marking.over);
+        // And when it answers in time, its process shows.
+        marks.begin(&mut marking, 4_000_000, 2);
+        marks.hold(7, 52 * MB);
+        assert_eq!(marks.marked(&mut marking, 60, 4_012_000), None);
+        marks.hold(7, 20 * MB);
+        assert_eq!(marks.tick(&mut marking, 4_024_000), (Some((7, 32)), None));
+    }
+
+    #[test]
+    fn quick_answers_that_show_nothing_end_the_asking() {
+        // A browser that does not count the memory as measured: the host
+        // does not go on asking for nothing.
+        let marks = Marks::new();
+        let mut marking = knowing();
+        let mut last = None;
+        for round in 1..=MARK_UNCLEAR {
+            let ms = u64::from(round) * 60_000;
+            marks.begin(&mut marking, ms, 2);
+            assert!(!marking.over);
+            last = marks.marked(&mut marking, round, ms + 20);
+        }
+        assert!(marking.over);
+        assert_eq!(
+            last.unwrap(),
+            "the extension held 32 MB and 0 of the browser's 3 renderers grew by that much: none is clearly this one yet; 8 quick answers showed no process, so the host stops asking"
+        );
+        let asked = marks.asked().len();
+        assert_eq!(marks.begin(&mut marking, 900_000, 2), None);
+        assert_eq!(marks.asked().len(), asked);
+    }
+
+    #[test]
+    fn a_process_that_shows_itself_confirms_or_corrects_what_a_look_took() {
+        let marks = Marks::new();
+        let shown = &marks.free[1];
+        // No look could tell: the one that showed is kept.
+        assert_eq!(shown_as(None, shown), Shown::New);
+        // A look took that very process, by the popup or the worker's start.
+        assert_eq!(shown_as(Some((8, shown.started)), shown), Shown::Kept);
+        // A look took another extension's process: one with a page open in
+        // a tab is "the only one in the foreground" to every look, while this
+        // extension's worker runs in the background.
+        assert_eq!(
+            shown_as(Some((9, marks.free[2].started)), shown),
+            Shown::Instead(9)
+        );
+        // A reused process id is another process.
+        assert_eq!(
+            shown_as(Some((8, shown.started + 1)), shown),
+            Shown::Instead(8)
+        );
     }
 
     #[test]
