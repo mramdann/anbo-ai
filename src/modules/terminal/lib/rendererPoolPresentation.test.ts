@@ -168,12 +168,11 @@ describe("terminal window restore", () => {
         sessionSource.indexOf(start),
         sessionSource.indexOf(end),
       );
-    // A line sent to the shell starts the hold, on every way in.
+    // A line sent to the shell starts the hold, on every way in. Whether one
+    // was sent is promptInput.ts's to say (its own tests hold that).
     expect(
       between("function notifyTerminalInput", "const dormantReads"),
-    ).toContain(
-      'if (character === "\\r" || character === "\\n") holdForStart(session);',
-    );
+    ).toContain("if (submitted) holdForStart(session);");
     // So does an agent's command about to be typed, once its buffer is bound.
     const prepare = between(
       "export function prepareTerminalAutomationSession",

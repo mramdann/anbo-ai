@@ -3081,7 +3081,7 @@ export default function App() {
     () =>
       isTerminalTab && activeLeafId !== null
         ? (cmd: string) => {
-            writeToSession(activeLeafId, cmd);
+            writeToSession(activeLeafId, cmd, "user");
             terminalRefs.current.get(activeLeafId)?.focus();
           }
         : null,
@@ -3133,7 +3133,7 @@ export default function App() {
               );
             }
           }
-          if (!writeToSession(leafId, text)) {
+          if (!writeToSession(leafId, text, "user")) {
             return failedVoiceInsert("The terminal is no longer available.");
           }
           terminalRefs.current.get(leafId)?.focus();

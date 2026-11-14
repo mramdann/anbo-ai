@@ -275,6 +275,13 @@ shows in `agent_list`), and `terminal_close` closes it once the CLI ended.
 Every execute needs an idle prompt. Anbo revalidates that the PTY is attached,
 sitting at a prompt, and free of a foreground job immediately before writing,
 so a busy or exited terminal fails instead of running half a command.
+A prompt that holds a line nobody submitted takes no command either
+(`terminal_input_pending`), and `terminal_list` marks such a terminal with
+`unsubmittedInput`. `"user"` means the user typed it, or brought it back from
+history: it is theirs, so leave it there, do not wait on it, and run your
+command in another terminal or open one. `terminal_interrupt` refuses to clear
+it. `"tool"` is input staged with `terminal_insert`, which `terminal_interrupt`
+without an `executionId` clears.
 A new terminal reads `starting` until its shell shows its first prompt. A
 command given to `terminal_execute` then waits for that prompt. A terminal
 restored from the last session reads `dormant` until something starts it, and

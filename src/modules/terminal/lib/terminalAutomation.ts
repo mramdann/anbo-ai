@@ -151,6 +151,10 @@ export type SharedTerminalDescriptor = {
   shell: string;
   columns?: number;
   rows?: number;
+  /** Only while a line stands at the prompt unsubmitted: who typed it. Such
+   *  a terminal reads idle and takes no command; in round 102 real agents
+   *  picked one for that and were refused. */
+  unsubmittedInput?: "user" | "tool";
 };
 
 /** A program running in a terminal's shell, with when it started (ms since
@@ -396,6 +400,12 @@ export function pagerOnScreen(screen: string): boolean {
   return /^(?::|.*\(END\)|--\s?More\s?(?:\(\d+%\))?\s?--)$/.test(last);
 }
 
+/** What an agent does about a line the user typed and has not submitted. In
+ *  round 102 a real agent, told to "submit or clear it", left the user's
+ *  half-typed command alone and said so; the words now ask for that. */
+const USERS_INPUT =
+  "It is theirs: leave it there, and run the command in another terminal (terminal_open opens one) or ask the user.";
+
 function firstPromptMissing(timeoutMs: number): string {
   return `The shell did not mark its first prompt within ${timeoutMs / 1000} s, so nothing was sent: Anbo follows a command by the prompt marks of its shell integration. Run the command again; a profile that replaces the prompt can keep the mark from appearing.`;
 }
@@ -410,7 +420,9 @@ async function busyShellReason(
   if (!state.ready)
     return "The shell had not finished starting, so nothing was sent. Run the command again once terminal_list shows the terminal idle.";
   if (state.inputPending)
-    return "The prompt held input nobody had submitted, so nothing was sent. Submit or clear it (terminal_interrupt without an executionId clears it), then run the command again.";
+    return state.inputPendingBy === "user"
+      ? `The prompt held input the user had typed and not submitted, so nothing was sent. ${USERS_INPUT}`
+      : "The prompt held input nobody had submitted, so nothing was sent. Submit or clear it (terminal_interrupt without an executionId clears it), then run the command again.";
   if (state.commandRunning || state.blockMode !== "prompt")
     return "Another command started in the terminal first, so nothing was sent. Wait for it to finish, or interrupt it, then run the command again.";
   if (await hasForegroundProcess())
@@ -664,6 +676,12 @@ export async function collectSharedTerminals(
             shell: state?.shell ?? "unknown",
             columns: state?.columns,
             rows: state?.rows,
+            ...(state?.inputPending && {
+              unsubmittedInput:
+                state.inputPendingBy === "user"
+                  ? ("user" as const)
+                  : ("tool" as const),
+            }),
           } satisfies SharedTerminalDescriptor,
         ];
       }),
@@ -1638,7 +1656,9 @@ export function createTerminalAutomationService(
         ok: false as const,
         response: automationError(
           "terminal_input_pending",
-          `${target.terminal.terminalId} contains unsubmitted input; submit or clear it before executing another command`,
+          latestState.inputPendingBy === "user"
+            ? `${target.terminal.terminalId} holds input the user typed and has not submitted. ${USERS_INPUT}`
+            : `${target.terminal.terminalId} contains unsubmitted input; submit or clear it before executing another command`,
         ),
       };
     }
@@ -1864,6 +1884,14 @@ export function createTerminalAutomationService(
             ...(terminals.some((terminal) => terminal.status === "dormant")
               ? {
                   note: "A dormant terminal was restored, or paused with its workspace, and has not started yet; terminal_execute starts it and runs the command once its prompt shows.",
+                }
+              : {}),
+            ...(terminals.some(
+              (terminal) => terminal.unsubmittedInput === "user",
+            )
+              ? {
+                  inputNote:
+                    'unsubmittedInput "user": the user typed a line there and has not submitted it. It takes no command until they do; leave the line, and use another terminal or open one.',
                 }
               : {}),
           },
@@ -2293,6 +2321,21 @@ export function createTerminalAutomationService(
               terminal: target.terminal,
             },
           };
+        }
+        // A line the user is typing at the prompt is not a tool's to clear:
+        // the refusal of terminal_execute used to send agents here for it
+        // (round 102). With a program in front the Ctrl+C is for that program.
+        if (
+          state.inputPending &&
+          state.inputPendingBy === "user" &&
+          !state.commandRunning &&
+          state.blockMode === "prompt" &&
+          !(await deps.hasForegroundProcess(target.terminal.leafId))
+        ) {
+          return automationError(
+            "terminal_input_pending",
+            `${target.terminal.terminalId} holds input the user typed and has not submitted, which Anbo does not clear for a tool. Leave it there, and use another terminal (terminal_open opens one) or ask the user`,
+          );
         }
         // An unfinished line someone typed, which the shell waits for the
         // rest of, reads as idle like a shell at its prompt, and agents could

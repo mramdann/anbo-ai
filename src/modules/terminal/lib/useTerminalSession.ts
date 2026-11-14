@@ -35,6 +35,12 @@ import {
 } from "./osc-handlers";
 import { openPty, ptyOutputStalledSince, type PtySession } from "./pty-bridge";
 import {
+  EMPTY_PROMPT,
+  type PromptInput,
+  promptInputAfter,
+  type TerminalInputSource,
+} from "./promptInput";
+import {
   joinTerminalBufferRows,
   releasedTerminalText,
 } from "./terminalBuffer";
@@ -110,6 +116,14 @@ type Session = {
   // True while the interactive prompt contains unsubmitted text. Automation
   // uses this to avoid concatenating an exact command onto user/tool input.
   inputPending: boolean;
+  // Who typed that text: the user, once a key, paste, voice text or history
+  // pick of theirs is part of it, else a tool (terminal_insert). A tool does
+  // not clear what the user typed (round 102).
+  inputPendingBy: TerminalInputSource | null;
+  // How much of it was typed straight through at the end of the line, and
+  // whether that is still all of it (promptInput.ts).
+  inputPendingChars: number;
+  inputPendingExact: boolean;
   // A command was submitted on this leaf; kills the watermark synchronously,
   // before the shell's OSC 133 C round-trips through the PTY.
   everSubmitted: boolean;
@@ -194,27 +208,37 @@ export function subscribeTerminalInput(
   return () => terminalInputListeners.delete(listener);
 }
 
-function notifyTerminalInput(leafId: number, data: string): void {
+function promptOf(session: Session): PromptInput {
+  return {
+    pending: session.inputPending,
+    by: session.inputPendingBy,
+    chars: session.inputPendingChars,
+    exact: session.inputPendingExact,
+  };
+}
+
+function setPrompt(session: Session, prompt: PromptInput): void {
+  session.inputPending = prompt.pending;
+  session.inputPendingBy = prompt.by;
+  session.inputPendingChars = prompt.chars;
+  session.inputPendingExact = prompt.exact;
+}
+
+function notifyTerminalInput(
+  leafId: number,
+  data: string,
+  from: TerminalInputSource,
+): void {
   const session = sessions.get(leafId);
   if (session) {
-    const printable = data.replace(
-      /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g,
-      "",
+    const { prompt, submitted } = promptInputAfter(
+      promptOf(session),
+      data,
+      from,
+      session.shell,
     );
-    for (const character of printable) {
-      if (
-        character === "\r" ||
-        character === "\n" ||
-        character === "\x03" ||
-        character === "\x15"
-      ) {
-        session.inputPending = false;
-        if (character === "\r" || character === "\n") holdForStart(session);
-      } else {
-        const code = character.charCodeAt(0);
-        if (code >= 0x20 && code !== 0x7f) session.inputPending = true;
-      }
-    }
+    setPrompt(session, prompt);
+    if (submitted) holdForStart(session);
   }
   for (const listener of terminalInputListeners) listener(leafId, data);
 }
@@ -368,15 +392,21 @@ function sendToPty(leafId: number, s: Session, data: string): void {
   });
 }
 
-export function writeToSession(leafId: number, data: string): boolean {
+/** `from` is "user" for text the user put there by other means than keys:
+ *  voice, or a pick from the command history. */
+export function writeToSession(
+  leafId: number,
+  data: string,
+  from: TerminalInputSource = "automation",
+): boolean {
   const s = sessions.get(leafId);
   if (!s || s.shellExited) return false;
   if (s.pty) {
-    notifyTerminalInput(leafId, data);
+    notifyTerminalInput(leafId, data, from);
     sendToPty(leafId, s, data);
     return true;
   }
-  notifyTerminalInput(leafId, data);
+  notifyTerminalInput(leafId, data, from);
   queuePendingInput(s, data);
   return true;
 }
@@ -436,7 +466,7 @@ export async function writeToReadySession(
   if (!session?.pty || session.shellExited) return false;
   if (!prepareTerminalAutomationSession(leafId)) return false;
   try {
-    notifyTerminalInput(leafId, data);
+    notifyTerminalInput(leafId, data, "automation");
     await session.pty.write(data);
     return true;
   } catch {
@@ -452,7 +482,7 @@ export function submitToLeaf(leafId: number, text: string): void {
   const data = text.includes("\n")
     ? `\x1b[200~${text}\x1b[201~\r`
     : `${text}\r`;
-  notifyTerminalInput(leafId, data);
+  notifyTerminalInput(leafId, data, "user");
   if (s.pty) sendToPty(leafId, s, data);
   else queuePendingInput(s, data);
 }
@@ -500,6 +530,9 @@ export type TerminalSessionState = {
   columns?: number;
   rows?: number;
   inputPending?: boolean;
+  /** Who typed the input that stands at the prompt unsubmitted, null when
+   *  there is none: the user, or a tool (terminal_insert). */
+  inputPendingBy?: TerminalInputSource | null;
   /** The shell has not ended its first prompt yet and still may. */
   awaitingFirstPrompt?: boolean;
   /** The shell could not start (Enter in it, or retryShellStart, tries again). */
@@ -530,6 +563,11 @@ export function getTerminalSessionState(
     rows: session.rows || undefined,
     inputPending:
       session.inputPending || (session.blocks && !!session.inputDraft.trim()),
+    inputPendingBy: session.inputPending
+      ? (session.inputPendingBy ?? "automation")
+      : session.blocks && session.inputDraft.trim()
+        ? "user"
+        : null,
     awaitingFirstPrompt:
       session.pty !== null &&
       awaitingFirstPrompt(
@@ -590,6 +628,10 @@ export function setLeafDraft(leafId: number, text: string): void {
   if (s) {
     s.inputDraft = text;
     s.inputPending = !!text.trim();
+    // The shell input bar holds what the user typed into it.
+    s.inputPendingBy = s.inputPending ? "user" : null;
+    s.inputPendingChars = 0;
+    s.inputPendingExact = false;
   }
 }
 
@@ -717,7 +759,7 @@ function recordCommandCompletion(
       session.commandCompletions.length - MAX_COMMAND_COMPLETIONS,
     );
   }
-  session.inputPending = false;
+  setPrompt(session, EMPTY_PROMPT);
 }
 
 function onLeafCommandState(
@@ -768,7 +810,8 @@ configureRendererPool({
           if (data.includes("\r")) void respawnSession(leafId);
           return;
         }
-        notifyTerminalInput(leafId, data);
+        // What the terminal itself takes in: the user's keys and pastes.
+        notifyTerminalInput(leafId, data, "user");
         if (s.pty) sendToPty(leafId, s, data);
         else queuePendingInput(s, data);
       },
@@ -855,6 +898,9 @@ function ensureSession(
     inputDraft: "",
     inputActive: false,
     inputPending: false,
+    inputPendingBy: null,
+    inputPendingChars: 0,
+    inputPendingExact: true,
     everSubmitted: false,
     altScreenAtRelease: false,
     commandRunning: false,
@@ -1272,7 +1318,7 @@ async function respawnSession(leafId: number, cwd?: string): Promise<void> {
   s.startHeldUntil = 0;
   s.lastExitCode = null;
   s.commandCompletions = [];
-  s.inputPending = false;
+  setPrompt(s, EMPTY_PROMPT);
   s.spawnFailed = false;
   s.spawnError = null;
   s.ptyOpenedAt = null;
@@ -1507,7 +1553,8 @@ export function useTerminalSession({
     (data: string) => {
       const s = sessions.get(leafId);
       if (!s || s.shellExited) return;
-      notifyTerminalInput(leafId, data);
+      // Text Anbo types for the user at their own word (cd to a folder).
+      notifyTerminalInput(leafId, data, "user");
       if (s.pty) sendToPty(leafId, s, data);
       else queuePendingInput(s, data);
     },

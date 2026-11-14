@@ -1364,6 +1364,168 @@ describe("shared terminal input", () => {
     expect(write).toHaveBeenCalledTimes(1);
   });
 
+  // Round 102: real agents were sent to a terminal the user was typing in.
+  // Anbo refused their commands, and its words told them to clear the line.
+  describe("a line the user typed and has not submitted", () => {
+    const typing = (by: "user" | "automation", more = {}) => ({
+      ready: true,
+      shellExited: false,
+      commandRunning: false,
+      blockMode: "prompt" as const,
+      commandGeneration: 2,
+      lastExitCode: 0,
+      shell: "pwsh",
+      inputPending: true,
+      inputPendingBy: by,
+      ...more,
+    });
+    const target = { workspace: workspace.root, terminalId: "terminal:10:101" };
+
+    it("shows in terminal_list, with who typed it", async () => {
+      const users = createTerminalAutomationService(
+        dependencies({ getSessionState: () => typing("user") }),
+      );
+      const listed = await users.handle("terminal_list", {
+        workspace: workspace.root,
+      });
+      expect(listed).toMatchObject({
+        result: {
+          terminals: [{ status: "idle", unsubmittedInput: "user" }],
+          inputNote: expect.stringContaining("use another terminal"),
+        },
+      });
+      const staged = createTerminalAutomationService(
+        dependencies({ getSessionState: () => typing("automation") }),
+      );
+      const result = (
+        await staged.handle("terminal_list", { workspace: workspace.root })
+      ).result as { terminals: { unsubmittedInput?: string }[] };
+      expect(result.terminals[0].unsubmittedInput).toBe("tool");
+      expect(result).not.toHaveProperty("inputNote");
+      // An empty prompt says nothing about it.
+      const empty = (
+        await createTerminalAutomationService(dependencies()).handle(
+          "terminal_list",
+          { workspace: workspace.root },
+        )
+      ).result as { terminals: object[] };
+      expect(empty.terminals[0]).not.toHaveProperty("unsubmittedInput");
+    });
+
+    it("is not a tool's to add to: the refusal sends the agent elsewhere", async () => {
+      const write = vi.fn(() => true);
+      const service = createTerminalAutomationService(
+        dependencies({ getSessionState: () => typing("user"), write }),
+      );
+      for (const method of ["terminal_execute", "terminal_insert"] as const) {
+        const refused = await service.handle(method, {
+          ...target,
+          text: "node -v",
+        });
+        expect(refused).toMatchObject({
+          error: { code: "terminal_input_pending" },
+        });
+        const message = (refused.error as { message: string }).message;
+        expect(message).toContain("the user typed");
+        expect(message).toContain("another terminal");
+        expect(message).not.toContain("clear");
+      }
+      expect(write).not.toHaveBeenCalled();
+    });
+
+    it("is not cleared by terminal_interrupt, and nothing is sent", async () => {
+      const write = vi.fn(() => true);
+      const service = createTerminalAutomationService(
+        dependencies({ getSessionState: () => typing("user"), write }),
+      );
+      const refused = await service.handle("terminal_interrupt", target);
+      expect(refused).toMatchObject({
+        error: { code: "terminal_input_pending" },
+      });
+      expect((refused.error as { message: string }).message).toContain(
+        "does not clear",
+      );
+      expect(write).not.toHaveBeenCalled();
+    });
+
+    it("leaves a tool's own staged input clearable, as before", async () => {
+      const write = vi.fn(() => true);
+      const service = createTerminalAutomationService(
+        dependencies({ getSessionState: () => typing("automation"), write }),
+      );
+      await expect(
+        service.handle("terminal_execute", { ...target, text: "node -v" }),
+      ).resolves.toMatchObject({
+        error: {
+          code: "terminal_input_pending",
+          message: expect.stringContaining("submit or clear it"),
+        },
+      });
+      await expect(
+        service.handle("terminal_interrupt", target),
+      ).resolves.toMatchObject({
+        result: { ok: true, clearedInput: true, interrupted: false },
+      });
+      expect(write).toHaveBeenCalledWith(101, "\x03");
+    });
+
+    it("does not keep a Ctrl+C from a program that runs in front", async () => {
+      // The user typed ahead while their command runs: the Ctrl+C is for it.
+      const write = vi.fn(() => true);
+      const running = createTerminalAutomationService(
+        dependencies({
+          getSessionState: () => typing("user", { commandRunning: true }),
+          write,
+        }),
+      );
+      await expect(
+        running.handle("terminal_interrupt", target),
+      ).resolves.toMatchObject({ result: { ok: true } });
+      // A shell without marks: only the look at its programs tells.
+      const unmarked = createTerminalAutomationService(
+        dependencies({
+          getSessionState: () => typing("user"),
+          hasForegroundProcess: async () => true,
+          write,
+        }),
+      );
+      await expect(
+        unmarked.handle("terminal_interrupt", target),
+      ).resolves.toMatchObject({ result: { ok: true } });
+      expect(write).toHaveBeenCalledTimes(2);
+    });
+
+    it("holds a queued command back with the same words", async () => {
+      let state = typing("user", { inputPending: false, inputPendingBy: null });
+      const write = vi.fn(() => true);
+      const service = createTerminalAutomationService(
+        dependencies({ getSessionState: () => state, write }),
+      );
+      const executed = await service.handle("terminal_execute", {
+        ...target,
+        text: "echo late",
+      });
+      // The user began to type before the queued command went out.
+      state = typing("user");
+      await expect(
+        service.handle("terminal_wait", {
+          ...target,
+          executionId: (executed.result as { executionId: string })
+            .executionId,
+          timeout: 1_000,
+        }),
+      ).resolves.toMatchObject({
+        result: {
+          completionReason: "dispatch_failed",
+          dispatchError: expect.stringContaining(
+            "input the user had typed and not submitted",
+          ),
+        },
+      });
+      expect(write).not.toHaveBeenCalled();
+    });
+  });
+
   it("rechecks foreground ownership after renderer preparation", async () => {
     let generation = 2;
     const hasForegroundProcess = vi.fn(async () => false);
