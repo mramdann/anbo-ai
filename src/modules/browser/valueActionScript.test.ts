@@ -241,6 +241,68 @@ describe("guarded value actions", () => {
     expect(h.events).toEqual([]);
   });
 
+  it("takes the only option a text names loosely, and says it did", () => {
+    // Rounds 101 and 102: every shop order of a real agent asked for
+    // "Ekspres", got option_not_found for "Ekspres (Rp 25.000)", and asked
+    // again with the value.
+    const shop = () => {
+      const h = harness(true);
+      h.el.options[0].textContent = "Reguler (Rp 10.000)";
+      h.el.options[0].value = "reguler";
+      h.el.options[1].textContent = "Ekspres (Rp 25.000)";
+      h.el.options[1].value = "ekspres";
+      h.el.value = "reguler";
+      return h;
+    };
+    // The label goes on with a qualifier; the value in another case.
+    for (const want of ["Ekspres", "ekspres (rp 25.000)", "EKSPRES", " Ekspres "]) {
+      const h = shop();
+      expect(h.run(want), want).toMatchObject({
+        ok: true,
+        value: "ekspres",
+        label: "Ekspres (Rp 25.000)",
+        loose: want !== "ekspres",
+      });
+      expect(h.events).toEqual(["input", "change"]);
+    }
+    // A value or whole label as written is no loose match.
+    expect(shop().run("ekspres")).toMatchObject({ ok: true, loose: false });
+    expect(shop().run("Ekspres (Rp 25.000)")).toMatchObject({
+      ok: true,
+      loose: false,
+    });
+    for (const [label, want] of [
+      ["Pro - $10 a month", "Pro"],
+      ["United States: +1", "united states"],
+      ["Kilat/Same day", "Kilat"],
+    ]) {
+      const h = shop();
+      h.el.options[1].textContent = label;
+      expect(h.run(want), want).toMatchObject({ ok: true, loose: true });
+    }
+  });
+
+  it("names no option by a part of a word, another word, or two matches", () => {
+    const h = harness(true);
+    h.el.options[0].textContent = "Jakarta Selatan";
+    h.el.options[1].textContent = "Ekspres (Rp 25.000)";
+    // A label that goes on with another word is another thing.
+    expect(h.run("Jakarta")).toMatchObject({
+      ok: false,
+      error: "option_not_found",
+    });
+    // A part of a word.
+    expect(h.run("Eks")).toMatchObject({ ok: false, error: "option_not_found" });
+    // Two options the text could mean.
+    h.el.options[0].textContent = "Ekspres (pagi)";
+    expect(h.run("Ekspres")).toMatchObject({
+      ok: false,
+      error: "option_not_found",
+    });
+    expect(h.run("  ")).toMatchObject({ ok: false, error: "option_not_found" });
+    expect(h.events).toEqual([]);
+  });
+
   it("rejects disabled options and disabled optgroups", () => {
     for (const inherited of [false, true]) {
       const h = harness(true);

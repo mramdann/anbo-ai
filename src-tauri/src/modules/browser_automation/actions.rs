@@ -64,6 +64,11 @@ const UNDRAWN_TAB: &str = "the browser stopped drawing this tab while the action
 /// A click on a select opens the browser's own option list, which no snapshot
 /// shows; arrow keys then highlight an option the list applies when it closes.
 const SELECT_PICKER_CLOSED_NOTE: &str = "The select's own option list was open; Anbo closed it without applying the option highlighted in it, then chose this one. Choose options with this tool rather than by clicking the select.";
+/// No option had that value or that whole label, and one alone went by it: in
+/// another case, or with a qualifier after it ("Ekspres" for "Ekspres (Rp
+/// 25.000)"). Rounds 101 and 102: every shop order of a real agent spent a
+/// call on an option_not_found for it.
+const SELECT_LOOSE_NOTE: &str = "No option has exactly that value or label; the only option that goes by it was chosen. Check label.";
 const MAX_TEXT_OUTPUT_CHARS: u64 = 16_000;
 /// The longest a wait may actually run.
 ///
@@ -3704,9 +3709,13 @@ async fn handle_action_attempt(
                     "valueVerified": true,
                     "ok": true
                 });
-                if parsed.get("closedPicker").and_then(Value::as_bool) == Some(true) {
+                let closed = parsed.get("closedPicker").and_then(Value::as_bool) == Some(true);
+                let loose = parsed.get("loose").and_then(Value::as_bool) == Some(true);
+                if closed {
                     result["closedPicker"] = Value::Bool(true);
-                    result["note"] = json!(SELECT_PICKER_CLOSED_NOTE);
+                }
+                if let Some(note) = select_note(closed, loose) {
+                    result["note"] = json!(note);
                 }
                 Ok(result)
             } else {
@@ -3742,7 +3751,7 @@ async fn handle_action_attempt(
                     Err((
                         error_codes::INVALID_REQUEST.to_string(),
                         format!(
-                            "select_option on ref '{ref_id}' failed: option_not_found; no option has that value or that whole label. {}",
+                            "select_option on ref '{ref_id}' failed: option_not_found; no option, or more than one, goes by that value or label. {}",
                             select_options_hint(&parsed)
                         ),
                     ))
@@ -7901,6 +7910,17 @@ async fn wait_for_checked_state(
     }
 }
 
+/// What a select_option answer adds in words: that an open list was closed,
+/// and that the option was not named exactly.
+fn select_note(closed_picker: bool, loose: bool) -> Option<String> {
+    match (closed_picker, loose) {
+        (false, false) => None,
+        (true, false) => Some(SELECT_PICKER_CLOSED_NOTE.to_owned()),
+        (false, true) => Some(SELECT_LOOSE_NOTE.to_owned()),
+        (true, true) => Some(format!("{SELECT_PICKER_CLOSED_NOTE} {SELECT_LOOSE_NOTE}")),
+    }
+}
+
 /// The options a select has, for an option_not_found answer.
 fn select_options_hint(parsed: &Value) -> String {
     let options: Vec<String> = parsed
@@ -10222,6 +10242,21 @@ mod tests {
             select_options_hint(&json!({ "options": [] })),
             "The select has no options."
         );
+    }
+
+    #[test]
+    fn a_select_answer_says_when_the_option_was_not_named_exactly() {
+        // Rounds 101 and 102: "Ekspres" now takes "Ekspres (Rp 25.000)" when
+        // no other option goes by it, and the answer says so.
+        assert_eq!(select_note(false, false), None);
+        assert_eq!(
+            select_note(true, false).as_deref(),
+            Some(SELECT_PICKER_CLOSED_NOTE)
+        );
+        let loose = select_note(false, true).unwrap();
+        assert!(loose.contains("Check label"), "{loose}");
+        let both = select_note(true, true).unwrap();
+        assert!(both.starts_with(SELECT_PICKER_CLOSED_NOTE) && both.ends_with(SELECT_LOOSE_NOTE));
     }
 
     #[test]

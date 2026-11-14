@@ -89,13 +89,33 @@ function closeSelectPicker(el) {
   return !el.matches(':open');
 }
 
+// The option a wanted text means: one with that value or that whole label, as
+// written. Else the only option it names loosely: its value or label in
+// another case, or a label that goes on after the text with a qualifier, as
+// "Ekspres" for "Ekspres (Rp 25.000)". Every shop order of the real agents in
+// rounds 101 and 102 spent a call on that one. A label that goes on with
+// another word ("Jakarta" for "Jakarta Selatan"), a part of a word, or two
+// options the text could mean name none.
+function wantedOption(options, want) {
+  const label = opt => (opt.textContent || '').trim();
+  const exact = options.find(opt => opt.value === want || label(opt) === want);
+  if (exact) return { option: exact, loose: false };
+  const text = String(want).trim().toLowerCase();
+  if (!text) return null;
+  const loose = options.filter(opt => {
+    const name = label(opt).toLowerCase();
+    if (String(opt.value).toLowerCase() === text || name === text) return true;
+    return name.startsWith(text) && /^\s*[(\[\-–—:,\/|]/.test(name.slice(text.length));
+  });
+  return loose.length === 1 ? { option: loose[0], loose: true } : null;
+}
+
 function selectValue(el, refRegistry, refId, want) {
   let error = valueActionGuard(el, refRegistry, refId, false);
   if (error) return { ok: false, error };
   if (el.tagName !== 'SELECT') return { ok: false, error: 'not_a_select' };
-  const matchesWanted = opt => opt.value === want || (opt.textContent || '').trim() === want;
-  const matched = Array.from(el.options).find(matchesWanted);
-  if (!matched) {
+  const found = wantedOption(Array.from(el.options), want);
+  if (!found) {
     // Named, so the next call can use a value or a whole label: "Reguler" for
     // "Reguler (Rp 10.000)" failed with nothing else to go on (round 64).
     const options = Array.from(el.options)
@@ -103,7 +123,8 @@ function selectValue(el, refRegistry, refId, want) {
       .map(opt => ({ value: opt.value, label: (opt.textContent || '').trim().slice(0, 80) }));
     return { ok: false, error: 'option_not_found', options, optionCount: el.options.length };
   }
-  const available = () => !matched.disabled && !matched.matches(':disabled') && matchesWanted(matched) && Array.from(el.options).includes(matched);
+  const matched = found.option;
+  const available = () => !matched.disabled && !matched.matches(':disabled') && wantedOption(Array.from(el.options), want)?.option === matched;
   if (!available()) return { ok: false, error: 'input_not_ready' };
   const closedPicker = closeSelectPicker(el);
   if (closedPicker === false) return { ok: false, error: 'picker_open' };
@@ -115,5 +136,5 @@ function selectValue(el, refRegistry, refId, want) {
   el.dispatchEvent(new Event('input', { bubbles: true }));
   el.dispatchEvent(new Event('change', { bubbles: true }));
   if (!el.isConnected || refRegistry.resolve(refId) !== el || el.value !== expected || !matched.selected) return { ok: false, error: 'input_mismatch' };
-  return { ok: true, value: expected, label: (matched.textContent || '').trim(), valueVerified: true, closedPicker: closedPicker === true };
+  return { ok: true, value: expected, label: (matched.textContent || '').trim(), valueVerified: true, closedPicker: closedPicker === true, loose: found.loose };
 }
