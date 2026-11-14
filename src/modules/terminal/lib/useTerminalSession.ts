@@ -34,7 +34,10 @@ import {
   registerPromptTracker,
 } from "./osc-handlers";
 import { openPty, ptyOutputStalledSince, type PtySession } from "./pty-bridge";
-import { joinTerminalBufferRows } from "./terminalBuffer";
+import {
+  joinTerminalBufferRows,
+  releasedTerminalText,
+} from "./terminalBuffer";
 import "../block/block.css";
 import { ensureAgentActivityListener, isAgentActivePty } from "./agentActivity";
 import {
@@ -264,13 +267,11 @@ export function readTerminalBuffer(
   ) {
     return cached.text;
   }
-  const source =
-    session.snapshot ??
-    new TextDecoder().decode(session.dormantRing.tail(256 * 1024));
-  if (!source) return "";
-  const lines = stripAnsi(source).split(/\r?\n/).slice(-maxLines);
-  while (lines.length && lines[lines.length - 1] === "") lines.pop();
-  const text = lines.join("\n");
+  const text = releasedTerminalText(
+    session.snapshot,
+    new TextDecoder().decode(session.dormantRing.tail(256 * 1024)),
+    maxLines,
+  );
   dormantReads.set(session, {
     revision,
     snapshot: session.snapshot,
@@ -1616,13 +1617,6 @@ export function useTerminalSession({
       clearSearch,
     ],
   );
-}
-
-const ANSI_RE =
-  /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][AB012]|\x1b[78=>]|\x1bc|\x1b[NOP\]X^_]/g;
-
-function stripAnsi(s: string): string {
-  return s.replace(ANSI_RE, "");
 }
 
 function terminalDebugStats() {
