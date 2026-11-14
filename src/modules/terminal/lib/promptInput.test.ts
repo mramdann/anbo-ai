@@ -101,6 +101,52 @@ describe("promptInputAfter", () => {
     expect(promptAfter([["\x1b[A", "automation"]])).toEqual(EMPTY_PROMPT);
   });
 
+  it("keeps a line the user sent until the shell says what became of it", () => {
+    // At the prompt of a shell that marks a command's start (`settles`).
+    const settling = (steps: Step[], shell = "powershell"): PromptInput => {
+      let prompt = EMPTY_PROMPT;
+      for (const [data, from = "user"] of steps) {
+        prompt = promptInputAfter(prompt, data, from, shell, true).prompt;
+      }
+      return prompt;
+    };
+    const theirs = { pending: true, by: "user", exact: false, unsettled: true };
+    // A block whose closing brace is to come: the shell shows `>>`, marks no
+    // start, and the line read as an empty prompt.
+    expect(settling([["foreach ($x in 1..3) {"], ["\r"]])).toMatchObject(theirs);
+    // Its next lines, each sent with Enter, and Backspaces in them.
+    expect(
+      settling([["foreach ($x in 1..3) {"], ["\r"], ["  $x"], ["\r"], ["\x7f"], ["\x7f"]]),
+    ).toMatchObject(theirs);
+    // Lines pasted ahead of their Enter.
+    expect(
+      settling([["\x1b[200~if ($true) {\r\n  1\r\n}\x1b[201~"]]),
+    ).toMatchObject(theirs);
+    // A command brought back from history and sent.
+    expect(settling([["\x1b[A"], ["\r"]])).toMatchObject(theirs);
+    // The user's Enter on text a tool staged makes it theirs.
+    expect(settling([["echo staged", "automation"], ["\r"]])).toMatchObject(theirs);
+    // Ctrl+U takes the line the caret is on; Ctrl+C and Esc take all of it.
+    expect(settling([["a {"], ["\r"], ["b"], ["\x15"]])).toMatchObject(theirs);
+    expect(settling([["a {"], ["\r"], ["\x03"]])).toEqual(EMPTY_PROMPT);
+    expect(settling([["a {"], ["\r"], ["\x1b"]])).toEqual(EMPTY_PROMPT);
+    // Enter at an empty prompt sends nothing to wait for.
+    expect(settling([["\r"]])).toEqual(EMPTY_PROMPT);
+    // A tool follows its own command itself (terminal_execute).
+    expect(settling([["node -v\r", "automation"]])).toEqual(EMPTY_PROMPT);
+    // The terminal's buffer is held for the start mark as before.
+    expect(
+      promptInputAfter(EMPTY_PROMPT, "git status\r", "user", "powershell", true)
+        .submitted,
+    ).toBe(true);
+    // Where no start mark is to come (cmd, a program that reads the line),
+    // Enter empties the prompt as before.
+    expect(promptAfter([["git status"], ["\r"]])).toEqual(EMPTY_PROMPT);
+    expect(
+      promptInputAfter(EMPTY_PROMPT, "yes\r", "user", "powershell", false).prompt,
+    ).toEqual(EMPTY_PROMPT);
+  });
+
   it("ignores what a terminal answers by itself", () => {
     // Focus reports, a cursor position report, device attributes, a Win32
     // key event, an OSC answer.

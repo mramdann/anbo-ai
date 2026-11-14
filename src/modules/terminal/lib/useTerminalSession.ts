@@ -124,6 +124,9 @@ type Session = {
   // whether that is still all of it (promptInput.ts).
   inputPendingChars: number;
   inputPendingExact: boolean;
+  // The user sent it and the shell has not marked what became of it
+  // (promptInput.ts `unsettled`): still theirs until `settlePrompt`.
+  inputPendingUnsettled: boolean;
   // A command was submitted on this leaf; kills the watermark synchronously,
   // before the shell's OSC 133 C round-trips through the PTY.
   everSubmitted: boolean;
@@ -214,6 +217,7 @@ function promptOf(session: Session): PromptInput {
     by: session.inputPendingBy,
     chars: session.inputPendingChars,
     exact: session.inputPendingExact,
+    unsettled: session.inputPendingUnsettled,
   };
 }
 
@@ -222,6 +226,13 @@ function setPrompt(session: Session, prompt: PromptInput): void {
   session.inputPendingBy = prompt.by;
   session.inputPendingChars = prompt.chars;
   session.inputPendingExact = prompt.exact;
+  session.inputPendingUnsettled = prompt.unsettled;
+}
+
+// The shell marked a command's start or end, or drew a new prompt: a line the
+// user had sent is settled, whatever became of it.
+function settlePrompt(session: Session): void {
+  if (session.inputPendingUnsettled) setPrompt(session, EMPTY_PROMPT);
 }
 
 function notifyTerminalInput(
@@ -236,6 +247,11 @@ function notifyTerminalInput(
       data,
       from,
       session.shell,
+      // At its shell's prompt, where the shell marks the start of a command:
+      // a program that reads the line (a REPL, an agent CLI) marks nothing.
+      session.promptMarks.seenStart &&
+        !session.commandRunning &&
+        session.blockMode === "prompt",
     );
     setPrompt(session, prompt);
     if (submitted) holdForStart(session);
@@ -627,6 +643,9 @@ export function setLeafDraft(leafId: number, text: string): void {
   const s = sessions.get(leafId);
   if (s) {
     s.inputDraft = text;
+    // A line the user sent that the shell has not taken yet stays theirs,
+    // whatever the bar holds now (it empties with the send).
+    if (s.inputPendingUnsettled) return;
     s.inputPending = !!text.trim();
     // The shell input bar holds what the user typed into it.
     s.inputPendingBy = s.inputPending ? "user" : null;
@@ -768,6 +787,7 @@ function onLeafCommandState(
 ): void {
   const s = sessions.get(leafId);
   if (!s) return;
+  settlePrompt(s);
   if (change.completed) recordCommandCompletion(leafId, change.exitCode);
   // The start mark came: commandRunning keeps the buffer from here.
   if (change.running) s.startHeldUntil = 0;
@@ -901,6 +921,7 @@ function ensureSession(
     inputPendingBy: null,
     inputPendingChars: 0,
     inputPendingExact: true,
+    inputPendingUnsettled: false,
     everSubmitted: false,
     altScreenAtRelease: false,
     commandRunning: false,
@@ -1069,6 +1090,7 @@ async function openPtyForSession(
 function applyBlockMode(leafId: number, mode: BlockMode): void {
   const s = sessions.get(leafId);
   if (!s) return;
+  settlePrompt(s);
   s.blockMode = mode;
   s.commandRunning = mode !== "prompt";
   if (s.commandRunning) s.startHeldUntil = 0;
@@ -1198,6 +1220,7 @@ function bindLeafToSlot(leafId: number, s: Session): void {
             s.callbacks.onCwd?.(next);
           },
           onMode: (mode) => applyBlockMode(leafId, mode),
+          onPrompt: () => settlePrompt(s),
           onCommandComplete: (exitCode) =>
             recordCommandCompletion(leafId, exitCode),
           onViewport: () => {

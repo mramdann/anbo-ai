@@ -75,6 +75,8 @@ export type BlockDecorationsOptions = {
   promptMarks?: PromptMarks;
   onCwd?: (cwd: string) => void;
   onMode?: (mode: BlockMode) => void;
+  /** The shell drew a new prompt (OSC 133 A), whether a command ran or not. */
+  onPrompt?: () => void;
   onCommandComplete?: (exitCode: number | null) => void;
   onViewport?: () => void;
 };
@@ -94,6 +96,7 @@ export class BlockDecorations {
   private readonly disposers: (() => void)[] = [];
   private readonly onCwd?: (cwd: string) => void;
   private readonly onMode?: (mode: BlockMode) => void;
+  private readonly onPrompt?: () => void;
   private readonly onCommandComplete?: (exitCode: number | null) => void;
   private readonly onViewport?: () => void;
   private viewportRaf: number | null = null;
@@ -105,6 +108,7 @@ export class BlockDecorations {
     this.marks = opts?.promptMarks ?? createPromptMarks();
     this.onCwd = opts?.onCwd;
     this.onMode = opts?.onMode;
+    this.onPrompt = opts?.onPrompt;
     this.onCommandComplete = opts?.onCommandComplete;
     this.onViewport = opts?.onViewport;
     this.term.options.cursorInactiveStyle = "none";
@@ -467,6 +471,9 @@ export class BlockDecorations {
         this.shellState.inCommand = false;
         this.marks.started = false;
         this.mode = reduceMode(this.mode, { type: "osc133", marker: "A" });
+        // Told apart from a mode change: a prompt drawn again after a blank
+        // line or one the shell refused changes no mode.
+        this.onPrompt?.();
         break;
       case "B":
         this.shellState.inCommand = true;

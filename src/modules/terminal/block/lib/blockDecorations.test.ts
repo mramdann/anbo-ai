@@ -140,6 +140,29 @@ describe("BlockDecorations — OSC 133 block lifecycle", () => {
     expect(onCommandComplete).toHaveBeenCalledTimes(2);
   });
 
+  it("says when the shell draws a new prompt, whether a command ran or not", () => {
+    // Round 103: a line the user sent stays theirs until the shell marks a
+    // command's start or a new prompt; a blank line or one the shell refused
+    // brings only the prompt, and changes no mode.
+    const { term, emit, setLine } = makeFakeTerm();
+    const onPrompt = vi.fn();
+    const onMode = vi.fn();
+    new BlockDecorations(term, { onPrompt, onMode });
+    emit("A");
+    emit("B");
+    expect(onPrompt).toHaveBeenCalledTimes(1);
+    emit("D;0");
+    emit("A");
+    emit("B");
+    expect(onPrompt).toHaveBeenCalledTimes(2);
+    setLine(2);
+    emit("C;node -v");
+    expect(onPrompt).toHaveBeenCalledTimes(2);
+    emit("D;0");
+    emit("A");
+    expect(onPrompt).toHaveBeenCalledTimes(3);
+  });
+
   it("reports hasAnyBlock for live and finished blocks", () => {
     const { term, emit, setLine } = makeFakeTerm();
     const deco = new BlockDecorations(term);

@@ -11,12 +11,21 @@ export type TerminalInputSource = "user" | "automation";
  * it is the line's length only while `exact` holds, which ends with the first
  * key that moves the caret, deletes elsewhere than at the end, or brings text
  * in from history or a completion.
+ *
+ * `unsettled`: the user sent the line with Enter and the shell has not said
+ * what became of it. A shell that marks a command's start (OSC 133 C) does so
+ * the moment a line is complete; until it does, the line is still being
+ * written: a block whose closing brace is to come (the shell shows `>>`),
+ * lines pasted ahead of their Enter, an Enter that only took a completion.
+ * Such a line read as an empty prompt before, and a tool's command would have
+ * been typed into the middle of it (round 103).
  */
 export type PromptInput = {
   pending: boolean;
   by: TerminalInputSource | null;
   chars: number;
   exact: boolean;
+  unsettled: boolean;
 };
 
 export const EMPTY_PROMPT: PromptInput = {
@@ -24,6 +33,7 @@ export const EMPTY_PROMPT: PromptInput = {
   by: null,
   chars: 0,
   exact: true,
+  unsettled: false,
 };
 
 // Keys of the user's that put text of unknown length at the prompt: Up and
@@ -39,26 +49,33 @@ const SEQUENCES =
 // Shells whose Esc key empties the line.
 const ESC_CLEARS = new Set(["powershell", "pwsh", "cmd"]);
 
-/** The prompt after `data` went into the terminal, and whether a line was
- *  submitted with it. */
+/**
+ * The prompt after `data` went into the terminal, and whether a line was
+ * submitted with it. `settles`: the terminal is at its shell's prompt and the
+ * shell marks a command's start, so it will say what became of a line sent
+ * now (see `unsettled`).
+ */
 export function promptInputAfter(
   before: PromptInput,
   data: string,
   from: TerminalInputSource,
   shell?: string | null,
+  settles = false,
 ): { prompt: PromptInput; submitted: boolean } {
-  let { pending, by, chars, exact } = before;
+  let { pending, by, chars, exact, unsettled } = before;
   let submitted = false;
   const empty = () => {
     pending = false;
     by = null;
     chars = 0;
     exact = true;
+    unsettled = false;
   };
+  const now = () => ({ pending, by, chars, exact, unsettled });
   if (from === "user") {
     if (data === "\x1b" && ESC_CLEARS.has(shell ?? "")) {
       empty();
-      return { prompt: { pending, by, chars, exact }, submitted };
+      return { prompt: now(), submitted };
     }
     if (RECALL.test(data)) {
       pending = true;
@@ -69,14 +86,27 @@ export function promptInputAfter(
     }
   }
   for (const character of data.replace(SEQUENCES, "")) {
-    if (
-      character === "\r" ||
-      character === "\n" ||
-      character === "\x03" ||
-      character === "\x15"
-    ) {
+    if (character === "\r" || character === "\n") {
+      submitted = true;
+      if (from === "user" && settles && pending) {
+        // Theirs until the shell marks the command's start or draws a new
+        // prompt; how much of it stands there is not known.
+        by = "user";
+        chars = 0;
+        exact = false;
+        unsettled = true;
+      } else {
+        empty();
+      }
+      continue;
+    }
+    if (character === "\x03") {
       empty();
-      if (character === "\r" || character === "\n") submitted = true;
+      continue;
+    }
+    if (character === "\x15") {
+      // Ctrl+U takes the line the caret is on, not the lines sent before it.
+      if (!unsettled) empty();
       continue;
     }
     if (character === "\x7f") {
@@ -96,5 +126,5 @@ export function promptInputAfter(
       if (from === "user" || by === null) by = from;
     }
   }
-  return { prompt: { pending, by, chars, exact }, submitted };
+  return { prompt: now(), submitted };
 }
