@@ -516,8 +516,12 @@ fn watch_leaving(notes: mpsc::Receiver<()>) {
                 until = until.max(now + LEAVING_STEP);
             }
             if helped > 0 && (now >= log_at || now >= until) {
+                // What was seen, not why. Nearly always it is a machine with
+                // no core free, but in the 0.39.2 release test about 5 of
+                // 1,300 closes on a quiet machine took that long as well.
                 log::info!(
-                    "{helped} process(es) of closed browser pages had no CPU to exit on this busy machine; raised their priority so they could"
+                    "{helped} process(es) of closed browser pages were still there {} ms and more after they were ended; raised their priority so they could leave",
+                    LEAVING_GRACE.as_millis()
                 );
                 helped = 0;
                 log_at = now + LEAVING_LOG_EVERY;
