@@ -1008,6 +1008,17 @@ fn warm_host_expired(
     !tabs_open && last_tab.is_none_or(|last| now.saturating_duration_since(last) >= idle)
 }
 
+/// Whether making the warm host failed only because another tab's call is
+/// already making it. Under a full CPU load the warm host takes seconds to
+/// come up, `get_webview` does not see it until then, and every tab opened
+/// meanwhile asks for it again. A freshly started Anbo logged that at WARN and
+/// let go of the shared environment, which nothing was wrong with (R100-1:
+/// once on 0.39.1 and twice on the 0.39.2 candidate in the release test).
+#[cfg(any(windows, test))]
+fn warm_host_already_coming(error: &tauri::Error) -> bool {
+    matches!(error, tauri::Error::WebviewLabelAlreadyExists(_))
+}
+
 #[cfg(windows)]
 fn keep_host_warm(window: &tauri::Window) {
     note_tab_seen();
@@ -1041,6 +1052,7 @@ fn keep_host_warm(window: &tauri::Window) {
                 super::host::adopt_from_webview(&webview);
                 remember_profile_environment(&webview, profile);
             }
+            Err(error) if warm_host_already_coming(&error) => {}
             Err(error) => {
                 if joined_profile {
                     forget_profile_environment(&app);
@@ -2868,6 +2880,20 @@ mod tests {
     };
     use std::collections::HashSet;
     use url::Url;
+
+    #[test]
+    fn a_warm_host_that_another_call_is_making_is_no_failure() {
+        // The words prod logged at WARN from a fresh start under a full load.
+        let coming = tauri::Error::WebviewLabelAlreadyExists("browser-host-warm".into());
+        assert_eq!(
+            coming.to_string(),
+            "a webview with label `browser-host-warm` already exists"
+        );
+        assert!(super::warm_host_already_coming(&coming));
+        assert!(!super::warm_host_already_coming(
+            &tauri::Error::WebviewNotFound
+        ));
+    }
 
     #[test]
     fn the_warm_host_waits_its_whole_idle_time_after_the_last_tab() {
