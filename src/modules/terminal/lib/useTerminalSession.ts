@@ -43,6 +43,7 @@ import {
 import {
   joinTerminalBufferRows,
   releasedTerminalText,
+  rowWithoutBlanksAfterCaret,
 } from "./terminalBuffer";
 import "../block/block.css";
 import { ensureAgentActivityListener, isAgentActivePty } from "./agentActivity";
@@ -290,9 +291,14 @@ export function readTerminalBuffer(
       start -= 1;
       rewind += 1;
     }
+    const caretRow = buffer.baseY + buffer.cursorY;
     for (let index = start; index < buffer.length; index++) {
       const line = buffer.getLine(index);
-      const text = line?.translateToString(true) ?? "";
+      const row = line?.translateToString(true) ?? "";
+      const text =
+        index === caretRow
+          ? rowWithoutBlanksAfterCaret(row, buffer.cursorX)
+          : row;
       rows.push({ text, wrapped: line?.isWrapped ?? false });
     }
     return joinTerminalBufferRows(rows, maxLines);

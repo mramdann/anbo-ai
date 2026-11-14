@@ -17,6 +17,23 @@ export function joinTerminalBufferRows(
   return lines.join("\n");
 }
 
+/**
+ * The caret's row without the blanks to the right of the caret. A shell rubs
+ * out what stood there by writing spaces over it (a line the user took back
+ * with Backspace, a shorter command brought back from history), and ConPTY
+ * sends those as spaces or as an erase depending on where the row is on its
+ * screen. Kept, they made the prompt read as a line rewritten once the next
+ * command was typed over them, and a tool's command came back with a line
+ * break and the prompt in front of it (round 103; on a row that had just
+ * scrolled into view the same steps read clean).
+ */
+export function rowWithoutBlanksAfterCaret(
+  text: string,
+  caret: number,
+): string {
+  return text.slice(0, Math.max(caret, text.trimEnd().length));
+}
+
 const ANSI_RE =
   /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][AB012]|\x1b[78=>]|\x1bc|\x1b[NOP\]X^_]/g;
 

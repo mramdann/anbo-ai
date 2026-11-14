@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { classifyAgentScreen } from "@/modules/agents/lib/agentScreenClassifier";
-import { joinTerminalBufferRows, releasedTerminalText } from "./terminalBuffer";
+import { OutputTracker } from "@/modules/agents/lib/outputTracker";
+import {
+  joinTerminalBufferRows,
+  releasedTerminalText,
+  rowWithoutBlanksAfterCaret,
+} from "./terminalBuffer";
 
 describe("joinTerminalBufferRows", () => {
   it("joins visual wraps without inventing logical newlines", () => {
@@ -75,5 +80,49 @@ describe("releasedTerminalText", () => {
         2,
       ),
     ).toBe("kept more\nlast");
+  });
+});
+
+describe("rowWithoutBlanksAfterCaret", () => {
+  const prompt = "PS D:\\work> ";
+
+  it("drops the blanks a shell wrote over a line the user took back", () => {
+    // "git stat" typed and taken back with eight Backspaces: the caret is
+    // back after the prompt, and the row ends in eight written spaces.
+    expect(rowWithoutBlanksAfterCaret(`${prompt}        `, prompt.length)).toBe(
+      prompt,
+    );
+    // The prompt's own space, left of the caret, stays.
+    expect(rowWithoutBlanksAfterCaret(prompt, prompt.length)).toBe(prompt);
+    // So does text to the right of the caret, and a blank inside it.
+    expect(
+      rowWithoutBlanksAfterCaret(`${prompt}git  status   `, prompt.length + 3),
+    ).toBe(`${prompt}git  status`);
+    // Blanks the user typed, left of the caret, are theirs.
+    expect(
+      rowWithoutBlanksAfterCaret(`${prompt}echo   `, prompt.length + 7),
+    ).toBe(`${prompt}echo   `);
+    expect(rowWithoutBlanksAfterCaret("", 0)).toBe("");
+  });
+
+  it("lets the next command read as going on from the prompt", () => {
+    // Round 103: with the blanks kept, the prompt read as a line rewritten
+    // once a tool's command was typed over them, and the command's output
+    // came back with a line break and the prompt in front of it.
+    const after = `one\n${prompt}echo ok\nok\n${prompt}`;
+    const clean = new OutputTracker("t1", 4);
+    const cursor = clean.checkpoint(
+      "a",
+      `one\n${rowWithoutBlanksAfterCaret(`${prompt}        `, prompt.length)}`,
+    );
+    expect(clean.span("a", after, cursor).text).toBe(
+      `echo ok\nok\n${prompt}`,
+    );
+    // As it read before: the row as the terminal holds it.
+    const kept = new OutputTracker("t1", 4);
+    const old = kept.checkpoint("a", `one\n${prompt}        `);
+    expect(kept.span("a", after, old).text).toBe(
+      `\n${prompt}echo ok\nok\n${prompt}`,
+    );
   });
 });
