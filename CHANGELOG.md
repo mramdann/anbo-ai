@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.2](https://github.com/mramdann/anbo-ai/compare/v0.39.1...v0.39.2) (2026-11-14)
+
+
+### Bug Fixes
+
+* **browser:** closed tabs of Anbo's own browser give their memory back on a busy machine too. With every CPU core in use, the processes of closed tabs stayed for a long time, and after many tabs Anbo refused new ones for lack of memory. Anbo now sees those processes out within about a second ([1583608](https://github.com/mramdann/anbo-ai/commit/158360821c45b26604774e7f13826fba9d2a866a))
+
 ## [0.39.1](https://github.com/mramdann/anbo-ai/compare/v0.39.0...v0.39.1) (2026-11-13)
 
 
