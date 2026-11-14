@@ -6,7 +6,9 @@ function openingBounds(bounds) {
   return place && size ? { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height } : { width: 900, height: 700 };
 }
 
-export function createDockManager(api, changed = () => {}) {
+// `driven(tabId)`: whether an agent's input reached that tab within the moment
+// a page takes to open a tab.
+export function createDockManager(api, changed = () => {}, driven = () => false) {
   const entries = new Map();
   // Tabs a link opened in the dock window, on their way to the user's window.
   const departures = new Map();
@@ -152,6 +154,8 @@ export function createDockManager(api, changed = () => {}) {
 
   // A link or shortcut opened a tab in the dock window. It joins the user's other
   // tabs, so the docked page stays in Anbo and no unrelated page stays there.
+  // `active`: it comes to the front of the user's window, as the tab their
+  // own click on the docked page opened in front does.
   async function moveOut(selected, entry, tabId, active) {
     try {
       const original = await api.windows.get(entry.originalWindow).catch(() => null);
@@ -176,7 +180,12 @@ export function createDockManager(api, changed = () => {}) {
       if (entry.windowId !== windowId || entry.moving.has(tabId)) continue;
       if (kind === "created" && tabId !== selected && tabId !== entry.bootstrapId) {
         entry.moving.add(tabId);
-        const departure = moveOut(selected, entry, tabId, active).catch(() => {});
+        // A tab an agent's click opened stays behind the tab the user is on.
+        // It came to the front of the user's own window like one the user
+        // opened: with real agents in round 102 (R102-4) the page the user
+        // was typing in gave way to the agent's new tab for 6 to 15 s, and
+        // once the agent closed that tab the window showed another one.
+        const departure = moveOut(selected, entry, tabId, active && !driven(selected)).catch(() => {});
         departures.set(tabId, departure);
         void departure.finally(() => { if (departures.get(tabId) === departure) departures.delete(tabId); });
         docked = true;

@@ -3,7 +3,8 @@ import { createDockManager } from "./dock.js";
 import { validateCommand } from "./bridge.js";
 
 const token = "a".repeat(64);
-function fixture() {
+// `driven`: the tabs an agent's input has just reached.
+function fixture(driven = new Set()) {
   const tabs = new Map([[10, { id: 10, windowId: 20, index: 1, url: "https://example.com/" }], [11, { id: 11, windowId: 20, index: 0, url: "https://example.org/" }]]);
   const windows = new Map([[20, { id: 20, type: "normal", incognito: false }]]);
   let next = 30;
@@ -27,7 +28,7 @@ function fixture() {
     },
   };
   const changed = vi.fn();
-  const manager = createDockManager(api, changed);
+  const manager = createDockManager(api, changed, (tabId) => driven.has(tabId));
   let revoked = false;
   const check = () => { if (revoked) throw new Error("revoked"); };
   const run = (method, override = {}) => manager.command({ method: `anbo.dock${method}`, tabId: 10, selectionId: "lease", params: { token }, ...override }, check);
@@ -134,6 +135,30 @@ describe("dedicated native dock window", () => {
     expect(state.api.tabs.update).toHaveBeenCalledWith(50, { active: true });
     expect(state.changed).not.toHaveBeenCalled();
     expect(state.tabs.get(10).windowId).toBe(40);
+  });
+  it("keeps a tab an agent's click opened behind the tab the user is on", async () => {
+    // Round 102 (R102-4): the docked page took an agent's click on a link
+    // that opens a new tab. The browser opened it in front, and it came to
+    // the front of the user's own window as well, over the page they typed in.
+    const driven = new Set([10]);
+    const state = fixture(driven);
+    await state.run("Prepare");
+    await state.run("Commit");
+    state.tabs.set(50, { id: 50, windowId: 40, url: "https://agent.example/" });
+    expect(state.manager.topology({ kind: "created", tabId: 50, windowId: 40, active: true })).toBe(true);
+    state.manager.topology({ kind: "activated", tabId: 50, windowId: 40 });
+    await state.manager.departure(50);
+    // It joins the user's window, and the docked page stays the one Anbo shows.
+    expect(state.tabs.get(50).windowId).toBe(20);
+    expect(state.api.tabs.update).toHaveBeenCalledWith(10, { active: true });
+    expect(state.api.tabs.update).not.toHaveBeenCalledWith(50, { active: true });
+    expect(state.changed).not.toHaveBeenCalled();
+    // The user's own click on that page a moment later opens its tab in front.
+    driven.clear();
+    state.tabs.set(51, { id: 51, windowId: 40, url: "https://user.example/" });
+    state.manager.topology({ kind: "created", tabId: 51, windowId: 40, active: true });
+    await state.manager.departure(51);
+    expect(state.api.tabs.update).toHaveBeenCalledWith(51, { active: true });
   });
   it("says when a tab the docked page opened has left the dock window", async () => {
     const state = fixture();
