@@ -3,6 +3,7 @@ import {
   isWindowPresentationDocumentVisible,
   subscribeWindowPresentation,
 } from "@/lib/windowPresentation";
+import { browserTabEverDriven } from "@/modules/browser/automationActivity";
 import {
   openReadHoldsDock,
   subscribeOpenReads,
@@ -21,7 +22,10 @@ import {
   useNativeBrowserDragActive,
 } from "@/modules/browser/nativeVisibility";
 import type { BrowserTab } from "@/modules/tabs";
-import { subscribeBrowserTabShown } from "@/modules/tabs/lib/browserTabShow";
+import {
+  noteUserUsedBrowserTab,
+  subscribeBrowserTabShown,
+} from "@/modules/tabs/lib/browserTabShow";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -387,26 +391,36 @@ export function shouldAttachDock(state: AutoDockState): boolean {
 }
 
 /** Where the user is, as Anbo's foreground watch tells it (dock.rs `Front`):
- * in Anbo's window or the page its dock shows, or elsewhere. */
-export type WindowFront = { front: boolean; seq: number };
+ * in Anbo's window or the page its dock shows (`page`), or elsewhere. */
+export type WindowFront = { front: boolean; seq: number; page?: boolean };
 
 /** Keeps the newest word on where the user is. A reply to an ask can arrive
- * after an event newer than it, so the watch's change count decides. */
+ * after an event newer than it, so the watch's change count decides.
+ * `onPage` hears each time their input goes into the page the dock shows: a
+ * click inside that page reaches no document of Anbo's, and this is all that
+ * says the user is on it. */
 export function createWindowFront(
   onChange: () => void,
   request: () => Promise<WindowFront>,
+  onPage: () => void = () => {},
 ) {
   let front = false;
+  let page = false;
   let seq = -1;
   const note = (next: WindowFront) => {
     if (next.seq < seq) return;
     seq = next.seq;
+    const onto = next.page === true && !page;
+    page = next.page === true;
+    if (onto) onPage();
     if (next.front === front) return;
     front = next.front;
     onChange();
   };
   return {
     current: () => front,
+    /** Whether their input is in the page the dock shows, by the last word. */
+    onPage: () => page,
     note,
     /** Where the user is now, or the last word when Windows cannot be asked. */
     ask: () =>
@@ -454,11 +468,16 @@ export function createFrontRecheck(
 // the page could not: WebView2's document.hasFocus() stayed true behind
 // another app, and the main window may not read its own focus.
 const focusListeners = new Set<() => void>();
+// Heard when the user's input goes into the page the dock shows.
+const pageListeners = new Set<() => void>();
 const windowFront = createWindowFront(
   () => {
     for (const notify of focusListeners) notify();
   },
   () => invoke<WindowFront>("browser_external_front"),
+  () => {
+    for (const notify of pageListeners) notify();
+  },
 );
 let watchingFocus = false;
 function syncAnboFocus() {
@@ -583,6 +602,34 @@ export function useBrowserDock(tab: BrowserTab, visible: boolean) {
     setLive(status.dockId !== null && status.live);
     setReason(status.dockId !== null ? status.reason : null);
   }, []);
+
+  // The user's input went into the page the dock shows: this tab's, while it
+  // is the one shown. That is the user on this page, as a press on its tab
+  // or its panel is (browserTabShow.ts): no agent's tab takes the panel from
+  // a page of their own by itself. Before round 103 only a press in Anbo's
+  // own window said so, and a page they had only clicked into did not count.
+  // A tab an agent drove is left out: Anbo itself puts the input into such a
+  // page when it shows it for the agent's click, and that is no word of the
+  // user's about any page.
+  const liveRef = useRef(live);
+  liveRef.current = live;
+  useEffect(() => {
+    const onPage = () => {
+      if (liveRef.current && !browserTabEverDriven(tab.id))
+        noteUserUsedBrowserTab(tab.id);
+    };
+    pageListeners.add(onPage);
+    return () => {
+      pageListeners.delete(onPage);
+    };
+  }, [tab.id]);
+  // The same for a page that comes into the dock while the user's input is
+  // in the dock's page already: a tab their own click there opened. Nothing
+  // changes in front of Windows then, so the watch has no news of it.
+  useEffect(() => {
+    if (live && windowFront.onPage() && !browserTabEverDriven(tab.id))
+      noteUserUsedBrowserTab(tab.id);
+  }, [live, tab.id]);
 
   const measure = useCallback(() => {
     const rect = surface.current?.getBoundingClientRect();

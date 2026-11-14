@@ -542,8 +542,8 @@ pub fn standing<R: tauri::Runtime>(app: &AppHandle<R>) -> Standing {
     }
 }
 
-/// The main window hears a `Front` here each time the user goes into Anbo or
-/// leaves it.
+/// The main window hears a `Front` here each time the user goes into Anbo,
+/// leaves it, or goes between its own window and the page the dock shows.
 pub const FRONT_EVENT: &str = "anbo:window-front";
 
 /// Whether the user is in Anbo: its main window has their input, or the page
@@ -551,33 +551,56 @@ pub const FRONT_EVENT: &str = "anbo:window-front";
 /// browser window it opens never comes over another app. `seq` counts the
 /// changes, so a reply sent before an event that arrives after it is known
 /// for the older news.
+///
+/// `page`: their input is in the page the dock shows, a window of the
+/// browser's, not in Anbo's own. A click of theirs inside that page reaches
+/// no document of Anbo's, so this is all that tells the main window that the
+/// user is on that page (round 103: a page of their own that they had only
+/// clicked into was no page "the user chose", and an agent's tab could take
+/// its panel).
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 pub struct Front {
     pub front: bool,
+    pub page: bool,
     pub seq: u64,
 }
 
-/// What the foreground watch last saw, packed as `seq << 2 | state`: state 0
-/// before its first look, 1 in Anbo, 2 elsewhere.
-fn front_value(packed: u64) -> Option<Front> {
-    match packed & 3 {
-        1 => Some(Front {
-            front: true,
-            seq: packed >> 2,
-        }),
-        2 => Some(Front {
-            front: false,
-            seq: packed >> 2,
-        }),
-        _ => None,
-    }
+/// Where the user's input is, as the foreground watch sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Input {
+    /// In Anbo's own window.
+    Anbo,
+    /// In the page the dock shows in it.
+    Page,
+    Elsewhere,
 }
 
-/// The packed value after the watch sees `front`, or None when nothing
-/// changed. A look while no window has the input (`None`, as for a moment in
-/// every switch) says nothing about where the user went.
-fn front_next(packed: u64, front: Option<bool>) -> Option<u64> {
-    let state = if front? { 1 } else { 2 };
+/// What the foreground watch last saw, packed as `seq << 2 | state`: state 0
+/// before its first look, 1 in Anbo's window, 2 elsewhere, 3 in the page the
+/// dock shows.
+fn front_value(packed: u64) -> Option<Front> {
+    let (front, page) = match packed & 3 {
+        1 => (true, false),
+        2 => (false, false),
+        3 => (true, true),
+        _ => return None,
+    };
+    Some(Front {
+        front,
+        page,
+        seq: packed >> 2,
+    })
+}
+
+/// The packed value after the watch sees the input at `seen`, or None when
+/// nothing changed. A look while no window has the input (`None`, as for a
+/// moment in every switch) says nothing about where the user went.
+fn front_next(packed: u64, seen: Option<Input>) -> Option<u64> {
+    let state = match seen? {
+        Input::Anbo => 1,
+        Input::Elsewhere => 2,
+        Input::Page => 3,
+    };
     (packed & 3 != state).then(|| (((packed >> 2) + 1) << 2) | state)
 }
 
@@ -591,6 +614,7 @@ pub fn front<R: tauri::Runtime>(app: &AppHandle<R>) -> Front {
         let _ = app;
         Front {
             front: true,
+            page: false,
             seq: 0,
         }
     }
@@ -1786,12 +1810,19 @@ mod native {
     /// has their input; None while no window has it. A minimized window can
     /// stay in front; the dock also needs the panel presented, so it does not
     /// dock then either.
-    fn user_in(host: HWND) -> Option<bool> {
+    fn user_in(host: HWND) -> Option<Input> {
         // Windows can name a child window as the one in front for a moment,
         // as WebView2's when Anbo's page takes the focus.
         let window = unsafe { GetAncestor(GetForegroundWindow(), GA_ROOT) };
-        (!window.0.is_null())
-            .then(|| window == host || window.0 as usize == BROWSER.load(Ordering::Acquire))
+        (!window.0.is_null()).then(|| {
+            if window == host {
+                Input::Anbo
+            } else if window.0 as usize == BROWSER.load(Ordering::Acquire) {
+                Input::Page
+            } else {
+                Input::Elsewhere
+            }
+        })
     }
 
     pub(super) fn front<R: tauri::Runtime>(app: &AppHandle<R>) -> Front {
@@ -1802,12 +1833,16 @@ mod native {
         if let Some(front) = front_value(FRONT.load(Ordering::Acquire)) {
             return front;
         }
-        let front = main_window(app)
+        let seen = main_window(app)
             .ok()
             .and_then(|window| window.hwnd().ok())
             .and_then(|handle| user_in(HWND(handle.0 as *mut _)))
-            .unwrap_or(false);
-        Front { front, seq: 0 }
+            .unwrap_or(Input::Elsewhere);
+        Front {
+            front: seen != Input::Elsewhere,
+            page: seen == Input::Page,
+            seq: 0,
+        }
     }
 
     pub(super) fn watch_front(app: &AppHandle) {
@@ -2297,33 +2332,71 @@ mod tests {
         // Nothing seen yet: the reply asks Windows itself.
         assert_eq!(front_value(0), None);
         assert_eq!(front_next(0, None), None);
-        let inside = front_next(0, Some(true)).unwrap();
+        let inside = front_next(0, Some(Input::Anbo)).unwrap();
         assert_eq!(
             front_value(inside),
             Some(Front {
                 front: true,
+                page: false,
                 seq: 1
             })
         );
         // Another look at the same window is no news.
-        assert_eq!(front_next(inside, Some(true)), None);
+        assert_eq!(front_next(inside, Some(Input::Anbo)), None);
         // Nor is a look in the middle of a switch, when no window has the
         // input: an ask landing there must not send the user away.
         assert_eq!(front_next(inside, None), None);
-        let outside = front_next(inside, Some(false)).unwrap();
+        let outside = front_next(inside, Some(Input::Elsewhere)).unwrap();
         assert_eq!(
             front_value(outside),
             Some(Front {
                 front: false,
+                page: false,
                 seq: 2
             })
         );
         assert_eq!(front_next(outside, None), None);
-        let back = front_next(outside, Some(true)).unwrap();
+        let back = front_next(outside, Some(Input::Anbo)).unwrap();
         assert_eq!(front_value(back).map(|front| front.seq), Some(3));
         assert_eq!(
             serde_json::to_value(front_value(back).unwrap()).unwrap(),
-            serde_json::json!({"front": true, "seq": 3})
+            serde_json::json!({"front": true, "page": false, "seq": 3})
+        );
+    }
+
+    #[test]
+    fn the_foreground_watch_says_when_the_user_is_on_the_docked_page() {
+        // Round 103: a click inside the page the dock shows reaches no
+        // document of Anbo's. The user is in Anbo all the same (`front`), and
+        // the change is news of its own, which the main window takes for the
+        // user choosing that page.
+        let anbo = front_next(0, Some(Input::Anbo)).unwrap();
+        let page = front_next(anbo, Some(Input::Page)).unwrap();
+        assert_eq!(
+            front_value(page),
+            Some(Front {
+                front: true,
+                page: true,
+                seq: 2
+            })
+        );
+        assert_eq!(front_next(page, Some(Input::Page)), None);
+        // Back into Anbo's own window, a terminal say: news again.
+        let terminal = front_next(page, Some(Input::Anbo)).unwrap();
+        assert_eq!(
+            front_value(terminal),
+            Some(Front {
+                front: true,
+                page: false,
+                seq: 3
+            })
+        );
+        // From another app straight onto the page.
+        let away = front_next(terminal, Some(Input::Elsewhere)).unwrap();
+        let onto = front_next(away, Some(Input::Page)).unwrap();
+        assert_eq!(
+            serde_json::to_value(front_value(onto).unwrap()).unwrap(),
+            serde_json::json!({"front": true, "page": true, "seq": 5})
         );
     }
 

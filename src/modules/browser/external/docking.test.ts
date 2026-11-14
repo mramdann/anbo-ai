@@ -111,6 +111,43 @@ describe("where the user is", () => {
     front.note({ front: true, seq: 1 });
     await expect(front.ask()).resolves.toBe(true);
   });
+
+  it("says each time the user's input goes into the page the dock shows", () => {
+    // Round 103: a click inside a docked Chrome or Edge page reaches no
+    // document of Anbo's; the watch's word is all that tells the user is on
+    // that page, which keeps an agent's tab from taking its panel.
+    const onChange = vi.fn();
+    const onPage = vi.fn();
+    const front = createWindowFront(onChange, unasked, onPage);
+    expect(front.onPage()).toBe(false);
+    front.note({ front: true, page: false, seq: 1 });
+    expect(onPage).not.toHaveBeenCalled();
+    // From Anbo's own window onto the page: the user stays "in Anbo".
+    front.note({ front: true, page: true, seq: 2 });
+    expect(onPage).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    // Asked while they are there: a tab their click on the page opened comes
+    // into the dock with no news from Windows.
+    expect(front.onPage()).toBe(true);
+    // The same word again (an ask's reply) is no new press.
+    front.note({ front: true, page: true, seq: 2 });
+    expect(onPage).toHaveBeenCalledTimes(1);
+    // Into a terminal and back onto the page.
+    front.note({ front: true, page: false, seq: 3 });
+    front.note({ front: true, page: true, seq: 4 });
+    expect(onPage).toHaveBeenCalledTimes(2);
+    // An older reply that arrives late does not count as leaving the page.
+    front.note({ front: true, page: false, seq: 3 });
+    front.note({ front: true, page: true, seq: 4 });
+    expect(onPage).toHaveBeenCalledTimes(2);
+    // From another app straight onto it; a watch older than `page` says none.
+    front.note({ front: false, seq: 5 });
+    front.note({ front: true, page: true, seq: 6 });
+    expect(onPage).toHaveBeenCalledTimes(3);
+    front.note({ front: true, seq: 7 });
+    front.note({ front: true, seq: 8 });
+    expect(onPage).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe("asking again while a tab waits for the user", () => {
