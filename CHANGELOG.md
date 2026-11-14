@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.2](https://github.com/mramdann/anbo-ai/compare/v0.39.1...v0.39.2) (2026-11-14)
+
+
+### Bug Fixes
+
+* **browser:** see a closed tab's process out when every core is busy ([1583608](https://github.com/mramdann/anbo-ai/commit/158360821c45b26604774e7f13826fba9d2a866a))
+
 ## [0.39.1](https://github.com/mramdann/anbo-ai/compare/v0.39.0...v0.39.1) (2026-11-13)
 
 
