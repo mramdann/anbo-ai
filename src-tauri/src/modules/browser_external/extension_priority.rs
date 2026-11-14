@@ -22,6 +22,19 @@
 //! and nothing told why. So the host now logs (host_log.rs) what each look
 //! for the process saw while it kept none, which one it kept and why, and how
 //! long the connection lasted.
+//!
+//! That log told the next one. A browser that has just started runs several
+//! extension processes at once: a fresh Edge four to eight of its own for its
+//! first seconds, two or more of them still in the foreground. A profile that
+//! connected then met "none of 4 free extension processes is clearly this
+//! one", the host stopped looking two seconds later, and the extension stayed
+//! at idle priority for the whole connection, an hour in the test that found
+//! it (Nov 14 2026, R101-1). Real agents in that Edge lost 8 of 109 page
+//! commands to their deadlines while the same agents in Chrome lost none of
+//! 121, and under a full CPU load a scripted login failed 10 times of 10
+//! there and passed 10 of 10 once the process was kept by hand. The other
+//! processes are gone a little later, so the host no longer stops: it looks
+//! again at a slower pace until one process is clearly this extension's.
 
 use super::{browser_process, host_log};
 use std::collections::{BTreeSet, HashMap};
@@ -45,6 +58,12 @@ const INTERVAL: Duration = Duration::from_millis(250);
 /// process after it starts, and again after the extension says when its
 /// worker started.
 const SEARCH_ATTEMPTS: u32 = 8;
+/// How long after those looks the host looks again while it keeps no process,
+/// and the longest it then waits between two looks: each wait is twice the
+/// one before. A look lists every process and reads the command lines of the
+/// browser's own, a few milliseconds of CPU.
+const SLOW_LOOK_FIRST: Duration = Duration::from_secs(2);
+const SLOW_LOOK_MAX: Duration = Duration::from_secs(30);
 /// The most renderers kept at once, as many as the tabs the extension drives.
 const MAX_RENDERERS: usize = 128;
 /// How soon a named renderer not found yet is looked for again.
@@ -169,9 +188,17 @@ fn run(orders: &mpsc::Receiver<Order>) {
     let mut extension: Option<(Process, Claim)> = None;
     let mut renderers = Renderers::default();
     let mut log = Log::default();
+    let mut slow = SlowLooks::default();
     loop {
         if extension.is_none() {
-            if Instant::now() < search_until {
+            let now = Instant::now();
+            let first_looks = now < search_until;
+            if first_looks {
+                slow = SlowLooks::default();
+            } else {
+                log.slowed();
+            }
+            if first_looks || slow.due(now) {
                 let (look, found) = find_extension(browser, worker, noted);
                 match found {
                     Ok((process, claim, why)) => {
@@ -183,8 +210,6 @@ fn run(orders: &mpsc::Receiver<Order>) {
                     }
                     Err(miss) => log.missed(&look, &miss, worker, noted),
                 }
-            } else {
-                log.stopped();
             }
         }
         if let Some((process, claim)) = &extension {
@@ -218,6 +243,41 @@ fn run(orders: &mpsc::Receiver<Order>) {
                 host_log::line(&log.ended(began.elapsed(), kept));
                 return;
             }
+        }
+    }
+}
+
+/// The pace of the looks that follow the first ones while no process is kept.
+struct SlowLooks {
+    wait: Duration,
+    next: Option<Instant>,
+}
+
+impl Default for SlowLooks {
+    fn default() -> Self {
+        Self {
+            wait: SLOW_LOOK_FIRST,
+            next: None,
+        }
+    }
+}
+
+impl SlowLooks {
+    /// Whether a look is due at `now`. The first call only sets the first
+    /// look's time; each look that comes due sets the next twice as far off,
+    /// up to `SLOW_LOOK_MAX`.
+    fn due(&mut self, now: Instant) -> bool {
+        match self.next {
+            None => {
+                self.next = Some(now + self.wait);
+                false
+            }
+            Some(at) if now >= at => {
+                self.wait = (self.wait * 2).min(SLOW_LOOK_MAX);
+                self.next = Some(now + self.wait);
+                true
+            }
+            Some(_) => false,
         }
     }
 }
@@ -350,7 +410,7 @@ impl Miss {
 struct Log {
     /// The last look that kept nothing, as `Look::shape` and the rest.
     missed: Option<String>,
-    stopped: bool,
+    slowed: bool,
     /// How often the host undid the browser's demotion of the kept process.
     restored: u32,
     refused: bool,
@@ -372,13 +432,18 @@ impl Log {
 
     /// The search goes on, with more to go by.
     fn searching(&mut self) {
-        self.stopped = false;
+        self.slowed = false;
     }
 
-    fn stopped(&mut self) {
-        if !self.stopped {
-            self.stopped = true;
-            host_log::line("stopped looking: no extension process was clearly this one, so the browser schedules it");
+    /// The first looks kept nothing: said once for each search.
+    fn slowed(&mut self) {
+        if !self.slowed {
+            self.slowed = true;
+            host_log::line(&format!(
+                "no extension process is clearly this one yet, so the browser schedules it for now; the host looks again in {} s and then at up to {} s apart",
+                SLOW_LOOK_FIRST.as_secs(),
+                SLOW_LOOK_MAX.as_secs()
+            ));
         }
     }
 
@@ -1019,6 +1084,36 @@ mod tests {
             Log::default().ended(Duration::from_secs(4), None),
             "connection ended after 4 s; kept no extension process"
         );
+    }
+
+    #[test]
+    fn the_host_goes_on_looking_at_a_slower_pace() {
+        // R101-1: a freshly started Edge ran four extension processes, the
+        // host stopped looking after two seconds, and three of them were gone
+        // a little later, leaving this extension's alone and unkept.
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut slow = SlowLooks::default();
+        // The first call only sets the time of the first slow look.
+        assert!(!slow.due(at(0)));
+        assert!(!slow.due(at(1_999)));
+        assert!(slow.due(at(2_000)));
+        // Then twice as far off each time: 4 s, 8 s, 16 s after the look before.
+        assert!(!slow.due(at(5_999)));
+        assert!(slow.due(at(6_000)));
+        assert!(!slow.due(at(13_999)));
+        assert!(slow.due(at(14_000)));
+        assert!(slow.due(at(30_000)));
+        // And never more than SLOW_LOOK_MAX apart.
+        assert!(!slow.due(at(59_999)));
+        assert!(slow.due(at(60_000)));
+        assert!(!slow.due(at(89_999)));
+        assert!(slow.due(at(90_000)));
+        assert_eq!(slow.wait, SLOW_LOOK_MAX);
+        // A new search starts the pace over.
+        let mut again = SlowLooks::default();
+        assert!(!again.due(at(100_000)));
+        assert!(again.due(at(102_000)));
     }
 
     #[test]
