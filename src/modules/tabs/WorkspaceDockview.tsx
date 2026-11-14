@@ -52,6 +52,8 @@ import "dockview/dist/styles/dockview.css";
 import { useAgentCallsign } from "@/modules/agents/lib/agentCallsign";
 import { AgentIcon } from "@/modules/agents/lib/agentIcon";
 import {
+  browserTabEverDriven,
+  getBrowserAutomationActivity,
   useBrowserAutomationActivity,
   useBrowserAutomationActor,
   useBrowserAutomationFocused,
@@ -75,8 +77,11 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import {
+  noteUserUsedBrowserTab,
   planBrowserTabShow,
   registerBrowserTabShow,
+  subscribeUserUsedBrowserTab,
+  usersPageAfterUse,
 } from "./lib/browserTabShow";
 import { BROWSER_PANEL_ATTRIBUTE } from "./lib/dockContentArea";
 import { restoreDockviewLayout } from "./lib/dockviewRestore";
@@ -622,9 +627,13 @@ function WorkspaceDockviewTab(
       data-workspace-dockview-panel-id={props.api.id}
       data-workspace-dockview-tab-id={tab.id}
       data-workspace-dockview-tab-kind={tab.kind}
-      onPointerDown={(event) =>
-        context.onTabPointerDown(event, props.api.id, tab.id, labelFor(tab))
-      }
+      onPointerDown={(event) => {
+        // The user's own press on a page's tab: their choice for the panel.
+        if (tab.kind === "browser" && event.button === 0) {
+          noteUserUsedBrowserTab(tab.id);
+        }
+        context.onTabPointerDown(event, props.api.id, tab.id, labelFor(tab));
+      }}
       onDoubleClick={() => {
         if (preview) context.onPin(tab.id);
       }}
@@ -993,7 +1002,39 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
   // time keeps the layout it was saved with.
   const arrangedLayoutRef = useRef(new Map<string, WorkspaceLayoutMode>());
   const handledReveals = useRef(new Map<string, number>());
+  // The page of their own the user last chose in each workspace's browser
+  // panel (browserTabShow.ts): no agent's tab comes forward over it by
+  // itself. Kept while the app runs, so it holds when a workspace is shown
+  // again.
+  const usersPageRef = useRef(new Map<string, number>());
   latest.current = props;
+  useEffect(
+    () =>
+      subscribeUserUsedBrowserTab((tabId) => {
+        const current = latest.current;
+        const tab = current.tabs.find((candidate) => candidate.id === tabId);
+        if (tab?.kind !== "browser") return;
+        const page = usersPageAfterUse({
+          id: tabId,
+          everDriven: browserTabEverDriven(tabId),
+        });
+        if (page === null) usersPageRef.current.delete(current.spaceId);
+        else usersPageRef.current.set(current.spaceId, page);
+      }),
+    [],
+  );
+  /** Whether `group` shows the page the user chose, with no agent on it. */
+  const usersPageInFront = useCallback(
+    (spaceId: string, group: DockviewGroupPanel | undefined): boolean => {
+      const front = tabIdForParams(group?.activePanel?.params ?? {});
+      return (
+        front !== null &&
+        usersPageRef.current.get(spaceId) === front &&
+        getBrowserAutomationActivity(front) === null
+      );
+    },
+    [],
+  );
   const layoutKey = `${props.spaceId}:${props.tabs.map((tab) => tab.id).join(",")}`;
   const persistenceTabsKey = JSON.stringify([
     layoutKey,
@@ -1946,7 +1987,10 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
         !group ||
         group.id !== browserGroupIdRef.current ||
         api.activeGroup === group ||
-        group.activePanel === panel
+        group.activePanel === panel ||
+        // The page the user chose there stays, also while they are in a
+        // terminal: a workspace shown again puts the caret into one.
+        usersPageInFront(props.spaceId, group)
       ) {
         continue;
       }
@@ -1956,8 +2000,9 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
       } finally {
         applyingLayout.current = false;
       }
+      usersPageRef.current.delete(props.spaceId);
     }
-  }, [api, props.revealRequests, props.spaceId]);
+  }, [api, props.revealRequests, props.spaceId, usersPageInFront]);
 
   // An agent's click on a Chrome or Edge tab needs its page shown, in any
   // layout.
@@ -1967,14 +2012,18 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
       const panel = api.getPanel(workspaceDockviewPanelId(tabId));
       const group = panel?.api.group;
       const front = tabIdForParams(group?.activePanel?.params ?? {});
+      const frontTab = latest.current.tabs.find((tab) => tab.id === front);
       const plan = planBrowserTabShow({
         found: Boolean(panel && group),
         front: Boolean(panel) && group?.activePanel === panel,
         groupInUse: Boolean(group) && api.activeGroup === group,
-        frontIsBrowser:
-          latest.current.tabs.find((tab) => tab.id === front)?.kind ===
-          "browser",
+        inFront: usersPageInFront(props.spaceId, group)
+          ? "users-page"
+          : frontTab?.kind === "browser"
+            ? "page"
+            : "other",
       });
+      if (plan.step !== "none") usersPageRef.current.delete(props.spaceId);
       if (plan.step === "select") latest.current.onSelect(tabId);
       if (plan.step === "reveal" && panel && group) {
         applyingLayout.current = true;
@@ -1986,7 +2035,7 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
       }
       return plan.outcome;
     });
-  }, [api, props.spaceId]);
+  }, [api, props.spaceId, usersPageInFront]);
 
   useLayoutEffect(() => {
     if (!api) return;

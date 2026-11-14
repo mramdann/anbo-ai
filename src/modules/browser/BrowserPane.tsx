@@ -25,6 +25,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { useAgentCallsign } from "@/modules/agents/lib/agentCallsign";
+import { noteUserUsedBrowserTab } from "@/modules/tabs/lib/browserTabShow";
 import { BROWSER_PANEL_ATTRIBUTE } from "@/modules/tabs/lib/dockContentArea";
 import { useTheme } from "@/modules/theme";
 import {
@@ -867,6 +868,7 @@ export const BrowserPane = memo(
       let alive = true;
       void listen<BrowserFocusEvent>(BROWSER_FOCUS_EVENT, ({ payload }) => {
         if (!isOwnBrowserFocusEvent(payload, id, ownerIdRef.current)) return;
+        noteUserUsedBrowserTab(id);
         onActivateRef.current?.();
       }).then((stop) => {
         if (alive) unlisten = stop;
@@ -1067,6 +1069,10 @@ export const BrowserPane = memo(
           visibility: visible ? "visible" : "hidden",
           pointerEvents: visible ? "auto" : "none",
         }}
+        // The user's own press or key in the tab's bar (its address, its
+        // buttons): this page is their choice for the panel.
+        onPointerDownCapture={() => noteUserUsedBrowserTab(id)}
+        onKeyDownCapture={() => noteUserUsedBrowserTab(id)}
       >
         <BrowserAddressBar
           ref={addressRef}

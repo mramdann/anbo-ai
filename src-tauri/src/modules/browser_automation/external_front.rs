@@ -2,7 +2,9 @@
 //! another tab of its window, where every tab an agent opens starts, or in a
 //! minimized window. Before such input Anbo brings the tab to the front of its
 //! panel, as a click on it would, the dock shows the page, and the action waits
-//! for it. Anbo never switches tabs in the user's own browser window. A page
+//! for it. Anbo never switches tabs in the user's own browser window, and in
+//! its own panel it does not switch away from the terminal or editor the user
+//! is in, nor from a page of the user's own that they chose to look at. A page
 //! that cannot be shown now, as one in a workspace Anbo is not showing, takes
 //! keys and its own DOM events instead (`actions/hidden_input.rs`).
 //!
@@ -360,6 +362,10 @@ const MINIMIZED: &str = "Anbo is minimized, so it cannot bring the tab to the fr
 const BEHIND: &str = "Anbo is not the window the user is in: bringing the tab forward now would open its browser window over what they are using. Retry once they are back in Anbo, or ask them to switch to it.";
 const OTHER_WORKSPACE: &str = "it is in a workspace Anbo is not showing. Ask the user to open that workspace in Anbo, then retry.";
 const PANEL_IN_USE: &str = "it shares its Anbo panel with the tab the user is working in, which Anbo does not switch away under them. Ask the user to show the tab, or to give browser tabs their own panel with the layout button in Anbo's tab bar, then retry.";
+/// The panel shows a page of the user's own, which they chose themselves.
+/// Until round 102 such a page gave way to an agent's tab like any other
+/// page (R102-1).
+const PAGE_IN_USE: &str = "its Anbo panel shows a page of the user's own that they chose to look at, which Anbo does not switch away from by itself. Ask the user to show your tab in Anbo, then retry.";
 const NOT_BROUGHT: &str = "Anbo could not bring it to the front of its panel. Ask the user to show the tab in Anbo, then retry.";
 
 fn not_in_front(standing: Standing) -> Option<&'static str> {
@@ -374,6 +380,7 @@ fn not_shown(reason: Option<&str>) -> &'static str {
     match reason {
         Some("workspace") => OTHER_WORKSPACE,
         Some("in-use") => PANEL_IN_USE,
+        Some("in-use-page") => PAGE_IN_USE,
         _ => NOT_BROUGHT,
     }
 }
@@ -390,6 +397,7 @@ pub fn hidden_because(message: &str) -> &'static str {
         MINIMIZED => "Anbo is minimized",
         OTHER_WORKSPACE => "its workspace is not shown in Anbo",
         PANEL_IN_USE => "its Anbo panel shows the tab the user is working in",
+        PAGE_IN_USE => "its Anbo panel shows a page of the user's own",
         _ => "Anbo could not bring it forward",
     }
 }
@@ -552,6 +560,12 @@ mod tests {
         assert!(refusal(not_shown(Some("in-use")))
             .1
             .contains("layout button"));
+        // The user's own page has the browser panel already: the layout
+        // button would not help (round 102).
+        let page = refusal(not_shown(Some("in-use-page"))).1;
+        assert!(page.contains("a page of the user's own"), "{page}");
+        assert!(!page.contains("layout button"), "{page}");
+        assert!(cannot_show(&refusal(not_shown(Some("in-use-page")))));
         assert!(refusal(not_shown(None))
             .1
             .contains("Ask the user to show the tab"));
@@ -608,6 +622,10 @@ mod tests {
         assert_eq!(
             because(not_shown(Some("in-use"))),
             "its Anbo panel shows the tab the user is working in"
+        );
+        assert_eq!(
+            because(not_shown(Some("in-use-page"))),
+            "its Anbo panel shows a page of the user's own"
         );
         for why in [
             not_shown(None).to_string(),

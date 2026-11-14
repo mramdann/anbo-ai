@@ -27,10 +27,15 @@ type ActivityTracker = {
   actors: Map<number, AutomationActor>;
   // Provisional open events use the PTY or legacy branding until controlId arrives.
   focus: Map<string, number>;
+  // Every tab an agent ever acted on, also after its session ended: such a
+  // tab is not a page of the user's own (tabs/lib/browserTabShow.ts).
+  driven: Set<number>;
   listeners: Set<() => void>;
   timers: Map<number, ReturnType<typeof setTimeout>>;
   bound: boolean;
 };
+
+const MAX_DRIVEN_TABS = 4096;
 
 type ActivityGlobal = typeof globalThis & {
   __anboBrowserAutomationActivity?: ActivityTracker;
@@ -46,6 +51,7 @@ const tracker = activityGlobal.__anboBrowserAutomationActivity ?? {
   details: new Map<number, AutomationState>(),
   actors: new Map<number, AutomationActor>(),
   focus: new Map<string, number>(),
+  driven: new Set<number>(),
   listeners: new Set<() => void>(),
   timers: new Map<number, ReturnType<typeof setTimeout>>(),
   bound: false,
@@ -54,6 +60,7 @@ activityGlobal.__anboBrowserAutomationActivity = tracker;
 tracker.details ??= new Map<number, AutomationState>();
 tracker.actors ??= new Map<number, AutomationActor>();
 tracker.focus ??= new Map<string, number>();
+tracker.driven ??= new Set<number>();
 
 export function browserAutomationActivityFromPayload(
   payload: unknown,
@@ -89,6 +96,14 @@ export function markBrowserAutomationActivity(
 ): void {
   if (!Number.isInteger(tabId) || !method) return;
   tracker.activities.set(tabId, method);
+  if (!tracker.driven.has(tabId)) {
+    // Tab ids only grow, so the oldest are the ones long closed.
+    if (tracker.driven.size >= MAX_DRIVEN_TABS) {
+      const oldest = tracker.driven.values().next().value;
+      if (oldest !== undefined) tracker.driven.delete(oldest);
+    }
+    tracker.driven.add(tabId);
+  }
   const identity = actor ?? tracker.actors.get(tabId);
   if (identity) {
     tracker.actors.set(tabId, identity);
@@ -132,6 +147,11 @@ export function clearBrowserAutomationActivity(tabId: number): void {
 
 export function getBrowserAutomationActivity(tabId: number): string | null {
   return tracker.activities.get(tabId) ?? null;
+}
+
+/** Whether an agent ever acted on the tab in this launch of the app. */
+export function browserTabEverDriven(tabId: number): boolean {
+  return tracker.driven.has(tabId);
 }
 
 export function getBrowserAutomationState(
