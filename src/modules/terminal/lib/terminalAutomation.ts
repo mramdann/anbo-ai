@@ -2344,6 +2344,9 @@ export function createTerminalAutomationService(
           state.inputPending ||
           continuationPrompt(deps.getBuffer(target.terminal.leafId) ?? "")
         ) {
+          // The cleared line and the new prompt are read back right after:
+          // with a live buffer, as for staged text above.
+          deps.prepare(target.terminal.leafId);
           if (!deps.write(target.terminal.leafId, "\x03")) {
             return automationError(
               "terminal_unavailable",
@@ -2390,6 +2393,13 @@ export function createTerminalAutomationService(
       if (!input.ok) return automationError("invalid_request", input.error);
       const target = await requireIdle(params, method === "terminal_execute");
       if (!target.ok) return target.response;
+      // Text a tool stages is read back from the terminal right after. With a
+      // live buffer that is what the terminal shows; without one it is only
+      // the plain text of what came since, where a line the shell redraws in
+      // place shows once per redraw (round 102). So the terminal gets its
+      // buffer first, as for a command; one that gets none takes the text all
+      // the same.
+      if (method === "terminal_insert") deps.prepare(target.terminal.leafId);
       const rawBefore = deps.getBuffer(target.terminal.leafId) ?? "";
       const stateBefore = deps.getSessionState(target.terminal.leafId);
       const cursor = output.checkpoint(target.terminal.terminalId, rawBefore);

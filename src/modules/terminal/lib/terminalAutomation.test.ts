@@ -1469,6 +1469,52 @@ describe("shared terminal input", () => {
       expect(write).toHaveBeenCalledWith(101, "\x03");
     });
 
+    it("gives the terminal its buffer before a tool stages or clears text", async () => {
+      // Round 102: a hidden terminal without a live buffer read the staged
+      // text once per redraw of its line ("echo dari-insecho dari-insert").
+      const order: string[] = [];
+      let pending = false;
+      const service = createTerminalAutomationService(
+        dependencies({
+          getSessionState: () =>
+            pending
+              ? typing("automation")
+              : typing("automation", {
+                  inputPending: false,
+                  inputPendingBy: null,
+                }),
+          prepare: () => {
+            order.push("buffer");
+            return true;
+          },
+          write: (_leaf, data) => {
+            order.push(data === "\x03" ? "clear" : "text");
+            pending = data !== "\x03";
+            return true;
+          },
+          getBuffer: () => {
+            order.push("read");
+            return pending ? "PS C:\\work> echo staged" : "PS C:\\work> ";
+          },
+        }),
+      );
+      await service.handle("terminal_insert", { ...target, text: "echo staged" });
+      // The buffer is there before the text, and before the first read of it.
+      expect(order.indexOf("buffer")).toBeLessThan(order.indexOf("text"));
+      expect(order.indexOf("buffer")).toBeLessThan(order.indexOf("read"));
+      order.length = 0;
+      await service.handle("terminal_interrupt", target);
+      expect(order.indexOf("buffer")).toBeGreaterThanOrEqual(0);
+      expect(order.indexOf("buffer")).toBeLessThan(order.indexOf("clear"));
+      // A terminal that gets no buffer takes the text all the same.
+      const none = createTerminalAutomationService(
+        dependencies({ prepare: () => false }),
+      );
+      await expect(
+        none.handle("terminal_insert", { ...target, text: "echo staged" }),
+      ).resolves.toMatchObject({ result: { ok: true, executed: false } });
+    });
+
     it("does not keep a Ctrl+C from a program that runs in front", async () => {
       // The user typed ahead while their command runs: the Ctrl+C is for it.
       const write = vi.fn(() => true);
