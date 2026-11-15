@@ -596,6 +596,14 @@ fn opened_in(openings: &VecDeque<Opening>, source: i64, since_ms: u64) -> Opened
     opened
 }
 
+/// Whether the page of `source_tab` asked for or opened a tab at or after
+/// `since_ms`: a key's watch for a submit or a navigation ends there.
+pub fn opened_any_since(source_tab: i64, since_ms: u64) -> bool {
+    OPENINGS
+        .lock()
+        .is_ok_and(|openings| opened_in(&openings, source_tab, since_ms) != Opened::default())
+}
+
 /// What the page of `source_tab` opened at or after `since_ms`, once the tabs
 /// it asked for are there or OPENING_PATIENCE is over. An action that opened
 /// nothing pays nothing.
@@ -1751,6 +1759,17 @@ mod opening_tests {
         theirs(&mut openings, 7, &page);
         assert_eq!(opened_in(&openings, 7, AT), Opened::default());
         assert!(openings.is_empty());
+    }
+
+    #[test]
+    fn a_keys_watch_ends_once_its_page_asked_for_a_tab() {
+        // A source id no other test uses: OPENINGS is shared.
+        let source = -103_991;
+        let before = epoch_ms();
+        assert!(!opened_any_since(source, before));
+        note_open_asked(source, OpeningKey::Browser(7));
+        assert!(opened_any_since(source, before));
+        assert!(!opened_any_since(source, epoch_ms() + 60_000));
     }
 
     #[test]

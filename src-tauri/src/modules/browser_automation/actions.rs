@@ -2827,6 +2827,7 @@ async fn handle_action_attempt(
                             before_navigation_generation,
                             observation_id,
                             observation_timeout_ms,
+                            pressed_at,
                         ),
                     )
                     .await
@@ -9478,6 +9479,7 @@ async fn observe_submission(
     before_navigation_generation: u64,
     observation_id: u64,
     timeout_ms: u64,
+    pressed_at: u64,
 ) -> SubmissionObservation {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     let mut observation = SubmissionObservation::default();
@@ -9485,6 +9487,12 @@ async fn observe_submission(
     let observed_script = format!("window.__anboSubmitObservations?.[{marker}]?.submitted===true");
     let mut submit_since: Option<tokio::time::Instant> = None;
     while tokio::time::Instant::now() < deadline {
+        // The key opened a tab (Enter on a target=_blank link), and the
+        // answer names it: waiting out the window for a submit or a
+        // navigation of this page cost every such key 3 s (round 103).
+        if super::activity::opened_any_since(tab_id, pressed_at) {
+            break;
+        }
         if active_navigation_generation(tab_id)
             .is_some_and(|generation| generation != before_navigation_generation)
         {
