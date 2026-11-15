@@ -5,25 +5,13 @@
 
 ### Bug Fixes
 
-* **browser:** a click into a docked page is the user choosing that page ([c20df3d](https://github.com/mramdann/anbo-ai/commit/c20df3d5752ea4b1e16c7bf578cd8f3a3cfd4287))
-* **browser:** a click or key that opened a tab names it ([8e7951b](https://github.com/mramdann/anbo-ai/commit/8e7951bc501e9e4214f1b537c8617abe10b23aea))
-* **browser:** a tab an agent's click opens stays behind the tab the user is on ([4f511c3](https://github.com/mramdann/anbo-ai/commit/4f511c3fa1cf5de96e9da36e84e28230cda83d3d))
-* **browser:** a tab opened while the warm host is still coming up is no failure ([b221672](https://github.com/mramdann/anbo-ai/commit/b22167257377440791a6855d4e75dbc261f02852))
-* **browser:** select_option takes the only option a text names loosely ([61d309b](https://github.com/mramdann/anbo-ai/commit/61d309b1e22e1bf24b433fe7c30f603db8ad56f0))
-* **browser:** the extension shows the native host which process is its own ([c776802](https://github.com/mramdann/anbo-ai/commit/c77680294617239eb897abc60f2f60baa1ce27b4))
-* **browser:** the last tab makes the warm host before it closes ([491cc64](https://github.com/mramdann/anbo-ai/commit/491cc6405b2388db70dd2b1f2aa7b0652ea8da80))
-* **browser:** the native host goes on looking for its extension's process ([98c775b](https://github.com/mramdann/anbo-ai/commit/98c775b72e5819e596fcfe37dada3cff15026f3c))
-* **browser:** the page the user chose stays in front of its panel ([f5983b2](https://github.com/mramdann/anbo-ai/commit/f5983b2649ca25f2975039843dec291f5b310014))
-* **terminal:** a line the user sent stays theirs until the shell takes it ([e9d6019](https://github.com/mramdann/anbo-ai/commit/e9d6019dc190baf17671af3c7735c7b0f2762141))
-* **terminal:** a line the user typed at a prompt is theirs ([19414b8](https://github.com/mramdann/anbo-ai/commit/19414b866238bbd5f043d90e7e394a01d4f2b69b))
-* **terminal:** a terminal without a live buffer reads with the output since ([a7089fc](https://github.com/mramdann/anbo-ai/commit/a7089fc32689cdd9a755ee51aa732970cc37c0f5))
-* **terminal:** a tool's write gives the terminal its buffer first ([63cb9aa](https://github.com/mramdann/anbo-ai/commit/63cb9aa788094e6700b267a55a5cb83e4611cb2f))
-* **terminal:** blanks to the right of the caret are no text ([3f12f3a](https://github.com/mramdann/anbo-ai/commit/3f12f3adfddb50441ef585275e5853fba5ac306c))
-
-
-### Performance Improvements
-
-* **browser:** an Enter that opened a tab stops watching for a submit ([fa8dd01](https://github.com/mramdann/anbo-ai/commit/fa8dd016f7acf3d18e9e6f6858348e2294a8b5f4))
+* **browser:** you and your agents share Chrome, Edge and Anbo's own browser more calmly. A tab an agent's click opens goes behind the tab you are on, and the page you chose in Anbo's browser panel stays in front of it, also when you only clicked into a docked Chrome or Edge page ([4f511c3](https://github.com/mramdann/anbo-ai/commit/4f511c3fa1cf5de96e9da36e84e28230cda83d3d), [f5983b2](https://github.com/mramdann/anbo-ai/commit/f5983b2649ca25f2975039843dec291f5b310014), [c20df3d](https://github.com/mramdann/anbo-ai/commit/c20df3d5752ea4b1e16c7bf578cd8f3a3cfd4287))
+* **browser:** when an agent's click or key opens a new tab, its answer names that tab, so agents no longer click again and open the same page twice. An Enter on such a link no longer waits 3 seconds for the page it left ([8e7951b](https://github.com/mramdann/anbo-ai/commit/8e7951bc501e9e4214f1b537c8617abe10b23aea), [fa8dd01](https://github.com/mramdann/anbo-ai/commit/fa8dd016f7acf3d18e9e6f6858348e2294a8b5f4))
+* **browser:** agents' commands in Chrome and Edge stay quick on a busy machine: the Anbo extension now shows Anbo which process is its own, so Anbo keeps the right one at normal priority, where an old rule could pick another extension's process ([c776802](https://github.com/mramdann/anbo-ai/commit/c77680294617239eb897abc60f2f60baa1ce27b4), [98c775b](https://github.com/mramdann/anbo-ai/commit/98c775b72e5819e596fcfe37dada3cff15026f3c))
+* **browser:** browser_select_option takes the only option a shortened label names, such as "Express" for "Express (+$5)", and says which one it took ([61d309b](https://github.com/mramdann/anbo-ai/commit/61d309b1e22e1bf24b433fe7c30f603db8ad56f0))
+* **browser:** tabs of Anbo's own browser open reliably right after Anbo starts on a busy machine. A tab opened while the browser was still starting could fail, and so could one of several quick tabs, because the browser stopped between them and the next tab waited for a new one past its time ([b221672](https://github.com/mramdann/anbo-ai/commit/b22167257377440791a6855d4e75dbc261f02852), [491cc64](https://github.com/mramdann/anbo-ai/commit/491cc6405b2388db70dd2b1f2aa7b0652ea8da80))
+* **terminal:** a line you are typing at a prompt stays yours: an agent's command or key waits instead of landing in it, also after Enter on a multi-line command the shell has not run yet ([19414b8](https://github.com/mramdann/anbo-ai/commit/19414b866238bbd5f043d90e7e394a01d4f2b69b), [e9d6019](https://github.com/mramdann/anbo-ai/commit/e9d6019dc190baf17671af3c7735c7b0f2762141))
+* **terminal:** agents read terminals right: a hidden terminal with the output since it was hidden, text an agent just typed once, and no extra prompt line after you erased what you typed ([a7089fc](https://github.com/mramdann/anbo-ai/commit/a7089fc32689cdd9a755ee51aa732970cc37c0f5), [63cb9aa](https://github.com/mramdann/anbo-ai/commit/63cb9aa788094e6700b267a55a5cb83e4611cb2f), [3f12f3a](https://github.com/mramdann/anbo-ai/commit/3f12f3adfddb50441ef585275e5853fba5ac306c))
 
 ## [0.39.2](https://github.com/mramdann/anbo-ai/compare/v0.39.1...v0.39.2) (2026-11-14)
 
