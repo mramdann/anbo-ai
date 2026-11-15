@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.40.0](https://github.com/mramdann/anbo-ai/compare/v0.39.3...v0.40.0) (2026-11-15)
+
+
+### Features
+
+* **usage:** a usage view shows what each workspace uses ([c032c1e](https://github.com/mramdann/anbo-ai/commit/c032c1e799c558210a271481c472bf7b7bdcb5b5))
+
 ## [0.39.3](https://github.com/mramdann/anbo-ai/compare/v0.39.2...v0.39.3) (2026-11-15)
 
 
