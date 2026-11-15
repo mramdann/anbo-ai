@@ -298,6 +298,7 @@ mod tests {
             child,
             writer: Mutex::new(writer),
             exited: Arc::new(AtomicBool::new(false)),
+            root: String::new(),
         }
     }
 
