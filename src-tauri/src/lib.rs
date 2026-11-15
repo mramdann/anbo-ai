@@ -572,6 +572,7 @@ pub fn run() {
             pty::pty_output_status,
             pty::pty_has_foreground_process,
             pty::pty_foreground_processes,
+            modules::usage::usage_snapshot,
             pty::pty_has_foreground_job,
             pty::pty_shell_name,
             pty::pty_list_shells,

@@ -46,6 +46,7 @@ function baseContext(
     openSettings: noop,
     openKeyboardShortcuts: noop,
     openSpacesOverview: noop,
+    openUsage: noop,
     newSpace: noop,
     switchSpace: noop,
     layoutMode: "free",

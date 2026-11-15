@@ -26,9 +26,32 @@ impl Default for LspState {
     }
 }
 
+/// A language server's processes for the usage view: the folder it serves and
+/// the server with its helpers.
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspProcesses {
+    pub root: String,
+    pub pids: Vec<u32>,
+}
+
 impl LspState {
     pub(super) fn take(&self, id: u32) -> Option<Arc<LspSession>> {
         self.sessions.write().unwrap().remove(&id)
+    }
+
+    /// Every live language server's processes.
+    pub(crate) fn usage_servers(&self) -> Vec<LspProcesses> {
+        let sessions: Vec<Arc<LspSession>> =
+            self.sessions.read().unwrap().values().cloned().collect();
+        sessions
+            .into_iter()
+            .filter(|session| !session.exited.load(Ordering::Acquire))
+            .map(|session| LspProcesses {
+                root: session.root.clone(),
+                pids: session.tree_ids(),
+            })
+            .collect()
     }
 
     pub fn kill_all(&self) {

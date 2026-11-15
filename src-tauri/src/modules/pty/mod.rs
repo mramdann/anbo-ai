@@ -33,7 +33,38 @@ impl Default for PtyState {
     }
 }
 
+/// A terminal's processes for the usage view: its session id (the one the UI
+/// holds for the leaf), its shell, and every process of its job.
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalProcesses {
+    pub pty_id: u32,
+    pub shell_pid: u32,
+    pub pids: Vec<u32>,
+}
+
 impl PtyState {
+    /// Every live terminal's processes. Reads the jobs only: nothing is asked of
+    /// the shells.
+    pub(crate) fn usage_terminals(&self) -> Vec<TerminalProcesses> {
+        let sessions: Vec<(u32, Arc<Session>)> = self
+            .sessions
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(id, session)| (*id, session.clone()))
+            .collect();
+        sessions
+            .into_iter()
+            .filter(|(_, session)| session.shell_pid != 0 && !session.has_exited())
+            .map(|(pty_id, session)| TerminalProcesses {
+                pty_id,
+                shell_pid: session.shell_pid,
+                pids: session.usage_pids(),
+            })
+            .collect()
+    }
+
     pub(crate) fn is_live(&self, id: u32) -> bool {
         self.sessions
             .read()
@@ -458,8 +489,9 @@ fn filetime_unix_ms(filetime: u64) -> u64 {
     filetime.saturating_sub(UNIX_EPOCH_FILETIME) / 10_000
 }
 
+/// Every process of the machine: pid, parent pid, executable name.
 #[cfg(windows)]
-fn process_snapshot() -> Vec<(u32, u32, String)> {
+pub(crate) fn process_snapshot() -> Vec<(u32, u32, String)> {
     use std::mem::{size_of, zeroed};
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{

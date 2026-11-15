@@ -19,6 +19,7 @@ export type ShortcutId =
   | "space.next"
   | "space.prev"
   | "space.overview"
+  | "usage.open"
   | "pane.splitRight"
   | "pane.splitDown"
   | "pane.focusNext"
@@ -253,6 +254,12 @@ export const SHORTCUTS: Shortcut[] = [
     label: "Open spaces",
     group: "Spaces",
     defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "s" }],
+  },
+  {
+    id: "usage.open",
+    label: "Open usage (memory and CPU by workspace)",
+    group: "View",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "u" }],
   },
   {
     id: "explorer.search",

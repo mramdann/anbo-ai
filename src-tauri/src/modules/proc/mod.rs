@@ -61,6 +61,19 @@ impl ManagedChild {
         self.child.id()
     }
 
+    /// The child and every process it started, for the usage view: its job's
+    /// processes on Windows, the child alone elsewhere.
+    pub fn tree_ids(&self) -> Vec<u32> {
+        #[cfg(windows)]
+        if let Some(job) = &self.job {
+            let pids = job.process_ids();
+            if !pids.is_empty() {
+                return pids;
+            }
+        }
+        vec![self.id()]
+    }
+
     pub fn take_stdin(&self) -> Option<ChildStdin> {
         self.child.take_stdin()
     }

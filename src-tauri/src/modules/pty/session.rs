@@ -64,6 +64,30 @@ impl Session {
     }
 }
 
+impl Session {
+    /// This terminal's processes for the usage view: every process of its job
+    /// (the shell and everything it runs, an agent and its children too), or
+    /// the shell alone where there is no job.
+    pub(super) fn usage_pids(&self) -> Vec<u32> {
+        #[cfg(windows)]
+        if let Some(job) = &self._job {
+            let pids = job.process_ids();
+            if !pids.is_empty() {
+                return pids;
+            }
+        }
+        if self.shell_pid == 0 {
+            Vec::new()
+        } else {
+            vec![self.shell_pid]
+        }
+    }
+
+    pub(super) fn has_exited(&self) -> bool {
+        self.exited.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         // If the session Arc is dropped without an explicit pty_close (e.g.

@@ -26,6 +26,7 @@ pub mod resource_guard;
 pub mod secrets;
 pub mod shell;
 pub mod skills;
+pub mod usage;
 pub mod voice_push_to_talk;
 pub mod voice_runtime;
 pub mod webview_position;

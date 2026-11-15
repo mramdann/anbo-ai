@@ -7,6 +7,7 @@ import {
 } from "@/modules/tabs/lib/workspaceTidyLayout";
 import { leafIds } from "@/modules/terminal";
 import {
+  Activity01Icon,
   Cancel01Icon,
   DashboardSquare01Icon,
   FileEditIcon,
@@ -63,6 +64,7 @@ export type CommandPaletteActionContext = {
   spaces: { id: string; name: string }[];
   activeSpaceId: string | null;
   openSpacesOverview: () => void;
+  openUsage: () => void;
   newSpace: () => void;
   switchSpace: (id: string) => void;
   layoutMode: WorkspaceLayoutMode;
@@ -125,6 +127,23 @@ export function createCommandItems(
       ],
       icon: DashboardSquare01Icon,
       run: ctx.openSpacesOverview,
+    },
+    {
+      id: "usage.open",
+      title: "Usage: Memory and CPU by workspace",
+      group: "View",
+      keywords: [
+        "usage",
+        "task manager",
+        "memory",
+        "cpu",
+        "processes",
+        "agents",
+        "performance",
+      ],
+      icon: Activity01Icon,
+      shortcutId: "usage.open",
+      run: ctx.openUsage,
     },
     {
       id: "spaces.new",

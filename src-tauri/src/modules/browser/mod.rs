@@ -5,3 +5,4 @@ pub mod host;
 pub mod new_tab;
 #[cfg(any(windows, test))]
 mod presentation;
+pub mod usage;

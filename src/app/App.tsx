@@ -152,6 +152,7 @@ import {
   useSpacesBoot,
 } from "@/modules/spaces";
 import { StatusBar } from "@/modules/statusbar";
+import { UsageDialog, usageBySpace, useUsageModel } from "@/modules/usage";
 import {
   flushWorkspaceLayoutNow,
   labelFor,
@@ -815,6 +816,7 @@ export default function App() {
   } = useSidebarPanel(explorerRef);
 
   const [newEditorOpen, setNewEditorOpen] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [paletteInitialMode, setPaletteInitialMode] = useState<
     "commands" | "content"
@@ -2487,6 +2489,7 @@ export default function App() {
       "space.next": () => cycleSpace(1),
       "space.prev": () => cycleSpace(-1),
       "space.overview": () => setSwitcherOpen(true),
+      "usage.open": () => setUsageOpen(true),
       "pane.splitRight": () => splitActiveTabInDockview("right"),
       "pane.splitDown": () => splitActiveTabInDockview("bottom"),
       "pane.focusNext": () => focusNextPaneInTab(activeId, 1),
@@ -2987,11 +2990,32 @@ export default function App() {
     setSwitcherOpen(false);
   });
 
+  // Each workspace's memory and CPU in the spaces menu, read only while it
+  // is open.
+  const switcherUsageModel = useUsageModel(switcherOpen, tabs);
+  const switcherUsage = useMemo(
+    () => usageBySpace(switcherUsageModel),
+    [switcherUsageModel],
+  );
+
+  const showUsageTarget = useStableCallback(
+    (tabId: number, leafId?: number) => {
+      setUsageOpen(false);
+      if (leafId !== undefined) activateAgentTarget(tabId, leafId);
+      else jumpToTab(tabId);
+    },
+  );
+
   const spaceSwitcher = (
     <SpaceSwitcher
       open={switcherOpen}
       onOpenChange={setSwitcherOpen}
       tabs={tabs}
+      usage={switcherUsage}
+      onOpenUsage={() => {
+        setSwitcherOpen(false);
+        setUsageOpen(true);
+      }}
       onNewSpace={() => void handleNewSpace()}
       onDeleteSpace={handleDeleteSpace}
       onPauseSpace={(id) => void handlePauseSpace(id)}
@@ -3034,6 +3058,7 @@ export default function App() {
             spaces: useSpaces.getState().spaces,
             activeSpaceId,
             openSpacesOverview: () => setSwitcherOpen(true),
+            openUsage: () => setUsageOpen(true),
             newSpace: () => void handleNewSpace(),
             switchSpace: (id) => useSpaces.getState().setActive(id),
             layoutMode: activeSpaceLayout,
@@ -3589,6 +3614,14 @@ export default function App() {
                 pendingAppClose={pendingAppClose}
                 onCancelAppClose={cancelAppClose}
                 onConfirmAppClose={confirmAppClose}
+              />
+              <UsageDialog
+                open={usageOpen}
+                onOpenChange={setUsageOpen}
+                tabs={tabs}
+                onShowTab={showUsageTarget}
+                onPauseSpace={(id) => void handlePauseSpace(id)}
+                onResumeSpace={resumeSpaceTabs}
               />
               <PauseSpaceDialog
                 pending={pendingSpacePause}

@@ -35,9 +35,16 @@ pub struct LspSession {
     child: Arc<ManagedChild>,
     writer: Mutex<Option<SyncSender<Vec<u8>>>>,
     pub(super) exited: Arc<AtomicBool>,
+    /// The folder it serves, for the usage view's workspace.
+    pub(super) root: String,
 }
 
 impl LspSession {
+    /// The server and its helpers (cargo check, rustc, ...) for the usage view.
+    pub(super) fn tree_ids(&self) -> Vec<u32> {
+        self.child.tree_ids()
+    }
+
     pub fn write_message(&self, payload: &str) -> Result<(), String> {
         if payload.len() > MAX_OUTBOUND_MESSAGE_BYTES {
             return Err("lsp message exceeds 8 MiB limit".into());
@@ -116,6 +123,7 @@ pub fn spawn(
         child: child.clone(),
         writer: Mutex::new(Some(writer_tx)),
         exited: exited.clone(),
+        root: root.to_string_lossy().into_owned(),
     });
 
     let writer_child = child.clone();
