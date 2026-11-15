@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.39.3](https://github.com/mramdann/anbo-ai/compare/v0.39.2...v0.39.3) (2026-11-15)
+
+
+### Bug Fixes
+
+* **browser:** a click into a docked page is the user choosing that page ([c20df3d](https://github.com/mramdann/anbo-ai/commit/c20df3d5752ea4b1e16c7bf578cd8f3a3cfd4287))
+* **browser:** a click or key that opened a tab names it ([8e7951b](https://github.com/mramdann/anbo-ai/commit/8e7951bc501e9e4214f1b537c8617abe10b23aea))
+* **browser:** a tab an agent's click opens stays behind the tab the user is on ([4f511c3](https://github.com/mramdann/anbo-ai/commit/4f511c3fa1cf5de96e9da36e84e28230cda83d3d))
+* **browser:** a tab opened while the warm host is still coming up is no failure ([b221672](https://github.com/mramdann/anbo-ai/commit/b22167257377440791a6855d4e75dbc261f02852))
+* **browser:** select_option takes the only option a text names loosely ([61d309b](https://github.com/mramdann/anbo-ai/commit/61d309b1e22e1bf24b433fe7c30f603db8ad56f0))
+* **browser:** the extension shows the native host which process is its own ([c776802](https://github.com/mramdann/anbo-ai/commit/c77680294617239eb897abc60f2f60baa1ce27b4))
+* **browser:** the last tab makes the warm host before it closes ([491cc64](https://github.com/mramdann/anbo-ai/commit/491cc6405b2388db70dd2b1f2aa7b0652ea8da80))
+* **browser:** the native host goes on looking for its extension's process ([98c775b](https://github.com/mramdann/anbo-ai/commit/98c775b72e5819e596fcfe37dada3cff15026f3c))
+* **browser:** the page the user chose stays in front of its panel ([f5983b2](https://github.com/mramdann/anbo-ai/commit/f5983b2649ca25f2975039843dec291f5b310014))
+* **terminal:** a line the user sent stays theirs until the shell takes it ([e9d6019](https://github.com/mramdann/anbo-ai/commit/e9d6019dc190baf17671af3c7735c7b0f2762141))
+* **terminal:** a line the user typed at a prompt is theirs ([19414b8](https://github.com/mramdann/anbo-ai/commit/19414b866238bbd5f043d90e7e394a01d4f2b69b))
+* **terminal:** a terminal without a live buffer reads with the output since ([a7089fc](https://github.com/mramdann/anbo-ai/commit/a7089fc32689cdd9a755ee51aa732970cc37c0f5))
+* **terminal:** a tool's write gives the terminal its buffer first ([63cb9aa](https://github.com/mramdann/anbo-ai/commit/63cb9aa788094e6700b267a55a5cb83e4611cb2f))
+* **terminal:** blanks to the right of the caret are no text ([3f12f3a](https://github.com/mramdann/anbo-ai/commit/3f12f3adfddb50441ef585275e5853fba5ac306c))
+
+
+### Performance Improvements
+
+* **browser:** an Enter that opened a tab stops watching for a submit ([fa8dd01](https://github.com/mramdann/anbo-ai/commit/fa8dd016f7acf3d18e9e6f6858348e2294a8b5f4))
+
 ## [0.39.2](https://github.com/mramdann/anbo-ai/compare/v0.39.1...v0.39.2) (2026-11-14)
 
 
