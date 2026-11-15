@@ -66,17 +66,31 @@ pub async fn ui_reply(
 
 /// The UI made a tab for a page another tab opened (a target=_blank link,
 /// window.open, or a Chrome/Edge tab the bridge brought in): an agent that
-/// drove the opener a moment before owns it.
+/// drove the opener a moment before owns it. `url` is the page it opens, so
+/// the answer of the action that opened it names the tab; `user` is the
+/// user's own plain click, shown at once and no agent's.
 #[tauri::command]
 pub fn browser_note_opened_from(
     webview: tauri::Webview,
     source_tab_id: i64,
     tab_id: i64,
+    url: Option<String>,
+    user: Option<bool>,
 ) -> Result<(), String> {
     if webview.label() != "main" {
         return Err("main webview required".into());
     }
+    let key = url.clone().map(activity::OpeningKey::Url);
+    if user == Some(true) {
+        if let Some(key) = key {
+            activity::note_open_theirs(source_tab_id, &key);
+        }
+        return Ok(());
+    }
     activity::note_opened_from(source_tab_id, tab_id);
+    if let Some(key) = key {
+        activity::note_open_made(source_tab_id, tab_id, key, url);
+    }
     Ok(())
 }
 

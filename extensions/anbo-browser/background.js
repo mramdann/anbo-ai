@@ -54,6 +54,10 @@ async function connect(name) {
       // For Anbo's log: what became of the window a new tab came in.
       const tab = attached.get(tabId);
       if (active() && tab) post({ type: "event", tabId, selectionId: tab.selectionId, method: "anbo.note", params: { text } }, current);
+    }, (tabId, opened) => {
+      // A page Anbo drives opened a tab, which comes over in a moment.
+      const tab = attached.get(tabId);
+      if (active() && tab) post({ type: "event", tabId, selectionId: tab.selectionId, method: "anbo.tabOpening", params: { tabId: opened } }, current);
     });
     session = current;
     const dispatch = createDispatcher(chrome, attached, (message) => post(message, current), active, current.tabs);

@@ -1935,12 +1935,18 @@ async fn handle_action_attempt(
                     (webview, result)
                 };
                 note_page_errors(&mut result, page_errors_since(&webview, clicked_at).await);
-                if let Some(expectation) = expectation {
-                    result["postcondition"] = wait_for_page_state(&webview, tab_id, &expectation)
-                        .await
-                        .map_err(|(code, message)| (code, format!("click was dispatched, but {message}; inspect the page before retrying the click")))?;
-                }
-                return Ok(result);
+                let postcondition = match expectation {
+                    Some(expectation) => {
+                        Some(wait_for_page_state(&webview, tab_id, &expectation).await)
+                    }
+                    None => None,
+                };
+                return answer_with_opened_tabs(
+                    result,
+                    postcondition,
+                    opened_tabs(tab_id, clicked_at).await,
+                    CLICK_RETRY,
+                );
             }
             let (webview, dispatch, revealed, media, dialog) = {
                 let _lock = timings.measure("queue", tab_lock.lock()).await;
@@ -2027,11 +2033,23 @@ async fn handle_action_attempt(
                     .measure("pageErrors", page_errors_since(&webview, clicked_at))
                     .await,
             );
-            if let Some(expectation) = expectation {
-                result["postcondition"] = timings.measure("postcondition", wait_for_page_state(&webview, tab_id, &expectation)).await
-                    .map_err(|(code, message)| (code, format!("click was dispatched, but {message}; inspect the page before retrying the click")))?;
-            }
-            Ok(result)
+            let postcondition = match expectation {
+                Some(expectation) => Some(
+                    timings
+                        .measure(
+                            "postcondition",
+                            wait_for_page_state(&webview, tab_id, &expectation),
+                        )
+                        .await,
+                ),
+                None => None,
+            };
+            answer_with_opened_tabs(
+                result,
+                postcondition,
+                opened_tabs(tab_id, clicked_at).await,
+                CLICK_RETRY,
+            )
         }
 
         "focus" => {
@@ -2715,6 +2733,8 @@ async fn handle_action_attempt(
 
             let tab_lock = get_tab_lock(tab_id);
             let mut focused_ancestor: Option<Value> = None;
+            // For a tab the key opens (Enter on a target=_blank link).
+            let pressed_at = epoch_millis();
             let (webview, before_url, before_navigation_generation, observation_id) = {
                 let _lock = timings.measure("queue", tab_lock.lock()).await;
                 let webview = get_embed_webview(app, tab_id)
@@ -2873,14 +2893,20 @@ async fn handle_action_attempt(
                     result["media"] = media;
                 }
             }
-            if let Some(expectation) = expectation {
+            let postcondition = if let Some(expectation) = expectation {
                 // The caller asked a question and gets its answer. Repeating the
                 // observation flags beside it invited the reading that a
                 // successful submit had failed -- three of them said false while
                 // the postcondition said matched -- and re-submitting a form is
                 // not a harmless way to find out.
-                result["postcondition"] = timings.measure("postcondition", wait_for_page_state(&webview, tab_id, &expectation)).await
-                    .map_err(|(code, message)| (code, format!("key was dispatched, but {message}; inspect the page before resubmitting")))?;
+                Some(
+                    timings
+                        .measure(
+                            "postcondition",
+                            wait_for_page_state(&webview, tab_id, &expectation),
+                        )
+                        .await,
+                )
             } else {
                 result["submissionObserved"] = json!(observation.submit_event);
                 result["navigationObserved"] = json!(observation.navigation);
@@ -2890,8 +2916,14 @@ async fn handle_action_attempt(
                 } else {
                     0
                 });
-            }
-            Ok(result)
+                None
+            };
+            answer_with_opened_tabs(
+                result,
+                postcondition,
+                opened_tabs(tab_id, pressed_at).await,
+                ("key was dispatched", "inspect the page before resubmitting"),
+            )
         }
 
         "key" => {
@@ -5493,6 +5525,99 @@ fn epoch_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// What a click says when its condition never matched on its own page and it
+/// opened no tab (answer_with_opened_tabs).
+const CLICK_RETRY: (&str, &str) = (
+    "click was dispatched",
+    "inspect the page before retrying the click",
+);
+
+/// The tabs an action opened, as its answer names them, and how many it
+/// asked for that were not there in time.
+struct OpenedTabs {
+    tabs: Vec<Value>,
+    coming: usize,
+}
+
+/// The tabs an action on `tab_id` opened since `since` (ms since 1970), each
+/// with the page it shows when Anbo can tell. Waits a moment for one its page
+/// asked for; an action that opened none pays nothing.
+async fn opened_tabs(tab_id: i64, since: u64) -> OpenedTabs {
+    let opened = super::activity::opened_since(tab_id, since).await;
+    let tabs = opened
+        .tabs
+        .into_iter()
+        .map(|(id, url)| {
+            // Chrome's or Edge's word on the page it is at now; a tab of
+            // Anbo's own browser has the page it was opened for.
+            let url = crate::modules::browser_external::get_target(id)
+                .and_then(|target| target.info().ok())
+                .map(|tab| tab.url)
+                .filter(|url| !url.is_empty())
+                .or(url);
+            json!({ "tabId": id, "url": url })
+        })
+        .collect();
+    OpenedTabs {
+        tabs,
+        coming: opened.coming,
+    }
+}
+
+/// A click's or key's answer with the tabs it opened. An agent whose click
+/// opened the page it waited for in a new tab read its own page, unchanged,
+/// in the answer and clicked again: a second tab of the same page (round 103,
+/// Antigravity CLI, in Chrome and in Edge). The answer names the tabs, and so
+/// does the error of a condition that never matched on the action's page.
+fn answer_with_opened_tabs(
+    mut result: Value,
+    postcondition: Option<Result<Value, (String, String)>>,
+    opened: OpenedTabs,
+    (done, otherwise): (&str, &str),
+) -> Result<Value, (String, String)> {
+    match postcondition {
+        Some(Err((code, message))) => {
+            let next = opened_hint(&opened).unwrap_or_else(|| otherwise.to_string());
+            return Err((code, format!("{done}, but {message}; {next}")));
+        }
+        Some(Ok(value)) => result["postcondition"] = value,
+        None => {}
+    }
+    if !opened.tabs.is_empty() {
+        result["openedTabs"] = Value::Array(opened.tabs);
+    }
+    if opened.coming > 0 {
+        result["openingTabs"] = json!(opened.coming);
+    }
+    Ok(result)
+}
+
+fn opened_hint(opened: &OpenedTabs) -> Option<String> {
+    let named: Vec<String> = opened
+        .tabs
+        .iter()
+        .map(|tab| match tab["url"].as_str() {
+            Some(url) => format!("tab {} ({url})", tab["tabId"]),
+            None => format!("tab {}", tab["tabId"]),
+        })
+        .collect();
+    if !named.is_empty() {
+        Some(format!(
+            "it opened {} {}: look for that state there rather than repeating the action",
+            if named.len() == 1 {
+                "a new tab,"
+            } else {
+                "new tabs,"
+            },
+            named.join(" and ")
+        ))
+    } else if opened.coming > 0 {
+        Some("it opened a new tab that is still on its way: browser_tabs lists it once it is there, so do not repeat the action".into())
+    } else {
+        None
+    }
 }
 
 /// Uncaught errors the page threw since `since` (epoch ms), from its console.
@@ -10214,6 +10339,97 @@ fn ensure_current_ref(ref_id: &str, current_generation: u64) -> Result<(), (Stri
                 "element ref '{ref_id}' is from an older find or snapshot of this tab; only its last {REF_GENERATIONS_KEPT} are kept, find it again"
             ),
         )),
+    }
+}
+
+#[cfg(test)]
+mod opened_tab_tests {
+    use super::*;
+
+    fn opened(tabs: &[(i64, Option<&str>)], coming: usize) -> OpenedTabs {
+        OpenedTabs {
+            tabs: tabs
+                .iter()
+                .map(|(id, url)| json!({ "tabId": id, "url": url }))
+                .collect(),
+            coming,
+        }
+    }
+
+    #[test]
+    fn a_click_that_opened_a_tab_names_it() {
+        let answer = answer_with_opened_tabs(
+            json!({"tabId": 157, "ok": true}),
+            None,
+            opened(&[(160, Some("http://127.0.0.1:5102/index.html"))], 0),
+            CLICK_RETRY,
+        )
+        .unwrap();
+        assert_eq!(
+            answer["openedTabs"],
+            json!([{"tabId": 160, "url": "http://127.0.0.1:5102/index.html"}])
+        );
+        assert!(answer.get("openingTabs").is_none());
+        // One that opened nothing answers as before.
+        let plain = answer_with_opened_tabs(
+            json!({"tabId": 157, "ok": true}),
+            Some(Ok(json!({"matched": true}))),
+            opened(&[], 0),
+            CLICK_RETRY,
+        )
+        .unwrap();
+        assert_eq!(
+            plain,
+            json!({"tabId": 157, "ok": true, "postcondition": {"matched": true}})
+        );
+        let late = answer_with_opened_tabs(json!({}), None, opened(&[], 1), CLICK_RETRY).unwrap();
+        assert_eq!(late["openingTabs"], 1);
+    }
+
+    #[test]
+    fn a_condition_that_never_matched_points_at_the_tab_the_click_opened() {
+        // Round 103, Edge: waitFor title "About Page" on the opener; the page
+        // came in a new tab, and the agent clicked again.
+        let timeout = || {
+            Some(Err((
+                error_codes::TIMEOUT.to_string(),
+                "expected page state never matched within 5000ms; the action was not repeated"
+                    .to_string(),
+            )))
+        };
+        let (code, message) = answer_with_opened_tabs(
+            json!({}),
+            timeout(),
+            opened(&[(158, Some("http://127.0.0.1:5102/about.html"))], 0),
+            CLICK_RETRY,
+        )
+        .unwrap_err();
+        assert_eq!(code, error_codes::TIMEOUT);
+        assert_eq!(
+            message,
+            "click was dispatched, but expected page state never matched within 5000ms; the action was not repeated; it opened a new tab, tab 158 (http://127.0.0.1:5102/about.html): look for that state there rather than repeating the action"
+        );
+        let (_, two) = answer_with_opened_tabs(
+            json!({}),
+            timeout(),
+            opened(&[(158, None), (159, Some("https://example.com/"))], 0),
+            ("key was dispatched", "inspect the page before resubmitting"),
+        )
+        .unwrap_err();
+        assert!(two.starts_with("key was dispatched, but "), "{two}");
+        assert!(
+            two.ends_with("it opened new tabs, tab 158 and tab 159 (https://example.com/): look for that state there rather than repeating the action"),
+            "{two}"
+        );
+        let (_, coming) =
+            answer_with_opened_tabs(json!({}), timeout(), opened(&[], 1), CLICK_RETRY).unwrap_err();
+        assert!(coming.ends_with("it opened a new tab that is still on its way: browser_tabs lists it once it is there, so do not repeat the action"), "{coming}");
+        let (_, none) =
+            answer_with_opened_tabs(json!({}), timeout(), opened(&[], 0), CLICK_RETRY).unwrap_err();
+        assert!(
+            none.ends_with("; inspect the page before retrying the click"),
+            "{none}"
+        );
     }
 }
 

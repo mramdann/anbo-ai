@@ -1,7 +1,7 @@
 use super::caller::Caller;
 use super::target::BrowserTarget as Webview;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -434,6 +434,182 @@ pub fn note_opened_from(source_tab: i64, tab_id: i64) {
     });
     if let Some(caller) = driver {
         note_opened(tab_id, &caller);
+    }
+}
+
+/// Which tab a page asked for: Chrome's or Edge's own id of the tab, or for
+/// Anbo's own browser the page it opens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OpeningKey {
+    Browser(i64),
+    Url(String),
+}
+
+/// Tabs pages asked for and opened lately. An agent whose click opened the
+/// page it waited for in a new tab read its own page, unchanged, in the
+/// click's answer and clicked again: a second tab of the same page (round
+/// 103, Antigravity CLI, in Chrome and in Edge). The answer names the tab now.
+static OPENINGS: Mutex<VecDeque<Opening>> = Mutex::new(VecDeque::new());
+const MAX_OPENINGS: usize = 64;
+const MAX_OPENING_URL: usize = 300;
+/// How long an action's answer waits for a tab its page asked for and Anbo
+/// has not made yet. Chrome and Edge bring a tab over once its first page is
+/// there: under a second on a quiet machine.
+const OPENING_PATIENCE: Duration = Duration::from_secs(3);
+/// Anbo's own browser asks twice for one link at times; the UI opens one tab
+/// for the same page within this (automationOpen.ts).
+const SAME_ASK_MS: u64 = 1_000;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Opening {
+    source: i64,
+    key: OpeningKey,
+    /// Anbo's tab, once made.
+    tab: Option<i64>,
+    url: Option<String>,
+    /// When the page asked, or when Anbo made the tab of an ask it never
+    /// heard (ms since 1970).
+    at_ms: u64,
+}
+
+/// What a page opened since a moment: the tabs Anbo made, oldest first, each
+/// with the page it opened when known, and how many it asked for that are not
+/// there yet.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Opened {
+    pub tabs: Vec<(i64, Option<String>)>,
+    pub coming: usize,
+}
+
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+/// A page asked its browser for a tab: Anbo's own browser's new window, or
+/// the extension's word (0.5.19) that a tab is on its way from Chrome or Edge.
+pub fn note_open_asked(source_tab: i64, key: OpeningKey) {
+    if let Ok(mut openings) = OPENINGS.lock() {
+        asked(&mut openings, source_tab, key, epoch_ms());
+    }
+}
+
+/// Anbo made the tab a page asked for.
+pub fn note_open_made(source_tab: i64, tab_id: i64, key: OpeningKey, url: Option<String>) {
+    if let Ok(mut openings) = OPENINGS.lock() {
+        made(&mut openings, source_tab, tab_id, key, url, epoch_ms());
+    }
+}
+
+/// The user's own click opened that tab: no action of an agent's did.
+pub fn note_open_theirs(source_tab: i64, key: &OpeningKey) {
+    if let Ok(mut openings) = OPENINGS.lock() {
+        theirs(&mut openings, source_tab, key);
+    }
+}
+
+fn theirs(openings: &mut VecDeque<Opening>, source: i64, key: &OpeningKey) {
+    if let Some(at) = waiting(openings, source, key) {
+        openings.remove(at);
+    }
+}
+
+fn waiting(openings: &VecDeque<Opening>, source: i64, key: &OpeningKey) -> Option<usize> {
+    openings.iter().position(|opening| {
+        opening.source == source && opening.tab.is_none() && opening.key == *key
+    })
+}
+
+fn asked(openings: &mut VecDeque<Opening>, source: i64, key: OpeningKey, at_ms: u64) {
+    if openings
+        .iter()
+        .rev()
+        .find(|opening| opening.source == source)
+        .is_some_and(|last| {
+            last.key == key && last.tab.is_none() && at_ms.saturating_sub(last.at_ms) < SAME_ASK_MS
+        })
+    {
+        return;
+    }
+    push(
+        openings,
+        Opening {
+            source,
+            key,
+            tab: None,
+            url: None,
+            at_ms,
+        },
+    );
+}
+
+fn made(
+    openings: &mut VecDeque<Opening>,
+    source: i64,
+    tab: i64,
+    key: OpeningKey,
+    url: Option<String>,
+    at_ms: u64,
+) {
+    let url = url.map(|url| url.chars().take(MAX_OPENING_URL).collect::<String>());
+    if openings.iter().any(|opening| opening.tab == Some(tab)) {
+        return;
+    }
+    if let Some(at) = waiting(openings, source, &key) {
+        openings[at].tab = Some(tab);
+        openings[at].url = url;
+        return;
+    }
+    push(
+        openings,
+        Opening {
+            source,
+            key,
+            tab: Some(tab),
+            url,
+            at_ms,
+        },
+    );
+}
+
+fn push(openings: &mut VecDeque<Opening>, opening: Opening) {
+    while openings.len() >= MAX_OPENINGS {
+        openings.pop_front();
+    }
+    openings.push_back(opening);
+}
+
+fn opened_in(openings: &VecDeque<Opening>, source: i64, since_ms: u64) -> Opened {
+    let mut opened = Opened::default();
+    for opening in openings
+        .iter()
+        .filter(|opening| opening.source == source && opening.at_ms >= since_ms)
+    {
+        match opening.tab {
+            Some(tab) => opened.tabs.push((tab, opening.url.clone())),
+            None => opened.coming += 1,
+        }
+    }
+    opened
+}
+
+/// What the page of `source_tab` opened at or after `since_ms`, once the tabs
+/// it asked for are there or OPENING_PATIENCE is over. An action that opened
+/// nothing pays nothing.
+pub async fn opened_since(source_tab: i64, since_ms: u64) -> Opened {
+    let deadline = Instant::now() + OPENING_PATIENCE;
+    loop {
+        let opened = OPENINGS
+            .lock()
+            .map(|openings| opened_in(&openings, source_tab, since_ms))
+            .unwrap_or_default();
+        if opened.coming == 0 || Instant::now() >= deadline {
+            return opened;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -1471,6 +1647,143 @@ fn seed_control(control_id: u64, caller: &Caller, idle: Duration) {
 fn reset_controls() {
     if let Ok(mut guard) = CONTROL.lock() {
         *guard = None;
+    }
+}
+
+#[cfg(test)]
+mod opening_tests {
+    use super::*;
+
+    const AT: u64 = 1_791_972_000_000;
+
+    #[test]
+    fn a_tab_a_page_asked_for_is_named_once_made_and_counted_as_coming_until() {
+        let mut openings = VecDeque::new();
+        // An earlier click's tab, made long before: not this click's.
+        made(
+            &mut openings,
+            157,
+            158,
+            OpeningKey::Browser(40),
+            None,
+            AT - 5_000,
+        );
+        asked(&mut openings, 157, OpeningKey::Browser(41), AT + 30);
+        assert_eq!(
+            opened_in(&openings, 157, AT),
+            Opened {
+                tabs: vec![],
+                coming: 1
+            }
+        );
+        // Another page's tab is no answer of this one's.
+        made(
+            &mut openings,
+            200,
+            201,
+            OpeningKey::Browser(42),
+            None,
+            AT + 40,
+        );
+        // Made late, after the click's answer had gone: it keeps the time
+        // its page asked, so a later click does not take it for its own.
+        made(
+            &mut openings,
+            157,
+            159,
+            OpeningKey::Browser(41),
+            None,
+            AT + 900,
+        );
+        assert_eq!(
+            opened_in(&openings, 157, AT),
+            Opened {
+                tabs: vec![(159, None)],
+                coming: 0
+            }
+        );
+        assert_eq!(opened_in(&openings, 157, AT + 500), Opened::default());
+        // Bound again (a reconnect): still one tab.
+        made(
+            &mut openings,
+            157,
+            159,
+            OpeningKey::Browser(41),
+            None,
+            AT + 2_000,
+        );
+        assert_eq!(opened_in(&openings, 157, AT).tabs, vec![(159, None)]);
+    }
+
+    #[test]
+    fn anbos_own_browser_asks_by_page_and_twice_asked_is_one_tab() {
+        let mut openings = VecDeque::new();
+        let page = || OpeningKey::Url("http://127.0.0.1:5102/index.html".into());
+        asked(&mut openings, 7, page(), AT);
+        // WebView2 asked again for the same link; the UI made one tab.
+        asked(&mut openings, 7, page(), AT + 200);
+        assert_eq!(opened_in(&openings, 7, AT).coming, 1);
+        made(
+            &mut openings,
+            7,
+            8,
+            page(),
+            Some("http://127.0.0.1:5102/index.html".into()),
+            AT + 300,
+        );
+        assert_eq!(
+            opened_in(&openings, 7, AT),
+            Opened {
+                tabs: vec![(8, Some("http://127.0.0.1:5102/index.html".into()))],
+                coming: 0
+            }
+        );
+        // A second click on the same link, past the moment: a second tab.
+        asked(&mut openings, 7, page(), AT + 1_500);
+        assert_eq!(opened_in(&openings, 7, AT + 1_400).coming, 1);
+    }
+
+    #[test]
+    fn a_tab_the_users_own_click_opened_is_no_actions() {
+        let mut openings = VecDeque::new();
+        let page = OpeningKey::Url("https://example.com/next".into());
+        asked(&mut openings, 7, page.clone(), AT);
+        theirs(&mut openings, 7, &page);
+        assert_eq!(opened_in(&openings, 7, AT), Opened::default());
+        assert!(openings.is_empty());
+    }
+
+    #[test]
+    fn openings_are_kept_to_a_bound() {
+        let mut openings = VecDeque::new();
+        for n in 0..(MAX_OPENINGS as i64 + 10) {
+            made(
+                &mut openings,
+                1,
+                100 + n,
+                OpeningKey::Browser(n),
+                None,
+                AT + n as u64,
+            );
+        }
+        assert_eq!(openings.len(), MAX_OPENINGS);
+        assert_eq!(openings.front().and_then(|opening| opening.tab), Some(110));
+        let long = format!("https://example.com/{}", "a".repeat(500));
+        made(
+            &mut openings,
+            2,
+            9,
+            OpeningKey::Url(long.clone()),
+            Some(long),
+            AT,
+        );
+        assert_eq!(
+            opened_in(&openings, 2, AT).tabs[0]
+                .1
+                .as_deref()
+                .map(str::len),
+            Some(MAX_OPENING_URL)
+        );
     }
 }
 

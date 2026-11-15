@@ -695,6 +695,15 @@ async fn spawn_browser_child(
             if navigation_allowed(&target, popup_app_url.as_ref(), root.as_deref()) {
                 let app = popup_app.clone();
                 let url = target.to_string();
+                // Now, while the click or key that asked is still running: its
+                // answer waits for the tab the UI makes and names it. The UI
+                // opens only web pages so.
+                if matches!(target.scheme(), "http" | "https") {
+                    crate::modules::browser_automation::activity::note_open_asked(
+                        tab_id,
+                        crate::modules::browser_automation::activity::OpeningKey::Url(url.clone()),
+                    );
+                }
                 tauri::async_runtime::spawn(async move {
                     let background = super::new_tab::opens_behind(&app, tab_id).await;
                     log::info!(

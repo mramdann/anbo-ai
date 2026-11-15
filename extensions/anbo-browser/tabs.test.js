@@ -61,14 +61,16 @@ function harness(reload, { renderers } = {}) {
   const kept = [];
   const closed = [];
   const notes = [];
-  const manager = createTabManager(api, selected, () => publications.push([...selected.values()].map((tab) => ({ ...tab }))), undefined, reload, (ids) => kept.push(ids), (tabId, selectionId) => closed.push([tabId, selectionId]), (tabId, text) => notes.push([tabId, text]));
+  // Each tab a page opened that Anbo heard of: [opener, tab, already connected].
+  const opening = [];
+  const manager = createTabManager(api, selected, () => publications.push([...selected.values()].map((tab) => ({ ...tab }))), undefined, reload, (ids) => kept.push(ids), (tabId, selectionId) => closed.push([tabId, selectionId]), (tabId, text) => notes.push([tabId, text]), (tabId, opened) => opening.push([tabId, opened, selected.has(opened)]));
   const dispatch = createDispatcher(api, selected, (reply) => replies.push(reply), () => active, manager);
   const run = async (method, tabId = 0, params = {}) => {
     const id = ++nextId;
     await dispatch({ type: "command", id, tabId, selectionId: selected.get(tabId)?.selectionId, method, params, expiresAt: Date.now() + 10_000 });
     return replies.find((reply) => reply.id === id);
   };
-  return { api, tabs, selected, publications, kept, closed, notes, manager, run, revoke: () => { active = false; } };
+  return { api, tabs, selected, publications, kept, closed, notes, opening, manager, run, revoke: () => { active = false; } };
 }
 
 describe("tabs selected directly from Anbo", () => {
@@ -658,6 +660,24 @@ describe("tabs a page Anbo drives opens", () => {
     state.manager.created(openedTab(state, 14));
     await vi.waitFor(() => expect(state.selected.has(14)).toBe(true));
     expect(state.selected.get(14).openedFrom.agent).toBe(true);
+  });
+
+  it("tells Anbo a tab an agent's input opened is on its way before it connects it, and not of a popup window", async () => {
+    // Round 103: an agent's click that opened a page in a new tab answered
+    // with its own page unchanged, and the agent clicked again. Anbo hears of
+    // the tab before it is connected, so the click waits for it and names it.
+    const state = harness();
+    await state.run("anbo.selectTab", 10, { expectedUrl: "https://example.com/" });
+    await state.run("Input.dispatchKeyEvent", 10, { type: "keyDown", key: "Enter" });
+    state.manager.created(openedTab(state, 13, { active: false }));
+    await vi.waitFor(() => expect(state.selected.has(13)).toBe(true));
+    expect(state.opening).toEqual([[10, 13, false]]);
+    // A window.open with a size makes a popup window, which stays the browser's.
+    state.manager.created(openedTab(state, 15, { windowId: 21 }));
+    await vi.waitFor(() => expect(state.api.windows.get).toHaveBeenCalledWith(21));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(state.opening).toEqual([[10, 13, false]]);
+    expect(state.selected.has(15)).toBe(false);
   });
 
   it("connects a tab an agent's key opened from a page behind the user's tab, and gives the user's tab back", async () => {

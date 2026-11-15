@@ -423,7 +423,8 @@ pub async fn browser_external_bind(
     let _guard = lock.lock().await;
     // Before the binding lands, when browser_tabs starts listing the tab: an
     // agent that read the list at once saw its own new tab as yours:false.
-    if let Some(source) = binding.opened_from {
+    let opened_from = binding.opened_from;
+    if let Some(source) = opened_from {
         activity::note_opened_from(source, tab_id);
     }
     let (target, bound) = {
@@ -432,6 +433,16 @@ pub async fn browser_external_bind(
             .map_err(|_| "browser registry unavailable")?;
         registry.bind(binding)?
     };
+    // The tab the extension said was on its way (anbo.tabOpening): the action
+    // that opened it names it in its answer.
+    if let Some(source) = opened_from {
+        activity::note_open_made(
+            source,
+            tab_id,
+            activity::OpeningKey::Browser(target.browser_tab_id),
+            None,
+        );
+    }
     if bound == Bound::Same {
         return Ok(());
     }
@@ -641,6 +652,16 @@ pub(super) fn event(
         // window or by Anbo.
         "anbo.closedInBrowser" => {
             let _ = app.emit(CLOSED_EVENT, json!({ "tabId": tab_id }));
+        }
+        // The page opened a tab that the extension brings over in a moment
+        // (extension 0.5.19): the action that opened it waits for it.
+        "anbo.tabOpening" => {
+            if let Some(opened) = params["tabId"]
+                .as_i64()
+                .filter(|id| protocol::valid_tab_id(*id))
+            {
+                activity::note_open_asked(tab_id, activity::OpeningKey::Browser(opened));
+            }
         }
         // What became of the window a new tab came in (extension 0.5.15):
         // put back, left alone and why, or up after its watch (R92-1).

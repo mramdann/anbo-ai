@@ -43,7 +43,7 @@ const KEEP_AFTER_INPUT_MS = 10_000;
 // noted coming up (round 92, R92-1).
 const LATE_NOTE_MS = 15_000;
 
-export function createTabManager(api, attached, publishTabs, dockChanged, reload = () => {}, keepRenderers = () => {}, closedInBrowser = () => {}, note = () => {}) {
+export function createTabManager(api, attached, publishTabs, dockChanged, reload = () => {}, keepRenderers = () => {}, closedInBrowser = () => {}, note = () => {}, tabOpening = () => {}) {
   const dock = createDockManager(api, dockChanged, (tabId) => driven(tabId));
   const pending = new Map();
   const attaching = new Map();
@@ -622,6 +622,12 @@ export function createTabManager(api, attached, publishTabs, dockChanged, reload
     if (front !== null) await api.tabs.update(front, { active: true }).catch(() => {});
     const window = await api.windows.get(tab.windowId);
     if (window.type !== "normal" || window.incognito) return;
+    // Anbo hears now that the tab is on its way, not once its first page is
+    // there: the agent's click or key that opened it waits for it and names
+    // it, where the agent read its own page unchanged and clicked again, and
+    // got a second tab (round 103).
+    const opener = [...attached.values()].find((entry) => entry.selectionId === openedFrom.selectionId);
+    if (opener && Number.isSafeInteger(tab.id)) tabOpening(opener.id, tab.id);
     const check = () => { if (disposed) throw new Error("Browser connection revoked"); };
     let info = await waitForPage(tab.id, Date.now() + ADOPT_WAIT_MS, check);
     // One opened in the dock window joins the user's other tabs first, so the

@@ -2013,13 +2013,15 @@ export default function App() {
           opened.delete(opener);
       }
       opened.set(payload.sourceTabId, id);
-      // A tab an agent's click opened is the agent's (browser_tabs yours).
-      if (payload.background !== false) {
-        void invoke("browser_note_opened_from", {
-          sourceTabId: payload.sourceTabId,
-          tabId: id,
-        }).catch(() => {});
-      }
+      // A tab an agent's click opened is the agent's (browser_tabs yours),
+      // and the click's answer names it. The user's own plain click is
+      // neither.
+      void invoke("browser_note_opened_from", {
+        sourceTabId: payload.sourceTabId,
+        tabId: id,
+        url: payload.url,
+        user: payload.background === false,
+      }).catch(() => {});
     });
   }, [newBrowserTab]);
 
