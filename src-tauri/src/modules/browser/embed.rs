@@ -1028,6 +1028,18 @@ fn warm_host_already_coming(error: &tauri::Error) -> bool {
     matches!(error, tauri::Error::WebviewLabelAlreadyExists(_))
 }
 
+/// Whether closing tab `closing` leaves the profile's WebView2 browser with no
+/// webview at all: no warm host yet, and no other tab of Anbo's own browser.
+/// WebView2 then ends that browser, and the next tab starts a cold one.
+#[cfg(any(windows, test))]
+fn leaves_browser_empty(
+    warm_host: bool,
+    open: impl IntoIterator<Item = i64>,
+    closing: i64,
+) -> bool {
+    !warm_host && open.into_iter().all(|tab| tab == closing)
+}
+
 #[cfg(windows)]
 fn keep_host_warm(window: &tauri::Window) {
     note_tab_seen();
@@ -2729,6 +2741,24 @@ async fn close_embed_locked(
             log::info!("browser embed {tab_id} never got a window; forgot it");
             return Ok(());
         }
+        // The last tab going before the warm host was there shut the WebView2
+        // browser down (the warm host is made 2 s after a tab, and on a busy
+        // machine its making takes seconds), and the next tab waited for a cold
+        // browser: on a freshly started prod under a full load the third or
+        // fourth tab did not become ready in its 10 s, each time right after a
+        // second "browser host ... now terminates with Anbo" line (round 104:
+        // 0.39.2 two starts of two, the 0.39.3 candidate one of two). The warm
+        // host joins the browser first now, so the browser stays.
+        #[cfg(windows)]
+        if let Some(webview) = &webview {
+            let open: Vec<i64> = active_embeds()
+                .lock()
+                .map(|active| active.keys().copied().collect())
+                .unwrap_or_default();
+            if leaves_browser_empty(app.get_webview(WARM_HOST_LABEL).is_some(), open, tab_id) {
+                keep_host_warm(&webview.window());
+            }
+        }
         if let Some(webview) = webview {
             webview.close().map_err(|error| error.to_string())?;
         }
@@ -2889,6 +2919,17 @@ mod tests {
     };
     use std::collections::HashSet;
     use url::Url;
+
+    #[test]
+    fn the_last_tab_going_before_the_warm_host_would_end_the_browser() {
+        // Round 104: a freshly started prod under a full load; tabs open and
+        // close one after another before the warm host is there.
+        assert!(super::leaves_browser_empty(false, [6], 6));
+        assert!(super::leaves_browser_empty(false, [], 6));
+        // Another tab, or the warm host, keeps the browser.
+        assert!(!super::leaves_browser_empty(false, [6, 7], 6));
+        assert!(!super::leaves_browser_empty(true, [6], 6));
+    }
 
     #[test]
     fn a_warm_host_that_another_call_is_making_is_no_failure() {
