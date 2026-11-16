@@ -7,7 +7,6 @@ import {
 import { cn } from "@/lib/utils";
 import { useShortcutLabel } from "@/modules/shortcuts";
 import { labelFor, type Tab, TabIcon } from "@/modules/tabs";
-import { formatCpu, formatMemory } from "@/modules/usage/lib/usageModel";
 import {
   ArrowDown01Icon,
   ArrowRight01Icon,
@@ -15,7 +14,6 @@ import {
   Delete02Icon,
   PauseIcon,
   PencilEdit02Icon,
-  PlayIcon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -28,19 +26,12 @@ import type { SpaceMeta } from "./lib/store";
 import { useSpaces } from "./lib/useSpaces";
 import { SpaceAvatar } from "./SpaceAvatar";
 
-type SpaceUsage = { memory: number; cpu: number | null };
-
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   tabs: Tab[];
-  /** Each space's memory and CPU, read while the menu is open. */
-  usage?: ReadonlyMap<string, SpaceUsage> | null;
   onNewSpace: () => void;
   onDeleteSpace: (id: string) => void;
-  /** Ends a space's shells, agents and pages until it is opened or resumed. */
-  onPauseSpace: (id: string) => void;
-  onResumeSpace: (id: string) => void;
   onNewTabInSpace: (spaceId: string) => void;
   onJumpTab: (id: number) => void;
   onCloseTab: (id: number) => void;
@@ -86,11 +77,8 @@ export function SpaceSwitcher({
   open,
   onOpenChange,
   tabs,
-  usage,
   onNewSpace,
   onDeleteSpace,
-  onPauseSpace,
-  onResumeSpace,
   onNewTabInSpace,
   onJumpTab,
   onCloseTab,
@@ -281,7 +269,6 @@ export function SpaceSwitcher({
               key={sp.id}
               space={sp}
               tabs={tabsBySpace.get(sp.id) ?? []}
-              usage={usage?.get(sp.id)}
               isActive={sp.id === activeId}
               runState={spaceRunState(tabsBySpace.get(sp.id) ?? [], sp.id)}
               expanded={expanded.has(sp.id)}
@@ -307,8 +294,6 @@ export function SpaceSwitcher({
               }}
               onCancelRename={() => setEditingId(null)}
               onDelete={() => onDeleteSpace(sp.id)}
-              onPause={() => onPauseSpace(sp.id)}
-              onResume={() => onResumeSpace(sp.id)}
               onNewTab={() => onNewTabInSpace(sp.id)}
               onJumpTab={onJumpTab}
               onCloseTab={onCloseTab}
@@ -351,7 +336,6 @@ export function SpaceSwitcher({
 type SpaceRowProps = {
   space: SpaceMeta;
   tabs: Tab[];
-  usage?: SpaceUsage;
   isActive: boolean;
   runState: SpaceRunState;
   expanded: boolean;
@@ -372,8 +356,6 @@ type SpaceRowProps = {
   onCommitRename: (name: string) => void;
   onCancelRename: () => void;
   onDelete: () => void;
-  onPause: () => void;
-  onResume: () => void;
   onNewTab: () => void;
   onJumpTab: (id: number) => void;
   onCloseTab: (id: number) => void;
@@ -382,7 +364,6 @@ type SpaceRowProps = {
 function SpaceRow({
   space,
   tabs,
-  usage,
   isActive,
   runState,
   expanded,
@@ -399,15 +380,14 @@ function SpaceRow({
   onCommitRename,
   onCancelRename,
   onDelete,
-  onPause,
-  onResume,
   onNewTab,
   onJumpTab,
   onCloseTab,
 }: SpaceRowProps) {
   const isDragging = dragging?.kind === "space" && dragging.id === space.id;
-  // The space in view stays as it is: its tabs warm again as they are shown.
-  const pausable = !isActive && runState === "running";
+  // The space in view never reads as paused: its tabs warm again as they are
+  // shown. Pausing and resuming are done in the usage view; here a paused
+  // space only carries its mark, and opening it resumes it.
   const paused = !isActive && runState === "paused";
   const moveTarget = drop?.kind === "into-space" && drop.spaceId === space.id;
   const reorderEdge =
@@ -473,30 +453,16 @@ function SpaceRow({
             {space.name}
           </span>
         )}
-        {!editing && usage && usage.memory > 0 && (
-          <span
-            className="shrink-0 text-[11px] tabular-nums text-muted-foreground/60"
-            title={`${formatMemory(usage.memory)} memory · ${formatCpu(usage.cpu)} CPU`}
-          >
-            {formatMemory(usage.memory)}
-            {usage.cpu !== null && usage.cpu >= 1
-              ? ` · ${formatCpu(usage.cpu)}`
-              : ""}
-          </span>
-        )}
         {!editing && (
           <div
             data-no-drag
-            className={cn(
-              "relative flex h-6 shrink-0 items-center justify-end",
-              pausable || paused ? "w-[6.5rem]" : "w-[4.5rem]",
-            )}
+            className="relative flex h-6 w-[4.5rem] shrink-0 items-center justify-end"
           >
             {paused ? (
               <span
                 role="img"
                 aria-label="Paused"
-                title="Paused: nothing runs here until you open or resume it"
+                title="Paused: nothing runs here until you open it, or resume it in Usage"
                 className="absolute right-1 flex items-center text-muted-foreground/60 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0"
               >
                 <HugeiconsIcon icon={PauseIcon} size={12} strokeWidth={2} />
@@ -507,20 +473,6 @@ function SpaceRow({
               </span>
             )}
             <div className="pointer-events-none absolute right-0 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
-              {pausable && (
-                <RowAction
-                  icon={PauseIcon}
-                  label="Pause space"
-                  onClick={onPause}
-                />
-              )}
-              {paused && (
-                <RowAction
-                  icon={PlayIcon}
-                  label="Resume space"
-                  onClick={onResume}
-                />
-              )}
               <RowAction
                 icon={PencilEdit02Icon}
                 label="Rename space"

@@ -152,7 +152,7 @@ import {
   useSpacesBoot,
 } from "@/modules/spaces";
 import { StatusBar } from "@/modules/statusbar";
-import { UsageDialog, usageBySpace, useUsageModel } from "@/modules/usage";
+import { UsageDialog } from "@/modules/usage";
 import {
   flushWorkspaceLayoutNow,
   labelFor,
@@ -2990,14 +2990,6 @@ export default function App() {
     setSwitcherOpen(false);
   });
 
-  // Each workspace's memory and CPU in the spaces menu, read only while it
-  // is open.
-  const switcherUsageModel = useUsageModel(switcherOpen, tabs);
-  const switcherUsage = useMemo(
-    () => usageBySpace(switcherUsageModel),
-    [switcherUsageModel],
-  );
-
   const showUsageTarget = useStableCallback(
     (tabId: number, leafId?: number) => {
       setUsageOpen(false);
@@ -3011,11 +3003,8 @@ export default function App() {
       open={switcherOpen}
       onOpenChange={setSwitcherOpen}
       tabs={tabs}
-      usage={switcherUsage}
       onNewSpace={() => void handleNewSpace()}
       onDeleteSpace={handleDeleteSpace}
-      onPauseSpace={(id) => void handlePauseSpace(id)}
-      onResumeSpace={resumeSpaceTabs}
       onNewTabInSpace={handleNewTabInSpace}
       onJumpTab={jumpToTab}
       onCloseTab={handleClose}

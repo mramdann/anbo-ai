@@ -8,17 +8,13 @@ export const USAGE_INTERVAL_MS = 2000;
 const SECOND_READ_MS = 700;
 
 /**
- * Reads what Anbo's processes use while `enabled` (the usage view or the
- * spaces menu is open), every couple of seconds, and not at all otherwise. A
+ * Reads what Anbo's processes use while its component is mounted (the usage
+ * view's body, so only while the view is open), every couple of seconds. A
  * hidden window (minimized) skips its reads.
  */
-export function useUsageSnapshot(enabled: boolean): UsageSnapshot | null {
+export function useUsageSnapshot(): UsageSnapshot | null {
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   useEffect(() => {
-    if (!enabled) {
-      setSnapshot(null);
-      return;
-    }
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let reads = 0;
@@ -45,6 +41,6 @@ export function useUsageSnapshot(enabled: boolean): UsageSnapshot | null {
       cancelled = true;
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [enabled]);
-  return enabled ? snapshot : null;
+  }, []);
+  return snapshot;
 }

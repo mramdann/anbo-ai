@@ -8,22 +8,18 @@ import { type AgentInfo, buildUsageModel, type UsageModel } from "./usageModel";
 import { useUsageSnapshot } from "./useUsageSnapshot";
 
 /**
- * Anbo's usage by workspace while `enabled` (the usage view or the spaces
- * menu is open); null while closed or before the first read.
+ * Anbo's usage by workspace; null before the first read. Only the usage
+ * view's body holds this hook, and that body exists only while the view is
+ * open: closed, nothing reads and no store is watched. Keep it out of App,
+ * which reads the agent store without re-rendering on its changes.
  */
-export function useUsageModel(
-  enabled: boolean,
-  tabs: readonly Tab[],
-): UsageModel | null {
-  const snapshot = useUsageSnapshot(enabled);
-  // Closed, the stores are not watched: a selector that gives null re-renders
-  // nothing when they change. App holds this hook for the spaces menu and
-  // otherwise reads the agent store without re-rendering on its changes.
-  const spaces = useSpaces((s) => (enabled ? s.spaces : null));
-  const agentSessions = useAgentStore((s) => (enabled ? s.sessions : null));
-  const lspSessions = useLspRuntimeStore((s) => (enabled ? s.sessions : null));
+export function useUsageModel(tabs: readonly Tab[]): UsageModel | null {
+  const snapshot = useUsageSnapshot();
+  const spaces = useSpaces((s) => s.spaces);
+  const agentSessions = useAgentStore((s) => s.sessions);
+  const lspSessions = useLspRuntimeStore((s) => s.sessions);
   return useMemo(() => {
-    if (!snapshot || !spaces || !agentSessions || !lspSessions) return null;
+    if (!snapshot) return null;
     const agents: Record<number, AgentInfo> = {};
     for (const session of Object.values(agentSessions)) {
       agents[session.leafId] = {
@@ -43,17 +39,4 @@ export function useUsageModel(
       })),
     });
   }, [snapshot, spaces, tabs, agentSessions, lspSessions]);
-}
-
-/** Each workspace's total, for the spaces menu. */
-export function usageBySpace(
-  model: UsageModel | null,
-): ReadonlyMap<string, { memory: number; cpu: number | null }> | null {
-  if (!model?.supported) return null;
-  return new Map(
-    model.workspaces.map((workspace) => [
-      workspace.spaceId,
-      { memory: workspace.memory, cpu: workspace.cpu },
-    ]),
-  );
 }

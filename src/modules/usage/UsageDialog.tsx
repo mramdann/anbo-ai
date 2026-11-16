@@ -143,7 +143,7 @@ function UsageBody({
   onResumeSpace,
 }: BodyProps) {
   // Mounted only while open; it keeps reading through the closing fade.
-  const model = useUsageModel(true, tabs);
+  const model = useUsageModel(tabs);
   const spaces = useSpaces((s) => s.spaces);
   const activeId = useSpaces((s) => s.activeId);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(
