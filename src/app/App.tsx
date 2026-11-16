@@ -3012,10 +3012,6 @@ export default function App() {
       onOpenChange={setSwitcherOpen}
       tabs={tabs}
       usage={switcherUsage}
-      onOpenUsage={() => {
-        setSwitcherOpen(false);
-        setUsageOpen(true);
-      }}
       onNewSpace={() => void handleNewSpace()}
       onDeleteSpace={handleDeleteSpace}
       onPauseSpace={(id) => void handlePauseSpace(id)}
@@ -3528,6 +3524,7 @@ export default function App() {
                   privateActive={
                     activeTab?.kind === "terminal" && activeTab.private === true
                   }
+                  onOpenUsage={() => setUsageOpen(true)}
                 />
               )}
 

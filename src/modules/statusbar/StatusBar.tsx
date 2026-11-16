@@ -10,8 +10,9 @@ import {
   AiStatusBarControls,
 } from "@/modules/ai/components/AiStatusBarControls";
 import { LspStatusPill } from "@/modules/lsp";
+import { useShortcutLabel } from "@/modules/shortcuts";
 import type { WorkspaceEnv } from "@/modules/workspace";
-import { IncognitoIcon } from "@hugeicons/core-free-icons";
+import { Activity01Icon, IncognitoIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { CwdBreadcrumb } from "./CwdBreadcrumb";
 import { DiagnosticsBadge } from "./DiagnosticsBadge";
@@ -29,7 +30,29 @@ type Props = {
   /** Only rendered when the AI panel is open and a key is loaded. */
   hasComposer: boolean;
   privateActive: boolean;
+  /** Opens the usage view (memory and CPU by workspace). */
+  onOpenUsage: () => void;
 };
+
+/** The usage view's button. It reads nothing itself: the view reads while open. */
+function UsageButton({ onOpen }: { onOpen: () => void }) {
+  const shortcut = useShortcutLabel("usage.open");
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={
+        shortcut
+          ? `Memory and CPU by workspace · ${shortcut}`
+          : "Memory and CPU by workspace"
+      }
+      className="flex h-6 items-center gap-1.5 rounded-md border border-border/60 bg-card px-2 text-xs text-muted-foreground transition-colors hover:border-border hover:bg-accent hover:text-foreground"
+    >
+      <HugeiconsIcon icon={Activity01Icon} size={13} strokeWidth={1.75} />
+      <span>Usage</span>
+    </button>
+  );
+}
 
 export function StatusBar({
   cwd,
@@ -41,6 +64,7 @@ export function StatusBar({
   onOpenAi,
   hasComposer,
   privateActive,
+  onOpenUsage,
 }: Props) {
   const panelOpen = useChatStore((s) => s.panelOpen);
 
@@ -71,6 +95,7 @@ export function StatusBar({
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         <AgentStatusPill onClick={onOpenMini} />
+        <UsageButton onOpen={onOpenUsage} />
         {panelOpen && hasComposer ? (
           <AiStatusBarControls />
         ) : (

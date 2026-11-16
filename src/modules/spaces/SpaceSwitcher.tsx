@@ -9,7 +9,6 @@ import { useShortcutLabel } from "@/modules/shortcuts";
 import { labelFor, type Tab, TabIcon } from "@/modules/tabs";
 import { formatCpu, formatMemory } from "@/modules/usage/lib/usageModel";
 import {
-  Activity01Icon,
   ArrowDown01Icon,
   ArrowRight01Icon,
   Cancel01Icon,
@@ -37,8 +36,6 @@ type Props = {
   tabs: Tab[];
   /** Each space's memory and CPU, read while the menu is open. */
   usage?: ReadonlyMap<string, SpaceUsage> | null;
-  /** Opens the usage view (Anbo's task manager by workspace). */
-  onOpenUsage?: () => void;
   onNewSpace: () => void;
   onDeleteSpace: (id: string) => void;
   /** Ends a space's shells, agents and pages until it is opened or resumed. */
@@ -90,7 +87,6 @@ export function SpaceSwitcher({
   onOpenChange,
   tabs,
   usage,
-  onOpenUsage,
   onNewSpace,
   onDeleteSpace,
   onPauseSpace,
@@ -107,7 +103,6 @@ export function SpaceSwitcher({
   const setActive = useSpaces((s) => s.setActive);
   const rename = useSpaces((s) => s.rename);
   const shortcut = useShortcutLabel("space.overview");
-  const usageShortcut = useShortcutLabel("usage.open");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
@@ -276,30 +271,9 @@ export function SpaceSwitcher({
           <span className="text-[13px] font-semibold text-foreground">
             Spaces
           </span>
-          <div className="flex items-center gap-1.5">
-            {onOpenUsage && (
-              <button
-                type="button"
-                onClick={onOpenUsage}
-                title={
-                  usageShortcut
-                    ? `Memory and CPU by workspace · ${usageShortcut}`
-                    : "Memory and CPU by workspace"
-                }
-                className="flex h-5 items-center gap-1 rounded px-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
-                <HugeiconsIcon
-                  icon={Activity01Icon}
-                  size={12}
-                  strokeWidth={1.75}
-                />
-                Usage
-              </button>
-            )}
-            {shortcut && (
-              <Kbd className="h-5 bg-muted/70 text-[11px]">{shortcut}</Kbd>
-            )}
-          </div>
+          {shortcut && (
+            <Kbd className="h-5 bg-muted/70 text-[11px]">{shortcut}</Kbd>
+          )}
         </div>
         <div className="panel-scrollbar -mx-0.5 max-h-[60vh] overflow-y-auto px-0.5 [scrollbar-gutter:stable]">
           {spaces.map((sp) => (
