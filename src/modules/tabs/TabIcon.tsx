@@ -1,3 +1,4 @@
+import { joinBeat } from "@/lib/beat";
 import { AgentIcon } from "@/modules/agents/lib/agentIcon";
 import {
   type AgentResumePhase,
@@ -195,9 +196,11 @@ function AgentTabIcon({
   resumePhase?: AgentResumePhase | null;
   pixels: number;
 }) {
+  // Working beats by the shared timer: a pulse by an animation that never ends
+  // drew the whole window at the display rate for as long as an agent worked.
   const badgeClass =
     state === "working"
-      ? "animate-pulse bg-primary"
+      ? "anbo-beat bg-primary"
       : state === "attention"
         ? "bg-amber-500"
         : state === "finished"
@@ -225,6 +228,7 @@ function AgentTabIcon({
         <span className="absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full bg-destructive ring-1 ring-background" />
       ) : badgeClass ? (
         <span
+          ref={state === "working" ? joinBeat : undefined}
           className={`absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full ring-1 ring-background ${badgeClass}`}
         />
       ) : null}

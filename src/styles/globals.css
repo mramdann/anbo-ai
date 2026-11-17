@@ -1104,14 +1104,24 @@ html *::-webkit-scrollbar {
  * without taking over the screen. The band is drawn in the control's own text
  * colour, so it stays visible whichever way the theme runs: a white shine on a
  * dark pill, a soft glint on a light one. Transform-only, and at rest most of
- * the time — it crosses once and then waits, leaving the compositor idle
- * between passes rather than animating forever. */
-@keyframes anbo-sheen {
-  0% {
+ * the time: `passesEvery` (src/lib/beat.ts) starts a crossing by flipping
+ * `data-pass`, and between crossings nothing animates. As one animation that
+ * never ended it kept the compositor at the display rate through its own
+ * rests: 501 frames in 8 s (round 110). */
+@keyframes anbo-sheen-a {
+  from {
     transform: translateX(-140%) skewX(-14deg);
   }
-  28%,
-  100% {
+  to {
+    transform: translateX(320%) skewX(-14deg);
+  }
+}
+/* The same crossing under a second name: a change of name starts it over. */
+@keyframes anbo-sheen-b {
+  from {
+    transform: translateX(-140%) skewX(-14deg);
+  }
+  to {
     transform: translateX(320%) skewX(-14deg);
   }
 }
@@ -1138,7 +1148,16 @@ html *::-webkit-scrollbar {
   left: 0;
   width: 42%;
   pointer-events: none;
-  animation: anbo-sheen 4.6s linear infinite;
+  /* Between crossings the band waits outside the control, where one starts. */
+  transform: translateX(-140%) skewX(-14deg);
+}
+.anbo-sheen[data-pass="a"]::before,
+.anbo-sheen[data-pass="a"]::after {
+  animation: anbo-sheen-a 1.288s linear;
+}
+.anbo-sheen[data-pass="b"]::before,
+.anbo-sheen[data-pass="b"]::after {
+  animation: anbo-sheen-b 1.288s linear;
 }
 .anbo-sheen::before {
   background-image: linear-gradient(
@@ -1158,6 +1177,17 @@ html *::-webkit-scrollbar {
   );
 }
 
+/* An indicator that beats (`joinBeat`, src/lib/beat.ts): two levels, switched
+ * once a second. `will-change` keeps the mark on a layer of its own, where the
+ * pulse's animation had it, so a beat paints nothing and changes no pixel
+ * beside the mark. */
+.anbo-beat {
+  will-change: opacity;
+}
+.anbo-beat[data-beat="low"] {
+  opacity: 0.5;
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root {
     --dur-fast: 0.01ms;
@@ -1171,9 +1201,8 @@ html *::-webkit-scrollbar {
     animation: none;
     background-position: 0% center;
   }
-  .anbo-sheen::before,
-  .anbo-sheen::after {
+  .anbo-sheen[data-pass]::before,
+  .anbo-sheen[data-pass]::after {
     animation: none;
-    opacity: 0;
   }
 }

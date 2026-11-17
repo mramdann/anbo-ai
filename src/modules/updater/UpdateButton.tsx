@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { passesEvery } from "@/lib/beat";
 import { lazy, Suspense, useState } from "react";
 
 // The dialog pulls in the dialog primitives and a markdown renderer for the
@@ -8,6 +9,9 @@ const UpdaterDialog = lazy(() =>
   import("./UpdaterDialog").then((m) => ({ default: m.UpdaterDialog })),
 );
 import { shouldOfferUpdate, useUpdater } from "./useUpdater";
+
+// One crossing takes 1.288 s (globals.css); the next starts 4.6 s after it did.
+const sheen = passesEvery(4_600);
 
 /**
  * The only sign that an update exists, sitting beside the workspace name.
@@ -40,6 +44,7 @@ export function UpdateButton() {
           it read heavier than its neighbours, so it sits a size below them
           rather than matching their height. */}
       <Button
+        ref={sheen}
         type="button"
         size="sm"
         onClick={() => setOpen(true)}
