@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.41.0](https://github.com/mramdann/anbo-ai/compare/v0.40.0...v0.41.0) (2026-11-17)
+
+
+### Features
+
+* **spaces:** the Spaces menu leaves pausing and memory to the usage view ([d0c72e6](https://github.com/mramdann/anbo-ai/commit/d0c72e694efcb7ec3820fa3e88c1e852ba2d8bdf))
+* **usage:** the Usage button sits in the status bar beside Open AI agent ([618550e](https://github.com/mramdann/anbo-ai/commit/618550e8310e6a25e6bdefbdf3a649495e66eb35))
+
 ## [0.40.0](https://github.com/mramdann/anbo-ai/compare/v0.39.3...v0.40.0) (2026-11-15)
 
 
