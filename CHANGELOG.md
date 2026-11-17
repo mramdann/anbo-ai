@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.41.1](https://github.com/mramdann/anbo-ai/compare/v0.41.0...v0.41.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* **agents:** the alert sound's audio context rests between sounds ([294267b](https://github.com/mramdann/anbo-ai/commit/294267b47d141bec3d84af6bc04a5ee507ec58eb))
+
+
+### Performance Improvements
+
+* **editor:** the caret blinks by a timer, not by an animation that never ends ([5ca5401](https://github.com/mramdann/anbo-ai/commit/5ca5401e012287a04a41d68595bed266665f1771))
+* **terminal:** a focused terminal's hidden caret no longer blinks ([3dc3852](https://github.com/mramdann/anbo-ai/commit/3dc38526c7b35cb3d2ecd6bc5e8cc98d0e102d50))
+* **ui:** the working badge and the update sheen no longer animate without end ([228f969](https://github.com/mramdann/anbo-ai/commit/228f969201038ddba505b5d3eb9ae0ebba459ecc))
+
 ## [0.41.0](https://github.com/mramdann/anbo-ai/compare/v0.40.0...v0.41.0) (2026-11-17)
 
 
