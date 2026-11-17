@@ -164,6 +164,15 @@ describe("terminal scrollbar", () => {
     );
   });
 
+  it("leaves the caret of the textarea that is never seen still", () => {
+    // xterm's helper textarea has opacity 0, but its native caret blinked every
+    // 530 ms and each blink was a frame: 17 frames in 8 s for a focused
+    // terminal that did nothing, none with this rule (round 110).
+    expect(css).toMatch(
+      /\.xterm \.xterm-helper-textarea \{\s*caret-animation:\s*manual;\s*\}/,
+    );
+  });
+
   it("sizes the bar and its slider from the shared token", () => {
     expect(css).toMatch(
       /\.scrollbar\.vertical\s*\{[^}]*width:\s*var\(--scrollbar-thickness\)/,

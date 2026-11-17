@@ -453,6 +453,14 @@ html[data-native-browser-live="true"]
 .xterm .xterm-screen {
   margin-inline: auto;
 }
+/* xterm's helper textarea takes the keys and is never seen (opacity 0), yet
+ * its native caret blinked every 530 ms, the Windows caret time, and each
+ * blink was a frame: a focused terminal that did nothing made two frames a
+ * second, about 0.3% of a core, and kept the compositor and the GPU process
+ * awake. Left still, such a terminal makes no frame at all (round 110). */
+.xterm .xterm-helper-textarea {
+  caret-animation: manual;
+}
 
 /* CodeMirror normally injects these structural rules through style-mod. Keep
  * the layout-critical subset global as a WebView2 production fallback. If the
