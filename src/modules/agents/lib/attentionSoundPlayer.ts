@@ -4,7 +4,11 @@ import {
   type AttentionSoundId,
   audioContext,
   DEFAULT_ATTENTION_SOUND,
+  restAudioAfter,
 } from "./attentionSound";
+
+/** Past a sound's last voice: its tail has gone quiet before the context rests. */
+const REST_MARGIN_S = 0.3;
 
 /**
  * One oscillator. Its gain rises from silence through `envelope`, points of
@@ -153,8 +157,20 @@ async function playWhenReady(
   voices: readonly Voice[],
 ): Promise<void> {
   try {
+    // The context runs for this sound only (see restAudioAfter). Asked for
+    // before the resume too, so a rest that falls due while it wakes does not
+    // suspend it under the sound; and again below, from the sound's real start.
+    const length =
+      Math.max(
+        ...voices.map(
+          (voice) =>
+            voice.at + (voice.envelope[voice.envelope.length - 1]?.[0] ?? 0),
+        ),
+      ) + REST_MARGIN_S;
+    restAudioAfter(audio, length);
     if (audio.state === "suspended") await audio.resume();
     if (audio.state !== "running") return;
+    restAudioAfter(audio, length);
 
     const now = audio.currentTime + 0.005;
     for (const voice of voices) {

@@ -1,4 +1,6 @@
 let context: AudioContext | null = null;
+let restAt = 0;
+let restTimer: ReturnType<typeof setTimeout> | undefined;
 
 /** One context for the unlock below and for the player that uses it. */
 export function audioContext(): AudioContext | null {
@@ -6,6 +8,25 @@ export function audioContext(): AudioContext | null {
   if (typeof AudioContextConstructor !== "function") return null;
   context ??= new AudioContextConstructor();
   return context;
+}
+
+/**
+ * Lets the context run for `seconds` more, then suspends it. A running context
+ * renders silence about 100 times a second for as long as it runs: left running
+ * after the unlock, it cost the main window about 3% of a core from the first
+ * click on (round 109). A context that ran once inside a user gesture resumes
+ * later without one, so it rests between sounds. A sound that asked for longer
+ * keeps its time.
+ */
+export function restAudioAfter(audio: AudioContext, seconds: number): void {
+  const at = Date.now() + seconds * 1000;
+  if (at < restAt) return;
+  restAt = at;
+  clearTimeout(restTimer);
+  restTimer = setTimeout(() => {
+    restAt = 0;
+    if (audio.state === "running") void audio.suspend().catch(() => {});
+  }, seconds * 1000);
 }
 
 /** The alert sounds a user can pick in Settings, in menu order. */
@@ -29,7 +50,8 @@ export function isAttentionSoundId(value: unknown): value is AttentionSoundId {
 
 /**
  * Unlock Web Audio from a real user gesture so background agent attention can
- * play even when the first sound happens after the window loses focus.
+ * play even when the first sound happens after the window loses focus. The
+ * context runs for that moment only: unlocked, it rests until a sound plays.
  */
 export function prepareAttentionSound(): () => void {
   if (typeof window === "undefined") return () => {};
@@ -38,20 +60,28 @@ export function prepareAttentionSound(): () => void {
   const cleanup = () => {
     if (!listening) return;
     listening = false;
-    window.removeEventListener("pointerdown", unlock, true);
-    window.removeEventListener("keydown", unlock, true);
+    window.removeEventListener("pointerdown", unlock, { capture: true });
+    window.removeEventListener("keydown", unlock, { capture: true });
   };
   const unlock = () => {
     const audio = audioContext();
-    if (!audio || audio.state === "running") {
+    if (!audio) {
       cleanup();
+      return;
+    }
+    const unlocked = () => {
+      if (audio.state !== "running") return;
+      cleanup();
+      restAudioAfter(audio, 0);
+    };
+    // A context made inside the gesture runs at once, with no resume.
+    if (audio.state === "running") {
+      unlocked();
       return;
     }
     void audio
       .resume()
-      .then(() => {
-        if (audio.state === "running") cleanup();
-      })
+      .then(unlocked)
       .catch(() => {});
   };
 
@@ -59,6 +89,6 @@ export function prepareAttentionSound(): () => void {
     capture: true,
     passive: true,
   });
-  window.addEventListener("keydown", unlock, true);
+  window.addEventListener("keydown", unlock, { capture: true });
   return cleanup;
 }
