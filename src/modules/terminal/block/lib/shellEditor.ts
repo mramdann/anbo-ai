@@ -1,3 +1,4 @@
+import { caretBlink } from "@/lib/caretBlink";
 import { buildTerminalTheme } from "@/styles/terminalTheme";
 import {
   acceptCompletion,
@@ -39,6 +40,9 @@ import { inlineSuggestion } from "./inlineSuggest";
 import { pathCompletions } from "./pathComplete";
 
 const shellLanguage = StreamLanguage.define(shell);
+
+/** One blink of the input's caret. */
+const CARET_BLINK_MS = 1100;
 
 export type ShellEditorOptions = {
   parent: HTMLElement;
@@ -399,7 +403,8 @@ export function createShellEditor(opts: ShellEditorOptions): ShellEditorHandle {
     doc: "",
     extensions: [
       history(),
-      drawSelection({ cursorBlinkRate: 1100 }),
+      drawSelection({ cursorBlinkRate: CARET_BLINK_MS }),
+      caretBlink(CARET_BLINK_MS),
       rectangularSelection(),
       crosshairCursor(),
       EditorState.allowMultipleSelections.of(true),

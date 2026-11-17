@@ -1,3 +1,4 @@
+import { caretBlink } from "@/lib/caretBlink";
 import { detectMonoFontFamily } from "@/lib/fonts";
 import { indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { lintGutter } from "@codemirror/lint";
@@ -33,6 +34,8 @@ const SHARED_EXTENSIONS: readonly Extension[] = Object.freeze([
   lintGutter(),
   syntaxHighlighting(classHighlighter),
   chromeTheme(),
+  // The caret blinks by a timer, not by an animation that never ends.
+  caretBlink(),
   EditorView.theme({
     "&, &.cm-editor, &.cm-editor.cm-focused": {
       backgroundColor: "transparent !important",

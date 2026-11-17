@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { CARET_OFF_CLASS, CARET_TIMED_CLASS } from "@/lib/caretBlink";
 import { describe, expect, it } from "vitest";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -36,6 +37,68 @@ describe("CodeMirror layout fallback", () => {
     // or scrollbar-color is non-initial, so these two must stay auto.
     expect(css).toMatch(
       /\.anbo-code-editor \.cm-scroller \{\s*scrollbar-width:\s*auto;\s*scrollbar-color:\s*auto;\s*\}/,
+    );
+  });
+});
+
+describe("caret blink", () => {
+  // The caret blinks by a timer (src/lib/caretBlink.ts): an animation that
+  // never ends keeps Chromium making frames 60 times a second, about 1.3% of a
+  // core for as long as an editor holds the focus (round 109). The plugin only
+  // sets two classes; these rules are what they do.
+  it("turns the animation off for a timed scroller, over CodeMirror's inline name", () => {
+    expect(css).toMatch(
+      new RegExp(
+        `\\.cm-editor\\.cm-focused > \\.cm-scroller\\.${CARET_TIMED_CLASS} > \\.cm-cursorLayer \\{\\s*animation:\\s*none\\s*!important;`,
+      ),
+    );
+  });
+
+  // The animation kept the caret on a layer of its own. Painted with the text
+  // instead, a shown caret changed how the line numbers beside it were drawn:
+  // 189 pixels with every blink (round 110, pictures compared pixel by pixel).
+  it("keeps the caret of a focused editor on its own layer, as the animation did", () => {
+    expect(css).toMatch(
+      new RegExp(
+        `\\.cm-editor\\.cm-focused > \\.cm-scroller\\.${CARET_TIMED_CLASS} > \\.cm-cursorLayer \\{[^}]*will-change:\\s*opacity;\\s*\\}`,
+      ),
+    );
+  });
+
+  // Opacity is the layer's own value: nothing is painted for a dark half.
+  // Visibility would take the caret out of the paint and bring the change to
+  // the line numbers back.
+  it("makes the dark half by opacity for every cursor layer of the scroller", () => {
+    expect(css).toMatch(
+      new RegExp(
+        `\\.cm-scroller\\.${CARET_OFF_CLASS} > \\.cm-cursorLayer \\{\\s*opacity:\\s*0;\\s*\\}`,
+      ),
+    );
+    expect(css).not.toMatch(
+      new RegExp(`\\.${CARET_OFF_CLASS}[^{]*\\{[^}]*visibility`),
+    );
+  });
+
+  it("keeps the animation for an editor without the timer", () => {
+    expect(css).toMatch(
+      /\.cm-editor\.cm-focused > \.cm-scroller > \.cm-cursorLayer \{\s*animation:\s*steps\(1\) cm-blink 1\.2s infinite;\s*\}/,
+    );
+    expect(css).toMatch(/@keyframes cm-blink \{/);
+    expect(css).toMatch(/@keyframes cm-blink2 \{/);
+  });
+
+  // The native caret is transparent under the drawn one and still blinked
+  // every 530 ms: a frame each time, half of a focused editor's frames
+  // (round 110).
+  it("leaves the native caret that cannot be seen still", () => {
+    expect(css).toMatch(
+      /\.cm-editor \.cm-line,\s*\.cm-editor \.cm-content \{\s*caret-color:\s*transparent\s*!important;\s*caret-animation:\s*manual;\s*\}/,
+    );
+  });
+
+  it("lets a focused field inside the editor blink its own caret", () => {
+    expect(css).toMatch(
+      /\.cm-editor \.cm-content :focus \{\s*caret-color:\s*initial\s*!important;\s*caret-animation:\s*auto;\s*\}/,
     );
   });
 });
