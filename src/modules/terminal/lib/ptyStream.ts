@@ -79,9 +79,23 @@ export type StreamWatch = {
   behindAt: number | null;
   /** Checks in a row that did not find the session at all. */
   missing: number;
+  /** Checks in a row that found it behind and holding the same. */
+  stuck: number;
+  /** How many such checks make it ask for a new channel. */
+  patience: number;
 };
 
-export const freshWatch = (): StreamWatch => ({ behindAt: null, missing: 0 });
+/** A stream behind for two checks in a row asks for a new channel. */
+const FIRST_PATIENCE = 2;
+/** The longest it waits between two asks, in checks. */
+const MOST_PATIENCE = 16;
+
+export const freshWatch = (): StreamWatch => ({
+  behindAt: null,
+  missing: 0,
+  stuck: 0,
+  patience: FIRST_PATIENCE,
+});
 
 /**
  * One watchdog check of a stream that holds everything before `received`.
@@ -89,6 +103,12 @@ export const freshWatch = (): StreamWatch => ({ behindAt: null, missing: 0 });
  * terminal looked idle for an hour while its shell had run the command. A
  * stream that stays behind Rust's for a whole check, or whose send failed,
  * gets a new channel; one Rust no longer knows twice in a row is gone.
+ *
+ * A new channel makes Rust send again everything the stream does not hold.
+ * When the page itself is too busy to take its output, that does not help and
+ * is more for it to take, so a stream that asked and still holds the same
+ * waits twice as many checks before it asks again (round 113: one stalled for
+ * 40 s asked 14 times). It is back to two checks once it moves.
  */
 export function watchStream(
   watch: StreamWatch,
@@ -98,15 +118,30 @@ export function watchStream(
   if (!status) {
     const missing = watch.missing + 1;
     return {
-      watch: { behindAt: null, missing },
+      watch: { ...freshWatch(), missing },
       action: missing >= 2 ? "gone" : "none",
     };
   }
   if (status.broken) return { watch: freshWatch(), action: "reattach" };
   const behind = status.sent > received || status.exitPending;
   if (!behind) return { watch: freshWatch(), action: "none" };
-  if (watch.behindAt === received) {
-    return { watch: freshWatch(), action: "reattach" };
+  if (watch.behindAt !== received) {
+    return {
+      watch: { ...freshWatch(), behindAt: received, stuck: 1 },
+      action: "none",
+    };
   }
-  return { watch: { behindAt: received, missing: 0 }, action: "none" };
+  const stuck = watch.stuck + 1;
+  if (stuck < watch.patience) {
+    return { watch: { ...watch, missing: 0, stuck }, action: "none" };
+  }
+  return {
+    watch: {
+      behindAt: received,
+      missing: 0,
+      stuck: 0,
+      patience: Math.min(watch.patience * 2, MOST_PATIENCE),
+    },
+    action: "reattach",
+  };
 }

@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const core = vi.hoisted(() => {
   const answers: Array<() => void> = [];
+  // What Rust says of its streams when the watchdog asks.
+  const statuses: unknown[] = [];
   const invoke = vi.fn((command: string, _payload?: unknown) => {
     if (command === "pty_open") return Promise.resolve(7);
     if (command === "pty_write") {
@@ -9,13 +11,15 @@ const core = vi.hoisted(() => {
         answers.push(resolve);
       });
     }
+    if (command === "pty_output_status") return Promise.resolve([...statuses]);
+    if (command === "pty_attach") return Promise.resolve(true);
     return Promise.resolve();
   });
   class Channel {
     id = 1;
     onmessage: (message: unknown) => void = () => {};
   }
-  return { answers, invoke, Channel };
+  return { answers, statuses, invoke, Channel };
 });
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -35,9 +39,29 @@ function writesSent(): string[] {
     .map(([, bytes]) => decoder.decode(bytes as Uint8Array));
 }
 
+type Wire = { onmessage: (message: unknown) => void };
+
+/** The channel the page handed to Rust with its last call of `command`. */
+function channelOf(command: "pty_open" | "pty_attach"): Wire {
+  const [call] = core.invoke.mock.calls
+    .filter(([name]) => name === command)
+    .slice(-1) as [string, { onData: Wire }][];
+  return call[1].onData;
+}
+
+/** A data message as Rust frames it: kind 0, the offset, the bytes. */
+const message = (offset: number, body: number[]) =>
+  new Uint8Array([0, offset, 0, 0, 0, 0, 0, 0, 0, ...body]);
+
 describe("openPty output", () => {
   beforeEach(() => {
     core.invoke.mockClear();
+    core.statuses.length = 0;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it("delivers a message the same whether it came raw or as text", async () => {
@@ -47,12 +71,7 @@ describe("openPty output", () => {
     const pty = await openPty(80, 24, {
       onData: (bytes) => got.push(Array.from(bytes)),
     });
-    const opened = core.invoke.mock.calls.find(
-      ([command]) => command === "pty_open",
-    ) as [string, { onData: { onmessage: (message: unknown) => void } }];
-    const channel = opened[1].onData;
-    const message = (offset: number, body: number[]) =>
-      new Uint8Array([0, offset, 0, 0, 0, 0, 0, 0, 0, ...body]);
+    const channel = channelOf("pty_open");
 
     channel.onmessage(message(0, [104, 105]).buffer);
     channel.onmessage(
@@ -63,6 +82,56 @@ describe("openPty output", () => {
       [104, 105],
       [0x1b, 0xff, 10],
     ]);
+    await pty.close();
+  });
+
+  it("tells Rust what each stream holds, and takes what a replaced channel still delivers", async () => {
+    // Measured (round 113): with several agents writing without a pause a
+    // page fell behind, asked for a new channel, threw away what the old one
+    // then delivered, and asked Rust for output Rust had let go 30 s after
+    // sending it: "[anbo: N bytes of output were lost]". Rust now keeps
+    // output until the page names it in its check, and a message that was
+    // only late is taken wherever it arrives.
+    vi.useFakeTimers();
+    vi.stubGlobal("window", {});
+    const got: number[][] = [];
+    const pty = await openPty(80, 24, {
+      onData: (bytes) => got.push(Array.from(bytes)),
+    });
+    const first = channelOf("pty_open");
+    first.onmessage(message(0, [1, 2]).buffer);
+    // Rust has handed over five bytes; two have arrived.
+    core.statuses.push({
+      id: 7,
+      sent: 5,
+      end: 5,
+      broken: false,
+      exitPending: false,
+    });
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    const checks = core.invoke.mock.calls.filter(
+      ([command]) => command === "pty_output_status",
+    );
+    expect(checks).toHaveLength(2);
+    expect(checks[1][1]).toEqual({ received: [[7, 2]] });
+    const second = channelOf("pty_attach");
+    expect(second).not.toBe(first);
+    expect(
+      core.invoke.mock.calls
+        .filter(([name]) => name === "pty_attach")
+        .slice(-1)[0]?.[1],
+    ).toMatchObject({ id: 7, received: 2 });
+
+    // The message the first channel was slow with arrives after all.
+    first.onmessage(message(2, [3, 4, 5]).buffer);
+    // Rust sends the same again on the new channel, and then goes on.
+    second.onmessage(message(2, [3, 4, 5]).buffer);
+    second.onmessage(btoa(String.fromCharCode(...message(5, [6]))));
+
+    expect(got).toEqual([[1, 2], [3, 4, 5], [6]]);
     await pty.close();
   });
 });

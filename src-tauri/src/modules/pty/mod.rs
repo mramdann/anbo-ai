@@ -225,13 +225,21 @@ pub fn pty_attach(
 }
 
 /// Each session's output progress, for the UI to find a stream that stopped
-/// reaching it.
+/// reaching it. `received` is the UI's side of it: the offset each of its
+/// streams has come to. Output stays for a resend until the UI names it here
+/// (`pty/output.rs`).
 #[tauri::command]
-pub fn pty_output_status(state: tauri::State<PtyState>) -> Vec<OutputStatus> {
-    state
-        .sessions
-        .read()
-        .unwrap()
+pub fn pty_output_status(
+    state: tauri::State<PtyState>,
+    received: Option<Vec<(u32, u64)>>,
+) -> Vec<OutputStatus> {
+    let sessions = state.sessions.read().unwrap();
+    for (id, offset) in received.unwrap_or_default() {
+        if let Some(session) = sessions.get(&id) {
+            session.output.taken(offset);
+        }
+    }
+    sessions
         .iter()
         .map(|(id, session)| session.output.status(*id))
         .collect()

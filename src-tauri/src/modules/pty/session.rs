@@ -10,7 +10,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::agent_detect::AgentDetector;
 use super::da_filter::DaFilter;
-use super::output::{self, OutputLog, MAX_UNSENT};
+use super::output::{self, OutputLog, MAX_KEPT};
 use super::shell_init;
 use crate::modules::workspace::WorkspaceEnv;
 
@@ -151,8 +151,13 @@ impl Output {
 
     fn push(&self, bytes: &[u8]) {
         let mut state = self.state.lock().unwrap();
-        state.log.push(bytes, Instant::now());
+        state.log.push(bytes);
         self.wake.notify_all();
+    }
+
+    /// The UI holds everything before `received`: no resend will ask for it.
+    pub(super) fn taken(&self, received: u64) {
+        self.state.lock().unwrap().log.taken_upto(received);
     }
 
     fn finish(&self, code: i32) {
@@ -220,7 +225,6 @@ fn flush_output(id: u32, output: &Output) {
                     break;
                 }
                 state = output.wake.wait_timeout(state, FLUSH_MAX_IDLE).unwrap().0;
-                state.log.expire(Instant::now());
             }
         }
         // Coalesce a short window so a burst flushes as one chunk.
@@ -235,7 +239,7 @@ fn flush_output(id: u32, output: &Output) {
                 let dropped = state.log.take_dropped();
                 if dropped > 0 {
                     log::warn!(
-                        "pty {id}: dropped {dropped} bytes of output the UI had not taken (cap {MAX_UNSENT})"
+                        "pty {id}: dropped {dropped} bytes of output the UI had not taken (cap {MAX_KEPT})"
                     );
                 }
                 let upto = offset + bytes.len() as u64;
@@ -265,7 +269,7 @@ fn flush_output(id: u32, output: &Output) {
         }
         match sent {
             Ok(()) => match next {
-                Next::Data { upto } => state.log.mark_sent(upto, Instant::now()),
+                Next::Data { upto } => state.log.mark_sent(upto),
                 Next::Exit => {
                     state.exit_delivered = true;
                     output.wake.notify_all();
@@ -706,5 +710,39 @@ mod output_tests {
         output.wait_delivered(Duration::from_secs(5));
         handle.join().unwrap();
         assert_eq!(seen.lock().unwrap().as_slice(), &[vec![1, 0, 0, 0, 0]]);
+    }
+
+    #[test]
+    fn what_the_ui_does_not_hold_is_sent_again_when_it_asks() {
+        // Measured (round 113): a message the channel took and the UI never
+        // got was gone from here 30 s later, so a UI that asked later than
+        // that got nothing, and its terminal showed "bytes of output were
+        // lost". The UI's own word is what lets output go.
+        let (first, first_seen) = recording_channel(&[]);
+        let output = Arc::new(Output::new(first));
+        let flusher = output.clone();
+        let handle = thread::spawn(move || flush_output(10, &flusher));
+        output.push(b"got this, ");
+        wait_for("the first message", || {
+            first_seen.lock().unwrap().len() == 1
+        });
+        output.push(b"not this");
+        wait_for("the second message", || {
+            first_seen.lock().unwrap().len() == 2
+        });
+        let status = output.status(10);
+        assert_eq!((status.sent, status.end), (18, 18), "both were handed over");
+
+        output.taken(10);
+        let (second, second_seen) = recording_channel(&[]);
+        output.attach(second, 10);
+        wait_for("the resend", || !second_seen.lock().unwrap().is_empty());
+        assert_eq!(
+            data_of(&second_seen.lock().unwrap()[0]),
+            (10, b"not this".to_vec())
+        );
+
+        output.close();
+        handle.join().unwrap();
     }
 }

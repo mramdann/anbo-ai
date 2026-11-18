@@ -1,22 +1,27 @@
 //! A PTY's output on its way to the UI. Every byte has a stream offset, and
-//! the recent part stays after it is sent: a Tauri channel that loses one
-//! message parks every later one for good, so a lost message is sent again on
-//! a new channel instead of leaving the terminal blind while its shell runs on.
+//! what the UI has not said it holds stays: a Tauri channel that loses one
+//! message parks every later one for good, so output that did not arrive is
+//! sent again on a new channel instead of leaving the terminal blind while its
+//! shell runs on.
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use tauri::ipc::Response;
 
-/// The most output kept that the UI has not been handed. Past it the oldest
-/// goes, and the UI marks the gap.
-pub(super) const MAX_UNSENT: u64 = 4 * 1024 * 1024;
-/// How long output handed to the UI stays for a resend. The UI checks for a
-/// stalled stream every 2 s, but its IPC stayed jammed for 25 s after Dev's
-/// UI-thread queue was full.
-const KEEP_SENT_FOR: Duration = Duration::from_secs(30);
-const KEEP_SENT_MAX: u64 = 1024 * 1024;
+/// The most output kept that the UI has not said it holds, handed to a channel
+/// or not. Past it the oldest goes, and the UI marks a gap where it turns out
+/// not to hold that.
+///
+/// Until round 113 output handed to a channel stayed 30 s and at most 1 MB,
+/// on the thought that a UI missing a message asks again within seconds. A UI
+/// that could not take its output for longer than that (several agents
+/// writing without a pause) asked for output that was gone: Rust had nothing
+/// to send again, the UI asked every four seconds in vain, and the terminal
+/// showed "[anbo: N bytes of output were lost]" as soon as its program wrote
+/// again. Handed to a channel is not arrived, so only the UI's own word lets
+/// output go.
+pub(super) const MAX_KEPT: u64 = 4 * 1024 * 1024;
 
 const DATA_MESSAGE: u8 = 0;
 const EXIT_MESSAGE: u8 = 1;
@@ -24,7 +29,6 @@ const EXIT_MESSAGE: u8 = 1;
 struct Chunk {
     offset: u64,
     bytes: Vec<u8>,
-    sent_at: Option<Instant>,
 }
 
 impl Chunk {
@@ -42,22 +46,23 @@ pub(super) struct OutputLog {
     end: u64,
     /// The current channel was handed everything before this offset.
     sent: u64,
+    /// The UI has said it holds everything before this offset.
+    taken: u64,
     /// Bytes dropped unsent since the last `take_dropped`.
     dropped: u64,
 }
 
 impl OutputLog {
-    pub(super) fn push(&mut self, bytes: &[u8], now: Instant) {
+    pub(super) fn push(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
         self.chunks.push_back(Chunk {
             offset: self.end,
             bytes: bytes.to_vec(),
-            sent_at: None,
         });
         self.end += bytes.len() as u64;
-        self.trim(now);
+        self.trim();
     }
 
     pub(super) fn end(&self) -> u64 {
@@ -90,21 +95,22 @@ impl OutputLog {
         Some((from, bytes))
     }
 
-    /// The channel took everything before `upto`.
-    pub(super) fn mark_sent(&mut self, upto: u64, now: Instant) {
+    /// The channel took everything before `upto`. That is not yet the UI
+    /// holding it, so nothing goes.
+    pub(super) fn mark_sent(&mut self, upto: u64) {
         self.sent = upto.clamp(self.sent, self.end);
-        for chunk in &mut self.chunks {
-            if chunk.end() > self.sent {
-                break;
-            }
-            chunk.sent_at.get_or_insert(now);
-        }
-        self.trim(now);
+    }
+
+    /// The UI says it holds everything before `received`: that much can go.
+    pub(super) fn taken_upto(&mut self, received: u64) {
+        self.taken = received.clamp(self.taken, self.end);
+        self.trim();
     }
 
     /// A new channel whose side has everything before `received`: send again
     /// from there, or from the oldest byte kept when that went.
     pub(super) fn resend_from(&mut self, received: u64) {
+        self.taken_upto(received);
         self.sent = received.clamp(self.start, self.end);
     }
 
@@ -112,24 +118,16 @@ impl OutputLog {
         std::mem::take(&mut self.dropped)
     }
 
-    /// Lets go of sent output past its time, for a terminal that went quiet.
-    pub(super) fn expire(&mut self, now: Instant) {
-        self.trim(now);
-    }
-
-    fn trim(&mut self, now: Instant) {
+    fn trim(&mut self) {
         while let Some(front) = self.chunks.front() {
-            let sent_long_ago = front.end() <= self.sent
-                && front
-                    .sent_at
-                    .is_some_and(|at| now.duration_since(at) >= KEEP_SENT_FOR);
-            let too_much_sent =
-                front.end() <= self.sent && self.sent.saturating_sub(self.start) > KEEP_SENT_MAX;
-            let too_much_unsent = self.end - self.sent.max(self.start) > MAX_UNSENT;
-            if !(sent_long_ago || too_much_sent || too_much_unsent) {
+            let taken = front.end() <= self.taken;
+            let too_much = self.end - self.start > MAX_KEPT;
+            if !(taken || too_much) {
                 break;
             }
             let front = self.chunks.pop_front().expect("front chunk exists");
+            // Only output no channel was handed counts as dropped here; the
+            // UI finds by itself what it was handed and does not hold.
             self.dropped += front.end().saturating_sub(self.sent.max(front.offset));
             self.start = self.chunks.front().map_or(self.end, |next| next.offset);
         }
@@ -206,22 +204,21 @@ pub(super) fn message_bytes(body: tauri::ipc::InvokeResponseBody) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    fn log_with(parts: &[&[u8]], now: Instant) -> OutputLog {
+    fn log_with(parts: &[&[u8]]) -> OutputLog {
         let mut log = OutputLog::default();
         for part in parts {
-            log.push(part, now);
+            log.push(part);
         }
         log
     }
 
     #[test]
     fn hands_out_each_byte_once_with_its_offset() {
-        let now = Instant::now();
-        let mut log = log_with(&[b"abc", b"de"], now);
+        let mut log = log_with(&[b"abc", b"de"]);
         assert_eq!(log.unsent(), Some((0, b"abcde".to_vec())));
-        log.mark_sent(5, now);
+        log.mark_sent(5);
         assert_eq!(log.unsent(), None);
-        log.push(b"fg", now);
+        log.push(b"fg");
         assert_eq!(log.unsent(), Some((5, b"fg".to_vec())));
     }
 
@@ -229,79 +226,93 @@ mod tests {
     fn sends_again_from_what_the_new_channel_has() {
         // Measured (round 61): one failed send left the UI's channel waiting
         // for that message forever while the shell ran the command.
-        let now = Instant::now();
-        let mut log = log_with(&[b"echo ", b"done\r\n"], now);
-        log.mark_sent(11, now);
-        log.resend_from(5);
-        assert_eq!(log.unsent(), Some((5, b"done\r\n".to_vec())));
+        let mut log = log_with(&[b"echo ", b"done\r\n"]);
+        log.mark_sent(11);
         log.resend_from(2);
         assert_eq!(log.unsent(), Some((2, b"ho done\r\n".to_vec())));
+        log.mark_sent(11);
+        log.resend_from(5);
+        assert_eq!(log.unsent(), Some((5, b"done\r\n".to_vec())));
     }
 
     #[test]
-    fn keeps_sent_output_for_a_while_only() {
-        let start = Instant::now();
-        let mut log = log_with(&[b"old"], start);
-        log.mark_sent(3, start);
-        let later = start + KEEP_SENT_FOR + Duration::from_millis(1);
-        log.push(b"new", later);
+    fn keeps_what_a_channel_took_until_the_ui_holds_it() {
+        // Measured (round 113): a UI that could not take a terminal's output
+        // for 40 s asked for it again every four seconds. After 30 s the
+        // output was gone from here, nothing was sent again, and the terminal
+        // showed "[anbo: 26272 bytes of output were lost]" when its program
+        // wrote again. However long the UI takes, what it asks for is there.
+        let mut log = log_with(&[b"a long answer"]);
+        log.mark_sent(13);
+        for _ in 0..12 {
+            log.resend_from(0);
+            assert_eq!(log.unsent(), Some((0, b"a long answer".to_vec())));
+            log.mark_sent(13);
+        }
+        log.push(b", and more");
         log.resend_from(0);
-        assert_eq!(log.unsent(), Some((3, b"new".to_vec())));
+        assert_eq!(log.unsent(), Some((0, b"a long answer, and more".to_vec())));
         assert_eq!(log.take_dropped(), 0);
     }
 
     #[test]
-    fn a_quiet_terminal_lets_go_of_sent_output() {
-        let start = Instant::now();
-        let mut log = log_with(&[b"last screen"], start);
-        log.mark_sent(11, start);
-        log.expire(start + KEEP_SENT_FOR - Duration::from_millis(1));
-        log.resend_from(0);
-        assert_eq!(log.unsent(), Some((0, b"last screen".to_vec())));
-        log.mark_sent(11, start);
-        log.expire(start + KEEP_SENT_FOR);
-        log.resend_from(0);
+    fn lets_go_of_what_the_ui_says_it_holds() {
+        let mut log = log_with(&[b"last ", b"screen"]);
+        log.mark_sent(11);
+        log.taken_upto(5);
+        log.resend_from(5);
+        assert_eq!(log.unsent(), Some((5, b"screen".to_vec())));
+        log.mark_sent(11);
+        log.taken_upto(11);
+        assert_eq!(log.chunks.len(), 0, "a quiet terminal keeps nothing");
+        log.resend_from(11);
         assert_eq!(log.unsent(), None);
+        // The UI's word only moves forward: an older one changes nothing.
+        log.push(b"next");
+        log.mark_sent(15);
+        log.taken_upto(13);
+        log.taken_upto(11);
+        assert_eq!(log.taken, 13);
+        assert_eq!(log.chunks.len(), 1, "a chunk stays until all of it is held");
     }
 
     #[test]
-    fn caps_sent_output_kept_for_a_resend() {
-        let now = Instant::now();
-        let block = vec![b'x'; 256 * 1024];
+    fn keeps_at_most_the_cap_for_a_ui_that_does_not_answer() {
+        let block = vec![b'x'; 1024 * 1024];
         let mut log = OutputLog::default();
-        for _ in 0..8 {
-            log.push(&block, now);
-            log.mark_sent(log.end(), now);
+        for _ in 0..7 {
+            log.push(&block);
+            log.mark_sent(log.end());
         }
         log.resend_from(0);
         let (from, bytes) = log.unsent().expect("kept output");
-        assert!(bytes.len() as u64 <= KEEP_SENT_MAX + block.len() as u64);
+        assert_eq!(bytes.len() as u64, MAX_KEPT);
         assert_eq!(from + bytes.len() as u64, log.end());
+        // What a channel took is not counted as dropped: the UI finds by
+        // itself what it does not hold.
         assert_eq!(log.take_dropped(), 0);
     }
 
     #[test]
     fn drops_the_oldest_unsent_output_past_the_cap_and_counts_it() {
-        let now = Instant::now();
         let block = vec![b'y'; 1024 * 1024];
         let mut log = OutputLog::default();
         for _ in 0..6 {
-            log.push(&block, now);
+            log.push(&block);
         }
         let (from, bytes) = log.unsent().expect("unsent output");
         assert!(from > 0, "the gap starts the next message");
-        assert!(bytes.len() as u64 <= MAX_UNSENT);
+        assert!(bytes.len() as u64 <= MAX_KEPT);
         assert_eq!(log.take_dropped(), from);
         assert_eq!(log.take_dropped(), 0);
     }
 
     #[test]
     fn a_resend_cannot_go_before_the_oldest_byte_kept() {
-        let now = Instant::now();
         let block = vec![b'z'; 1024 * 1024];
         let mut log = OutputLog::default();
         for _ in 0..6 {
-            log.push(&block, now);
+            log.push(&block);
         }
         log.resend_from(0);
         let (from, _) = log.unsent().expect("unsent output");

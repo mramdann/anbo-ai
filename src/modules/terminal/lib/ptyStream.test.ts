@@ -105,6 +105,27 @@ describe("PTY stream watchdog", () => {
     ).toBe("reattach");
   });
 
+  it("waits twice as long each time it asked and nothing came, and is quick again once the stream moves", () => {
+    // A new channel makes Rust send everything again. A page too busy to
+    // take its output is not helped by that: round 113's stalled terminal
+    // asked 14 times in a minute. The checks are 2 s apart: it asks after 4 s,
+    // then 8 s later, 16 s, and at most every 32 s.
+    const behind = status({ sent: 30 });
+    let watch = freshWatch();
+    const asks: number[] = [];
+    for (let check = 1; check <= 70; check += 1) {
+      const next = watchStream(watch, behind, 10);
+      watch = next.watch;
+      if (next.action === "reattach") asks.push(check);
+    }
+    expect(asks).toEqual([2, 6, 14, 30, 46, 62]);
+
+    // One message arrives: the next stall is met as quickly as the first.
+    const moved = watchStream(watch, behind, 20);
+    expect(moved.action).toBe("none");
+    expect(watchStream(moved.watch, behind, 20).action).toBe("reattach");
+  });
+
   it("calls a session gone once Rust has not known it twice", () => {
     const first = watchStream(freshWatch(), undefined, 10);
     expect(first.action).toBe("none");

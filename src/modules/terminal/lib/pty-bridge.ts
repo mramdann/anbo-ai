@@ -71,7 +71,9 @@ class PtyStream {
     return channel;
   }
 
-  private receive(wire: PtyWireMessage): void {
+  /** Takes one message, from the stream's channel or from one it replaced:
+   *  the offset says what of it is new. */
+  receive(wire: PtyWireMessage): void {
     if (this.ended) return;
     let message: ReturnType<typeof parsePtyMessage>;
     try {
@@ -100,6 +102,11 @@ class PtyStream {
     this.received = received;
     if (lost > 0) {
       console.warn("[anbo] terminal output was lost", this.id, lost);
+      // Into Anbo's own log too: the console is not kept in a release build,
+      // and the notice in the terminal is gone once its program repaints.
+      void warn(
+        `terminal ${this.id}: ${lost} bytes of its output never reached the page and could not be sent again; the terminal shows a notice in their place`,
+      ).catch(() => {});
       this.deliver(textEncoder.encode(lostOutputNotice(lost)));
     }
     if (part) this.deliver(part);
@@ -175,8 +182,16 @@ async function checkStreams(): Promise<void> {
   if (checking || watched.size === 0) return;
   checking = true;
   try {
+    // The question carries the page's side of the answer: how far each stream
+    // has come here. Rust keeps a terminal's output until it is named here,
+    // so that a stream asking again, however late, finds it.
     const statuses = await withinTime(
-      invoke<PtyOutputStatus[]>("pty_output_status"),
+      invoke<PtyOutputStatus[]>("pty_output_status", {
+        received: [...watched.values()].map((stream) => [
+          stream.id,
+          stream.received,
+        ]),
+      }),
       WATCH_CALL_TIMEOUT_MS,
     );
     const byId = new Map(statuses.map((status) => [status.id, status]));
@@ -224,12 +239,16 @@ async function reattach(stream: PtyStream): Promise<void> {
   stream.attaching = true;
   const previous = stream.channel;
   stream.channel = stream.newChannel();
-  // Messages the old channel still gets were only late, and the new one has
-  // them again; none means one was lost. Round 64's soak could not tell: all
-  // its reattaches came while a new browser host was starting.
+  // Messages the old channel still gets were only late; none means one was
+  // lost. Round 64's soak could not tell: all its reattaches came while a new
+  // browser host was starting. A late message is taken like any other: every
+  // message carries its offset, so the same output arriving again on the new
+  // channel is told from what is new. Thrown away, it made a page that was
+  // only slow wait for all of it a second time (round 113).
   let late = 0;
-  previous.onmessage = () => {
+  previous.onmessage = (wire) => {
     late += 1;
+    stream.receive(wire);
   };
   console.warn(
     "[anbo] terminal output stalled; attaching a new channel",
