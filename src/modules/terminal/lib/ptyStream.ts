@@ -5,6 +5,26 @@ export type PtyMessage =
   | { kind: "data"; offset: number; bytes: Uint8Array }
   | { kind: "exit"; code: number };
 
+/** A message as the channel delivers it: raw bytes, or the same bytes as
+ *  base64 text. */
+export type PtyWireMessage = ArrayBuffer | string;
+
+/**
+ * A message's bytes, whichever way Rust sent it. One of up to about 6 KB
+ * comes as base64 text, because Tauri evaluates a short text body in place
+ * and makes the page fetch a raw body of 1 KB or more (`pty/output.rs` has
+ * the measurement); a larger one still comes raw.
+ */
+export function ptyMessageBuffer(message: PtyWireMessage): ArrayBuffer {
+  if (typeof message !== "string") return message;
+  const binary = atob(message);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes.buffer;
+}
+
 export function parsePtyMessage(buffer: ArrayBuffer): PtyMessage | null {
   const view = new DataView(buffer);
   if (buffer.byteLength >= 9 && view.getUint8(0) === 0) {

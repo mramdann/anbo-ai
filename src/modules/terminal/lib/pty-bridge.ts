@@ -8,7 +8,9 @@ import {
   freshWatch,
   lostOutputNotice,
   parsePtyMessage,
+  ptyMessageBuffer,
   type PtyOutputStatus,
+  type PtyWireMessage,
   type StreamWatch,
   unseenPart,
   watchStream,
@@ -56,22 +58,35 @@ class PtyStream {
   stalledSince: number | null = null;
   private ended = false;
   private readonly handlers: PtyHandlers;
-  channel: Channel<ArrayBuffer>;
+  channel: Channel<PtyWireMessage>;
 
   constructor(handlers: PtyHandlers) {
     this.handlers = handlers;
     this.channel = this.newChannel();
   }
 
-  newChannel(): Channel<ArrayBuffer> {
-    const channel = new Channel<ArrayBuffer>();
-    channel.onmessage = (buffer) => this.receive(buffer);
+  newChannel(): Channel<PtyWireMessage> {
+    const channel = new Channel<PtyWireMessage>();
+    channel.onmessage = (wire) => this.receive(wire);
     return channel;
   }
 
-  private receive(buffer: ArrayBuffer): void {
+  private receive(wire: PtyWireMessage): void {
     if (this.ended) return;
-    const message = parsePtyMessage(buffer);
+    let message: ReturnType<typeof parsePtyMessage>;
+    try {
+      message = parsePtyMessage(ptyMessageBuffer(wire));
+    } catch (cause) {
+      // Text that is not base64 would throw out of the channel's handler, and
+      // the channel would then hold every later message. The watchdog asks
+      // for the output again.
+      console.error(
+        "[anbo] terminal output message unreadable",
+        this.id,
+        cause,
+      );
+      return;
+    }
     if (!message) return;
     if (message.kind === "exit") {
       this.finish(message.code);
@@ -197,7 +212,7 @@ type TauriInternals = { unregisterCallback?: (id: number) => void };
 
 // A channel that lost a message holds every later one until its callback is
 // dropped, and Channel offers no public way to drop it.
-function forgetChannel(channel: Channel<ArrayBuffer>): void {
+function forgetChannel(channel: Channel<PtyWireMessage>): void {
   const internals = (
     window as unknown as { __TAURI_INTERNALS__?: TauriInternals }
   ).__TAURI_INTERNALS__;
@@ -261,7 +276,8 @@ export async function openPty(
   blocks?: boolean,
   shell?: string,
 ): Promise<PtySession> {
-  // Raw bytes, no base64/JSON round-trip; messages arrive as ArrayBuffer.
+  // No JSON round-trip of the output itself: a message arrives as its bytes,
+  // or as base64 text when it is short (ptyMessageBuffer).
   const stream = new PtyStream(handlers);
 
   const id = await invoke<number>("pty_open", {

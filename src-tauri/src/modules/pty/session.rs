@@ -257,7 +257,7 @@ fn flush_output(id: u32, output: &Output) {
             }
         };
         last_send = Some(Instant::now());
-        let sent = channel.send(Response::new(message));
+        let sent = channel.send(output::response(message));
         let mut state = output.state.lock().unwrap();
         // A channel attached meanwhile sends again from what the UI has.
         if state.epoch != epoch {
@@ -599,9 +599,7 @@ mod output_tests {
             if fail.contains(&call) {
                 return Err(tauri::Error::FailedToReceiveMessage);
             }
-            if let tauri::ipc::InvokeResponseBody::Raw(bytes) = body {
-                sink.lock().unwrap().push(bytes);
-            }
+            sink.lock().unwrap().push(output::message_bytes(body));
             Ok(())
         });
         (channel, seen)

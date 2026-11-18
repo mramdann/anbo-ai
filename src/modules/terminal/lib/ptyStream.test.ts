@@ -4,6 +4,7 @@ import {
   lostOutputNotice,
   parsePtyMessage,
   type PtyOutputStatus,
+  ptyMessageBuffer,
   unseenPart,
   watchStream,
 } from "./ptyStream";
@@ -33,6 +34,25 @@ describe("PTY stream messages", () => {
       code: -1,
     });
     expect(parsePtyMessage(new Uint8Array([7, 1]).buffer)).toBeNull();
+  });
+
+  it("reads a message sent as text like the same message sent raw", () => {
+    // Rust sends a short message as base64 text, which Tauri evaluates in
+    // place; a raw body of 1 KB or more is fetched by a request of its own,
+    // and that cost more than the output itself (round 112). The bytes are
+    // ones no text encoding keeps: an escape, a NUL, half a character, 0xff.
+    const body = [0x1b, 0x5b, 0, 0xe2, 0x94, 0xff, 0x0a];
+    const raw = frame(0, [9, 0, 0, 0, 0, 0, 0, 0], body);
+    const text = btoa(String.fromCharCode(...new Uint8Array(raw)));
+    expect(ptyMessageBuffer(raw)).toBe(raw);
+    const read = parsePtyMessage(ptyMessageBuffer(text));
+    expect(read).toMatchObject({ kind: "data", offset: 9 });
+    expect(read?.kind === "data" && Array.from(read.bytes)).toEqual(body);
+    expect(
+      parsePtyMessage(
+        ptyMessageBuffer(btoa(String.fromCharCode(1, 3, 0, 0, 0))),
+      ),
+    ).toEqual({ kind: "exit", code: 3 });
   });
 
   it("keeps only what a message sent again adds, and counts a gap", () => {

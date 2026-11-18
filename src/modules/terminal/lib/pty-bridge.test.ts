@@ -35,6 +35,38 @@ function writesSent(): string[] {
     .map(([, bytes]) => decoder.decode(bytes as Uint8Array));
 }
 
+describe("openPty output", () => {
+  beforeEach(() => {
+    core.invoke.mockClear();
+  });
+
+  it("delivers a message the same whether it came raw or as text", async () => {
+    // Rust sends a short message as base64 text and a long one raw
+    // (pty/output.rs); the terminal must not know the difference.
+    const got: number[][] = [];
+    const pty = await openPty(80, 24, {
+      onData: (bytes) => got.push(Array.from(bytes)),
+    });
+    const opened = core.invoke.mock.calls.find(
+      ([command]) => command === "pty_open",
+    ) as [string, { onData: { onmessage: (message: unknown) => void } }];
+    const channel = opened[1].onData;
+    const message = (offset: number, body: number[]) =>
+      new Uint8Array([0, offset, 0, 0, 0, 0, 0, 0, 0, ...body]);
+
+    channel.onmessage(message(0, [104, 105]).buffer);
+    channel.onmessage(
+      btoa(String.fromCharCode(...message(2, [0x1b, 0xff, 10]))),
+    );
+
+    expect(got).toEqual([
+      [104, 105],
+      [0x1b, 0xff, 10],
+    ]);
+    await pty.close();
+  });
+});
+
 describe("openPty input", () => {
   beforeEach(() => {
     core.answers.length = 0;

@@ -6,6 +6,9 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
+use tauri::ipc::Response;
+
 /// The most output kept that the UI has not been handed. Past it the oldest
 /// goes, and the UI marks the gap.
 pub(super) const MAX_UNSENT: u64 = 4 * 1024 * 1024;
@@ -151,6 +154,54 @@ pub(super) fn exit_message(code: i32) -> Vec<u8> {
     message
 }
 
+/// The longest message that still travels as text. Tauri puts a JSON body
+/// under 8,192 bytes inside the script that hands it to the page; base64
+/// writes four characters for three bytes, and the two quotes count.
+const TEXT_MESSAGE_MAX: usize = 6_141;
+
+/// A message as the channel sends it.
+///
+/// Tauri hands a raw body of 1,024 bytes or more to the page by a request of
+/// its own: the page fetches it through the IPC protocol, which is a trip
+/// through the browser's network stack and back into this process for every
+/// message. That is the right way for a megabyte of output and a dear one for
+/// the kilobyte or two an agent's CLI repaints many times a second: across
+/// that line, at twenty messages a second, Anbo's own work rose from 6% to 13%
+/// of a core (round 112). A message that fits goes as base64 text instead,
+/// which Tauri evaluates in place; a larger one stays raw.
+pub(super) fn response(message: Vec<u8>) -> Response {
+    match text_message(&message) {
+        Some(text) => Response::new(text),
+        None => Response::new(message),
+    }
+}
+
+/// `message` as a JSON string of base64, when it is short enough.
+fn text_message(message: &[u8]) -> Option<String> {
+    if message.len() > TEXT_MESSAGE_MAX {
+        return None;
+    }
+    let mut text = String::with_capacity(message.len().div_ceil(3) * 4 + 2);
+    text.push('"');
+    base64::engine::general_purpose::STANDARD.encode_string(message, &mut text);
+    text.push('"');
+    Some(text)
+}
+
+/// The bytes of a message as the page reads them, whichever way it went.
+#[cfg(test)]
+pub(super) fn message_bytes(body: tauri::ipc::InvokeResponseBody) -> Vec<u8> {
+    match body {
+        tauri::ipc::InvokeResponseBody::Raw(bytes) => bytes,
+        tauri::ipc::InvokeResponseBody::Json(text) => {
+            let text: String = serde_json::from_str(&text).expect("a JSON string");
+            base64::engine::general_purpose::STANDARD
+                .decode(text)
+                .expect("base64")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,5 +315,55 @@ mod tests {
             vec![0, 0x02, 0x01, 0, 0, 0, 0, 0, 0, b'h', b'i']
         );
         assert_eq!(exit_message(-1), vec![1, 0xff, 0xff, 0xff, 0xff]);
+    }
+
+    fn body_of(message: Vec<u8>) -> tauri::ipc::InvokeResponseBody {
+        use tauri::ipc::IpcResponse;
+        response(message).body().expect("a body")
+    }
+
+    #[test]
+    fn a_message_that_fits_travels_as_text_and_reads_the_same() {
+        // Bytes no text encoding would keep: an escape, a NUL, half a UTF-8
+        // character, 0xff.
+        let message = data_message(9, &[0x1b, b'[', 0, 0xe2, 0x94, 0xff, b'\n']);
+        let body = body_of(message.clone());
+        let tauri::ipc::InvokeResponseBody::Json(text) = &body else {
+            panic!("a short message goes as text");
+        };
+        assert!(text.starts_with('"') && text.ends_with('"'));
+        assert!(
+            text[1..text.len() - 1]
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=')),
+            "nothing a script would have to escape"
+        );
+        assert_eq!(message_bytes(body), message);
+        assert_eq!(
+            message_bytes(body_of(exit_message(3))),
+            vec![1, 3, 0, 0, 0],
+            "the exit code too"
+        );
+    }
+
+    #[test]
+    fn text_stops_where_tauri_would_fetch_it() {
+        // Tauri's own limit for a JSON body it evaluates in place
+        // (MAX_JSON_DIRECT_EXECUTE_THRESHOLD in its ipc/channel.rs): past it
+        // the text would be fetched like a raw body, only larger.
+        const TAURI_JSON_DIRECT_LIMIT: usize = 8192;
+        let longest = vec![0xa5; TEXT_MESSAGE_MAX];
+        let text = text_message(&longest).expect("the longest text message");
+        assert!(text.len() < TAURI_JSON_DIRECT_LIMIT);
+        assert!(text_message(&vec![0xa5; TEXT_MESSAGE_MAX + 1]).is_none());
+        let one_more = vec![0xa5; TEXT_MESSAGE_MAX + 1];
+        assert!(
+            one_more.len().div_ceil(3) * 4 + 2 >= TAURI_JSON_DIRECT_LIMIT,
+            "the limit is as high as it can be"
+        );
+        assert!(matches!(
+            body_of(one_more),
+            tauri::ipc::InvokeResponseBody::Raw(bytes) if bytes.len() == TEXT_MESSAGE_MAX + 1
+        ));
     }
 }
