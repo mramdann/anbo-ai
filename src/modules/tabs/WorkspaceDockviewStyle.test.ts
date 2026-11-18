@@ -116,6 +116,81 @@ describe("WorkspaceDockview active tab treatment", () => {
     expect(css).toContain("border-radius: 50%");
   });
 
+  it("draws the wave thirty-six times a period, each time as the wave stands at that moment", () => {
+    // An animation that never ends keeps the window drawing at the display's
+    // rate for as long as an agent holds a tab. Drawn smoothly, the held wave
+    // alone took 12% of one core on a machine that draws without a graphics
+    // card (round 112). So the keyframes are the wave's own values at 36
+    // evenly spaced moments, each held until the next: what is drawn is a
+    // frame of the same wave, 36 times a period. The curve below is the
+    // design; the stylesheet's numbers have to follow from it.
+    const STEPS = 36;
+    // CSS cubic-bezier(x1, y1, x2, y2), solved for its input.
+    const cubicBezier =
+      (x1: number, y1: number, x2: number, y2: number) => (x: number) => {
+        const at = (a: number, b: number, t: number) =>
+          ((1 - 3 * b + 3 * a) * t + (3 * b - 6 * a)) * t * t + 3 * a * t;
+        let low = 0;
+        let high = 1;
+        let t = x;
+        for (let turn = 0; turn < 60; turn += 1) {
+          if (at(x1, x2, t) < x) low = t;
+          else high = t;
+          t = (low + high) / 2;
+        }
+        return at(y1, y2, t);
+      };
+    const easeOut = cubicBezier(0, 0, 0.58, 1);
+    // Bright by 18%, still half lit at 55%, gone at the end; every stretch
+    // eases out, as the smooth wave did.
+    const stops = [
+      [0, 0],
+      [0.18, 0.95],
+      [0.55, 0.5],
+      [1, 0],
+    ];
+    const opacityAt = (t: number) => {
+      const next = Math.max(
+        1,
+        stops.findIndex(([at]) => t <= at),
+      );
+      const [t0, v0] = stops[next - 1];
+      const [t1, v1] = stops[next];
+      return v0 + (v1 - v0) * easeOut((t - t0) / (t1 - t0));
+    };
+    const scaleAt = (t: number) => 0.45 + (1.7 - 0.45) * easeOut(t);
+
+    const pulse =
+      /@keyframes anbo-browser-automation-pulse \{([\s\S]*?)\n\}/.exec(
+        css,
+      )?.[1] ?? "";
+    const frames = [
+      ...pulse.matchAll(
+        /([\d.]+)% \{\s*opacity: ([\d.]+);\s*transform: scale\(([\d.]+)\);\s*\}/g,
+      ),
+    ].map((match) => match.slice(1).map(Number));
+    expect(frames).toHaveLength(STEPS + 1);
+    frames.forEach(([at, opacity, scale], step) => {
+      const t = step / STEPS;
+      expect(at).toBeCloseTo(t * 100, 3);
+      expect(opacity).toBeCloseTo(opacityAt(t), 3);
+      expect(scale).toBeCloseTo(scaleAt(t), 3);
+    });
+    // Each keyframe holds until the next one: no frame in between.
+    expect(css).toMatch(
+      /animation: anbo-browser-automation-pulse var\(--anbo-automation-period, 1\.8s\)\s+step-end infinite;/,
+    );
+    // The second ring starts half a period in. Only an even count puts its
+    // steps on the first ring's, so that both change in one frame.
+    expect(STEPS % 2).toBe(0);
+    // A step is too small to see: under half a pixel at the ring's outer edge
+    // (84% of the 8 px the mark's box leaves it).
+    const widest = Math.max(
+      ...frames.slice(1).map(([, , scale], step) => scale - frames[step][2]),
+    );
+    expect(widest * 8 * 0.84).toBeLessThan(0.5);
+  });
+
   it("rests the wave of a parked session but keeps held and acting tabs beating", () => {
     expect(css).toMatch(
       /indicator\[data-state="idle"\]::before,\s*\.anbo-browser-automation-indicator\[data-state="idle"\]::after \{\s*animation: none;/,

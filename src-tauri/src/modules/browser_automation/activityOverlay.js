@@ -10,6 +10,33 @@
   let latest = 0;
   let request;
   let scheduled = 0, pending;
+  // The overlay's two lasting motions are drawn fewer times a second than the
+  // display refreshes, each time exactly as the smooth motion stands at that
+  // moment. An animation that runs keeps its page drawing at the display's
+  // rate, and on a machine that draws without a graphics card that is the
+  // CPU's work: on a 950 px page (round 112) the halo took 9% of a core for as
+  // long as a tab was held, and the two orbs 29% while a call was in flight.
+  // The halo is its breath at 36 moments (13 a second). Each orb takes 30
+  // positions a second, the second orb half a step behind the first, so one
+  // orb moves per frame: two marks moving in the same frame at opposite edges
+  // make the whole page the area to draw again, and one at a time it is a
+  // patch around that orb.
+  const HOLD_STEPS = 36, ORB_STEPS = 270;
+  // CSS ease-in-out, cubic-bezier(.42,0,.58,1), solved for its input.
+  const easeInOut = x => {
+    let low = 0, high = 1, t = x;
+    for (let turn = 0; turn < 32; turn++) {
+      if (((.52 * t - .78) * t + 1.26) * t < x) low = t; else high = t;
+      t = (low + high) / 2;
+    }
+    return (3 - 2 * t) * t * t;
+  };
+  // The halo's breath as keyframes: faint and small at both ends, full in the
+  // middle, easing in and out on the way up and on the way down.
+  const holdFrames = () => Array.from({length: HOLD_STEPS + 1}, (_, step) => {
+    const t = step / HOLD_STEPS, p = t < .5 ? easeInOut(t * 2) : 1 - easeInOut(t * 2 - 1);
+    return `${+(t * 100).toFixed(4)}%{opacity:${+(.14 + .76 * p).toFixed(4)};transform:scale(${+(.72 + .28 * p).toFixed(4)})}`;
+  }).join('');
   const resetPointer = () => {
     badgePoint = null;
     if (cursor) { cursor.style.display = 'none'; cursor.style.opacity = '0'; }
@@ -76,13 +103,14 @@
       .ring{position:absolute;left:-15px;top:-15px;width:30px;height:30px;display:none}
       /* A parked cursor still has to read as held rather than left behind, so a
        * halo breathes behind it whenever the session is idle. Transform and
-       * opacity only, on one small element, and only in the tab on screen. */
+       * opacity only, on one small element, and only in the tab on screen.
+       * step-end: each keyframe holds until the next, see HOLD_STEPS. */
       .hold{position:absolute;left:-13px;top:-11px;width:40px;height:40px;border-radius:50%;background:radial-gradient(circle,#61c6d147,#61c6d10f 55%,transparent 72%);opacity:0;will-change:transform,opacity}
-      :host([data-idle]) .hold{animation:hold 2800ms ease-in-out infinite}
+      :host([data-idle]) .hold{animation:hold 2800ms step-end infinite}
       .target{position:absolute;left:0;top:0;display:none;border:1px solid #61c6d18c;border-radius:4px;background:#61c6d10b}
       .ring::after{content:'';position:absolute;inset:0;border:2px solid var(--b);border-radius:50%;animation:ripple 450ms ease-out both}
       @keyframes ripple{from{transform:scale(.35);opacity:1}to{transform:scale(1.5);opacity:0}}
-      @keyframes hold{0%,100%{opacity:.14;transform:scale(.72)}50%{opacity:.9;transform:scale(1)}}
+      @keyframes hold{${holdFrames()}}
       @media(prefers-reduced-motion:reduce){.orb{animation:none;display:none}.cursor,.badge{transition:none}.ring::after{animation:none;opacity:.7}:host([data-idle]) .hold{animation:none;opacity:.45}}
       @media(max-width:420px){.badge{padding:6px 8px;gap:6px;font-size:9px}.logo{width:22px;height:22px}.name{max-width:85px}}
     `);
@@ -129,7 +157,7 @@
       const steps = [[0,-72,0,0],[.24,w-72,0,0],[.25,w-38,34,90],[.49,w-38,h-38,90],[.5,w-72,h-4,180],[.74,0,h-4,180],[.75,-34,h-38,270],[.99,-34,34,270],[1,-72,0,360]];
       const frames = steps.map(([offset,x,y,angle]) => ({offset,transform:`translate(${x}px,${y}px) rotate(${angle}deg)`}));
       root.querySelectorAll('.orb').forEach((orb,index) => {
-        const animation = orb.animate(frames, {duration:9000,iterations:Infinity,easing:'linear',delay:index ? -4500 : 0});
+        const animation = orb.animate(frames, {duration:9000,iterations:Infinity,easing:`steps(${ORB_STEPS})`,delay:index ? -4500 - 4500 / ORB_STEPS : 0});
         animation.currentTime = time;
         if (idle) animation.pause();
         animations.push(animation);

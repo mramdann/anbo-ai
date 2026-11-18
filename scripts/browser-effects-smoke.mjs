@@ -88,6 +88,13 @@ try {
   assert.equal(await evaluate(`document.elementFromPoint(${point.x},${point.y}).id`), "run", "Overlay does not intercept hit testing");
   assert.deepEqual(await evaluate("({width:document.documentElement.scrollWidth,height:document.documentElement.scrollHeight,text:document.body.innerText,buttons:document.querySelectorAll('button').length})"), before, "Overlay leaves layout and page text unchanged");
   assert.equal(await evaluate("document.querySelector('[data-anbo-visual]').shadowRoot"), null);
+  // Each orb takes thirty positions a second (270 over its nine-second loop)
+  // and the second runs half a position behind the first, so one orb moves
+  // per frame. Moving together at opposite edges they made the whole page the
+  // area to draw again at the display's rate.
+  await pause(50);
+  const orbs = await evaluate("window.testRoots.at(-1).getAnimations().filter(a=>a.constructor.name==='Animation').map(a=>{const t=a.effect.getTiming();return{easing:t.easing,delay:Math.round(t.delay*1000)/1000,duration:t.duration,state:a.playState}})");
+  assert.deepEqual(orbs, [{easing:'steps(270)',delay:0,duration:9000,state:'running'},{easing:'steps(270)',delay:-4516.667,duration:9000,state:'running'}], 'Both orbs run in thirty positions a second, half a position apart');
   const initialBadge = await badgeBounds();
   assert.equal(initialBadge.placement, 'pointer');
   assert(initialBadge.x >= point.x + 11 && initialBadge.y >= point.y + 19, 'Identity appears below and right of the agent cursor');
@@ -231,6 +238,10 @@ try {
   await pause(3000);
   assert((await cursorState()).opacity > .99, 'A finished tool retains its pointer beyond the old disposal timeout');
   assert.deepEqual(await evaluate("window.testRoots.at(-1).getAnimations().filter(a=>a.playState==='running').map(a=>a.animationName)"), ['hold'], 'Thinking gaps run only the held-session halo');
+  // The halo's breath is its own values at thirty-six moments, each held until
+  // the next: a frame of the same breath thirteen times a second.
+  const breath = await evaluate("(()=>{const root=window.testRoots.at(-1),rule=[...root.adoptedStyleSheets[0].cssRules].find(rule=>rule.name==='hold'),style=getComputedStyle(root.querySelector('.hold'));return{frames:rule.cssRules.length,timing:style.animationTimingFunction,duration:style.animationDuration}})()");
+  assert.deepEqual(breath, {frames:37,timing:'steps(1)',duration:'2.8s'}, 'The halo is drawn at its keyframes, not at every display frame');
   await emit('running', undefined, 'get_text', undefined, 80);
   assert.equal((await cursorState()).display, 'block', 'A read resumes the retained cursor after a long gap');
   await emit('ended', undefined, 'get_text', undefined, 80);
@@ -312,6 +323,9 @@ try {
     assert.equal(initial.first,'anbo-browser-automation-pulse');assert.equal(initial.second,initial.first);
     assert.equal(initial.radius,'50%');assert.equal(initial.duration,'1.5s');assert.equal(initial.delay,'-0.75s');assert.equal(initial.logoAnimation,'none');
     assert(Object.values(initial.room).every(value=>value>=5.2),'The full expanding circle fits inside the clipped tab content');
+    // The wave is its own values at thirty-six moments of a period, each held
+    // until the next (WorkspaceDockviewStyle.test.ts checks the values).
+    assert.deepEqual(await evaluate("(()=>{const rule=[...document.styleSheets].flatMap(sheet=>[...sheet.cssRules]).find(rule=>rule.name==='anbo-browser-automation-pulse');return{frames:rule.cssRules.length,timing:getComputedStyle(document.querySelector('.anbo-browser-automation-indicator'),'::before').animationTimingFunction}})()"),{frames:37,timing:'steps(1)'},'The wave is drawn at its keyframes, not at every display frame');
     const setPulseTime = time => evaluate(`document.getAnimations().filter(a=>a.animationName==='anbo-browser-automation-pulse').forEach(a=>{a.pause();a.currentTime=${time}})`);
     await setPulseTime(450);const early=await pulseState();
     await setPulseTime(1050);const later=await pulseState();

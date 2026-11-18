@@ -340,17 +340,164 @@
  * of its travel before fading. A single early peak read as a flicker at the
  * logo's edge; holding the band lit while it crosses open space is what makes
  * the beat legible from the far side of a tab strip.
+ *
+ * The curve: opacity 0 at the start, 0.95 at 18%, 0.5 at 55%, 0 at the end;
+ * scale 0.45 to 1.7; ease-out in every stretch. The keyframes are that curve
+ * at 36 evenly spaced moments, and step-end holds each until the next, so the
+ * window draws a frame of the same wave 36 times a period (24 a second on the
+ * tab being worked, about 11 on a tab merely held) instead of at every
+ * refresh. An animation that never ends keeps the window drawing at the
+ * display's rate for as long as an agent holds a tab: drawn smoothly, the held
+ * wave alone took 12% of a core on a machine that draws without a graphics
+ * card, and in these steps 5%. One step moves the ring by less than half a
+ * pixel. The count is even on purpose: the second ring starts half a period
+ * in, and only with an even count do both rings change in the same frame.
+ * WorkspaceDockviewStyle.test.ts rebuilds every keyframe from the curve.
  */
 @keyframes anbo-browser-automation-pulse {
   0% {
     opacity: 0;
     transform: scale(0.45);
   }
-  18% {
-    opacity: 0.95;
+  2.7778% {
+    opacity: 0.2301;
+    transform: scale(0.5079);
   }
-  55% {
-    opacity: 0.5;
+  5.5556% {
+    opacity: 0.4337;
+    transform: scale(0.5639);
+  }
+  8.3333% {
+    opacity: 0.6118;
+    transform: scale(0.6185);
+  }
+  11.1111% {
+    opacity: 0.761;
+    transform: scale(0.6719);
+  }
+  13.8889% {
+    opacity: 0.8746;
+    transform: scale(0.7242);
+  }
+  16.6667% {
+    opacity: 0.9409;
+    transform: scale(0.7754);
+  }
+  19.4444% {
+    opacity: 0.9209;
+    transform: scale(0.8256);
+  }
+  22.2222% {
+    opacity: 0.868;
+    transform: scale(0.8746);
+  }
+  25% {
+    opacity: 0.8182;
+    transform: scale(0.9227);
+  }
+  27.7778% {
+    opacity: 0.7711;
+    transform: scale(0.9697);
+  }
+  30.5556% {
+    opacity: 0.7268;
+    transform: scale(1.0156);
+  }
+  33.3333% {
+    opacity: 0.6854;
+    transform: scale(1.0604);
+  }
+  36.1111% {
+    opacity: 0.647;
+    transform: scale(1.1042);
+  }
+  38.8889% {
+    opacity: 0.612;
+    transform: scale(1.1469);
+  }
+  41.6667% {
+    opacity: 0.5806;
+    transform: scale(1.1884);
+  }
+  44.4444% {
+    opacity: 0.5533;
+    transform: scale(1.2287);
+  }
+  47.2222% {
+    opacity: 0.5307;
+    transform: scale(1.2679);
+  }
+  50% {
+    opacity: 0.5135;
+    transform: scale(1.3058);
+  }
+  52.7778% {
+    opacity: 0.5029;
+    transform: scale(1.3425);
+  }
+  55.5556% {
+    opacity: 0.4896;
+    transform: scale(1.3778);
+  }
+  58.3333% {
+    opacity: 0.4398;
+    transform: scale(1.4117);
+  }
+  61.1111% {
+    opacity: 0.3926;
+    transform: scale(1.4443);
+  }
+  63.8889% {
+    opacity: 0.3476;
+    transform: scale(1.4753);
+  }
+  66.6667% {
+    opacity: 0.3046;
+    transform: scale(1.5048);
+  }
+  69.4444% {
+    opacity: 0.2637;
+    transform: scale(1.5327);
+  }
+  72.2222% {
+    opacity: 0.225;
+    transform: scale(1.5588);
+  }
+  75% {
+    opacity: 0.1885;
+    transform: scale(1.5832);
+  }
+  77.7778% {
+    opacity: 0.1544;
+    transform: scale(1.6056);
+  }
+  80.5556% {
+    opacity: 0.1228;
+    transform: scale(1.6261);
+  }
+  83.3333% {
+    opacity: 0.0939;
+    transform: scale(1.6444);
+  }
+  86.1111% {
+    opacity: 0.0681;
+    transform: scale(1.6604);
+  }
+  88.8889% {
+    opacity: 0.0457;
+    transform: scale(1.674);
+  }
+  91.6667% {
+    opacity: 0.027;
+    transform: scale(1.685);
+  }
+  94.4444% {
+    opacity: 0.0127;
+    transform: scale(1.6931);
+  }
+  97.2222% {
+    opacity: 0.0034;
+    transform: scale(1.6982);
   }
   100% {
     opacity: 0;
@@ -438,7 +585,7 @@
   );
   opacity: 0;
   animation: anbo-browser-automation-pulse var(--anbo-automation-period, 1.8s)
-    ease-out infinite;
+    step-end infinite;
   content: "";
   pointer-events: none;
 }
