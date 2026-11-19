@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.41.2](https://github.com/mramdann/anbo-ai/compare/v0.41.1...v0.41.2) (2026-11-19)
+
+
+### Bug Fixes
+
+* **terminal:** output over 1 KB is no longer lost once a window's IPC has fallen back ([6ab1e6c](https://github.com/mramdann/anbo-ai/commit/6ab1e6ca056a142e3aa15af903f87d7b7ba4bd25))
+* **terminal:** output stays until the page holds it, so a page that fell behind loses none ([e311b2b](https://github.com/mramdann/anbo-ai/commit/e311b2bd06121e82d018e5092f1629bf6309289d))
+
+
+### Performance Improvements
+
+* **browser:** the marks of a tab an agent holds are drawn fewer times a second ([e2e19c3](https://github.com/mramdann/anbo-ai/commit/e2e19c3286b3a52557a37c03dc31af203df4f09f))
+* **terminal:** a short output message travels as text, not by a request of its own ([9b33b94](https://github.com/mramdann/anbo-ai/commit/9b33b94075306b5f0192ac5d5a9773bd074cdbc7))
+
 ## [0.41.1](https://github.com/mramdann/anbo-ai/compare/v0.41.0...v0.41.1) (2026-11-17)
 
 
