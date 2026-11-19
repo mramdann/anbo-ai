@@ -26,7 +26,9 @@ vi.mock("@tauri-apps/api/core", () => ({
   Channel: core.Channel,
   invoke: core.invoke,
 }));
-vi.mock("@tauri-apps/plugin-log", () => ({ warn: vi.fn() }));
+vi.mock("@tauri-apps/plugin-log", () => ({
+  warn: vi.fn(() => Promise.resolve()),
+}));
 vi.mock("@/lib/platform", () => ({ IS_WINDOWS: true }));
 vi.mock("@/modules/workspace", () => ({ currentWorkspaceEnv: () => null }));
 
@@ -85,9 +87,28 @@ describe("openPty output", () => {
     await pty.close();
   });
 
+  it("takes raw output that arrives as an array of numbers, and marks no gap", async () => {
+    // Measured (round 114): with the page's IPC on its fallback path a
+    // terminal printed 24 KB in one go. The raw message arrived as number[],
+    // the reader threw on it, and the next short message made the terminal
+    // show "[anbo: 26397 bytes of output were lost]".
+    const decoder = new TextDecoder();
+    const got: string[] = [];
+    const pty = await openPty(80, 24, {
+      onData: (bytes) => got.push(decoder.decode(bytes)),
+    });
+    const channel = channelOf("pty_open");
+
+    channel.onmessage(Array.from(message(0, [104, 105])));
+    channel.onmessage(btoa(String.fromCharCode(...message(2, [33]))));
+
+    expect(got).toEqual(["hi", "!"]);
+    await pty.close();
+  });
+
   it("tells Rust what each stream holds, and takes what a replaced channel still delivers", async () => {
-    // Measured (round 113): with several agents writing without a pause a
-    // page fell behind, asked for a new channel, threw away what the old one
+    // Measured (round 113): a page in which one terminal's raw messages were
+    // held for 40 s asked for a new channel, threw away what the old one
     // then delivered, and asked Rust for output Rust had let go 30 s after
     // sending it: "[anbo: N bytes of output were lost]". Rust now keeps
     // output until the page names it in its check, and a message that was

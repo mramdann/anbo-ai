@@ -55,6 +55,23 @@ describe("PTY stream messages", () => {
     ).toEqual({ kind: "exit", code: 3 });
   });
 
+  it("reads a raw message that came as an array of numbers", () => {
+    // Once one request of the page has failed, Tauri's IPC answers raw bytes
+    // as a JSON array for the rest of the page's life (`ipcBytes`). Read as
+    // an ArrayBuffer that threw, and the output was gone (round 114).
+    const body = [0x1b, 0x5b, 0, 0xe2, 0x94, 0xff, 10];
+    const raw = frame(0, [9, 0, 0, 0, 0, 0, 0, 0], body);
+    const read = parsePtyMessage(
+      ptyMessageBuffer(Array.from(new Uint8Array(raw))),
+    );
+    expect(read).toMatchObject({ kind: "data", offset: 9 });
+    expect(read?.kind === "data" && Array.from(read.bytes)).toEqual(body);
+    expect(parsePtyMessage(ptyMessageBuffer([1, 3, 0, 0, 0]))).toEqual({
+      kind: "exit",
+      code: 3,
+    });
+  });
+
   it("keeps only what a message sent again adds, and counts a gap", () => {
     const bytes = new TextEncoder().encode("hello");
     expect(unseenPart(0, 0, bytes)).toMatchObject({ lost: 0, received: 5 });

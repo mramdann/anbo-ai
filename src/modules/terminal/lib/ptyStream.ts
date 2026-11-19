@@ -1,3 +1,5 @@
+import { type IpcBytes, ipcBytes } from "@/lib/ipcBytes";
+
 /** One message of a PTY's output stream, as `pty/output.rs` frames it: a kind
  *  byte, then the stream offset of the first byte (little endian) and the
  *  bytes, or the shell's exit code. */
@@ -6,8 +8,9 @@ export type PtyMessage =
   | { kind: "exit"; code: number };
 
 /** A message as the channel delivers it: raw bytes, or the same bytes as
- *  base64 text. */
-export type PtyWireMessage = ArrayBuffer | string;
+ *  base64 text. Raw bytes are an ArrayBuffer, or an array of numbers once the
+ *  page's IPC has fallen back (`ipcBytes`). */
+export type PtyWireMessage = IpcBytes | string;
 
 /**
  * A message's bytes, whichever way Rust sent it. One of up to about 6 KB
@@ -16,7 +19,7 @@ export type PtyWireMessage = ArrayBuffer | string;
  * the measurement); a larger one still comes raw.
  */
 export function ptyMessageBuffer(message: PtyWireMessage): ArrayBuffer {
-  if (typeof message !== "string") return message;
+  if (typeof message !== "string") return ipcBytes(message);
   const binary = atob(message);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) {

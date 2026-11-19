@@ -1,3 +1,4 @@
+import { type IpcBytes, ipcBytes } from "@/lib/ipcBytes";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { Transport } from "codemirror-languageserver";
@@ -44,9 +45,12 @@ export class TauriLspTransport implements Transport {
 
   async start(config: LspSpawnConfig): Promise<void> {
     const decoder = new TextDecoder();
-    const onMessage = new Channel<ArrayBuffer>();
+    // Raw bytes: an array of numbers once the page's IPC has fallen back
+    // (`ipcBytes`), which a decoder refuses, so a server's message of 1 KB
+    // or more was dropped from then on.
+    const onMessage = new Channel<IpcBytes>();
     onMessage.onmessage = (buf) => {
-      const text = decoder.decode(buf);
+      const text = decoder.decode(ipcBytes(buf));
       this.answerServerRequest(text);
       if (this.onMsg) this.onMsg(text);
       else this.backlog.push(text);

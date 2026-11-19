@@ -15,12 +15,12 @@ use tauri::ipc::Response;
 ///
 /// Until round 113 output handed to a channel stayed 30 s and at most 1 MB,
 /// on the thought that a UI missing a message asks again within seconds. A UI
-/// that could not take its output for longer than that (several agents
-/// writing without a pause) asked for output that was gone: Rust had nothing
-/// to send again, the UI asked every four seconds in vain, and the terminal
-/// showed "[anbo: N bytes of output were lost]" as soon as its program wrote
-/// again. Handed to a channel is not arrived, so only the UI's own word lets
-/// output go.
+/// that could not take its output for longer than that (reproduced by
+/// holding one terminal's raw messages in the page for 40 s) asked for output
+/// that was gone: Rust had nothing to send again, the UI asked every four
+/// seconds in vain, and the terminal showed "[anbo: N bytes of output were
+/// lost]" as soon as its program wrote again. Handed to a channel is not
+/// arrived, so only the UI's own word lets output go.
 pub(super) const MAX_KEPT: u64 = 4 * 1024 * 1024;
 
 const DATA_MESSAGE: u8 = 0;
