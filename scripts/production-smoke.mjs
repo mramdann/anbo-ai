@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } 
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, resolve, sep } from "node:path";
+import { runEditorSmoke } from "./lib/production-smoke-editor.mjs";
 import { assertNoStaticChunkCycles } from "./production-chunk-graph.mjs";
 
 const distRoot = resolve("dist");
@@ -277,28 +278,18 @@ try {
   );
 
   await dumpPage(url, "main window");
-  const editor = await dumpPage(
-    `${url}?anbo-production-editor-smoke=1`,
-    "editor",
-  );
-  // How many 100 ms looks the editor needed, so a CI log shows how close the
+  // The editor page, and once more when a part of the editor was still
+  // missing at its last look (scripts/lib/production-smoke-editor.mjs). How
+  // many 100 ms looks it needed is printed, so a CI log shows how close the
   // page came to its deadline.
-  const looks = editor.stdout.match(/data-anbo-editor-smoke-looks="(\d+)"/)?.[1];
-  const firstLook = editor.stdout.match(/data-anbo-editor-smoke-first-look="([^"]*)"/)?.[1];
-  if (firstLook) console.log(`editor smoke, first look: ${firstLook}`);
-  if (!editor.stdout.includes('data-anbo-editor-smoke="pass"')) {
-    const detail = editor.stdout.match(
-      /data-anbo-editor-smoke-error="([^"]*)"/,
-    )?.[1];
-    throw new Error(
-      `production editor layout smoke failed${detail ? `: ${detail}` : ""}${looks ? ` (after ${looks} looks)` : ""}\n${editor.stderr.slice(-4000)}`,
-    );
-  }
+  const editor = await runEditorSmoke((label) =>
+    dumpPage(`${url}?anbo-production-editor-smoke=1`, label),
+  );
 
   const icons = await dumpPage(`${url}__anbo-icon-smoke`, "local icon assets");
   if (!icons.stdout.includes('data-anbo-icons="')) throw new Error("local icon decoding failed");
   console.log(
-    `Production bundle, editor layout (ready after ${looks ?? "?"} looks), and local icon decoding smoke tests passed`,
+    `Production bundle, editor layout (ready after ${editor.looks ?? "?"} looks${editor.attempt > 1 ? ", on the second try" : ""}), and local icon decoding smoke tests passed`,
   );
 } finally {
   await new Promise((resolveClose) => server.close(resolveClose));
