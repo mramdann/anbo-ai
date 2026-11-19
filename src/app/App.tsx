@@ -3335,11 +3335,12 @@ export default function App() {
                     </div>
                   </ResizablePanel>
                   <ResizableHandle withHandle />
-                  <ResizablePanel
-                    id="workspace"
-                    defaultSize="78%"
-                    minSize="30%"
-                  >
+                  {/* No default size here: this panel takes what the sidebar
+                      leaves. With one of its own (it had 78%) the two did not
+                      add up to the group, the panels library scaled both to
+                      fill it, and a stored 304 px sidebar came up 324 px wide
+                      in a 1920 px window. */}
+                  <ResizablePanel id="workspace" minSize="30%">
                     <div className="flex h-full min-h-0 flex-col">
                       <div
                         ref={dockAreaRef}

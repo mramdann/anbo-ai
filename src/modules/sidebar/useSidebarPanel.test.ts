@@ -81,3 +81,27 @@ describe("shouldRestoreSidebarWidth", () => {
     );
   });
 });
+
+describe("the sidebar's width when the app starts", () => {
+  const panelTag = (id: string) =>
+    appSource.match(
+      new RegExp(String.raw`<ResizablePanel\s+id="${id}"[^>]*>`),
+    )?.[0];
+
+  it("opens at the stored width, in pixels", () => {
+    expect(panelTag("sidebar")).toMatch(
+      /defaultSize=\{\s*initialSidebarCollapsed\s*\?\s*"0px"\s*:\s*`\$\{sidebarWidthRef\.current\}px`\s*\}/,
+    );
+  });
+
+  it("gives the workspace panel what is left, so that width is not scaled", () => {
+    // Seen live: with 78% for the workspace a stored 304 px came up as 324 px
+    // in a 1920 px window, 338 px in a 2560 px one and 288 px in an 1100 px
+    // one. Default sizes that do not add up to the group are scaled by the
+    // panels library; a panel without one takes the rest.
+    const workspace = panelTag("workspace");
+    expect(workspace).toBeDefined();
+    expect(workspace).not.toContain("defaultSize");
+    expect(workspace).toContain('minSize="30%"');
+  });
+});
