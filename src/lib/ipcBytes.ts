@@ -14,10 +14,12 @@ import { warn } from "@tauri-apps/plugin-log";
  * Read as an ArrayBuffer, such a message throws and is gone. Measured (round
  * 114): with one request of the page made to fail, the next raw message of a
  * terminal's output arrived as `number[]`, and the terminal showed "[anbo:
- * 26397 bytes of output were lost]"; ending the main window's network service
- * once made requests fail the same way. From 0.39.0 to 0.41.1 every terminal
- * output message of 1 KB or more travelled raw, so after one such failure a
- * terminal showed that notice at each of them until Anbo was restarted.
+ * 26397 bytes of output were lost]". A restart of the main window's network
+ * service makes a request fail when one is in flight at that instant: on the
+ * released 0.41.1 two restarts in eleven did, the first of them at once. From
+ * 0.39.0 to 0.41.1 every terminal output message of 1 KB or more travelled
+ * raw, so after one such failure a terminal showed that notice at each of
+ * them until Anbo was restarted.
  */
 export type IpcBytes = ArrayBuffer | ArrayBufferView | readonly number[];
 
