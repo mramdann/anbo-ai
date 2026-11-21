@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.41.3](https://github.com/mramdann/anbo-ai/compare/v0.41.2...v0.41.3) (2026-11-21)
+
+
+### Bug Fixes
+
+* **sidebar:** the sidebar opens at the width you left it at. It came up some 20 px wider in a wide window, and narrower in a narrow one ([a1efdc0](https://github.com/mramdann/anbo-ai/commit/a1efdc0c4dea047ff9498c3aaa8a51087588b0a7))
+* **deps:** the libraries Anbo is built on are up to date: Tauri 2.12.5 with its store, log, notification and opener plugins, the AI SDK and its providers, the editor's lint library and the panel library. Two of them fix faults of their own: loading a settings store while one is being closed can no longer freeze Anbo, and the limit on kept log files now counts the files two rotations in one second left behind. Nothing else changes in how Anbo works ([5aed6e4](https://github.com/mramdann/anbo-ai/commit/5aed6e4b06f5666165302687c4bf1822ca847203))
+
 ## [0.41.2](https://github.com/mramdann/anbo-ai/compare/v0.41.1...v0.41.2) (2026-11-19)
 
 
