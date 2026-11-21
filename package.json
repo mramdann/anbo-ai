@@ -138,7 +138,7 @@
     "babel-plugin-react-compiler": "^1.0.0",
     "knip": "^6.45.1",
     "material-icon-theme": "5.40.0",
-    "oxc-parser": "^0.158.0",
+    "oxc-parser": "^0.159.0",
     "react-compiler-healthcheck": "^1.0.0",
     "react-scan": "^0.5.7",
     "rollup-plugin-visualizer": "^7.1.3",
