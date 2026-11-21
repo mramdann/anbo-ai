@@ -1,3 +1,4 @@
+export { SidebarPanel } from "./SidebarPanel";
 export { SidebarRail } from "./SidebarRail";
 export type { SidebarViewId } from "./types";
 export {

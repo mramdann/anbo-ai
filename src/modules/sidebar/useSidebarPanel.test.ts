@@ -83,15 +83,31 @@ describe("shouldRestoreSidebarWidth", () => {
 });
 
 describe("the sidebar's width when the app starts", () => {
-  const panelTag = (id: string) =>
+  const panelTag = (id: string, component = "ResizablePanel") =>
     appSource.match(
-      new RegExp(String.raw`<ResizablePanel\s+id="${id}"[^>]*>`),
+      new RegExp(String.raw`<${component}\s+id="${id}"[^>]*>`),
     )?.[0];
 
   it("opens at the stored width, in pixels", () => {
-    expect(panelTag("sidebar")).toMatch(
-      /defaultSize=\{\s*initialSidebarCollapsed\s*\?\s*"0px"\s*:\s*`\$\{sidebarWidthRef\.current\}px`\s*\}/,
+    expect(source).toMatch(
+      /const sidebarInitialSize = useCallback\(\s*\(\) =>\s*\(initialSidebarCollapsed \? "0px" : `\$\{sidebarWidthRef\.current\}px`\),/,
     );
+    expect(panelTag("sidebar", "SidebarPanel")).toMatch(
+      /initialSize=\{sidebarInitialSize\}/,
+    );
+  });
+
+  it("never hands the mounted sidebar panel a default size that follows the drags", () => {
+    // Seen live, with a real mouse too: every second drag of the separator
+    // stopped after its first few pixels. The panel had the last dragged
+    // width as its default size; the panels library registers a panel again
+    // when that changes, which ends a drag under way, and in an idle window
+    // the first render after a drag is the one the next drag's press causes.
+    const sidebar = panelTag("sidebar", "SidebarPanel");
+    expect(sidebar).toBeDefined();
+    expect(sidebar).not.toContain("defaultSize");
+    expect(panelTag("sidebar")).toBeUndefined();
+    expect(appSource).not.toContain("sidebarWidthRef");
   });
 
   it("gives the workspace panel what is left, so that width is not scaled", () => {

@@ -135,6 +135,7 @@ import {
 import {
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
+  SidebarPanel,
   SidebarRail,
   useSidebarPanel,
 } from "@/modules/sidebar";
@@ -804,9 +805,8 @@ export default function App() {
 
   const {
     sidebarRef,
-    sidebarWidthRef,
+    sidebarInitialSize,
     sidebarView,
-    initialSidebarCollapsed,
     persistSidebarView,
     persistSidebarCollapsed,
     toggleSidebar,
@@ -3277,15 +3277,11 @@ export default function App() {
                     persistSidebarCollapsed(collapsed, isUserInteraction);
                   }}
                 >
-                  <ResizablePanel
+                  <SidebarPanel
                     id="sidebar"
                     panelRef={sidebarRef}
                     groupResizeBehavior="preserve-pixel-size"
-                    defaultSize={
-                      initialSidebarCollapsed
-                        ? "0px"
-                        : `${sidebarWidthRef.current}px`
-                    }
+                    initialSize={sidebarInitialSize}
                     minSize={`${SIDEBAR_MIN_WIDTH}px`}
                     maxSize={`${SIDEBAR_MAX_WIDTH}px`}
                     collapsible
@@ -3333,7 +3329,7 @@ export default function App() {
                         changedCount={sourceControl.changedCount}
                       />
                     </div>
-                  </ResizablePanel>
+                  </SidebarPanel>
                   <ResizableHandle withHandle />
                   {/* No default size here: this panel takes what the sidebar
                       leaves. With one of its own (it had 78%) the two did not

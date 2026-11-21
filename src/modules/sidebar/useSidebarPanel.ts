@@ -123,6 +123,13 @@ export function useSidebarPanel(
     useState<SidebarViewId>(readSidebarView);
   const [initialSidebarCollapsed] = useState(readSidebarCollapsed);
   const collapsedRef = useRef(initialSidebarCollapsed);
+  // What the sidebar's panel opens at. SidebarPanel reads it once, when the
+  // panel mounts: the width in here follows every drag, and a default size
+  // that changes under a mounted panel ends the drag that is under way.
+  const sidebarInitialSize = useCallback(
+    () => (initialSidebarCollapsed ? "0px" : `${sidebarWidthRef.current}px`),
+    [initialSidebarCollapsed],
+  );
 
   const persistSidebarView = useCallback((view: SidebarViewId) => {
     setSidebarViewState(view);
@@ -322,9 +329,8 @@ export function useSidebarPanel(
 
   return {
     sidebarRef,
-    sidebarWidthRef,
+    sidebarInitialSize,
     sidebarView,
-    initialSidebarCollapsed,
     persistSidebarView,
     persistSidebarCollapsed,
     toggleSidebar,
