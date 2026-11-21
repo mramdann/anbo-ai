@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.41.3](https://github.com/mramdann/anbo-ai/compare/v0.41.2...v0.41.3) (2026-11-21)
+
+
+### Bug Fixes
+
+* **deps:** take the Dependabot updates of Nov 19 ([5aed6e4](https://github.com/mramdann/anbo-ai/commit/5aed6e4b06f5666165302687c4bf1822ca847203))
+* **sidebar:** the sidebar opens at its stored width ([a1efdc0](https://github.com/mramdann/anbo-ai/commit/a1efdc0c4dea047ff9498c3aaa8a51087588b0a7))
+
 ## [0.41.2](https://github.com/mramdann/anbo-ai/compare/v0.41.1...v0.41.2) (2026-11-19)
 
 
