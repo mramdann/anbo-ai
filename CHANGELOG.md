@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.4](https://github.com/mramdann/anbo-ai/compare/v0.41.3...v0.41.4) (2026-11-21)
+
+
+### Bug Fixes
+
+* **deps:** take the rest of Dependabot's Tauri update, and oxc-parser ([db9e8b1](https://github.com/mramdann/anbo-ai/commit/db9e8b1ffd09d6b3c160c96ec06a7ae50d463e96))
+
 ## [0.41.3](https://github.com/mramdann/anbo-ai/compare/v0.41.2...v0.41.3) (2026-11-21)
 
 
