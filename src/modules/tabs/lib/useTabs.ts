@@ -16,6 +16,11 @@ import {
   planSpacePause,
   spaceResumeTabIds,
 } from "@/modules/spaces/lib/pauseSpace";
+import { staysAsleep } from "@/modules/spaces/lib/resumeGate";
+import {
+  useResumeGate,
+  useResumePending,
+} from "@/modules/spaces/lib/resumeGateStore";
 import {
   adoptLeafAgentResume,
   deactivateLeafAgentResume,
@@ -777,14 +782,17 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   }, [activeId]);
 
   // Activating a cold tab warms it: one choke point for every activation path.
+  // Not in a workspace that still waits for the user's word (resumeGate.ts):
+  // its tab in view wakes once the user says resume.
+  const resumePending = useResumePending();
   useEffect(() => {
     if (!booted) return;
     setTabs((curr) => {
       const t = curr.find((x) => x.id === activeId);
-      if (!t?.cold) return curr;
+      if (!t?.cold || staysAsleep(resumePending, t)) return curr;
       return curr.map((x) => (x.id === activeId ? { ...x, cold: false } : x));
     });
-  }, [activeId, booted]);
+  }, [activeId, booted, resumePending]);
 
   const warmTab = useCallback(
     (id: number) => {
@@ -805,12 +813,15 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   const pauseSpaceTabs = useCallback((spaceId: string): boolean => {
     if (!planSpacePause(tabsRef.current, spaceId)) return false;
     setTabs((current) => planSpacePause(current, spaceId) ?? current);
+    // Asleep again by the user's hand: opening it asks first, as after a start.
+    useResumeGate.getState().ask([spaceId]);
     return true;
   }, []);
 
   const resumeSpaceTabs = useCallback(
     (spaceId: string) => {
       if (!booted) return;
+      useResumeGate.getState().release(spaceId);
       setTabs((current) => {
         const ids = new Set(spaceResumeTabIds(current, spaceId));
         if (ids.size === 0) return current;

@@ -147,7 +147,14 @@ import {
   authorizeWorkspaceRoot,
   flushSpacePersistenceNow,
   newSpaceDefaults,
+  ResumeGate,
+  resumeGateShown,
+  resumeSummary,
   SpaceSwitcher,
+  sleepingTabIds,
+  staysAsleep,
+  useResumeGate,
+  useResumePending,
   useSpacePersistence,
   useSpaces,
   useSpacesBoot,
@@ -794,6 +801,37 @@ export default function App() {
     },
     [],
   );
+  const resumePending = useResumePending();
+  const resumeGateOpen =
+    spacesHydrated &&
+    resumeGateShown(
+      resumePending,
+      tabs,
+      activeSpaceId ?? DEFAULT_SPACE_ID,
+      activeId,
+    );
+  const resumeGateSummary = useMemo(
+    () =>
+      resumeGateOpen
+        ? resumeSummary(tabs, activeSpaceId ?? DEFAULT_SPACE_ID)
+        : null,
+    [resumeGateOpen, tabs, activeSpaceId],
+  );
+  const previousSpaceName = useSpaces((s) =>
+    s.previousId && s.previousId !== s.activeId
+      ? (s.spaces.find((p) => p.id === s.previousId)?.name ?? null)
+      : null,
+  );
+  // The layout reveals the tabs in view of its own accord; a workspace that
+  // still waits keeps them asleep. A new function per answer, so the panels in
+  // view reveal their tabs again once the user says resume.
+  const revealTab = useCallback(
+    (id: number) => {
+      const tab = tabsRef.current.find((candidate) => candidate.id === id);
+      if (!staysAsleep(resumePending, tab)) warmTab(id);
+    },
+    [resumePending, warmTab],
+  );
   const backgroundBrowserTabs = useMemo(
     () => selectBackgroundBrowserTabs(tabs, visibleDockviewTabIds),
     [tabs, visibleDockviewTabIds],
@@ -903,6 +941,19 @@ export default function App() {
     editorRefs.current.delete(id);
     browserRefs.current.delete(id);
     closeTab(id);
+  });
+
+  const resumeActiveSpace = useStableCallback(() => {
+    useResumeGate.getState().release(activeSpaceId ?? DEFAULT_SPACE_ID);
+  });
+  const startActiveSpaceFresh = useStableCallback(() => {
+    const spaceId = activeSpaceId ?? DEFAULT_SPACE_ID;
+    for (const id of sleepingTabIds(tabsRef.current, spaceId)) disposeTab(id);
+    useResumeGate.getState().release(spaceId);
+  });
+  const backToPreviousSpace = useStableCallback(() => {
+    const { previousId, setActive } = useSpaces.getState();
+    if (previousId) setActive(previousId);
   });
 
   const {
@@ -1260,7 +1311,12 @@ export default function App() {
         // especially the active one — as a bare shell). Warming happens once the
         // user opens that workspace; a warmed agent then keeps running across
         // workspace switches (tabs never re-cold, background PTYs are retained).
-        if (shouldWarmAgentTabOnReopen(tab, activeSpaceId)) warmTab(tab.id);
+        if (
+          !staysAsleep(resumePending, tab) &&
+          shouldWarmAgentTabOnReopen(tab, activeSpaceId)
+        ) {
+          warmTab(tab.id);
+        }
         continue;
       }
       const space = spaceEnvironments.find(
@@ -1418,6 +1474,7 @@ export default function App() {
     activeSpaceId,
     agentMcpEnabled,
     customCliAgents,
+    resumePending,
     spaceEnvironments,
     tabs,
     warmTab,
@@ -3355,7 +3412,7 @@ export default function App() {
                             onLayoutModeChange={setActiveSpaceLayout}
                             revealRequests={dockviewRevealRequests}
                             onSelect={setActiveId}
-                            onRevealTab={warmTab}
+                            onRevealTab={revealTab}
                             onTabVisibilityChange={handleDockviewTabVisibility}
                             onNew={openNewTab}
                             onNewBlock={openNewBlockTab}
@@ -3373,8 +3430,12 @@ export default function App() {
                               <WorkspaceSurface
                                 tabs={[tab]}
                                 workspace={workspaceForSpace(tab.spaceId)}
-                                activeId={visible ? tab.id : -1}
-                                activeTab={visible ? tab : undefined}
+                                activeId={
+                                  visible && !resumeGateOpen ? tab.id : -1
+                                }
+                                activeTab={
+                                  visible && !resumeGateOpen ? tab : undefined
+                                }
                                 registerTerminalHandle={registerTerminalHandle}
                                 onSearchReady={handleSearchReady}
                                 onCwd={handleTerminalCwd}
@@ -3477,9 +3538,22 @@ export default function App() {
                             </Suspense>
                           </div>
                         ) : null}
+                        {resumeGateOpen && resumeGateSummary ? (
+                          <div className="absolute inset-0 z-10 bg-background">
+                            <ResumeGate
+                              key={activeSpaceId ?? DEFAULT_SPACE_ID}
+                              name={activeSpaceName ?? "this workspace"}
+                              summary={resumeGateSummary}
+                              backTo={previousSpaceName}
+                              onResume={resumeActiveSpace}
+                              onStartFresh={startActiveSpaceFresh}
+                              onBack={backToPreviousSpace}
+                            />
+                          </div>
+                        ) : null}
                       </div>
 
-                      {showWorkspaceWelcome ? null : (
+                      {showWorkspaceWelcome || resumeGateOpen ? null : (
                         <WorkspaceInputBar
                           isBlockTab={isBlockTab}
                           isTerminalTab={isTerminalTab}

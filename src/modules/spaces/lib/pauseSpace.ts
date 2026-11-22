@@ -125,7 +125,8 @@ export type SpacePauseWork = {
 
 const LISTED = 4;
 
-function listed(items: string[]): string {
+/** The first few of a list, and how many more there are. */
+export function listed(items: string[]): string {
   const shown = items.slice(0, LISTED);
   const more = items.length - shown.length;
   return more > 0 ? `${shown.join(", ")} and ${more} more` : shown.join(", ");

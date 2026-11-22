@@ -20,6 +20,8 @@ type CreateInput = {
 type State = {
   spaces: SpaceMeta[];
   activeId: string | null;
+  /** The workspace the user was in before the active one, this launch. */
+  previousId: string | null;
   hydrated: boolean;
   // Per-space active tab index loaded from disk, so persistence preserves it
   // for spaces the user never visits this session.
@@ -43,6 +45,7 @@ type State = {
 export const useSpaces = create<State>((set, get) => ({
   spaces: [],
   activeId: null,
+  previousId: null,
   hydrated: false,
   initialActiveIndex: {},
 
@@ -138,7 +141,11 @@ export const useSpaces = create<State>((set, get) => ({
     const spaces = prev.spaces.filter((s) => s.id !== id);
     let activeId = prev.activeId;
     if (activeId === id) activeId = spaces[0]?.id ?? null;
-    set({ spaces, activeId });
+    set({
+      spaces,
+      activeId,
+      previousId: prev.previousId === id ? null : prev.previousId,
+    });
     void saveSpacesList(spaces);
     void deleteSpaceData(id);
     if (activeId !== prev.activeId) void saveActiveId(activeId);
@@ -146,8 +153,9 @@ export const useSpaces = create<State>((set, get) => ({
   },
 
   setActive: (id) => {
-    if (get().activeId === id) return;
-    set({ activeId: id });
+    const previousId = get().activeId;
+    if (previousId === id) return;
+    set({ activeId: id, previousId });
     void saveActiveId(id);
   },
 }));

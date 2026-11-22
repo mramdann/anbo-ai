@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { ThemePref } from "@/modules/settings/store";
 import {
+  setAskBeforeResume,
   setAutostart,
   setDefaultWorkspaceEnv,
   setExplorerGitDecorations,
@@ -83,6 +84,7 @@ export function GeneralSection() {
   const autostart = usePreferencesStore((s) => s.autostart);
   const restoreWindowState = usePreferencesStore((s) => s.restoreWindowState);
   const openLinksInAnbo = usePreferencesStore((s) => s.openLinksInAnbo);
+  const askBeforeResume = usePreferencesStore((s) => s.askBeforeResume);
   const showHidden = usePreferencesStore((s) => s.showHidden);
   const explorerGitDecorations = usePreferencesStore(
     (s) => s.explorerGitDecorations,
@@ -491,6 +493,15 @@ export function GeneralSection() {
             <Switch
               checked={restoreWindowState}
               onCheckedChange={(v) => void setRestoreWindowState(v)}
+            />
+          </SettingRow>
+          <SettingRow
+            title="Ask before resuming a workspace"
+            description="Before a workspace's saved tabs start, choose: resume them, start fresh, or go back. Off: opening a workspace resumes it at once."
+          >
+            <Switch
+              checked={askBeforeResume}
+              onCheckedChange={(v) => void setAskBeforeResume(v)}
             />
           </SettingRow>
         </div>

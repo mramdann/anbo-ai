@@ -180,6 +180,8 @@ export type Preferences = {
   whispercppModel: WhispercppModelChoice;
   whispercppAcceleration: WhispercppAcceleration;
   openLinksInAnbo: boolean;
+  /** Ask before a workspace's saved tabs come back (spaces/ResumeGate). */
+  askBeforeResume: boolean;
   whispercppAutoStart: boolean;
   globalVoiceEnabled: boolean;
   globalVoicePushToTalk: PushToTalkKey;
@@ -282,6 +284,7 @@ const KEY_GROQ_STT_MODEL = "groqSttModel";
 const KEY_WHISPERCPP_BASE_URL = "whispercppBaseURL";
 const KEY_WHISPERCPP_ACCELERATION = "whispercppAcceleration";
 const KEY_OPEN_LINKS_IN_ANBO = "openLinksInAnbo";
+const KEY_ASK_BEFORE_RESUME = "askBeforeResume";
 const KEY_WHISPERCPP_MODEL = "whispercppModel";
 const KEY_WHISPERCPP_AUTO_START = "whispercppAutoStart";
 const KEY_GLOBAL_VOICE_ENABLED = "globalVoiceEnabled";
@@ -382,6 +385,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   whispercppModel: WHISPERCPP_DEFAULT_MODEL_CHOICE,
   whispercppAcceleration: WHISPERCPP_DEFAULT_ACCELERATION,
   openLinksInAnbo: DEFAULT_OPEN_LINKS_IN_ANBO,
+  askBeforeResume: true,
   whispercppAutoStart: true,
   globalVoiceEnabled: false,
   globalVoicePushToTalk: "win",
@@ -559,6 +563,9 @@ export async function loadPreferences(): Promise<Preferences> {
     openLinksInAnbo:
       get<boolean>(KEY_OPEN_LINKS_IN_ANBO) ??
       DEFAULT_PREFERENCES.openLinksInAnbo,
+    askBeforeResume:
+      get<boolean>(KEY_ASK_BEFORE_RESUME) ??
+      DEFAULT_PREFERENCES.askBeforeResume,
     globalVoiceEnabled:
       get<boolean>(KEY_GLOBAL_VOICE_ENABLED) ??
       DEFAULT_PREFERENCES.globalVoiceEnabled,
@@ -886,6 +893,10 @@ export async function setOpenLinksInAnbo(value: boolean): Promise<void> {
   await writePref(KEY_OPEN_LINKS_IN_ANBO, value);
 }
 
+export async function setAskBeforeResume(value: boolean): Promise<void> {
+  await writePref(KEY_ASK_BEFORE_RESUME, value);
+}
+
 export async function setWhispercppAutoStart(value: boolean): Promise<void> {
   await writePref(KEY_WHISPERCPP_AUTO_START, value);
 }
@@ -1135,6 +1146,7 @@ export async function onPreferencesChange(
     [KEY_WHISPERCPP_BASE_URL]: "whispercppBaseURL",
     [KEY_WHISPERCPP_ACCELERATION]: "whispercppAcceleration",
     [KEY_OPEN_LINKS_IN_ANBO]: "openLinksInAnbo",
+    [KEY_ASK_BEFORE_RESUME]: "askBeforeResume",
     [KEY_WHISPERCPP_MODEL]: "whispercppModel",
     [KEY_WHISPERCPP_AUTO_START]: "whispercppAutoStart",
     [KEY_GLOBAL_VOICE_ENABLED]: "globalVoiceEnabled",

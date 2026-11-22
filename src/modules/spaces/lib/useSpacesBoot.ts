@@ -12,6 +12,8 @@ import {
   freshTabCwd,
   shouldCreateFreshTerminal,
 } from "./activeSpace";
+import { spacesWithTabs } from "./resumeGate";
+import { useResumeGate } from "./resumeGateStore";
 import { freshTerminalTab, hydrateTabs } from "./serialize";
 import { loadAll, type SpaceMeta, saveActiveId, saveSpacesList } from "./store";
 import { useSpaces } from "./useSpaces";
@@ -105,6 +107,16 @@ export function useSpacesBoot({
           const st = states.get(space.id);
           if (!st) continue;
           restored.push(...hydrateTabs(st.tabs, space.id, allocId));
+        }
+
+        // Every workspace that comes back with tabs waits for the user's word
+        // (resumeGate.ts); a shell made below for `anbo <dir>` is no saved tab.
+        await usePreferencesStore
+          .getState()
+          .init()
+          .catch(() => {});
+        if (usePreferencesStore.getState().askBeforeResume) {
+          useResumeGate.getState().ask(spacesWithTabs(restored));
         }
 
         const active =
