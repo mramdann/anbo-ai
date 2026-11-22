@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.42.0](https://github.com/mramdann/anbo-ai/compare/v0.41.4...v0.42.0) (2026-11-22)
+
+
+### Features
+
+* **spaces:** a workspace asks before its saved tabs come back ([760f3e6](https://github.com/mramdann/anbo-ai/commit/760f3e6045524c74c3aa8ed373ee9f46267c0300))
+* **usage:** the usage view is the Task Manager, and its workspaces start folded ([9fe6b9a](https://github.com/mramdann/anbo-ai/commit/9fe6b9a79d2d3481910db23ef995ebf4017c086f))
+
 ## [0.41.4](https://github.com/mramdann/anbo-ai/compare/v0.41.3...v0.41.4) (2026-11-22)
 
 
