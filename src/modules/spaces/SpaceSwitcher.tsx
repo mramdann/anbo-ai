@@ -462,7 +462,7 @@ function SpaceRow({
               <span
                 role="img"
                 aria-label="Paused"
-                title="Paused: nothing runs here until you open it, or resume it in Usage"
+                title="Paused: nothing runs here until you open it, or resume it in Task Manager"
                 className="absolute right-1 flex items-center text-muted-foreground/60 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0"
               >
                 <HugeiconsIcon icon={PauseIcon} size={12} strokeWidth={2} />

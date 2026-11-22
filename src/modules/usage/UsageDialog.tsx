@@ -80,11 +80,6 @@ function countsLine(workspace: WorkspaceUsage): string {
   return parts.length ? parts.join(" · ") : "nothing running";
 }
 
-/** Workspaces that run nothing start folded. */
-function runsNothing(workspace: WorkspaceUsage): boolean {
-  return workspace.rows.every((row) => !row.running);
-}
-
 export function UsageDialog({
   open,
   onOpenChange,
@@ -108,7 +103,7 @@ export function UsageDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-1.75">
             <HugeiconsIcon icon={Activity01Icon} size={16} strokeWidth={1.75} />
-            Usage
+            Task Manager
           </DialogTitle>
           <DialogDescription>
             Memory and CPU of each workspace's agents, terminals and browser
@@ -146,9 +141,8 @@ function UsageBody({
   const model = useUsageModel(tabs);
   const spaces = useSpaces((s) => s.spaces);
   const activeId = useSpaces((s) => s.activeId);
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
+  // Every workspace starts folded: one line each, opened by a click.
+  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
 
   const runStates = useMemo(() => {
     const states = new Map<string, SpaceRunState>();
@@ -170,7 +164,7 @@ function UsageBody({
   );
 
   const toggle = (spaceId: string) =>
-    setCollapsed((current) => {
+    setOpened((current) => {
       const next = new Set(current);
       if (next.has(spaceId)) next.delete(spaceId);
       else next.add(spaceId);
@@ -187,7 +181,7 @@ function UsageBody({
   if (!model.supported) {
     return (
       <p className="py-6 text-center text-[13px] text-muted-foreground">
-        Usage is read on Windows only.
+        Task Manager is available on Windows only.
       </p>
     );
   }
@@ -242,9 +236,7 @@ function UsageBody({
           if (!space) return null;
           const isActive = workspace.spaceId === activeId;
           const runState = runStates.get(workspace.spaceId) ?? "idle";
-          // A workspace that runs nothing starts folded; a click flips it.
-          const isCollapsed =
-            runsNothing(workspace) !== collapsed.has(workspace.spaceId);
+          const isCollapsed = !opened.has(workspace.spaceId);
           const rows = workspace.rows
             .filter((row) => row.running)
             .sort((a, b) => metric(b, sortBy) - metric(a, sortBy));

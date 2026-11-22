@@ -34,7 +34,7 @@ type Props = {
   onOpenUsage: () => void;
 };
 
-/** The usage view's button. It reads nothing itself: the view reads while open. */
+/** The Task Manager's button. It reads nothing itself: the view reads while open. */
 function UsageButton({ onOpen }: { onOpen: () => void }) {
   const shortcut = useShortcutLabel("usage.open");
   return (
@@ -49,7 +49,7 @@ function UsageButton({ onOpen }: { onOpen: () => void }) {
       className="flex h-6 items-center gap-1.5 rounded-md border border-border/60 bg-card px-2 text-xs text-muted-foreground transition-colors hover:border-border hover:bg-accent hover:text-foreground"
     >
       <HugeiconsIcon icon={Activity01Icon} size={13} strokeWidth={1.75} />
-      <span>Usage</span>
+      <span>Task Manager</span>
     </button>
   );
 }

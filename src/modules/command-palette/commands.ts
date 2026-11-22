@@ -130,7 +130,7 @@ export function createCommandItems(
     },
     {
       id: "usage.open",
-      title: "Usage: Memory and CPU by workspace",
+      title: "Task Manager: Memory and CPU by workspace",
       group: "View",
       keywords: [
         "usage",

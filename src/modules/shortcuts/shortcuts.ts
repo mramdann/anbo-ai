@@ -257,7 +257,7 @@ export const SHORTCUTS: Shortcut[] = [
   },
   {
     id: "usage.open",
-    label: "Open usage (memory and CPU by workspace)",
+    label: "Open Task Manager (memory and CPU by workspace)",
     group: "View",
     defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "u" }],
   },
