@@ -215,6 +215,15 @@ describe("where the rule is applied", () => {
     expect(app).toContain("visible && !resumeGateOpen ? tab.id : -1");
   });
 
+  it("takes the covered tab strip out of the Tab order and the screen reader's reach", () => {
+    // Measured on 0.42.0: one Shift+Tab from Resume landed on the covered
+    // "Close panel", the next on "New browser tab", neither of them visible.
+    expect(read("../../../app/App.tsx")).toContain("inert={resumeGateOpen}");
+    expect(read("../../tabs/WorkspaceDockview.tsx")).toContain(
+      "inert={props.inert}",
+    );
+  });
+
   it("asks at boot for the workspaces that came back, before a shell made for a folder joins", () => {
     const boot = read("useSpacesBoot.ts");
     const asked = boot.indexOf(

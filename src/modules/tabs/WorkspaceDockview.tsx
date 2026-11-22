@@ -145,6 +145,9 @@ export type WorkspaceDockviewProps = {
   onReorder: (fromId: number, toGapIndex: number) => void;
   onOverrideLanguage?: (id: number, lang: string | null) => void;
   hideTabs?: boolean;
+  // A screen covers the whole area (the pause screen): nothing under it takes
+  // focus or reaches a screen reader meanwhile.
+  inert?: boolean;
   externalMoves?: readonly {
     tabId: number;
     targetTabId: number;
@@ -2102,7 +2105,11 @@ export function WorkspaceDockview({ ...props }: WorkspaceDockviewProps) {
 
   return (
     <WorkspaceDockviewContext.Provider value={contextValue}>
-      <div className="anbo-workspace-dockview" onClickCapture={onClickCapture}>
+      <div
+        className="anbo-workspace-dockview"
+        inert={props.inert}
+        onClickCapture={onClickCapture}
+      >
         <DockviewReact
           ref={dockviewElementRef}
           components={components}

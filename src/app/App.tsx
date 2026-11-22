@@ -3405,6 +3405,7 @@ export default function App() {
                             tabs={spaceTabs}
                             activeId={activeId}
                             hideTabs={zenMode}
+                            inert={resumeGateOpen}
                             externalMoves={dockviewExternalMoves}
                             externalSplits={dockviewExternalSplits}
                             onLayoutSettled={handleDockLayoutSettled}
