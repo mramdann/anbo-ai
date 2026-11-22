@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.42.0](https://github.com/mramdann/anbo-ai/compare/v0.41.4...v0.42.0) (2026-11-22)
+
+
+### Features
+
+* **spaces:** a workspace asks before its saved tabs come back. When Anbo starts, and when you open a workspace you have not opened since, a short screen comes first: Resume, Start fresh, or Back. Until you choose, no shell, agent or page of that workspace starts, so a workspace opened by mistake no longer resumes all its agents. The switch is in Settings, General, Startup ([760f3e6](https://github.com/mramdann/anbo-ai/commit/760f3e6045524c74c3aa8ed373ee9f46267c0300))
+* **usage:** the Usage view is called Task Manager now, and every workspace in it starts folded to one line; a click opens it ([9fe6b9a](https://github.com/mramdann/anbo-ai/commit/9fe6b9a79d2d3481910db23ef995ebf4017c086f))
+
 ## [0.41.4](https://github.com/mramdann/anbo-ai/compare/v0.41.3...v0.41.4) (2026-11-22)
 
 
