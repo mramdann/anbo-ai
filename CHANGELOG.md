@@ -5,8 +5,8 @@
 
 ### Bug Fixes
 
-* **deps:** take the rest of Dependabot's Tauri update, and oxc-parser ([db9e8b1](https://github.com/mramdann/anbo-ai/commit/db9e8b1ffd09d6b3c160c96ec06a7ae50d463e96))
-* **sidebar:** a second drag of the separator follows the pointer too ([1b20e8a](https://github.com/mramdann/anbo-ai/commit/1b20e8ade2f4620475e47e8c13d131a04e18ee15))
+* **sidebar:** dragging the sidebar's edge follows the mouse every time. Every second drag used to stop after a couple of pixels and had to be done again ([1b20e8a](https://github.com/mramdann/anbo-ai/commit/1b20e8ade2f4620475e47e8c13d131a04e18ee15))
+* **deps:** the rest of the Tauri libraries Anbo is built on are up to date. One thing changes for someone who uses Anbo: a tool that asks Windows what is under the pointer, a screen reader that follows the mouse for one, now finds the Settings window's own content where it used to get an invisible resize panel ([db9e8b1](https://github.com/mramdann/anbo-ai/commit/db9e8b1ffd09d6b3c160c96ec06a7ae50d463e96))
 
 ## [0.41.3](https://github.com/mramdann/anbo-ai/compare/v0.41.2...v0.41.3) (2026-11-21)
 
