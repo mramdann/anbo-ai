@@ -226,16 +226,16 @@ function UsageBody({
             while the list scrolls; in a short window they scroll with it. */}
         <div className="top-0 z-10 mb-1 border-b border-border/60 bg-popover pb-1.5 [@media(min-height:34rem)]:sticky">
           <TotalRow
-            name="Anbo"
-            note="everything below"
-            cpu={model.total.cpu}
-            memory={model.total.memory}
-          />
-          <TotalRow
             name="This computer"
             cpu={model.machine.cpu}
             memory={model.machine.memoryUsed}
             of={model.machine.memoryTotal}
+          />
+          <TotalRow
+            name="Anbo"
+            note="everything below"
+            cpu={model.total.cpu}
+            memory={model.total.memory}
           />
         </div>
         {workspaces.map((workspace) => {

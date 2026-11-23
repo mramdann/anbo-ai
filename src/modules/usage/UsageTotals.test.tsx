@@ -73,6 +73,14 @@ describe("the Task Manager's totals", () => {
     expect(view).not.toContain("Anbo:{");
   });
 
+  it("names this computer first and Anbo under it: the whole, then Anbo's part of it", () => {
+    // The user's order (Nov 23 2026); the first version had Anbo on top.
+    const computer = view.indexOf('name="This computer"');
+    const anbo = view.indexOf('name="Anbo"');
+    expect(computer).toBeGreaterThan(0);
+    expect(anbo).toBeGreaterThan(computer);
+  });
+
   it("stay on top while the list scrolls, but only in a window that can spare their two lines", () => {
     // Measured in a window 360 px high with the totals always on top: 3 px
     // were left for the workspaces.
