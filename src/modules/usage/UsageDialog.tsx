@@ -61,6 +61,12 @@ const ROW_ICONS = {
 
 const GRID =
   "grid grid-cols-[minmax(0,1fr)_4.25rem_5rem_4.75rem] items-center gap-2";
+// One class list for each kind of cell, shared by the totals and every row.
+const NAME = "truncate text-[13px] font-medium text-foreground";
+const NOTE = "truncate text-[11px] text-muted-foreground/70";
+const FIGURE = "text-right text-[12px] tabular-nums text-muted-foreground";
+const FIGURE_STRONG =
+  "text-right text-[12px] font-medium tabular-nums text-foreground";
 
 function metric(
   item: { memory: number | null; cpu: number | null },
@@ -187,24 +193,10 @@ function UsageBody({
   }
   return (
     <>
-      <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-muted-foreground">
-        <span>
-          Anbo:{" "}
-          <span className="font-medium text-foreground tabular-nums">
-            {formatMemory(model.total.memory)}
-          </span>{" "}
-          · <span className="tabular-nums">{formatCpu(model.total.cpu)}</span>{" "}
-          CPU
-          <span className="mx-2 text-muted-foreground/40">|</span>
-          This computer:{" "}
-          <span className="tabular-nums">
-            {formatMemory(model.machine.memoryUsed)} of{" "}
-            {formatMemory(model.machine.memoryTotal)}
-          </span>{" "}
-          · <span className="tabular-nums">{formatCpu(model.machine.cpu)}</span>{" "}
-          CPU
-        </span>
-        <div className="flex items-center gap-0.5 rounded-md bg-muted/60 p-0.5">
+      {/* The heads stand in the list's own width (its scrollbar gutter): outside
+          it they stood a scrollbar's width to the right of the figures. */}
+      <div className="panel-scrollbar -mx-1 -mb-1.5 shrink-0 overflow-hidden px-1 [scrollbar-gutter:stable]">
+        <div className="mb-1.5 ml-auto flex w-fit items-center gap-0.5 rounded-md bg-muted/60 p-0.5">
           {(["memory", "cpu"] as const).map((key) => (
             <button
               key={key}
@@ -221,16 +213,31 @@ function UsageBody({
             </button>
           ))}
         </div>
-      </div>
-
-      <div className={cn(GRID, "px-2 text-[11px] text-muted-foreground/70")}>
-        <span>Name</span>
-        <span className="text-right">CPU</span>
-        <span className="text-right">Memory</span>
-        <span />
+        <div className={cn(GRID, "px-2 text-[11px] text-muted-foreground/70")}>
+          <span>Name</span>
+          <span className="text-right">CPU</span>
+          <span className="text-right">Memory</span>
+          <span />
+        </div>
       </div>
 
       <div className="panel-scrollbar -mx-1 min-h-0 flex-1 overflow-y-auto px-1 [scrollbar-gutter:stable]">
+        {/* Anbo against this computer, in the list's columns. They stay on top
+            while the list scrolls; in a short window they scroll with it. */}
+        <div className="top-0 z-10 mb-1 border-b border-border/60 bg-popover pb-1.5 [@media(min-height:34rem)]:sticky">
+          <TotalRow
+            name="Anbo"
+            note="everything below"
+            cpu={model.total.cpu}
+            memory={model.total.memory}
+          />
+          <TotalRow
+            name="This computer"
+            cpu={model.machine.cpu}
+            memory={model.machine.memoryUsed}
+            of={model.machine.memoryTotal}
+          />
+        </div>
         {workspaces.map((workspace) => {
           const space = spaces.find((s) => s.id === workspace.spaceId);
           if (!space) return null;
@@ -264,22 +271,18 @@ function UsageBody({
                     className="shrink-0 text-muted-foreground/60"
                   />
                   <SpaceAvatar space={space} size="sm" active={isActive} />
-                  <span className="truncate text-[13px] font-medium text-foreground">
-                    {workspace.name}
-                  </span>
+                  <span className={NAME}>{workspace.name}</span>
                   {isActive && (
                     <span className="shrink-0 rounded bg-background/70 px-1 text-[10px] text-muted-foreground">
                       in view
                     </span>
                   )}
-                  <span className="truncate text-[11px] text-muted-foreground/70">
+                  <span className={NOTE}>
                     {runState === "paused" ? "paused" : countsLine(workspace)}
                   </span>
                 </button>
-                <span className="text-right text-[12px] tabular-nums text-muted-foreground">
-                  {formatCpu(workspace.cpu)}
-                </span>
-                <span className="text-right text-[12px] font-medium tabular-nums text-foreground">
+                <span className={FIGURE}>{formatCpu(workspace.cpu)}</span>
+                <span className={FIGURE_STRONG}>
                   {formatMemory(workspace.memory)}
                 </span>
                 <span className="flex justify-end">
@@ -341,17 +344,11 @@ function UsageBody({
                 strokeWidth={1.75}
                 className="shrink-0 text-muted-foreground/70"
               />
-              <span className="truncate text-[13px] font-medium text-foreground">
-                Anbo itself
-              </span>
-              <span className="truncate text-[11px] text-muted-foreground/70">
-                shared by every workspace
-              </span>
+              <span className={NAME}>Anbo itself</span>
+              <span className={NOTE}>shared by every workspace</span>
             </span>
-            <span className="text-right text-[12px] tabular-nums text-muted-foreground">
-              {formatCpu(model.anbo.cpu)}
-            </span>
-            <span className="text-right text-[12px] font-medium tabular-nums text-foreground">
+            <span className={FIGURE}>{formatCpu(model.anbo.cpu)}</span>
+            <span className={FIGURE_STRONG}>
               {formatMemory(model.anbo.memory)}
             </span>
             <span />
@@ -367,6 +364,36 @@ function UsageBody({
         (Shift+Esc there) shows what they use.
       </p>
     </>
+  );
+}
+
+/** One of the two totals above the list, in the list's own columns. */
+export function TotalRow({
+  name,
+  note,
+  cpu,
+  memory,
+  of,
+}: {
+  name: string;
+  note?: string;
+  cpu: number | null;
+  memory: number;
+  /** What `memory` is a part of: the computer's installed memory. */
+  of?: number;
+}) {
+  return (
+    <div className={cn(GRID, "px-2 py-1")}>
+      <span className="flex min-w-0 items-center gap-2">
+        <span className={NAME}>{name}</span>
+        {note && <span className={NOTE}>{note}</span>}
+      </span>
+      <span className={FIGURE}>{formatCpu(cpu)}</span>
+      <span className={FIGURE_STRONG}>{formatMemory(memory)}</span>
+      <span className={NOTE}>
+        {of !== undefined && `of ${formatMemory(of)}`}
+      </span>
+    </div>
   );
 }
 
@@ -396,18 +423,10 @@ function UsageRowView({
         <span className="truncate text-[12px] text-foreground">
           {row.label}
         </span>
-        {row.detail && (
-          <span className="truncate text-[11px] text-muted-foreground/70">
-            {row.detail}
-          </span>
-        )}
+        {row.detail && <span className={NOTE}>{row.detail}</span>}
       </span>
-      <span className="text-right text-[12px] tabular-nums text-muted-foreground">
-        {formatCpu(row.cpu)}
-      </span>
-      <span className="text-right text-[12px] tabular-nums text-muted-foreground">
-        {formatMemory(row.memory)}
-      </span>
+      <span className={FIGURE}>{formatCpu(row.cpu)}</span>
+      <span className={FIGURE}>{formatMemory(row.memory)}</span>
       <span className="flex justify-end">
         {onShow && tabId !== undefined && (
           <Button
