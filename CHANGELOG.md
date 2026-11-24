@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.43.0](https://github.com/mramdann/anbo-ai/compare/v0.42.0...v0.43.0) (2026-11-24)
+
+
+### Features
+
+* **usage:** the Task Manager's totals stand in the list's columns ([f14e7d7](https://github.com/mramdann/anbo-ai/commit/f14e7d7a98dd400e0c7ce77d2f87ff75ce550075))
+* **usage:** this computer stands above Anbo in the Task Manager's totals ([287e923](https://github.com/mramdann/anbo-ai/commit/287e923d0ca919e5e78f8f9eadad73cfb8f27908))
+
+
+### Bug Fixes
+
+* **spaces:** the tab area under the pause screen is out of the keyboard's reach ([5b96d66](https://github.com/mramdann/anbo-ai/commit/5b96d66a92c0a371ae47c85676c836dbb781e0e2))
+
 ## [0.42.0](https://github.com/mramdann/anbo-ai/compare/v0.41.4...v0.42.0) (2026-11-22)
 
 
