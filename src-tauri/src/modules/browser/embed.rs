@@ -591,6 +591,44 @@ mod privilege_tests {
     }
 }
 
+/// A tab whose pages have no pagehide, visibilitychange or beforeunload
+/// listener has its processes ended the quick way when it closes or moves to
+/// another site, and WebView2's browser then copies one more handle of its
+/// network service into this process that nothing closes: one for every
+/// process of the tab (round 127, R124-1; WebView2 159). A listener that does
+/// nothing takes the tab off that way.
+#[cfg(windows)]
+const ORDERLY_CLOSE_SCRIPT: &str = "window.addEventListener('pagehide',()=>{});";
+
+/// What runs in every new document of a tab's main frame, ahead of the page.
+const TAB_DOCUMENT_SCRIPTS: &[&str] = &[
+    include_str!("consoleCapture.js"),
+    #[cfg(windows)]
+    ORDERLY_CLOSE_SCRIPT,
+];
+
+/// How long a closing tab's page may take to answer `hear_page_out`. The answer
+/// came in 1 ms at the median and 13 ms at the 95th percentile; with every
+/// core busy 26 of 140 pages took longer than this, and none of those tabs
+/// left a handle either.
+#[cfg(windows)]
+const ORDERLY_CLOSE_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Has the page answer one script before its tab closes. WebView2's browser
+/// hears of the page's listener (`ORDERLY_CLOSE_SCRIPT`) from the page's
+/// process, and a tab closed the moment it had opened could be ahead of that
+/// news: on a busy machine 21 of 120 such tabs still left a handle, and none
+/// of 140 whose close waited for this answer first (round 127).
+#[cfg(windows)]
+async fn hear_page_out(webview: &tauri::Webview) {
+    let _ = crate::modules::browser_automation::cdp::execute_script_with_timeout(
+        &webview.clone().into(),
+        "0",
+        ORDERLY_CLOSE_WAIT,
+    )
+    .await;
+}
+
 #[allow(clippy::too_many_arguments)] // One call site; splitting it would only hide the wiring.
 async fn spawn_browser_child(
     window: &tauri::Window,
@@ -652,8 +690,12 @@ async fn spawn_browser_child(
         .data_directory(browser_data_dir)
         // Opaque background so a not-yet-painted webview (new tab, mid-load) shows
         // a solid color instead of a transparent hole through to the desktop.
-        .background_color(Color(255, 255, 255, 255))
-        .initialization_script(include_str!("consoleCapture.js"));
+        .background_color(Color(255, 255, 255, 255));
+    let builder = TAB_DOCUMENT_SCRIPTS
+        .iter()
+        .fold(builder, |builder, script| {
+            builder.initialization_script(*script)
+        });
     // Tauri's drop handler is for the shell's own page; nothing listens to a
     // tab's. With it on, wry registers a drop target with OLE for each of the
     // four windows WebView2 gives a webview and revokes none, so every one of
@@ -2760,6 +2802,8 @@ async fn close_embed_locked(
             }
         }
         if let Some(webview) = webview {
+            #[cfg(windows)]
+            hear_page_out(&webview).await;
             webview.close().map_err(|error| error.to_string())?;
         }
         // The host ends the tab's process next; on a busy machine that one
@@ -3445,6 +3489,17 @@ mod tests {
             assert_ne!(flags & SWP_NOSIZE.0, 0);
             assert_eq!(flags & SWP_NOMOVE.0 != 0, visible);
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn every_tab_document_listens_for_pagehide() {
+        // Measured without it: 20 tabs of a page with no such listener, opened
+        // and closed in a workspace not in view, left 20 process handles.
+        let scripts = super::TAB_DOCUMENT_SCRIPTS;
+        assert_eq!(scripts.len(), 2);
+        assert!(scripts[0].contains("__anboLogs"));
+        assert_eq!(scripts[1], "window.addEventListener('pagehide',()=>{});");
     }
 
     #[test]
