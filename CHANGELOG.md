@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.43.1](https://github.com/mramdann/anbo-ai/compare/v0.43.0...v0.43.1) (2026-11-24)
+
+
+### Bug Fixes
+
+* **browser:** a closed tab no longer leaves a process handle behind ([9e0f9c9](https://github.com/mramdann/anbo-ai/commit/9e0f9c92fcf8e09aedaba25c711e4ec0754a3469))
+
 ## [0.43.0](https://github.com/mramdann/anbo-ai/compare/v0.42.0...v0.43.0) (2026-11-24)
 
 
