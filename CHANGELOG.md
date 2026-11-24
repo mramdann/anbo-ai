@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.43.0](https://github.com/mramdann/anbo-ai/compare/v0.42.0...v0.43.0) (2026-11-24)
+
+
+### Features
+
+* **usage:** in the Task Manager, this computer and Anbo are now the first two lines of the list, with their CPU and memory in the list's own columns. You can compare them straight down with every workspace; before, they were one sentence above the list ([f14e7d7](https://github.com/mramdann/anbo-ai/commit/f14e7d7a98dd400e0c7ce77d2f87ff75ce550075), [287e923](https://github.com/mramdann/anbo-ai/commit/287e923d0ca919e5e78f8f9eadad73cfb8f27908))
+
+
+### Bug Fixes
+
+* **spaces:** while the pause screen is up, the Tab key and a screen reader no longer reach the tab strip and the buttons hidden behind it ([5b96d66](https://github.com/mramdann/anbo-ai/commit/5b96d66a92c0a371ae47c85676c836dbb781e0e2))
+
 ## [0.42.0](https://github.com/mramdann/anbo-ai/compare/v0.41.4...v0.42.0) (2026-11-22)
 
 
