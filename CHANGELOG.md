@@ -5,7 +5,7 @@
 
 ### Bug Fixes
 
-* **browser:** a closed tab no longer leaves a process handle behind ([9e0f9c9](https://github.com/mramdann/anbo-ai/commit/9e0f9c92fcf8e09aedaba25c711e4ec0754a3469))
+* **browser:** closing a browser tab no longer leaves a system handle behind in Anbo. It happened mostly with tabs that were closed without ever being shown, such as those an agent opens in a workspace you are not looking at or under the pause screen, and over a long session they added up ([9e0f9c9](https://github.com/mramdann/anbo-ai/commit/9e0f9c92fcf8e09aedaba25c711e4ec0754a3469))
 
 ## [0.43.0](https://github.com/mramdann/anbo-ai/compare/v0.42.0...v0.43.0) (2026-11-24)
 
