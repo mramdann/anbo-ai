@@ -17,11 +17,18 @@ use base64::Engine;
 use webview2_com::{
     BrowserProcessExitedEventHandler, CapturePreviewCompletedHandler, FocusChangedEventHandler,
     Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2Environment, ICoreWebView2Environment5, ICoreWebView2_22,
-        COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+        ICoreWebView2Environment, ICoreWebView2Environment5, ICoreWebView2ProcessFailedEventArgs2,
+        ICoreWebView2_22, COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG,
+        COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_REASON, COREWEBVIEW2_PROCESS_FAILED_REASON_CRASHED,
+        COREWEBVIEW2_PROCESS_FAILED_REASON_LAUNCH_FAILED,
+        COREWEBVIEW2_PROCESS_FAILED_REASON_OUT_OF_MEMORY,
+        COREWEBVIEW2_PROCESS_FAILED_REASON_PROFILE_DELETED,
+        COREWEBVIEW2_PROCESS_FAILED_REASON_TERMINATED,
+        COREWEBVIEW2_PROCESS_FAILED_REASON_UNRESPONSIVE, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
         COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
     },
-    SourceChangedEventHandler,
+    ProcessFailedEventHandler, SourceChangedEventHandler,
 };
 #[cfg(windows)]
 use windows::Win32::{
@@ -620,13 +627,134 @@ const ORDERLY_CLOSE_WAIT: std::time::Duration = std::time::Duration::from_millis
 /// news: on a busy machine 21 of 120 such tabs still left a handle, and none
 /// of 140 whose close waited for this answer first (round 127).
 #[cfg(windows)]
-async fn hear_page_out(webview: &tauri::Webview) {
-    let _ = crate::modules::browser_automation::cdp::execute_script_with_timeout(
+async fn hear_page_out(webview: &tauri::Webview) -> bool {
+    crate::modules::browser_automation::cdp::execute_script_with_timeout(
         &webview.clone().into(),
         "0",
         ORDERLY_CLOSE_WAIT,
     )
-    .await;
+    .await
+    .is_ok()
+}
+
+/// Tabs whose page process ended by itself (a crash, the system taking it for
+/// memory) and that have loaded no page since. Never held with another lock.
+#[cfg(windows)]
+static GONE_PAGES: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
+
+#[cfg(windows)]
+fn gone_pages() -> &'static Mutex<HashSet<i64>> {
+    GONE_PAGES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+#[cfg(windows)]
+fn page_is_gone(tab_id: i64) -> bool {
+    gone_pages().lock().is_ok_and(|gone| gone.contains(&tab_id))
+}
+
+#[cfg(windows)]
+fn note_page_back(tab_id: i64) {
+    if let Ok(mut gone) = gone_pages().lock() {
+        gone.remove(&tab_id);
+    }
+}
+
+/// The one page a tab may load that is neither a web page nor a workspace
+/// file: an empty one, into a tab whose own page process has ended.
+#[cfg(any(windows, test))]
+fn empty_page_for_gone_tab(target: &Url, page_gone: bool) -> bool {
+    page_gone && target.as_str() == "about:blank"
+}
+
+#[cfg(windows)]
+fn page_end_reason(reason: COREWEBVIEW2_PROCESS_FAILED_REASON) -> &'static str {
+    match reason {
+        COREWEBVIEW2_PROCESS_FAILED_REASON_CRASHED => "crashed",
+        COREWEBVIEW2_PROCESS_FAILED_REASON_OUT_OF_MEMORY => "out of memory",
+        COREWEBVIEW2_PROCESS_FAILED_REASON_TERMINATED => "terminated",
+        COREWEBVIEW2_PROCESS_FAILED_REASON_UNRESPONSIVE => "unresponsive",
+        COREWEBVIEW2_PROCESS_FAILED_REASON_LAUNCH_FAILED => "launch failed",
+        COREWEBVIEW2_PROCESS_FAILED_REASON_PROFILE_DELETED => "profile deleted",
+        _ => "unexpected",
+    }
+}
+
+/// Notes when this tab's page process ends by itself. Nothing else tells Anbo:
+/// the tab stays, with no page in it. The registration token is dropped on
+/// purpose, as the focus handler's.
+#[cfg(windows)]
+fn register_page_gone_handler(webview: &tauri::Webview, tab_id: i64) {
+    let _ = webview.with_webview(move |platform| {
+        let register = || -> windows::core::Result<()> {
+            use windows::core::Interface;
+            let core = unsafe { platform.controller().CoreWebView2()? };
+            let handler = ProcessFailedEventHandler::create(Box::new(move |_sender, args| {
+                let Some(args) = args else {
+                    return Ok(());
+                };
+                let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+                unsafe { args.ProcessFailedKind(&mut kind)? };
+                if kind != COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED {
+                    return Ok(());
+                }
+                let mut reason = COREWEBVIEW2_PROCESS_FAILED_REASON::default();
+                let mut exit_code = 0;
+                if let Ok(more) = args.cast::<ICoreWebView2ProcessFailedEventArgs2>() {
+                    unsafe {
+                        let _ = more.Reason(&mut reason);
+                        let _ = more.ExitCode(&mut exit_code);
+                    }
+                }
+                if let Ok(mut gone) = gone_pages().lock() {
+                    bounded_insert(&mut gone, tab_id, MAX_ACTIVE_EMBEDS);
+                }
+                log::warn!(
+                    "browser embed {tab_id}: its page process ended ({}, exit code {exit_code:#x})",
+                    page_end_reason(reason)
+                );
+                Ok(())
+            }));
+            let mut token = 0;
+            unsafe { core.add_ProcessFailed(&handler, &mut token) }
+        };
+        if let Err(error) = register() {
+            log::warn!("browser page process observer could not be registered: {error}");
+        }
+    });
+}
+
+/// How long a tab whose page process has ended may take to bring an empty
+/// page up before its close.
+#[cfg(windows)]
+const GONE_TAB_PAGE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Gives a tab whose page process has ended an empty page before its close.
+/// Such a tab has no page that could listen (`ORDERLY_CLOSE_SCRIPT`), so its
+/// close went the quick way again and left a handle, 4 of 4 (round 128,
+/// R128-1). The empty page comes with a new page process and the listener;
+/// once it answers, the close is the orderly one.
+#[cfg(windows)]
+async fn give_gone_tab_a_page(webview: &tauri::Webview, tab_id: i64) {
+    let started = std::time::Instant::now();
+    let asked = webview.with_webview(|platform| {
+        if let Ok(core) = unsafe { platform.controller().CoreWebView2() } {
+            let _ = unsafe { core.Navigate(&windows::core::HSTRING::from("about:blank")) };
+        }
+    });
+    if asked.is_err() {
+        return;
+    }
+    while started.elapsed() < GONE_TAB_PAGE_WAIT {
+        if hear_page_out(webview).await {
+            log::info!(
+                "browser embed {tab_id}: its page process had ended; an empty page answered after {} ms, before the close",
+                started.elapsed().as_millis()
+            );
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    log::info!("browser embed {tab_id}: its page process had ended, and no page came back before the close");
 }
 
 #[allow(clippy::too_many_arguments)] // One call site; splitting it would only hide the wiring.
@@ -726,6 +854,10 @@ async fn spawn_browser_child(
             // busy machine that one needs help to leave (R98-1, host.rs).
             #[cfg(windows)]
             super::host::note_leaving();
+            #[cfg(windows)]
+            if empty_page_for_gone_tab(target, page_is_gone(tab_id)) {
+                return true;
+            }
             let root = navigation_local_root
                 .lock()
                 .ok()
@@ -770,6 +902,11 @@ async fn spawn_browser_child(
             NewWindowResponse::Deny
         })
         .on_page_load(move |webview, payload| {
+            // A page is loading, so the tab has a page process again.
+            #[cfg(windows)]
+            if matches!(payload.event(), PageLoadEvent::Started) {
+                note_page_back(tab_id);
+            }
             let Some(owner_id) = page_load_owner(
                 &event_local_root,
                 payload.url(),
@@ -907,6 +1044,8 @@ async fn spawn_browser_child(
         register_focus_handler(&webview, tab_id);
         #[cfg(windows)]
         register_source_handler(&webview, tab_id, app_url, local_root);
+        #[cfg(windows)]
+        register_page_gone_handler(&webview, tab_id);
         #[cfg(windows)]
         drop_app_protocol_filters(&webview);
         set_embed_presentation(&webview, visible)?;
@@ -2803,7 +2942,9 @@ async fn close_embed_locked(
         }
         if let Some(webview) = webview {
             #[cfg(windows)]
-            hear_page_out(&webview).await;
+            if !hear_page_out(&webview).await && page_is_gone(tab_id) {
+                give_gone_tab_a_page(&webview, tab_id).await;
+            }
             webview.close().map_err(|error| error.to_string())?;
         }
         // The host ends the tab's process next; on a busy machine that one
@@ -2843,6 +2984,8 @@ async fn close_embed_locked(
         crate::modules::browser_automation::design::remove(tab_id);
         super::new_tab::remove(tab_id);
         clear_spawn_failure(tab_id);
+        #[cfg(windows)]
+        note_page_back(tab_id);
     }
     outcome.map(|()| existed)
 }
@@ -3500,6 +3643,24 @@ mod tests {
         assert_eq!(scripts.len(), 2);
         assert!(scripts[0].contains("__anboLogs"));
         assert_eq!(scripts[1], "window.addEventListener('pagehide',()=>{});");
+    }
+
+    #[test]
+    fn only_a_tab_whose_page_process_ended_may_load_the_empty_page() {
+        let empty = Url::parse("about:blank").unwrap();
+        // The policy for every other tab stays: web pages and workspace files.
+        assert!(!navigation_allowed(&empty, None, None));
+        assert!(!super::empty_page_for_gone_tab(&empty, false));
+        assert!(super::empty_page_for_gone_tab(&empty, true));
+        for other in [
+            "about:srcdoc",
+            "data:text/html,x",
+            "javascript:0",
+            "https://example.com/",
+        ] {
+            let other = Url::parse(other).unwrap();
+            assert!(!super::empty_page_for_gone_tab(&other, true), "{other}");
+        }
     }
 
     #[test]
