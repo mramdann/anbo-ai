@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.43.2](https://github.com/mramdann/anbo-ai/compare/v0.43.1...v0.43.2) (2026-11-25)
+
+
+### Bug Fixes
+
+* **browser:** a tab whose page process has ended closes without leaving a handle ([8811925](https://github.com/mramdann/anbo-ai/commit/88119251dde868d07f25692ea19f667003d10427))
+* **browser:** a tool on a tab whose page process has ended says so at once ([3c3145c](https://github.com/mramdann/anbo-ai/commit/3c3145c02c4f8d76d27d8a75949aedd7bb562c8c))
+
 ## [0.43.1](https://github.com/mramdann/anbo-ai/compare/v0.43.0...v0.43.1) (2026-11-24)
 
 
