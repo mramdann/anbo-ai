@@ -107,13 +107,14 @@ function EntryRowImpl(props: EntryRowProps) {
   return (
     <button
       type="button"
+      tabIndex={-1}
       data-fs-path={path}
       onClick={handleClick}
       onDoubleClick={() => !isDir && actions.beginRename(path)}
       className={cn(
         "group flex h-[22px] w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-sm px-1.5 text-left text-[13px] transition-colors hover:bg-accent/70",
         isSelected
-          ? "bg-accent text-foreground"
+          ? "bg-accent text-foreground group-focus-visible/tree:ring-1 group-focus-visible/tree:ring-inset group-focus-visible/tree:ring-ring/50"
           : gitignored
             ? "text-muted-foreground/70"
             : "text-foreground/85",

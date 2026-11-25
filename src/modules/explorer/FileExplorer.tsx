@@ -306,10 +306,15 @@ export const FileExplorer = memo(
     }, [dropTargetDir, rootPath, tree.expanded, tree.expand]);
 
     useEffect(() => {
-      if (selectedPath && !entryIndexByPath.has(selectedPath)) {
+      // The row being renamed is not among the entries; it stays selected.
+      if (
+        selectedPath &&
+        selectedPath !== tree.renaming &&
+        !entryIndexByPath.has(selectedPath)
+      ) {
         setSelectedPath(null);
       }
-    }, [entryIndexByPath, selectedPath]);
+    }, [entryIndexByPath, selectedPath, tree.renaming]);
 
     const virtualizer = useVirtualizer({
       count: rows.length,
@@ -346,7 +351,7 @@ export const FileExplorer = memo(
       ref,
       () => ({
         focus: () => {
-          containerRef.current?.focus();
+          scrollRef.current?.focus();
           if (!selectedPath && entryPaths.length > 0) {
             const first = entryPaths[0];
             setSelectedPath(first);
@@ -378,6 +383,23 @@ export const FileExplorer = memo(
       },
     });
 
+    // A rename, a new name or the search that ends takes its field away with
+    // the focus in it. The list takes the focus then, so the keys go on.
+    const fieldOpen = Boolean(
+      tree.renaming || tree.pendingCreate || isSearchOpen,
+    );
+    const fieldWasOpen = useRef(false);
+    useEffect(() => {
+      if (
+        fieldWasOpen.current &&
+        !fieldOpen &&
+        document.activeElement === document.body
+      ) {
+        scrollRef.current?.focus();
+      }
+      fieldWasOpen.current = fieldOpen;
+    }, [fieldOpen]);
+
     if (!rootPath) {
       return (
         <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
@@ -400,13 +422,8 @@ export const FileExplorer = memo(
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
       if (tree.renaming || tree.pendingCreate || isSearchOpen) return;
-      const target = e.target as HTMLElement;
-      if (
-        target.tagName === "INPUT" ||
-        target.tagName === "TEXTAREA" ||
-        target.isContentEditable
-      )
-        return;
+      // A key pressed in a rename field is the field's own.
+      if (e.target !== e.currentTarget) return;
       if (entryPaths.length === 0) return;
 
       const currentIdx = selectedPath ? entryPaths.indexOf(selectedPath) : -1;
@@ -463,6 +480,7 @@ export const FileExplorer = memo(
           }
           break;
         }
+        case " ":
         case "Enter": {
           if (currentIdx < 0) return;
           e.preventDefault();
@@ -476,6 +494,13 @@ export const FileExplorer = memo(
           break;
         }
       }
+    };
+
+    // The tree is one Tab stop, the list, and the arrows move inside it. Rows
+    // have tabindex -1. A click still puts focus on one; the list takes it,
+    // where the keys are read and where the paging keys scroll.
+    const handleFocus = (e: React.FocusEvent<HTMLDivElement>) => {
+      if (e.target.tabIndex < 0) e.currentTarget.focus();
     };
 
     const renderRow = (row: Row) => {
@@ -522,12 +547,7 @@ export const FileExplorer = memo(
     };
 
     return (
-      <div
-        ref={containerRef}
-        className="flex h-full flex-col outline-none"
-        tabIndex={0}
-        onKeyDown={handleKeyDown}
-      >
+      <div ref={containerRef} className="flex h-full flex-col">
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border/60 px-2">
           <span
             className="flex flex-1 min-w-0 items-center gap-1.5 truncate text-xs font-medium text-foreground/80"
@@ -603,9 +623,12 @@ export const FileExplorer = memo(
             <ContextMenuTrigger asChild>
               <div
                 ref={scrollRef}
+                tabIndex={0}
+                onKeyDown={handleKeyDown}
+                onFocus={handleFocus}
                 data-explorer-drop=""
                 className={cn(
-                  "panel-scrollbar min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]",
+                  "group/tree panel-scrollbar min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden outline-none [scrollbar-gutter:stable] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/30",
                   rootIsDropTarget &&
                     "rounded-sm ring-1 ring-inset ring-primary/50",
                 )}
