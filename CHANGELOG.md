@@ -5,8 +5,8 @@
 
 ### Bug Fixes
 
-* **browser:** a tab whose page process has ended closes without leaving a handle ([8811925](https://github.com/mramdann/anbo-ai/commit/88119251dde868d07f25692ea19f667003d10427))
-* **browser:** a tool on a tab whose page process has ended says so at once ([3c3145c](https://github.com/mramdann/anbo-ai/commit/3c3145c02c4f8d76d27d8a75949aedd7bb562c8c))
+* **browser:** closing a browser tab whose page had crashed, or whose page the system had ended to free memory, no longer leaves a system handle behind in Anbo. The fix in 0.43.1 did not reach such tabs ([8811925](https://github.com/mramdann/anbo-ai/commit/88119251dde868d07f25692ea19f667003d10427))
+* **browser:** when the page of a browser tab has crashed, the browser tools an agent uses now say so at once and name the way back: reload the tab or open another address. Before, they waited up to 17 seconds and most of them then failed with a timeout that named no cause ([3c3145c](https://github.com/mramdann/anbo-ai/commit/3c3145c02c4f8d76d27d8a75949aedd7bb562c8c))
 
 ## [0.43.1](https://github.com/mramdann/anbo-ai/compare/v0.43.0...v0.43.1) (2026-11-24)
 
