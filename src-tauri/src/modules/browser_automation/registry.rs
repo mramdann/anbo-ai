@@ -133,6 +133,12 @@ pub fn active_loading(tab_id: i64) -> Option<bool> {
     embed::active_loading(tab_id).or_else(|| browser_external::get_target(tab_id)?.loading())
 }
 
+/// Whether the page process of a tab of Anbo's own browser ended by itself
+/// and no page has loaded in the tab since. Never so for a Chrome or Edge tab.
+pub fn page_process_ended(tab_id: i64) -> bool {
+    embed::page_process_ended(tab_id)
+}
+
 pub fn active_pending_url(tab_id: i64) -> Option<String> {
     embed::active_pending_url(tab_id)
         .or_else(|| browser_external::get_target(tab_id)?.pending_url())

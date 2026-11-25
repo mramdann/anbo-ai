@@ -414,6 +414,21 @@ pub async fn handle_action_as(
             scope => return Err(tab_scope_refusal(id, scope)),
         }
     }
+    if let Some(id) = tab_id.filter(|&id| {
+        refused_for_gone_page(
+            method,
+            super::registry::page_process_ended(id),
+            active_loading(id),
+        )
+    }) {
+        log::info!(
+            "[browser_automation] {method}: tab {id} has no page (its page process ended); answered at once"
+        );
+        return Err((
+            error_codes::PAGE_GONE.to_string(),
+            page_gone_answer(id, None),
+        ));
+    }
     let before_navigation = tab_id.and_then(active_navigation_generation);
     // A single-page app moves to a new URL without a native navigation:
     // YouTube and Maps after a search, YouTube after a result click. Their
@@ -462,6 +477,16 @@ pub async fn handle_action_as(
             if code == error_codes::TAB_NOT_FOUND && super::registry::short_of_memory(&message) =>
         {
             Err(("resource_exhausted".to_string(), message))
+        }
+        // The page process ended while the call ran, or under a call that is
+        // not refused up front: its own failure alone would not say why.
+        (Err((code, message)), Some(tab), _)
+            if gone_page_explains(&code) && super::registry::page_process_ended(tab) =>
+        {
+            Err((
+                error_codes::PAGE_GONE.to_string(),
+                page_gone_answer(tab, Some(&message)),
+            ))
         }
         (Err((code, message)), Some(tab), _)
             if (code == error_codes::TIMEOUT || code == error_codes::NOT_FOUND)
@@ -4576,6 +4601,75 @@ fn lost_page_connection(message: &str) -> bool {
 fn lost_page_answer(tab: i64) -> String {
     format!(
         "tab {tab} lost its connection to its page (the page was closed or replaced in the browser, or the browser let it go after a command there did not finish). Open its URL again with browser_open, or close the tab with browser_close."
+    )
+}
+
+/// Methods that act on the page or read it. On a tab of Anbo's own browser
+/// whose page process had ended they waited 2 to 17 s for an answer that could
+/// not come and failed with "DevTools method '...' timed out", and two answered
+/// as if the page were empty (round 129, R129-1). What reads the browser's own
+/// record (`page_info`, `network_requests`, `get_url`), moves the tab
+/// (`navigate`, `reload`, `back`, `forward`, `stop`) or closes it still works
+/// there and is not listed.
+fn needs_live_page(method: &str) -> bool {
+    matches!(
+        method,
+        "snapshot"
+            | "find"
+            | "click"
+            | "double_click"
+            | "focus"
+            | "check"
+            | "drag"
+            | "fill_form"
+            | "type_text"
+            | "type"
+            | "upload_files"
+            | "upload"
+            | "press_key"
+            | "press"
+            | "key"
+            | "scroll"
+            | "wait"
+            | "dialog"
+            | "emulate"
+            | "screenshot"
+            | "download"
+            | "select_option"
+            | "select"
+            | "hover"
+            | "scroll_to_element"
+            | "scroll_into_view"
+            | "get_text"
+            | "get_property"
+            | "console_logs"
+    )
+}
+
+/// Whether a call is answered at once because its tab has no page. Not while a
+/// load is under way: that one brings a page, and the call waits for it as on
+/// any loading tab.
+fn refused_for_gone_page(method: &str, page_gone: bool, loading: Option<bool>) -> bool {
+    page_gone && loading != Some(true) && needs_live_page(method)
+}
+
+/// Failures a missing page explains: the call waited for the page, or asked it.
+fn gone_page_explains(code: &str) -> bool {
+    matches!(
+        code,
+        error_codes::CDP_FAILED | error_codes::TIMEOUT | error_codes::NOT_FOUND
+    )
+}
+
+/// The answer for a tab whose page process has ended, with the call's own
+/// failure when it ran into that on the way.
+fn page_gone_answer(tab: i64, own_error: Option<&str>) -> String {
+    let what = match own_error {
+        Some(error) => format!("so this call did not finish ({error})"),
+        None => "so there is no page to act on or read; nothing was done".to_string(),
+    };
+    format!(
+        "tab {tab}: the process of its page has ended (a crash, or the system took it for memory), {what}. browser_reload loads the page again and browser_navigate opens another; what the page held (typed text, its scroll position) is gone."
     )
 }
 
@@ -13235,6 +13329,111 @@ mod workspace_scope_tests {
         let answer = lost_page_answer(208);
         assert!(answer.starts_with("tab 208 lost its connection to its page"));
         assert!(answer.contains("browser_open") && answer.contains("browser_close"));
+    }
+
+    #[test]
+    fn a_call_that_needs_the_page_is_answered_at_once_when_the_page_is_gone() {
+        // Round 129 (R129-1), measured on a tab whose page process was ended:
+        // these waited 2 to 17 s and failed with a timeout that named no cause,
+        // console_logs and emulate answered as if the page were empty.
+        for method in [
+            "snapshot",
+            "find",
+            "get_text",
+            "get_property",
+            "console_logs",
+            "screenshot",
+            "wait",
+            "click",
+            "double_click",
+            "focus",
+            "check",
+            "type",
+            "type_text",
+            "press",
+            "press_key",
+            "key",
+            "scroll",
+            "hover",
+            "scroll_to_element",
+            "scroll_into_view",
+            "select_option",
+            "select",
+            "emulate",
+            "dialog",
+            "drag",
+            "fill_form",
+            "upload",
+            "upload_files",
+            "download",
+        ] {
+            assert!(needs_live_page(method), "{method}");
+            assert!(scoped_to_workspace(method), "{method}");
+            assert!(refused_for_gone_page(method, true, Some(false)), "{method}");
+            assert!(refused_for_gone_page(method, true, None), "{method}");
+            // A load under way brings a page: the call waits for it.
+            assert!(!refused_for_gone_page(method, true, Some(true)), "{method}");
+            assert!(
+                !refused_for_gone_page(method, false, Some(false)),
+                "{method}"
+            );
+        }
+        // These answered there from the browser's own record, or bring a page.
+        for method in [
+            "page_info",
+            "get_page_info",
+            "network_requests",
+            "get_url",
+            "navigate",
+            "reload",
+            "back",
+            "forward",
+            "stop",
+            "close",
+            "open",
+            "tabs",
+            "list_tabs",
+            "download_status",
+            "download_wait",
+            "agent_send",
+            "terminal_read",
+            "skills_list",
+        ] {
+            assert!(!needs_live_page(method), "{method}");
+            assert!(
+                !refused_for_gone_page(method, true, Some(false)),
+                "{method}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_answer_for_a_gone_page_says_what_brings_one_back() {
+        let refused = page_gone_answer(12, None);
+        assert!(refused.starts_with("tab 12: the process of its page has ended"));
+        assert!(refused.contains("nothing was done"));
+        assert!(refused.contains("browser_reload") && refused.contains("browser_navigate"));
+        let failed = page_gone_answer(12, Some("DevTools method 'Page.getFrameTree' timed out"));
+        assert!(failed.contains("did not finish (DevTools method 'Page.getFrameTree' timed out)"));
+        assert!(!failed.contains("nothing was done"));
+        assert!(failed.contains("browser_reload") && failed.contains("browser_navigate"));
+        // Only a failure the missing page explains is put so.
+        for code in [
+            error_codes::CDP_FAILED,
+            error_codes::TIMEOUT,
+            error_codes::NOT_FOUND,
+        ] {
+            assert!(gone_page_explains(code), "{code}");
+        }
+        for code in [
+            error_codes::INVALID_REQUEST,
+            error_codes::OTHER_WORKSPACE,
+            error_codes::STALE_REF,
+            error_codes::NAVIGATION_FAILED,
+            error_codes::PAGE_GONE,
+        ] {
+            assert!(!gone_page_explains(code), "{code}");
+        }
     }
 
     #[test]

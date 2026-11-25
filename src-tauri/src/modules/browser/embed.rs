@@ -418,6 +418,22 @@ pub fn clear_lifecycle_state() {
     if let Ok(mut failures) = spawn_failures().lock() {
         failures.clear();
     }
+    #[cfg(windows)]
+    if let Ok(mut gone) = gone_pages().lock() {
+        gone.clear();
+    }
+}
+
+/// Whether this tab's page process ended by itself and no page has loaded in
+/// the tab since: the tab is there, with no page in it.
+#[cfg(windows)]
+pub fn page_process_ended(tab_id: i64) -> bool {
+    page_is_gone(tab_id)
+}
+
+#[cfg(not(windows))]
+pub fn page_process_ended(_tab_id: i64) -> bool {
+    false
 }
 
 fn validate_tab_id(tab_id: i64) -> Result<(), String> {
@@ -1045,7 +1061,11 @@ async fn spawn_browser_child(
         #[cfg(windows)]
         register_source_handler(&webview, tab_id, app_url, local_root);
         #[cfg(windows)]
-        register_page_gone_handler(&webview, tab_id);
+        {
+            // A note left by an earlier page of this tab id says nothing of this one.
+            note_page_back(tab_id);
+            register_page_gone_handler(&webview, tab_id);
+        }
         #[cfg(windows)]
         drop_app_protocol_filters(&webview);
         set_embed_presentation(&webview, visible)?;
