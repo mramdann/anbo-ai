@@ -137,8 +137,10 @@ tab follows whoever acted last.
 
 Postconditions: with `waitFor`, `browser_press` returns only `postcondition`,
 without the Enter observation flags; read `postcondition.matched`. A failed postcondition does not undo a click or
-submit. Check `browser_tabs` for a newly opened background tab before clicking
-an equivalent link: a popup does not navigate the source tab. A target that
+submit. A click or `browser_press` whose page opened a tab names it in
+`openedTabs` (`tabId`, `url`) and counts one not there yet in `openingTabs`,
+which `browser_tabs` lists once it is. Go on in that tab instead of clicking an
+equivalent link again: a popup does not navigate the source tab. A target that
 moves, hides, disables or gets covered after pointer movement returns
 `input_not_ready` before mouse-down; a double-click can stop after its first
 click and reports how many clicks were dispatched. Failure never means no input
@@ -220,8 +222,8 @@ answers `pageHidden: true`: a native control was activated with the keyboard
 relying on it.
 `browser_close` on a Chrome or Edge tab closes it in that browser too, and one
 the user closes there closes in Anbo. A tab a page there opens (a `target=_blank` link, `window.open`) becomes an Anbo tab of
-its own, in the background when your click opened it: find it in
-`browser_tabs`.
+its own, in the background when your click opened it: the click's answer names
+it in `openedTabs`.
 
 When the active workspace has no tabs, `browser_open`, `terminal_open` and
 `agent_spawn` display their first tab automatically (`placement:
@@ -277,9 +279,10 @@ sitting at a prompt, and free of a foreground job immediately before writing,
 so a busy or exited terminal fails instead of running half a command.
 A prompt that holds a line nobody submitted takes no command either
 (`terminal_input_pending`), and `terminal_list` marks such a terminal with
-`unsubmittedInput`. `"user"` means the user typed it, or brought it back from
-history: it is theirs, so leave it there, do not wait on it, and run your
-command in another terminal or open one. `terminal_interrupt` refuses to clear
+`unsubmittedInput`. `"user"` means the user typed it, brought it back from
+history, or began a block the shell still waits to see closed: it is theirs,
+so leave it there, do not wait on it, and run your command in another terminal
+or open one. `terminal_interrupt` refuses to clear
 it. `"tool"` is input staged with `terminal_insert`, which `terminal_interrupt`
 without an `executionId` clears.
 A new terminal reads `starting` until its shell shows its first prompt. A
@@ -338,10 +341,10 @@ user to review, or answer a prompt that is not a shell command.
 ## Other agents
 
 `agent_list` shows the agents in a workspace and whether each is idle. An
-agent restored from the last session in a workspace not shown yet lists as
-`dormant`, and as `resuming` while its CLI comes back; `agent_send`,
-`agent_read` and `agent_wait` resume a dormant one, so never start another in
-its place.
+agent restored from the last session whose workspace has not resumed yet, or
+one in a workspace the user paused, lists as `dormant`, and as `resuming`
+while its CLI comes back; `agent_send`, `agent_read` and `agent_wait` resume a
+dormant one, so never start another in its place.
 `agent_send` gives one an instruction; it waits for the agent to be ready
 rather than typing over a running task. On a busy machine an agent can take a
 long message in more slowly than your timeout: the result then says
