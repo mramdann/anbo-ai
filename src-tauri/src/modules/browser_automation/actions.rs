@@ -3135,7 +3135,7 @@ async fn handle_action_attempt(
 
         "dialog" => {
             let tab_id = extract_tab_id(&params)?;
-            let ref_id = extract_ref(&params)?;
+            let ref_id = extract_ref_or(&params, DIALOG_NO_TARGET)?;
             let action = params
                 .get("dialogAction")
                 .and_then(Value::as_str)
@@ -10275,7 +10275,22 @@ fn extract_tab_id(params: &Value) -> Result<i64, (String, String)> {
         })
 }
 
+/// What an action answers when it is called with nothing to act on. A locator
+/// has become a ref by the time an action looks for its target, so both ways
+/// are named: the text said only `ref` until round 133.
+const NO_TARGET: &str =
+    "no target named: pass ref (from a find, a snapshot or an earlier answer) or locator";
+
+/// A model that knows other browser tools takes browser_dialog for "answer the
+/// dialog that is open". A real agent called it bare after a click's note sent
+/// it here (round 133), and "missing ref" told it nothing about why.
+const DIALOG_NO_TARGET: &str = "browser_dialog clicks the element itself and answers the dialog that click opens: pass that element's ref or locator; a dialog an earlier click opened was dismissed already";
+
 fn extract_ref(params: &Value) -> Result<String, (String, String)> {
+    extract_ref_or(params, NO_TARGET)
+}
+
+fn extract_ref_or(params: &Value, missing: &str) -> Result<String, (String, String)> {
     let ref_id = params
         .get("ref")
         .or_else(|| params.get("ref_id"))
@@ -10283,7 +10298,7 @@ fn extract_ref(params: &Value) -> Result<String, (String, String)> {
         .ok_or_else(|| {
             (
                 error_codes::INVALID_REQUEST.to_string(),
-                "missing or invalid 'ref' parameter".to_string(),
+                missing.to_string(),
             )
         })?;
     ensure_bounded(ref_id, MAX_REF_BYTES, "ref")?;
@@ -10812,6 +10827,23 @@ mod tests {
 
         let v3 = json!({});
         assert!(extract_ref(&v3).is_err());
+
+        // Nothing to act on: the answer names both ways to say what, and
+        // browser_dialog's says that the tool does the click.
+        for bare in [json!({}), json!({ "ref": null }), json!({ "ref": 7 })] {
+            let (code, text) = extract_ref(&bare).unwrap_err();
+            assert_eq!(code, error_codes::INVALID_REQUEST);
+            assert!(
+                text.contains("pass ref") && text.contains("or locator"),
+                "{text}"
+            );
+            let (_, text) = extract_ref_or(&bare, DIALOG_NO_TARGET).unwrap_err();
+            assert!(text.contains("clicks the element itself"), "{text}");
+            assert!(text.contains("ref or locator"), "{text}");
+        }
+        // A ref that is there and malformed keeps its own answer.
+        let (_, text) = extract_ref_or(&json!({ "ref": "e1" }), DIALOG_NO_TARGET).unwrap_err();
+        assert!(!text.contains("clicks the element itself"), "{text}");
 
         for invalid in [
             "",
