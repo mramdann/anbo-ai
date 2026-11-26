@@ -68,7 +68,6 @@ import {
 import { AiComposerProvider } from "@/modules/ai/lib/composer";
 import { native } from "@/modules/ai/lib/native";
 import {
-  acceptBrowserPopupRequest,
   type BrowserPaneHandle,
   BrowserStack,
   type BrowserTabMetadata,
@@ -487,10 +486,6 @@ export default function App() {
   }, []);
   const editorRefs = useRef<Map<number, EditorPaneHandle>>(new Map());
   const browserRefs = useRef<Map<number, BrowserPaneHandle>>(new Map());
-  const lastBrowserPopupRef = useRef<{
-    key: string;
-    at: number;
-  } | null>(null);
   // The tab each page of Anbo's browser opened last, so the next goes after it.
   const browserPopupOpenedRef = useRef<Map<number, number>>(new Map());
   const [activeEditorHandleKey, setActiveEditorHandleKey] = useState<
@@ -2034,12 +2029,6 @@ export default function App() {
 
   useEffect(() => {
     setBrowserPopupRequestHandler((payload) => {
-      const decision = acceptBrowserPopupRequest(
-        lastBrowserPopupRef.current,
-        payload,
-      );
-      lastBrowserPopupRef.current = decision.stamp;
-      if (!decision.accept) return;
       let protocol: string;
       try {
         protocol = new URL(payload.url).protocol;

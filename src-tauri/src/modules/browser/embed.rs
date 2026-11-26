@@ -887,12 +887,20 @@ async fn spawn_browser_child(
                 let url = target.to_string();
                 // Now, while the click or key that asked is still running: its
                 // answer waits for the tab the UI makes and names it. The UI
-                // opens only web pages so.
-                if matches!(target.scheme(), "http" | "https") {
-                    crate::modules::browser_automation::activity::note_open_asked(
+                // opens only web pages so, and a tab for every ask it gets:
+                // the same link asked for again within a second (WebView2
+                // asks twice for one at times) is judged here and goes no
+                // further.
+                if matches!(target.scheme(), "http" | "https")
+                    && !crate::modules::browser_automation::activity::note_open_asked(
                         tab_id,
                         crate::modules::browser_automation::activity::OpeningKey::Url(url.clone()),
+                    )
+                {
+                    log::info!(
+                        "[browser_new_tab] tab {tab_id}: its page asked for the same tab again within a second"
                     );
+                    return NewWindowResponse::Deny;
                 }
                 tauri::async_runtime::spawn(async move {
                     let background = super::new_tab::opens_behind(&app, tab_id).await;

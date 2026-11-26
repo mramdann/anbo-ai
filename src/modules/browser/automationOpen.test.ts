@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  acceptBrowserPopupRequest,
   browserOpenPlacement,
   browserPopupAfter,
   createBrowserCloseListener,
@@ -136,20 +135,6 @@ describe("browserPopupAfter", () => {
     // That one closed, or moved to another workspace.
     expect(browserPopupAfter(tabs, 7, 12)).toBe(7);
     expect(browserPopupAfter(tabs, 7, 9)).toBe(7);
-  });
-});
-
-describe("acceptBrowserPopupRequest", () => {
-  it("deduplicates native and automation popup signals for the same target", () => {
-    const request = { sourceTabId: 7, url: "https://example.com/popup" };
-    const first = acceptBrowserPopupRequest(null, request, 1_000);
-    expect(first.accept).toBe(true);
-    expect(acceptBrowserPopupRequest(first.stamp, request, 1_500).accept).toBe(
-      false,
-    );
-    expect(acceptBrowserPopupRequest(first.stamp, request, 2_100).accept).toBe(
-      true,
-    );
   });
 });
 

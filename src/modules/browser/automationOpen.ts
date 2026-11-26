@@ -37,6 +37,10 @@ export type BrowserTabsRequest = {
   requestId: string;
 };
 
+/** A tab the page of a tab of Anbo's browser asked for. Anbo sends one for
+ *  each tab to make: the same link asked for again within a second is judged
+ *  there (activity.rs `own_ask`), where the ask is noted for the answer of
+ *  the click that made it. */
 export type BrowserPopupRequest = {
   sourceTabId: number;
   url: string;
@@ -56,26 +60,6 @@ export type BrowserWakeRequest = {
   requestId: string;
   tabId: number;
 };
-
-export type BrowserPopupStamp = {
-  key: string;
-  at: number;
-};
-
-export function acceptBrowserPopupRequest(
-  previous: BrowserPopupStamp | null,
-  request: BrowserPopupRequest,
-  now = Date.now(),
-): { accept: boolean; stamp: BrowserPopupStamp } {
-  const stamp = {
-    key: `${request.sourceTabId}\u0000${request.url}`,
-    at: now,
-  };
-  return {
-    accept: !(previous?.key === stamp.key && now - previous.at < 1_000),
-    stamp,
-  };
-}
 
 export type BrowserTabMetadata = {
   tabId: number;

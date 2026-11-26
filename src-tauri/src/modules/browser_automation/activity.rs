@@ -456,9 +456,16 @@ const MAX_OPENING_URL: usize = 300;
 /// has not made yet. Chrome and Edge bring a tab over once its first page is
 /// there: under a second on a quiet machine.
 const OPENING_PATIENCE: Duration = Duration::from_secs(3);
-/// Anbo's own browser asks twice for one link at times; the UI opens one tab
-/// for the same page within this (automationOpen.ts).
+/// Anbo's own browser asks twice for one link at times: the same page asked
+/// for again by the same tab within this is the tab already asked for.
 const SAME_ASK_MS: u64 = 1_000;
+/// The ask before this one: which tab, for what, when (ms since 1970). The
+/// one judge of a repeated ask. The UI had a rule of its own for it, and the
+/// two disagreed on a second ask that came after the first one's tab was made:
+/// noted here, opened by nobody. Every later tab of that link from that page
+/// was then taken for the old ask's, and the click that opened it answered
+/// "one coming" after OPENING_PATIENCE instead of naming it (round 132).
+static LAST_ASK: Mutex<Option<(i64, OpeningKey, u64)>> = Mutex::new(None);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Opening {
@@ -491,10 +498,41 @@ fn epoch_ms() -> u64 {
 
 /// A page asked its browser for a tab: Anbo's own browser's new window, or
 /// the extension's word (0.5.19) that a tab is on its way from Chrome or Edge.
-pub fn note_open_asked(source_tab: i64, key: OpeningKey) {
-    if let Ok(mut openings) = OPENINGS.lock() {
-        asked(&mut openings, source_tab, key, epoch_ms());
+/// False when it repeats the ask before it, for which no tab of its own is
+/// made: the caller then asks the UI for none.
+pub fn note_open_asked(source_tab: i64, key: OpeningKey) -> bool {
+    let now = epoch_ms();
+    let own = match LAST_ASK.lock() {
+        Ok(mut last) => own_ask(&mut last, source_tab, &key, now),
+        Err(_) => true,
+    };
+    if !own {
+        return false;
     }
+    if let Ok(mut openings) = OPENINGS.lock() {
+        asked(&mut openings, source_tab, key, now);
+    }
+    true
+}
+
+/// Whether this ask is for a tab of its own, as against the ask before it
+/// made again. Every ask moves the moment on, a repeated one too: asks that
+/// keep coming under SAME_ASK_MS apart stay the one tab.
+fn own_ask(
+    last: &mut Option<(i64, OpeningKey, u64)>,
+    source: i64,
+    key: &OpeningKey,
+    at_ms: u64,
+) -> bool {
+    let repeated = last
+        .as_ref()
+        .is_some_and(|(last_source, last_key, last_at)| {
+            *last_source == source
+                && last_key == key
+                && at_ms.saturating_sub(*last_at) < SAME_ASK_MS
+        });
+    *last = Some((source, key.clone(), at_ms));
+    !repeated
 }
 
 /// Anbo made the tab a page asked for.
@@ -1749,6 +1787,73 @@ mod opening_tests {
         // A second click on the same link, past the moment: a second tab.
         asked(&mut openings, 7, page(), AT + 1_500);
         assert_eq!(opened_in(&openings, 7, AT + 1_400).coming, 1);
+    }
+
+    #[test]
+    fn the_same_link_asked_for_again_within_a_second_leaves_no_ask_behind() {
+        let page = || OpeningKey::Url("http://127.0.0.1:5102/second".into());
+        let url = || Some("http://127.0.0.1:5102/second".to_string());
+
+        // As it was (round 132): the second ask, 370 ms after the first and
+        // after the first one's tab was made, was noted, and the UI opened no
+        // tab for it. The tab of a click two seconds later was then taken for
+        // that ask's, and the click's own ask stayed "coming".
+        let mut openings = VecDeque::new();
+        asked(&mut openings, 7, page(), AT);
+        made(&mut openings, 7, 8, page(), url(), AT + 60);
+        asked(&mut openings, 7, page(), AT + 370);
+        asked(&mut openings, 7, page(), AT + 2_500);
+        made(&mut openings, 7, 9, page(), url(), AT + 2_560);
+        assert_eq!(
+            opened_in(&openings, 7, AT + 2_400),
+            Opened {
+                tabs: vec![],
+                coming: 1
+            }
+        );
+
+        // With the one judge the second ask is the first made again: not
+        // noted, so its click waits for nothing, and the third names its tab.
+        let mut openings = VecDeque::new();
+        let mut last = None;
+        let mut ask = |openings: &mut VecDeque<Opening>, at_ms: u64| {
+            let own = own_ask(&mut last, 7, &page(), at_ms);
+            if own {
+                asked(openings, 7, page(), at_ms);
+            }
+            own
+        };
+        assert!(ask(&mut openings, AT));
+        made(&mut openings, 7, 8, page(), url(), AT + 60);
+        assert!(!ask(&mut openings, AT + 370));
+        assert_eq!(opened_in(&openings, 7, AT + 300), Opened::default());
+        assert!(ask(&mut openings, AT + 2_500));
+        made(&mut openings, 7, 9, page(), url(), AT + 2_560);
+        assert_eq!(
+            opened_in(&openings, 7, AT + 2_400),
+            Opened {
+                tabs: vec![(9, url())],
+                coming: 0
+            }
+        );
+    }
+
+    #[test]
+    fn an_ask_is_the_one_before_it_only_for_the_same_tab_and_page_within_a_second() {
+        let page = OpeningKey::Url("https://example.com/next".into());
+        let other = OpeningKey::Url("https://example.com/other".into());
+        let mut last = None;
+        assert!(own_ask(&mut last, 7, &page, AT));
+        // Asks that keep coming under a second apart stay the one tab.
+        assert!(!own_ask(&mut last, 7, &page, AT + 600));
+        assert!(!own_ask(&mut last, 7, &page, AT + 1_200));
+        assert!(own_ask(&mut last, 7, &page, AT + 2_200));
+        // Another page, or another tab's page, is an ask of its own, and so
+        // is the first page after it.
+        assert!(own_ask(&mut last, 7, &other, AT + 2_300));
+        assert!(own_ask(&mut last, 7, &page, AT + 2_400));
+        assert!(own_ask(&mut last, 9, &page, AT + 2_500));
+        assert!(own_ask(&mut last, 7, &page, AT + 2_600));
     }
 
     #[test]
