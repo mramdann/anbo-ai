@@ -46,3 +46,23 @@ describe("quoteShellArg (windows/pwsh)", () => {
     expect(q("")).toBe("''");
   });
 });
+
+describe("quoteShellArg and the quotes PowerShell reads as its own", () => {
+  const curly = [0x2018, 0x2019, 0x201a, 0x201b].map((code) =>
+    String.fromCodePoint(code),
+  );
+
+  it("doubles each curly quote on Windows, so a name cannot end the string", () => {
+    for (const quote of curly) {
+      expect(quoteShellArg(`x${quote};calc;${quote}y`, true)).toBe(
+        `'x${quote}${quote};calc;${quote}${quote}y'`,
+      );
+    }
+  });
+
+  it("leaves them alone for a POSIX shell, which reads them as text", () => {
+    for (const quote of curly) {
+      expect(quoteShellArg(`x${quote}y`, false)).toBe(`'x${quote}y'`);
+    }
+  });
+});
