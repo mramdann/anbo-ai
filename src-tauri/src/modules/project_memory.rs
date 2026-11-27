@@ -59,6 +59,8 @@ fn read_project_memory_sync(
     {
         return Err("project memory escapes the authorized workspace root".into());
     }
+    // ANBO.md may be a link to a file beside it; that file must not be a secret.
+    crate::modules::authority::ensure_unprotected(&canonical_file)?;
 
     let mut file = File::open(&canonical_file).map_err(|error| error.to_string())?;
     let metadata = file.metadata().map_err(|error| error.to_string())?;
@@ -165,6 +167,46 @@ mod tests {
         let result =
             read_project_memory_sync(&to_canon(dir.path()), &WorkspaceEnv::Local, &registry);
         assert!(result.unwrap_err().contains("escapes"));
+    }
+
+    fn link_file(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(target, link);
+        if made.is_err() {
+            eprintln!("skipping: this account may not create symbolic links");
+        }
+        made.is_ok()
+    }
+
+    #[test]
+    fn rejects_memory_that_links_to_a_secret_beside_it() {
+        let (dir, registry) = authorized_root();
+        let secret = dir.path().join(".env");
+        std::fs::write(&secret, "TOKEN=not-for-a-model").unwrap();
+        if !link_file(&secret, &dir.path().join(PROJECT_MEMORY_FILE)) {
+            return;
+        }
+
+        let result =
+            read_project_memory_sync(&to_canon(dir.path()), &WorkspaceEnv::Local, &registry);
+        assert!(result.unwrap_err().contains("sensitive"));
+    }
+
+    #[test]
+    fn reads_memory_that_links_to_an_ordinary_file_beside_it() {
+        let (dir, registry) = authorized_root();
+        let agents = dir.path().join("AGENTS.md");
+        std::fs::write(&agents, "# Agents").unwrap();
+        if !link_file(&agents, &dir.path().join(PROJECT_MEMORY_FILE)) {
+            return;
+        }
+
+        let content =
+            read_project_memory_sync(&to_canon(dir.path()), &WorkspaceEnv::Local, &registry)
+                .unwrap();
+        assert_eq!(content.as_deref(), Some("# Agents"));
     }
 
     #[test]
