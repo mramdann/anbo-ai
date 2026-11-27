@@ -569,3 +569,239 @@ fn list_branches_keeps_current_branch_local_and_surfaces_worktrees() {
     assert!(!feature[0].is_head);
     assert!(feature[0].worktree_path.is_some());
 }
+
+fn git_output(dir: &std::path::Path, args: &[&str], input: Option<&[u8]>) -> String {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("git on PATH");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(input.unwrap_or_default())
+        .expect("write to git");
+    let out = child.wait_with_output().expect("git ran");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).expect("utf-8 from git")
+}
+
+fn write_script(path: &std::path::Path, body: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("script folder");
+    }
+    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("write script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+}
+
+fn seeded_repo() -> GitRepoFixture {
+    let fx = GitRepoFixture::new();
+    fx.write_file("note.txt", "before\n");
+    fx.run_git(&["add", "."]);
+    fx.run_git(&["commit", "-qm", "seed"]);
+    fx
+}
+
+#[test]
+fn status_and_diff_do_not_run_a_repository_fsmonitor() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = seeded_repo();
+    fx.write_file("note.txt", "after\n");
+    fx.run_git(&[
+        "config",
+        "core.fsmonitor",
+        "echo ran > fsmonitor-marker; exit 0 #",
+    ]);
+    let marker = fx.repo_path.join("fsmonitor-marker");
+
+    operations::status(&fx.registry, &fx.repo_str(), &fx.workspace).expect("status");
+    assert!(!marker.exists(), "status ran the repository's fsmonitor");
+    operations::diff(&fx.registry, &fx.repo_str(), None, false, &fx.workspace).expect("diff");
+    assert!(!marker.exists(), "diff ran the repository's fsmonitor");
+}
+
+#[test]
+fn status_does_not_run_the_fsmonitor_of_a_repository_inside() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = seeded_repo();
+    let inner = fx.repo_path.join("inner");
+    std::fs::create_dir(&inner).expect("inner folder");
+    git_output(&inner, &["init", "-q"], None);
+    git_output(&inner, &["config", "user.email", "test@anbo.local"], None);
+    git_output(&inner, &["config", "user.name", "Anbo Test"], None);
+    git_output(&inner, &["config", "commit.gpgsign", "false"], None);
+    fx.write_file("inner/inside.txt", "one\n");
+    git_output(&inner, &["add", "."], None);
+    git_output(&inner, &["commit", "-qm", "inner"], None);
+    fx.run_git(&["add", "inner"]);
+    fx.run_git(&["commit", "-qm", "with a repository inside"]);
+    git_output(
+        &inner,
+        &[
+            "config",
+            "core.fsmonitor",
+            "echo ran > fsmonitor-marker; exit 0 #",
+        ],
+        None,
+    );
+    fx.write_file("inner/inside.txt", "two\n");
+
+    operations::status(&fx.registry, &fx.repo_str(), &fx.workspace).expect("status");
+    assert!(
+        !inner.join("fsmonitor-marker").exists(),
+        "status ran the fsmonitor of the repository inside"
+    );
+}
+
+#[test]
+fn diffs_do_not_run_a_repository_text_converter_or_external_diff() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = GitRepoFixture::new();
+    fx.write_file("note.txt", "before\n");
+    fx.write_file(".gitattributes", "*.txt diff=hostile\n");
+    fx.run_git(&["add", "."]);
+    fx.run_git(&["commit", "-qm", "seed"]);
+    fx.write_file("note.txt", "staged\n");
+    fx.run_git(&["add", "note.txt"]);
+    fx.write_file("note.txt", "after\n");
+    let sha = git_output(&fx.repo_path, &["rev-parse", "HEAD"], None);
+    let sha = sha.trim();
+    fx.run_git(&[
+        "config",
+        "diff.hostile.textconv",
+        "echo ran > textconv-marker; cat",
+    ]);
+    fx.run_git(&[
+        "config",
+        "diff.external",
+        "echo ran > extdiff-marker; exit 0 #",
+    ]);
+
+    for staged in [false, true] {
+        operations::diff(&fx.registry, &fx.repo_str(), None, staged, &fx.workspace).expect("diff");
+    }
+    operations::show_commit_diff(&fx.registry, &fx.repo_str(), sha, &fx.workspace).expect("show");
+    operations::commit_file_diff(
+        &fx.registry,
+        &fx.repo_str(),
+        sha,
+        "note.txt",
+        None,
+        &fx.workspace,
+    )
+    .expect("file diff");
+    operations::log(&fx.registry, &fx.repo_str(), 10, None, &fx.workspace).expect("log");
+    operations::commit_files(&fx.registry, &fx.repo_str(), sha, &fx.workspace).expect("files");
+    for name in ["textconv-marker", "extdiff-marker"] {
+        assert!(
+            !fx.repo_path.join(name).exists(),
+            "reading diffs left {name}"
+        );
+    }
+}
+
+#[test]
+fn log_and_show_do_not_run_a_repository_signature_checker() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = seeded_repo();
+    let plain = git_output(&fx.repo_path, &["cat-file", "commit", "HEAD"], None);
+    let signed = plain.replacen(
+        "\n\n",
+        "\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n probe\n -----END PGP SIGNATURE-----\n\n",
+        1,
+    );
+    assert_ne!(plain, signed, "the commit got its signature header");
+    let sha = git_output(
+        &fx.repo_path,
+        &["hash-object", "-t", "commit", "-w", "--stdin"],
+        Some(signed.as_bytes()),
+    );
+    let sha = sha.trim();
+    fx.run_git(&["update-ref", "HEAD", sha]);
+    write_script(
+        &fx.repo_path.join("checker.sh"),
+        "echo ran > checker-marker\nexit 1",
+    );
+    fx.run_git(&["config", "log.showSignature", "true"]);
+    fx.run_git(&[
+        "config",
+        "gpg.program",
+        &format!("{}/checker.sh", fx.repo_str()),
+    ]);
+    let marker = fx.repo_path.join("checker-marker");
+
+    operations::log(&fx.registry, &fx.repo_str(), 10, None, &fx.workspace).expect("log");
+    assert!(
+        !marker.exists(),
+        "log ran the repository's signature checker"
+    );
+    operations::show_commit_diff(&fx.registry, &fx.repo_str(), sha, &fx.workspace).expect("show");
+    assert!(
+        !marker.exists(),
+        "show ran the repository's signature checker"
+    );
+}
+
+#[test]
+fn a_diff_does_not_run_the_repository_index_hook() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = seeded_repo();
+    write_script(
+        &fx.repo_path.join(".git/hooks/post-index-change"),
+        "echo ran > hook-marker",
+    );
+    // The same bytes at a later time: git compares the content, finds it
+    // unchanged and writes the index again, which is when this hook runs.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fx.write_file("note.txt", "before\n");
+
+    operations::diff(&fx.registry, &fx.repo_str(), None, false, &fx.workspace).expect("diff");
+    assert!(
+        !fx.repo_path.join("hook-marker").exists(),
+        "a diff ran the repository's post-index-change hook"
+    );
+}
+
+#[test]
+fn a_commit_still_runs_the_repository_hooks() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = seeded_repo();
+    write_script(
+        &fx.repo_path.join(".git/hooks/pre-commit"),
+        "echo ran > hook-marker",
+    );
+    fx.write_file("note.txt", "after\n");
+    fx.run_git(&["add", "note.txt"]);
+
+    operations::commit(&fx.registry, &fx.repo_str(), "change", &fx.workspace).expect("commit");
+    assert!(
+        fx.repo_path.join("hook-marker").exists(),
+        "a commit the user asked for runs the repository's own hooks"
+    );
+}

@@ -244,10 +244,11 @@ where
     S: AsRef<OsStr>,
 {
     let dur = Duration::from_secs(timeout_secs.clamp(1, MAX_TIMEOUT_SECS));
-    let args: Vec<OsString> = args
+    let mut args: Vec<OsString> = args
         .into_iter()
         .map(|arg| arg.as_ref().to_os_string())
         .collect();
+    harden_inspection(&mut args);
     let mut cmd = build_git_command(workspace, cwd, &args)?;
     cmd.env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "")
@@ -311,6 +312,49 @@ where
         timed_out,
         truncated: stdout_truncated,
     })
+}
+
+// A repository's own config and hooks name programs that git runs during plain
+// reads (fsmonitor, diff drivers, a signature checker, the index hook). No read
+// of Anbo's needs them; hooks of what a user asks for (a commit) stay on.
+fn harden_inspection(args: &mut Vec<OsString>) {
+    let mut command = 0;
+    while command < args.len() {
+        let arg = args[command].to_string_lossy();
+        if arg == "-c" || arg == "-C" {
+            command += 2;
+        } else if arg.starts_with('-') {
+            command += 1;
+        } else {
+            break;
+        }
+    }
+    let Some(name) = args
+        .get(command)
+        .map(|arg| arg.to_string_lossy().into_owned())
+    else {
+        return;
+    };
+    let shows_diffs = matches!(
+        name.as_str(),
+        "diff" | "show" | "log" | "diff-tree" | "diff-index" | "diff-files"
+    );
+    let only_reads = shows_diffs || matches!(name.as_str(), "status" | "rev-parse");
+    if shows_diffs {
+        args.splice(
+            command + 1..command + 1,
+            ["--no-ext-diff".into(), "--no-textconv".into()],
+        );
+    }
+    // Empty, not "false": git 2.23 would take that for a hook's file name.
+    let mut config: Vec<OsString> = vec!["-c".into(), "core.fsmonitor=".into()];
+    if only_reads {
+        config.extend(["-c".into(), "core.hooksPath=/dev/null".into()]);
+    }
+    if shows_diffs {
+        config.extend(["-c".into(), "log.showSignature=false".into()]);
+    }
+    args.splice(command..command, config);
 }
 
 fn build_git_command(
@@ -420,15 +464,89 @@ mod tests {
     #[cfg(windows)]
     use super::build_git_command;
     use super::{
-        parse_git_version, prune_expired_availability_entries, version_meets_minimum, Availability,
-        AvailabilityCache, AVAILABILITY_TTL,
+        harden_inspection, parse_git_version, prune_expired_availability_entries,
+        version_meets_minimum, Availability, AvailabilityCache, AVAILABILITY_TTL,
     };
     #[cfg(windows)]
     use crate::modules::workspace::WorkspaceEnv;
     use std::collections::HashMap;
-    #[cfg(windows)]
     use std::ffi::OsString;
     use std::time::{Duration, Instant};
+
+    fn hardened(args: &[&str]) -> Vec<String> {
+        let mut args: Vec<OsString> = args.iter().map(OsString::from).collect();
+        harden_inspection(&mut args);
+        args.iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_status_runs_without_the_repository_fsmonitor_and_hooks() {
+        assert_eq!(
+            hardened(&["status", "--porcelain=v2"]),
+            [
+                "-c",
+                "core.fsmonitor=",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "status",
+                "--porcelain=v2"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_diff_also_drops_converters_external_diffs_and_signature_checks() {
+        for command in ["diff", "show", "log", "diff-tree"] {
+            assert_eq!(
+                hardened(&[command, "--cached"]),
+                [
+                    "-c",
+                    "core.fsmonitor=",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "-c",
+                    "log.showSignature=false",
+                    command,
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--cached"
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn what_a_user_asks_for_keeps_the_repository_hooks() {
+        for command in ["commit", "checkout", "push", "add"] {
+            assert_eq!(
+                hardened(&[command, "x"]),
+                ["-c", "core.fsmonitor=", command, "x"]
+            );
+        }
+    }
+
+    #[test]
+    fn the_settings_come_last_so_that_they_win() {
+        assert_eq!(
+            hardened(&["-c", "core.fsmonitor=true", "status"]),
+            [
+                "-c",
+                "core.fsmonitor=true",
+                "-c",
+                "core.fsmonitor=",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "status"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_call_without_a_command_is_left_as_it_is() {
+        assert_eq!(hardened(&["--version"]), ["--version"]);
+    }
 
     #[test]
     fn extracts_simple_version() {
