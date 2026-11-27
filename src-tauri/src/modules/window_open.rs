@@ -54,6 +54,7 @@ pub fn remember_main_environment<R: Runtime>(app: &tauri::AppHandle<R>) {
                 *slot = Some(SharedEnvironment(webview.environment()));
             }
             pin_runtime(&webview);
+            drop_reload_from_menu(&webview);
         });
         if let Err(error) = kept {
             log::warn!("[windows] the main window's browser environment was not kept: {error}");
@@ -61,6 +62,47 @@ pub fn remember_main_environment<R: Runtime>(app: &tauri::AppHandle<R>) {
     }
     #[cfg(not(windows))]
     let _ = app;
+}
+
+/// WebView2's own menu over Anbo's page offers "Refresh", and a reload of that
+/// page closes every terminal. The item goes; the rest of the menu stays.
+#[cfg(windows)]
+fn drop_reload_from_menu(webview: &tauri::webview::PlatformWebview) {
+    use webview2_com::ContextMenuRequestedEventHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_11;
+    use windows::core::Interface;
+
+    let register = || -> windows::core::Result<()> {
+        let core = unsafe { webview.controller().CoreWebView2()? }.cast::<ICoreWebView2_11>()?;
+        let handler = ContextMenuRequestedEventHandler::create(Box::new(|_sender, args| {
+            let Some(args) = args else {
+                return Ok(());
+            };
+            let items = unsafe { args.MenuItems()? };
+            let mut count = 0_u32;
+            unsafe { items.Count(&mut count)? };
+            for index in (0..count).rev() {
+                let item = unsafe { items.GetValueAtIndex(index)? };
+                let mut name = windows::core::PWSTR::null();
+                unsafe { item.Name(&mut name)? };
+                if is_reload_item(&webview2_com::take_pwstr(name)) {
+                    unsafe { items.RemoveValueAtIndex(index)? };
+                }
+            }
+            Ok(())
+        }));
+        let mut token = 0_i64;
+        unsafe { core.add_ContextMenuRequested(&handler, &mut token) }
+    };
+    if let Err(error) = register() {
+        log::warn!("[windows] the main window's menu keeps its Refresh item: {error}");
+    }
+}
+
+/// WebView2 names a menu item by its English label in camel case.
+#[cfg(any(windows, test))]
+fn is_reload_item(name: &str) -> bool {
+    matches!(name, "reload" | "refresh")
 }
 
 #[cfg(windows)]
@@ -283,6 +325,22 @@ mod tests {
             shown_note("Settings", &Err("no window".into()), Ok(false)).as_deref(),
             Some("Settings would not show: no window")
         );
+    }
+
+    #[test]
+    fn only_the_reload_item_leaves_the_menu() {
+        assert!(is_reload_item("reload"));
+        assert!(is_reload_item("refresh"));
+        for kept in [
+            "back",
+            "forward",
+            "copy",
+            "paste",
+            "saveAs",
+            "inspectElement",
+        ] {
+            assert!(!is_reload_item(kept), "{kept}");
+        }
     }
 
     #[test]

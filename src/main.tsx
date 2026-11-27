@@ -13,8 +13,11 @@ import App from "./app/App";
 import { RootErrorBoundary, StartupReady } from "./app/StartupRoot";
 import { initLaunchDir } from "./lib/launchDir";
 import { USE_CUSTOM_WINDOW_CONTROLS } from "./lib/platform";
+import { blockPageReloadKeys } from "./lib/reloadGuard";
 import { initializeWindowPresentation } from "./lib/windowPresentation";
 import { initializeWindowShape } from "./lib/windowShape";
+
+blockPageReloadKeys();
 
 if (USE_CUSTOM_WINDOW_CONTROLS) {
   document.documentElement.dataset.chrome = "borderless";
