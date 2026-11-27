@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.43.3](https://github.com/mramdann/anbo-ai/compare/v0.43.2...v0.43.3) (2026-11-27)
+
+
+### Bug Fixes
+
+* **ai:** an IPv6 address that carries an IPv4 one is classed by it ([822e1d1](https://github.com/mramdann/anbo-ai/commit/822e1d10c56071e442c513aa692189fb7023172c))
+* **ai:** project memory that links to a secret beside it is refused ([08234c0](https://github.com/mramdann/anbo-ai/commit/08234c0c0215cfc661d91ed6e7fd74f01c60ad14))
+* **ai:** the model list follows the providers as they stand on Nov 27 ([d27de11](https://github.com/mramdann/anbo-ai/commit/d27de11ddd7cf599303585abfa1353af61550165))
+* **app:** F5, Ctrl+R and the menu's Refresh no longer reload Anbo's page ([0bd2a52](https://github.com/mramdann/anbo-ai/commit/0bd2a52e8d467c2130d06b2b6344d6d0a7ece358))
+* **browser:** a click names the tab it opened after a repeated ask too ([014b5bc](https://github.com/mramdann/anbo-ai/commit/014b5bc3b278eb7993b33bfd90bd0d4d48e72545))
+* **browser:** an action called with no target says what to pass ([3dc2332](https://github.com/mramdann/anbo-ai/commit/3dc233251c37b56c35d8c170cf6b4e5636a2046a))
+* **editor:** a .pdf goes into the preview frame only when it starts as a PDF ([96eda65](https://github.com/mramdann/anbo-ai/commit/96eda65f18e34261903a1027819431638ec32178))
+* **explorer:** the file tree is one Tab stop ([91d1111](https://github.com/mramdann/anbo-ai/commit/91d1111e2bbedc0bd96e91d4fca103d31a3a8542))
+* **git:** a repository's own config and hooks run no program while Anbo reads it ([9be381f](https://github.com/mramdann/anbo-ai/commit/9be381f3d525a1e4eeee015a8841d5ee4df880e2))
+* **skills:** the built-in skill and two tool descriptions say what the tools answer now ([4ccd0bb](https://github.com/mramdann/anbo-ai/commit/4ccd0bb0b10ae622313bfbd3e3c7af28791b4f9b))
+* **terminal:** a curly quote in a path cannot end the string of a typed command ([cca163d](https://github.com/mramdann/anbo-ai/commit/cca163d335dc7e93ed8ffef174b39701cbae8230))
+
 ## [0.43.2](https://github.com/mramdann/anbo-ai/compare/v0.43.1...v0.43.2) (2026-11-25)
 
 
