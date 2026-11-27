@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::UNIX_EPOCH;
-use std::{fs, io::Write};
+use std::{
+    fs,
+    io::{Read, Write},
+};
 
 use serde::Serialize;
 use tauri::Emitter;
@@ -17,6 +20,9 @@ const MAX_READ_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 const FORCE_MAX_READ_BYTES: u64 = 50 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 const EXPECTED_MISSING_VERSION: &str = "__anbo_missing__";
+// The editor frames a ".pdf" only when it starts like one: the asset protocol
+// serves a file by what it looks like, and one that is HTML would run there.
+const PDF_MAGIC: &[u8] = b"%PDF-";
 static FILE_WRITE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
 
 #[derive(Serialize)]
@@ -30,11 +36,13 @@ pub enum ReadResult {
     },
     Binary {
         size: u64,
+        pdf: bool,
     },
     /// File exceeds MAX_READ_BYTES. UI decides whether to offer "open anyway".
     TooLarge {
         size: u64,
         limit: u64,
+        pdf: bool,
     },
 }
 
@@ -110,6 +118,14 @@ pub async fn fs_read_file(
     read_file_sync(&path, force.unwrap_or(false), max_bytes)
 }
 
+fn starts_as_pdf(path: &Path) -> bool {
+    let mut head = [0_u8; PDF_MAGIC.len()];
+    fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut head))
+        .is_ok()
+        && head == PDF_MAGIC
+}
+
 fn read_file_sync(p: &Path, force: bool, max_bytes: Option<u64>) -> Result<ReadResult, String> {
     let meta = std::fs::metadata(p).map_err(|e| {
         log::debug!("fs_read_file stat({}) failed: {e}", p.display());
@@ -124,7 +140,11 @@ fn read_file_sync(p: &Path, force: bool, max_bytes: Option<u64>) -> Result<ReadR
     };
     let limit = max_bytes.unwrap_or(base_limit).clamp(1, base_limit);
     if size > limit {
-        return Ok(ReadResult::TooLarge { size, limit });
+        return Ok(ReadResult::TooLarge {
+            size,
+            limit,
+            pdf: starts_as_pdf(p),
+        });
     }
 
     let bytes = std::fs::read(p).map_err(|e| {
@@ -134,9 +154,10 @@ fn read_file_sync(p: &Path, force: bool, max_bytes: Option<u64>) -> Result<ReadR
 
     // Null-byte sniff on the first chunk. Not perfect (misses UTF-16 BOM
     // cases) but catches the common "this is a PNG" mistake cheaply.
+    let pdf = bytes.starts_with(PDF_MAGIC);
     let sniff_len = bytes.len().min(BINARY_SNIFF_BYTES);
     if bytes[..sniff_len].contains(&0) {
-        return Ok(ReadResult::Binary { size });
+        return Ok(ReadResult::Binary { size, pdf });
     }
 
     let version = version_for(&meta, &bytes);
@@ -147,7 +168,7 @@ fn read_file_sync(p: &Path, force: bool, max_bytes: Option<u64>) -> Result<ReadR
             mtime: mtime_millis(&meta),
             version,
         }),
-        Err(_) => Ok(ReadResult::Binary { size }),
+        Err(_) => Ok(ReadResult::Binary { size, pdf }),
     }
 }
 
@@ -351,6 +372,46 @@ mod tests {
     }
 
     #[test]
+    fn only_a_file_that_starts_as_a_pdf_is_marked_as_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.pdf");
+        std::fs::write(
+            &real,
+            [b"%PDF-1.4".as_slice(), &[0x0a, 0x25, 0xe2, 0xe3]].concat(),
+        )
+        .unwrap();
+        assert!(matches!(
+            read_file_sync(&real, false, None).unwrap(),
+            ReadResult::Binary { pdf: true, .. }
+        ));
+        // A page named like a PDF; the zero byte makes it binary to the editor.
+        let page = dir.path().join("page.pdf");
+        std::fs::write(
+            &page,
+            [b"<!DOCTYPE html><script>1</script>".as_slice(), &[0]].concat(),
+        )
+        .unwrap();
+        assert!(matches!(
+            read_file_sync(&page, false, None).unwrap(),
+            ReadResult::Binary { pdf: false, .. }
+        ));
+        assert!(matches!(
+            read_file_sync(&real, false, Some(4)).unwrap(),
+            ReadResult::TooLarge { pdf: true, .. }
+        ));
+        assert!(matches!(
+            read_file_sync(&page, false, Some(4)).unwrap(),
+            ReadResult::TooLarge { pdf: false, .. }
+        ));
+        let short = dir.path().join("short.pdf");
+        std::fs::write(&short, b"%PD").unwrap();
+        assert!(matches!(
+            read_file_sync(&short, false, Some(2)).unwrap(),
+            ReadResult::TooLarge { pdf: false, .. }
+        ));
+    }
+
+    #[test]
     fn force_lifts_the_default_size_limit() {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("big.txt");
@@ -373,7 +434,11 @@ mod tests {
 
         assert!(matches!(
             read_file_sync(&f, false, Some(4)).unwrap(),
-            ReadResult::TooLarge { size: 5, limit: 4 }
+            ReadResult::TooLarge {
+                size: 5,
+                limit: 4,
+                pdf: false
+            }
         ));
         assert!(matches!(
             read_file_sync(&f, false, Some(MAX_READ_BYTES + 1)).unwrap(),

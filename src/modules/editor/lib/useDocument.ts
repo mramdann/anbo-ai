@@ -14,8 +14,8 @@ type ReadResult =
       mtime: number;
       version: string;
     }
-  | { kind: "binary"; size: number }
-  | { kind: "toolarge"; size: number; limit: number };
+  | { kind: "binary"; size: number; pdf: boolean }
+  | { kind: "toolarge"; size: number; limit: number; pdf: boolean };
 
 type WriteResult =
   | { status: "written"; mtime: number; version: string }
@@ -31,8 +31,8 @@ export const FORCE_READ_LIMIT = 50 * 1024 * 1024;
 export type DocumentState =
   | { status: "loading" }
   | { status: "ready"; content: string; size: number }
-  | { status: "binary"; size: number }
-  | { status: "toolarge"; size: number; limit: number }
+  | { status: "binary"; size: number; pdf: boolean }
+  | { status: "toolarge"; size: number; limit: number; pdf: boolean }
   | { status: "error"; message: string };
 
 type Options = {
@@ -149,9 +149,14 @@ export function useDocument({ path, workspace, onDirtyChange }: Options) {
       setDirty(false);
       setDoc({ status: "ready", content, size: res.size });
     } else if (res.kind === "binary") {
-      setDoc({ status: "binary", size: res.size });
+      setDoc({ status: "binary", size: res.size, pdf: res.pdf });
     } else if (res.kind === "toolarge") {
-      setDoc({ status: "toolarge", size: res.size, limit: res.limit });
+      setDoc({
+        status: "toolarge",
+        size: res.size,
+        limit: res.limit,
+        pdf: res.pdf,
+      });
     }
   }, []);
 

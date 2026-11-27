@@ -54,6 +54,7 @@ import {
 } from "./lib/externalFormat";
 import { detectIndentUnit } from "./lib/indent";
 import { type LanguageResult, resolveLanguage } from "./lib/languageResolver";
+import { mediaPreviewFor } from "./lib/mediaPreview";
 import { FORCE_READ_LIMIT, useDocument } from "./lib/useDocument";
 import { useEditorThemeExt } from "./lib/useEditorThemeExt";
 import { useEditorWindowPresentation } from "./lib/useEditorWindowPresentation";
@@ -548,21 +549,13 @@ export const EditorPane = memo(
       );
     }
     if (doc.status === "binary" || doc.status === "toolarge") {
-      const ext = path.split(".").pop()?.toLowerCase() ?? "";
-      const isImage = [
-        "png",
-        "jpg",
-        "jpeg",
-        "gif",
-        "webp",
-        "svg",
-        "ico",
-      ].includes(ext);
-      const isVideo = ["mp4", "webm", "ogg", "mov"].includes(ext);
-      const isAudio = ["mp3", "wav", "flac", "aac", "m4a"].includes(ext);
-      const isPdf = ext === "pdf";
+      const preview = mediaPreviewFor(path, doc.pdf);
+      const isImage = preview === "image";
+      const isVideo = preview === "video";
+      const isAudio = preview === "audio";
+      const isPdf = preview === "pdf";
 
-      if (isImage || isVideo || isAudio || isPdf) {
+      if (preview) {
         const assetUrl = convertFileSrc(path);
         return (
           <div className="flex h-full min-h-0 flex-col items-center justify-center bg-background p-4 overflow-auto">
