@@ -2,14 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   compatModelIdForEndpoint,
   endpointIdFromCompatModel,
+  DEFAULT_AUTOCOMPLETE_MODEL,
   getModelContextLimit,
   isCompatModelId,
+  isKnownModelId,
   migrateLegacyCompatEndpoint,
+  migrateRetiredModelId,
   modelKeepsReasoning,
   modelSupportsTemperature,
   modelUsesReasoningTokens,
   MODEL_PRICING,
   resolveModel,
+  selectSystemPrompt,
   type CustomEndpoint,
 } from "./config";
 
@@ -79,12 +83,21 @@ describe("getModelContextLimit", () => {
   });
 
   it.each([
+    ["gpt-6.2-astra", 1_050_000],
+    ["gpt-6-luna", 1_050_000],
     ["gpt-5.6", 1_050_000],
     ["gpt-5.6-terra", 1_050_000],
     ["gpt-5.6-luna", 1_050_000],
     ["claude-fable-5", 1_000_000],
     ["claude-sonnet-5", 1_000_000],
+    ["claude-opus-5", 1_000_000],
+    ["gemini-4-carbon", 1_000_000],
+    ["gemini-3.8-flash", 1_000_000],
+    ["grok-4.7", 500_000],
     ["grok-4.5", 500_000],
+    ["deepseek-flash", 1_000_000],
+    ["mistral-large-4-0", 1_000_000],
+    ["qwen/qwen3.8-27b", 131_072],
   ] as const)("uses the published context limit for %s", (modelId, limit) => {
     expect(getModelContextLimit(modelId)).toBe(limit);
   });
@@ -92,14 +105,73 @@ describe("getModelContextLimit", () => {
 
 describe("current model pricing", () => {
   it.each([
+    ["gpt-6.2-astra", 8, 40, 0.4],
+    ["gpt-6.2-sol", 2, 10, 0.1],
+    ["gpt-6.1-terra", 1, 5, 0.05],
+    ["gpt-6-luna", 0.1, 0.5, 0.01],
     ["gpt-5.6", 5, 30, 0.5],
     ["gpt-5.6-terra", 2.5, 15, 0.25],
     ["gpt-5.6-luna", 1, 6, 0.1],
     ["claude-fable-5", 10, 50, 1],
-    ["claude-sonnet-5", 3, 15, 0.3],
-    ["grok-4.5", 2, 6, 0.5],
+    ["claude-sonnet-5", 2, 10, 0.2],
+    ["claude-opus-5", 5, 25, 0.5],
+    ["gemini-4-hydrogen", 1.5, 7.5, 0.075],
+    ["gemini-4-neon", 3, 15, 0.15],
+    ["grok-4.7", 2, 6, 0.5],
+    ["grok-4.5", 2, 6, 0.3],
+    ["deepseek-flash", 0.3, 1.2, 0.006],
   ] as const)("uses the published token pricing for %s", (modelId, input, output, cacheRead) => {
     expect(MODEL_PRICING[modelId]).toEqual({ input, output, cacheRead });
+  });
+});
+
+describe("models a provider has withdrawn", () => {
+  it.each([
+    ["gemini-2.5-pro", "gemini-3.8-flash"],
+    ["gemini-2.5-flash", "gemini-3.5-flash-lite"],
+    ["gemini-3.5-flash", "gemini-3.6-flash"],
+    ["deepseek-v4-flash", "deepseek-flash"],
+    ["deepseek-reasoner", "deepseek-v4-pro"],
+    ["grok-4-fast-reasoning", "grok-4.3"],
+    ["llama3.3-70b", "gpt-oss-120b"],
+    ["qwen-3-32b", "gpt-oss-120b"],
+  ] as const)("moves a stored %s to %s, which the list has", (retired, next) => {
+    expect(isKnownModelId(retired)).toBe(false);
+    expect(migrateRetiredModelId(retired)).toBe(next);
+    expect(isKnownModelId(next)).toBe(true);
+  });
+
+  it("leaves a model the list still has where it is", () => {
+    expect(migrateRetiredModelId("gpt-6.2-sol")).toBe("gpt-6.2-sol");
+  });
+
+  it("offers a listed model as each provider's autocomplete default", () => {
+    for (const provider of [
+      "openai",
+      "anthropic",
+      "google",
+      "xai",
+      "deepseek",
+      "groq",
+      "cerebras",
+    ] as const) {
+      const id = DEFAULT_AUTOCOMPLETE_MODEL[provider] ?? "";
+      expect(isKnownModelId(id), `${provider}: ${id}`).toBe(true);
+      expect(resolveModel(id).provider).toBe(provider);
+    }
+  });
+
+  it("gives the short system prompt only to models the list has", () => {
+    for (const id of [
+      "gpt-6-luna",
+      "gemini-3.5-flash-lite",
+      "deepseek-flash",
+      "qwen-3.8-27b",
+      "qwen/qwen3.8-27b",
+    ]) {
+      expect(isKnownModelId(id), id).toBe(true);
+      expect(selectSystemPrompt(id)).not.toBe(selectSystemPrompt("gpt-6.2-astra"));
+    }
   });
 });
 
@@ -122,8 +194,11 @@ describe("model sampling capabilities", () => {
   it.each([
     ["openai", "gpt-5.4-nano"],
     ["openai", "gpt-5.6"],
+    ["openai", "gpt-6.2-astra"],
+    ["openai", "gpt-6-luna"],
     ["anthropic", "claude-fable-5"],
     ["anthropic", "claude-sonnet-5"],
+    ["anthropic", "claude-opus-5"],
   ] as const)("omits temperature for %s/%s", (provider, modelId) => {
     expect(modelSupportsTemperature(provider, modelId)).toBe(false);
   });
@@ -142,7 +217,9 @@ describe("model sampling capabilities", () => {
   it.each([
     ["openai", "gpt-5.4-nano"],
     ["openai", "gpt-5.6-luna"],
+    ["openai", "gpt-6.1-terra"],
     ["anthropic", "claude-sonnet-5"],
+    ["google", "gemini-4-carbon"],
     ["xai", "grok-4.5"],
     ["groq", "openai/gpt-oss-20b"],
   ] as const)("allocates a reasoning output budget for %s/%s", (provider, modelId) => {
