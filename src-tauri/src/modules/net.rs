@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -55,48 +55,92 @@ fn is_blocked_host_name(host: &str) -> bool {
 
 fn ip_kind(ip: IpAddr) -> IpKind {
     match ip {
-        IpAddr::V4(v) => {
-            let o = v.octets();
-            // Cloud metadata IPv4: 169.254.169.254
-            if v.is_link_local() {
-                return IpKind::BlockedMetadata;
-            }
-            if v.is_loopback() || v.is_unspecified() || v.is_broadcast() || v.is_multicast() {
-                return IpKind::Loopback;
-            }
-            // RFC1918 + CGNAT + benchmarking + IETF
-            if o[0] == 10
-                || (o[0] == 172 && (16..=31).contains(&o[1]))
-                || (o[0] == 192 && o[1] == 168)
-                || (o[0] == 100 && (64..=127).contains(&o[1]))
-                || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
-            {
-                return IpKind::Private;
-            }
-            IpKind::Public
+        IpAddr::V4(v) => ipv4_kind(v),
+        IpAddr::V6(v) => ipv6_kind(v),
+    }
+}
+
+fn ipv4_kind(v: Ipv4Addr) -> IpKind {
+    let o = v.octets();
+    // Cloud metadata IPv4: 169.254.169.254
+    if v.is_link_local() {
+        return IpKind::BlockedMetadata;
+    }
+    // 0.0.0.0/8 is "this host" to most stacks.
+    if v.is_loopback() || o[0] == 0 || v.is_broadcast() || v.is_multicast() {
+        return IpKind::Loopback;
+    }
+    // RFC1918, CGNAT, benchmarking, IETF assignments, documentation, reserved.
+    if o[0] == 10
+        || (o[0] == 172 && (16..=31).contains(&o[1]))
+        || (o[0] == 192 && o[1] == 168)
+        || (o[0] == 100 && (64..=127).contains(&o[1]))
+        || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
+        || (o[0] == 192 && o[1] == 0 && (o[2] == 0 || o[2] == 2))
+        || (o[0] == 198 && o[1] == 51 && o[2] == 100)
+        || (o[0] == 203 && o[1] == 0 && o[2] == 113)
+        || o[0] >= 240
+    {
+        return IpKind::Private;
+    }
+    IpKind::Public
+}
+
+fn ipv6_kind(v: Ipv6Addr) -> IpKind {
+    let s = v.segments();
+    if v.is_loopback() || v.is_unspecified() || v.is_multicast() {
+        return IpKind::Loopback;
+    }
+    // Cloud metadata IPv6 (AWS): fd00:ec2::254
+    if s[0] == 0xfd00 && s[1] == 0xec2 {
+        return IpKind::BlockedMetadata;
+    }
+    // fe80::/10 link-local
+    if s[0] & 0xffc0 == 0xfe80 {
+        return IpKind::BlockedMetadata;
+    }
+    // A translating or dual-stack network delivers these to the IPv4 host
+    // inside them, so that host decides the class.
+    if let Some(embedded) = embedded_ipv4(&s) {
+        return embedded
+            .into_iter()
+            .flatten()
+            .map(ipv4_kind)
+            .max_by_key(|kind| kind.severity())
+            .unwrap_or(IpKind::Public);
+    }
+    // Outside global unicast 2000::/3: unique-local, site-local, discard,
+    // local-use NAT64 and everything unallocated.
+    if s[0] & 0xe000 != 0x2000 {
+        return IpKind::Private;
+    }
+    // IETF protocol assignments 2001::/23, documentation 2001:db8::/32 and 3fff::/20.
+    if s[0] == 0x2001 && (s[1] < 0x0200 || s[1] == 0x0db8) || s[0] == 0x3fff && s[1] < 0x1000 {
+        return IpKind::Private;
+    }
+    IpKind::Public
+}
+
+fn embedded_ipv4(s: &[u16; 8]) -> Option<[Option<Ipv4Addr>; 2]> {
+    let v4 = |hi: u16, lo: u16| {
+        let [a, b] = hi.to_be_bytes();
+        let [c, d] = lo.to_be_bytes();
+        Some(Ipv4Addr::new(a, b, c, d))
+    };
+    match s {
+        // ::ffff:a.b.c.d (mapped) and ::a.b.c.d (compatible, deprecated)
+        [0, 0, 0, 0, 0, 0xffff, hi, lo] | [0, 0, 0, 0, 0, 0, hi, lo] => Some([v4(*hi, *lo), None]),
+        // ::ffff:0:a.b.c.d (SIIT-translated)
+        [0, 0, 0, 0, 0xffff, 0, hi, lo] => Some([v4(*hi, *lo), None]),
+        // 64:ff9b::/96 (NAT64)
+        [0x64, 0xff9b, 0, 0, 0, 0, hi, lo] => Some([v4(*hi, *lo), None]),
+        // 2002::/16 (6to4): the IPv4 address follows the prefix
+        [0x2002, hi, lo, ..] => Some([v4(*hi, *lo), None]),
+        // 2001:0::/32 (Teredo): the server, and the client with its bits inverted
+        [0x2001, 0, server_hi, server_lo, _, _, client_hi, client_lo] => {
+            Some([v4(*server_hi, *server_lo), v4(!*client_hi, !*client_lo)])
         }
-        IpAddr::V6(v) => {
-            if let Some(mapped) = v.to_ipv4_mapped() {
-                return ip_kind(IpAddr::V4(mapped));
-            }
-            if v.is_loopback() || v.is_unspecified() || v.is_multicast() {
-                return IpKind::Loopback;
-            }
-            // Cloud metadata IPv6 (AWS): fd00:ec2::254
-            let segs = v.segments();
-            if segs[0] == 0xfd00 && segs[1] == 0xec2 {
-                return IpKind::BlockedMetadata;
-            }
-            // fe80::/10 link-local
-            if segs[0] & 0xffc0 == 0xfe80 {
-                return IpKind::BlockedMetadata;
-            }
-            // fc00::/7 unique-local (private)
-            if segs[0] & 0xfe00 == 0xfc00 {
-                return IpKind::Private;
-            }
-            IpKind::Public
-        }
+        _ => None,
     }
 }
 
@@ -106,6 +150,17 @@ enum IpKind {
     Private,
     Loopback,
     BlockedMetadata,
+}
+
+impl IpKind {
+    fn severity(self) -> u8 {
+        match self {
+            Self::Public => 0,
+            Self::Private => 1,
+            Self::Loopback => 2,
+            Self::BlockedMetadata => 3,
+        }
+    }
 }
 
 /// Resolve `host` once and return both its safety classification and the
@@ -579,7 +634,6 @@ pub async fn ai_http_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
 
     #[test]
     fn a_client_builds_without_a_preinstalled_crypto_provider() {
@@ -654,6 +708,73 @@ mod tests {
             ip_kind("::ffff:169.254.169.254".parse().unwrap()),
             IpKind::BlockedMetadata
         );
+    }
+
+    fn kind(address: &str) -> IpKind {
+        ip_kind(address.parse().unwrap())
+    }
+
+    #[test]
+    fn compatible_and_translated_addresses_take_the_class_of_their_ipv4() {
+        assert_eq!(kind("::127.0.0.1"), IpKind::Loopback);
+        assert_eq!(kind("::169.254.169.254"), IpKind::BlockedMetadata);
+        assert_eq!(kind("::10.1.2.3"), IpKind::Private);
+        assert_eq!(kind("::8.8.8.8"), IpKind::Public);
+        assert_eq!(kind("::ffff:0:127.0.0.1"), IpKind::Loopback);
+        assert_eq!(kind("::ffff:0:8.8.8.8"), IpKind::Public);
+        assert_eq!(kind("::"), IpKind::Loopback);
+    }
+
+    #[test]
+    fn nat64_addresses_take_the_class_of_their_ipv4() {
+        assert_eq!(kind("64:ff9b::7f00:1"), IpKind::Loopback);
+        assert_eq!(kind("64:ff9b::a9fe:a9fe"), IpKind::BlockedMetadata);
+        assert_eq!(kind("64:ff9b::c0a8:101"), IpKind::Private);
+        assert_eq!(kind("64:ff9b::808:808"), IpKind::Public);
+        assert_eq!(kind("64:ff9b:1::808:808"), IpKind::Private);
+    }
+
+    #[test]
+    fn six_to_four_addresses_take_the_class_of_their_ipv4() {
+        assert_eq!(kind("2002:7f00:1::"), IpKind::Loopback);
+        assert_eq!(kind("2002:a9fe:a9fe::"), IpKind::BlockedMetadata);
+        assert_eq!(kind("2002:c0a8:101::5"), IpKind::Private);
+        assert_eq!(kind("2002:808:808::1"), IpKind::Public);
+    }
+
+    #[test]
+    fn teredo_addresses_take_the_worse_class_of_server_and_client() {
+        assert_eq!(kind("2001:0:808:808:0:0:fefd:fcfb"), IpKind::Public);
+        assert_eq!(kind("2001:0:808:808:0:0:80ff:fffe"), IpKind::Loopback);
+        assert_eq!(kind("2001:0:a00:1:0:0:fefd:fcfb"), IpKind::Private);
+        assert_eq!(
+            kind("2001:0:808:808:0:0:5601:5601"),
+            IpKind::BlockedMetadata
+        );
+    }
+
+    #[test]
+    fn addresses_outside_global_unicast_are_never_public() {
+        for address in ["fec0::1", "100::1", "2001:db8::1", "3fff::1", "fd12::1"] {
+            assert_eq!(kind(address), IpKind::Private, "{address}");
+        }
+        for address in ["0.1.2.3", "::ffff:0.1.2.3"] {
+            assert_eq!(kind(address), IpKind::Loopback, "{address}");
+        }
+        for address in ["240.0.0.1", "192.0.2.1", "198.51.100.7", "203.0.113.5"] {
+            assert_eq!(kind(address), IpKind::Private, "{address}");
+        }
+        for address in ["2606:4700:4700::1111", "2001:4860:4860::8888"] {
+            assert_eq!(kind(address), IpKind::Public, "{address}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_nat64_form_of_the_metadata_address_is_blocked_without_dns() {
+        let result = classify_and_collect_safe_ips("[64:ff9b::a9fe:a9fe]", true).await;
+        assert!(result.unwrap_err().contains("not allowed"));
+        let result = classify_and_collect_safe_ips("2002:7f00:1::", false).await;
+        assert!(result.unwrap_err().contains("opt-in"));
     }
 
     #[tokio::test]
