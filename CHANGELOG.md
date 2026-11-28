@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.43.3](https://github.com/mramdann/anbo-ai/compare/v0.43.2...v0.43.3) (2026-11-27)
+
+
+### Bug Fixes
+
+* **ai:** the guard on the built-in AI's web requests now looks inside every IPv6 form that carries an IPv4 address (NAT64, 6to4, Teredo and others), not only the mapped one. Before, those forms were taken for public addresses even when they pointed at this computer, the local network or a cloud metadata address ([822e1d1](https://github.com/mramdann/anbo-ai/commit/822e1d10c56071e442c513aa692189fb7023172c))
+* **ai:** the built-in AI no longer reads a project's ANBO.md when that file is a link to a protected file beside it, such as .env. Before, the text of that file was read into the AI's instructions and sent to the model's provider ([08234c0](https://github.com/mramdann/anbo-ai/commit/08234c0c0215cfc661d91ed6e7fd74f01c60ad14))
+* **ai:** the built-in AI's model list matches the providers as of Nov 27 2026: 17 models added (GPT-6.2 Astra and Sol, GPT-6.1 Terra, GPT-6 Luna, Claude Opus 5, Gemini 4 Carbon, Neon, Hydrogen and Argon, Gemini 3.8 Flash, 3.6 Flash and 3.5 Flash-Lite, Grok 4.7 and 4.6, Mistral Large 4, Qwen 3.8 27B on Cerebras and on Groq), prices and context sizes corrected, and eight models their providers have withdrawn taken out. A stored choice of a withdrawn model moves to its replacement by itself ([d27de11](https://github.com/mramdann/anbo-ai/commit/d27de11ddd7cf599303585abfa1353af61550165))
+* **app:** F5, Ctrl+R, Ctrl+F5, Ctrl+Shift+R and the Refresh entry of the right-click menu no longer reload Anbo's own window. Such a reload ended every open terminal, and the agents running in them, without asking ([0bd2a52](https://github.com/mramdann/anbo-ai/commit/0bd2a52e8d467c2130d06b2b6344d6d0a7ece358))
+* **browser:** when a link that opens a new tab had been clicked twice within a second, every later click an agent made on that link was answered as still opening, without the new tab's name. Each click now names the tab it opened ([014b5bc](https://github.com/mramdann/anbo-ai/commit/014b5bc3b278eb7993b33bfd90bd0d4d48e72545))
+* **browser:** a browser tool that an agent calls without naming an element now answers what to pass (a ref or a locator), and browser_dialog says that it clicks the element itself. Before, the answer was only that the ref was missing or invalid ([3dc2332](https://github.com/mramdann/anbo-ai/commit/3dc233251c37b56c35d8c170cf6b4e5636a2046a))
+* **editor:** a file named .pdf is shown in the PDF preview only when it really starts as a PDF. Before, a web page saved under a .pdf name could run its script inside Anbo and read files in the folders Anbo has access to ([96eda65](https://github.com/mramdann/anbo-ai/commit/96eda65f18e34261903a1027819431638ec32178))
+* **explorer:** the file tree is a single Tab stop now: Tab moves past it and the arrow keys move inside it. Before, every row was a stop, so a folder of several hundred files took as many key presses to leave ([91d1111](https://github.com/mramdann/anbo-ai/commit/91d1111e2bbedc0bd96e91d4fca103d31a3a8542))
+* **git:** while Anbo only reads a repository (status, diffs, history), it no longer runs the programs that repository's own git settings name: its file-system monitor, its hooks, its diff and text converters and its signature checker. Hooks of what you ask for, such as a commit, still run ([9be381f](https://github.com/mramdann/anbo-ai/commit/9be381f3d525a1e4eeee015a8841d5ee4df880e2))
+* **skills:** the built-in Anbo skill and two tool descriptions say what the tools answer today. Agents were still told to list the tabs after a click that opens one (the click's answer names it), and that element refs live for 8 scans (it is 32) ([4ccd0bb](https://github.com/mramdann/anbo-ai/commit/4ccd0bb0b10ae622313bfbd3e3c7af28791b4f9b))
+* **terminal:** a folder or file whose name holds a curly quote can no longer end the quoted path in a command Anbo types into a PowerShell terminal, such as the cd after a folder is opened with Anbo. Before, the rest of such a name was run as a command ([cca163d](https://github.com/mramdann/anbo-ai/commit/cca163d335dc7e93ed8ffef174b39701cbae8230))
+
 ## [0.43.2](https://github.com/mramdann/anbo-ai/compare/v0.43.1...v0.43.2) (2026-11-25)
 
 
